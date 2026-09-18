@@ -1,0 +1,94 @@
+name: CI
+
+# Build and test for everything in this repository. Deployment is not here: the platform is brought
+# up on each host with scripts/platform.sh, and applications are deployed by Jenkins.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  status:
+    name: Status API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test status --configuration Release
+      - name: Build the container image
+        run: docker build --tag yggdrasil-status:ci status
+
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.4
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build web --release --no-web-resources-cdn
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yggdrasil-console-android
+          path: console/build/app/outputs/flutter-apk/app-release.apk
+
+  platform:
+    name: Platform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check shell scripts
+        run: shellcheck scripts/*.sh
+      - name: Check the catalog
+        # rulesets.py and the Jenkins Job DSL both read it; a dry run parses it the same way.
+        run: |
+          pip install --quiet pyyaml
+          python3 - <<'PY'
+          import re, sys, yaml
+          catalog = yaml.safe_load(open("catalog.yaml", encoding="utf-8"))
+          ids = [a["id"] for s in catalog["systems"] for a in s["applications"]]
+          dupes = {i for i in ids if ids.count(i) > 1}
+          bad = [i for i in ids if not re.fullmatch(r"[a-z0-9-]+", i)]
+          if dupes or bad:
+              sys.exit(f"duplicate ids: {sorted(dupes)}; invalid ids: {bad}")
+          print(f"{len(catalog['systems'])} systems, {len(ids)} applications")
+          PY
+      - name: Validate the Compose files
+        run: |
+          secrets=$(mktemp -d)
+          cat > "$secrets/platform.env" <<'ENV'
+          ENVIRONMENT=ci
+          DOMAIN=example.com
+          ACME_EMAIL=ci@example.com
+          CF_DNS_API_TOKEN=x
+          TRAEFIK_DASHBOARD_USERS='admin:x'
+          GRAFANA_ADMIN_PASSWORD=x
+          YGGDRASIL_STATUS_TOKEN=0000000000000000000000000000000000000000
+          ENV
+          docker compose --env-file "$secrets/platform.env" -f platform/compose.yml config --quiet
+          for ui in heimdall-ui fortuna-ui; do
+            APP_DIR=. docker compose --env-file "env/production/$ui.env.example" \
+              -f "stacks/$ui.yml" -f "stacks/$ui.proxy.yml" config --quiet
+          done

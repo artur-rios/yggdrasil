@@ -1,40 +1,19 @@
 # One Prometheus per environment host, so no environment label is needed: the Grafana of that host
 # only ever sees its own environment.
 #
-# Targets are static names on the telemetry network. The application stacks give their API
-# container a network alias equal to the stack name (stacks/*.proxy.yml), which is what these
-# resolve to. A stack that is not deployed on this host just shows as down.
+# Every target comes from catalog.yaml, through the status API's HTTP service discovery (its internal
+# port 8081, reachable on the telemetry network only). An application added to the catalog is
+# scraped from the next refresh on, with system, app and kind labels. A target whose container is
+# not running on this host (Jenkins in homologation, say) just shows as down. Prometheus scrapes
+# itself through the same list: it is in the catalog like every other platform component.
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: apis
-    # The APIs serve /metrics only on this port, which is neither published nor routed by Traefik.
-    static_configs:
-      - targets: [heimdall-api:9464]
-        labels: { app: heimdall-api }
-      - targets: [fortuna-api:9464]
-        labels: { app: fortuna-api }
+  - job_name: catalog
+    http_sd_configs:
+      - url: http://status:8081/internal/prometheus/targets
+        refresh_interval: 1m
 
-  - job_name: traefik
-    static_configs:
-      - targets: [traefik:8082]
-
-  - job_name: jenkins
-    # Only the production host runs the controller; down in homologation, by design.
-    metrics_path: /prometheus/
-    static_configs:
-      - targets: [jenkins:8080]
-
-  - job_name: platform
-    static_configs:
-      - targets: [localhost:9090]
-        labels: { app: prometheus }
-      - targets: [loki:3100]
-        labels: { app: loki }
-      - targets: [alloy:12345]
-        labels: { app: alloy }
-      - targets: [grafana:3000]
-        labels: { app: grafana }

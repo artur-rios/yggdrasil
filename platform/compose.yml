@@ -3,7 +3,7 @@
 # stacks/ and scripts/deploy.sh) and joins the two external networks this stack routes and scrapes:
 #
 #   edge       Traefik <-> the applications (and application <-> application, e.g. fortuna-api
-#              calling heimdall-api by its alias)
+#              calling heimdall-api by its alias); the status API probes health endpoints here
 #   telemetry  Prometheus <-> everything it scrapes
 #
 # Both are created by scripts/platform.sh, not by this file, so an application stack can be
@@ -44,6 +44,9 @@ services:
       - --accesslog=true
       - --accesslog.format=json
       - --ping=true
+      # /ping on the internal metrics port, where the status API probes it; the container health
+      # check below uses the same entry point.
+      - --ping.entrypoint=metrics
 
       - --providers.docker=true
       # Nothing is routed unless it opts in with traefik.enable=true.
@@ -92,7 +95,7 @@ services:
       - edge
       - telemetry
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entrypoint=metrics", "--entrypoints.metrics.address=:8082"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -104,6 +107,71 @@ services:
       traefik.http.routers.dashboard.middlewares: dashboard-auth,secure-headers@file
       # htpasswd -nB admin -- single-quote the value in the env file so Compose leaves its $ alone.
       traefik.http.middlewares.dashboard-auth.basicauth.users: ${TRAEFIK_DASHBOARD_USERS:?set TRAEFIK_DASHBOARD_USERS in the env file}
+
+  docker-proxy:
+    # The status API reads container state (what runs, which version, is it healthy) through this
+    # proxy instead of the Docker socket itself: only GET on /containers is allowed, so a bug or a
+    # compromise in the status API cannot start, stop or exec into anything.
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker
+
+  status:
+    # Probes every catalog application and serves the console (/api/ under yggdrasil.DOMAIN) and
+    # Prometheus' target discovery (port 8081, internal). Contract: docs/status-api.md.
+    build: ../status
+    image: yggdrasil/status:local
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      YGGDRASIL_ENVIRONMENT: ${ENVIRONMENT}
+      YGGDRASIL_DOMAIN: ${DOMAIN}
+      YGGDRASIL_STATUS_TOKEN: ${YGGDRASIL_STATUS_TOKEN:?set YGGDRASIL_STATUS_TOKEN in the env file -- openssl rand -hex 32}
+      YGGDRASIL_STATUS_CORS_ORIGINS: ${YGGDRASIL_STATUS_CORS_ORIGINS:-}
+      YGGDRASIL_CATALOG_PATH: /app/catalog.yaml
+      YGGDRASIL_DOCKER_URL: http://docker-proxy:2375
+    volumes:
+      - ../catalog.yaml:/app/catalog.yaml:ro
+    networks:
+      - edge
+      - telemetry
+      - docker
+    depends_on:
+      - docker-proxy
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.status.rule: Host(`yggdrasil.${DOMAIN}`) && PathPrefix(`/api/`)
+      traefik.http.routers.status.entrypoints: websecure
+      traefik.http.routers.status.middlewares: secure-headers@file
+      traefik.http.services.status.loadbalancer.server.port: "8080"
+
+  console:
+    # The Flutter web console, at yggdrasil.DOMAIN. It calls the status API on its own origin.
+    build:
+      context: ../console
+      args:
+        YGGDRASIL_ENVIRONMENTS: ${YGGDRASIL_CONSOLE_ENVIRONMENTS:-}
+    image: yggdrasil/console:local
+    restart: unless-stopped
+    logging: *logging
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - edge
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.console.rule: Host(`yggdrasil.${DOMAIN}`)
+      traefik.http.routers.console.entrypoints: websecure
+      traefik.http.routers.console.middlewares: secure-headers@file
+      traefik.http.services.console.loadbalancer.server.port: "8080"
 
   prometheus:
     image: prom/prometheus:v3.5.0
@@ -197,6 +265,8 @@ services:
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
     volumes:
       - ./jenkins/controller/casc.yaml:/etc/jenkins/casc.yaml:ro
+      # The Job DSL in casc.yaml creates one deploy job per catalog application.
+      - ../catalog.yaml:/etc/jenkins/catalog.yaml:ro
       # The GitHub App private key, converted to PKCS#8 (see the README). Read by casc.yaml.
       - ${GITHUB_APP_KEY_FILE:-/etc/yggdrasil/github-app.pem}:/run/secrets/github-app.pem:ro
       - jenkins:/var/jenkins_home
@@ -244,6 +314,9 @@ networks:
     external: true
   telemetry:
     external: true
+  # Private to this project: only the status API reaches the Docker proxy.
+  docker:
+    internal: true
 
 volumes:
   letsencrypt:
