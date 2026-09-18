@@ -6,7 +6,7 @@ namespace Yggdrasil.Status.Tests;
 
 public class SnapshotBuilderTests
 {
-    private readonly Catalog catalog = TestData.Catalog();
+    private readonly EnvironmentCatalog catalog = TestData.InEnvironment();
 
     private ApplicationDefinition App(string id) => catalog.Applications.Single(a => a.Id == id);
 
@@ -86,6 +86,7 @@ public class SnapshotBuilderTests
         }, TestData.Now);
 
         Assert.Equal("production", snapshot.Environment);
+        Assert.Equal("Production", snapshot.EnvironmentName);
         Assert.Equal(TestData.Now, snapshot.GeneratedAt);
         Assert.Equal(StatusLevel.Degraded, snapshot.Systems.Single(s => s.Id == "heimdall").Status);
         Assert.Equal(StatusLevel.Up, snapshot.Systems.Single(s => s.Id == "yggdrasil").Status);
@@ -105,5 +106,16 @@ public class SnapshotBuilderTests
         {
             ["system"] = "yggdrasil", ["app"] = "jenkins", ["kind"] = "platform", ["__metrics_path__"] = "/prometheus/",
         }, targets[2].Labels);
+    }
+
+    [Fact]
+    public void GivenApplicationsNotInTheEnvironment_WhenListingScrapeTargets_ThenOnlyThisEnvironmentsAreTargets()
+    {
+        var production = PrometheusTargets.From(TestData.InEnvironment("production")).Select(t => t.Targets.Single());
+        var development = PrometheusTargets.From(TestData.InEnvironment("development")).Select(t => t.Targets.Single());
+
+        Assert.DoesNotContain("heimdall-worker:9464", production);
+        Assert.DoesNotContain("sandbox-api:9464", production);
+        Assert.Equal(["heimdall-api:9464", "heimdall-worker:9464", "traefik:8082", "jenkins:8080", "sandbox-api:9464"], development);
     }
 }

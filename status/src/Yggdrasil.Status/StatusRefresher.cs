@@ -10,7 +10,7 @@ namespace Yggdrasil.Status;
 /// and a burst of requests can't turn into a burst of probes against the applications.
 /// </summary>
 public sealed class StatusRefresher(
-    Catalog catalog,
+    EnvironmentCatalog catalog,
     StatusOptions options,
     IServiceProvider services,
     SnapshotBuilder builder,

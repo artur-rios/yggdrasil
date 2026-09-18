@@ -1,9 +1,13 @@
 # Status API contract
 
-The status API (`status/`) runs once per environment host, next to Traefik. It reads `catalog.yaml`, probes every application, and answers the console (`console/`) and Prometheus. This document is the contract between the two: change it first, then both sides.
+The status API (`status/`) runs once per environment host, next to Traefik. It reads `catalog.yaml`, probes every application deployed to its environment, and answers the console (`console/`) and Prometheus. This document is the contract between the two: change it first, then both sides.
 
 - **Public:** `https://yggdrasil.<domain>/api/...`, the same host as the console, routed by Traefik.
 - **Internal:** `http://status:8080/...` on the `edge` and `telemetry` Docker networks. The `/internal/*` endpoints are on port 8081 (`http://status:8081/internal/...`).
+
+## Which applications
+
+Only those deployed to the API's environment (`YGGDRASIL_ENVIRONMENT`, one of the catalog's `environments`). An application whose `environments` map in the catalog leaves that environment out is not reported, probed or scraped: it is absent from `/api/status`, `/api/systems/{id}` and `/internal/prometheus/targets`, not shown as `not_deployed`. A system with none of its applications left is absent too, and `/api/systems/{id}` answers `404` for it. An application without an `environments` map is in every environment.
 
 ## Authentication
 
@@ -20,27 +24,28 @@ The whole environment in one response. The console polls it (every 30 s by defau
 ```json
 {
   "environment": "production",
+  "environmentName": "Production",
   "generatedAt": "2026-09-18T18:04:11Z",
   "status": "degraded",
   "systems": [
     {
-      "id": "heimdall",
-      "name": "Heimdall",
-      "description": "Identity and access management",
+      "id": "shop",
+      "name": "Shop",
+      "description": "The online store",
       "status": "up",
       "applications": [
         {
-          "id": "heimdall-api",
-          "name": "Heimdall API",
+          "id": "shop-api",
+          "name": "Shop API",
           "kind": "api",
           "status": "up",
-          "url": "https://heimdall-api.example.com",
-          "repository": "https://github.com/artur-rios/heimdall-api",
+          "url": "https://shop-api.example.com",
+          "repository": "https://github.com/acme/shop-api",
           "deployment": {
             "version": "1.4.0",
             "commit": "3f2a9c1",
             "deployedAt": "2026-09-17T21:40:02Z",
-            "image": "heimdall-api:1.4.0-3f2a9c1"
+            "image": "shop-api:1.4.0-3f2a9c1"
           },
           "container": {
             "state": "running",
@@ -86,6 +91,7 @@ When the Docker proxy is unreachable, applications whose probe fails are `down` 
 
 ### Fields
 
+- **`environment`**: the environment's `id` in the catalog, i.e. `YGGDRASIL_ENVIRONMENT`. **`environmentName`** is its `name`, for display.
 - **`url`**: `https://<host>.<DOMAIN>` when the catalog gives a `host`; otherwise `null`.
 - **`repository`**: `https://github.com/<owner>/<repository>` for applications with a repository; `null` for platform components.
 - **`deployment`**: read from the container labels `scripts/deploy.sh` sets: `yggdrasil.version`, `yggdrasil.commit` and `yggdrasil.deployed_at`. `image` comes from the container. The object is `null` when there is no container. Each field is `null` when its label is missing, as for platform components.
@@ -98,7 +104,7 @@ When the Docker proxy is unreachable, applications whose probe fails are `down` 
 
 ## `GET /api/systems/{id}`
 
-One element of `systems`, shaped as above. `404` for an unknown id.
+One element of `systems`, shaped as above. `404` for an unknown id, and for a system with no application in this environment.
 
 ## `GET /healthz`
 
@@ -106,11 +112,11 @@ One element of `systems`, shaped as above. `404` for an unknown id.
 
 ## `GET /internal/prometheus/targets` (port 8081)
 
-[HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/) for every catalog application with `metrics`:
+[HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/) for every application in this environment with `metrics`:
 
 ```json
 [
-  { "targets": ["heimdall-api:9464"], "labels": { "system": "heimdall", "app": "heimdall-api", "kind": "api" } },
+  { "targets": ["shop-api:9464"], "labels": { "system": "shop", "app": "shop-api", "kind": "api" } },
   { "targets": ["jenkins:8080"], "labels": { "system": "yggdrasil", "app": "jenkins", "kind": "platform", "__metrics_path__": "/prometheus/" } }
 ]
 ```
@@ -132,7 +138,7 @@ When several containers match, the running one wins.
 | Variable | Default | |
 |---|---|---|
 | `YGGDRASIL_STATUS_TOKEN` | — | Required, at least 32 characters |
-| `YGGDRASIL_ENVIRONMENT` | — | Required. Reported as `environment` |
+| `YGGDRASIL_ENVIRONMENT` | — | Required. The `id` of one of the catalog's `environments`; reported as `environment` |
 | `YGGDRASIL_DOMAIN` | — | Required. Builds application `url`s |
 | `YGGDRASIL_CATALOG_PATH` | `/app/catalog.yaml` | |
 | `YGGDRASIL_DOCKER_URL` | `http://docker-proxy:2375` | |
@@ -140,4 +146,4 @@ When several containers match, the running one wins.
 | `YGGDRASIL_STATUS_INTERNAL_PORT` | `8081` | Must not be 8080 |
 | `YGGDRASIL_STATUS_CORS_ORIGINS` | empty | Comma-separated origins |
 
-Every setting and the catalog are validated together at start-up. On any error, the service prints every problem and exits with code 1 instead of starting half-configured.
+Every setting and the catalog are validated at start-up, the settings first, then the catalog, then that `YGGDRASIL_ENVIRONMENT` is one of the catalog's environments. On any error, the service prints every problem it found and exits with code 1 instead of starting half-configured.

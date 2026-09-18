@@ -65,6 +65,8 @@ public static partial class CatalogLoader
             errors.Add("owner: required (the GitHub account the repositories belong to)");
         }
 
+        var (environments, declared) = ValidateEnvironments(raw.Environments, errors);
+
         if (raw.Systems is null || raw.Systems.Count == 0)
         {
             errors.Add("systems: at least one system is required");
@@ -98,7 +100,8 @@ public static partial class CatalogLoader
             var applications = new List<ApplicationDefinition>();
             foreach (var (rawApp, appIndex) in (rawSystem.Applications ?? []).Select((app, index) => (app, index)))
             {
-                var application = ValidateApplication(rawApp, $"{where}.applications[{appIndex}]", applicationIds, errors);
+                var application = ValidateApplication(
+                    rawApp, $"{where}.applications[{appIndex}]", applicationIds, environments, declared, errors);
                 if (application is not null)
                 {
                     applications.Add(application);
@@ -108,11 +111,91 @@ public static partial class CatalogLoader
             systems.Add(new SystemDefinition(systemId, rawSystem.Name?.Trim() ?? "", rawSystem.Description?.Trim() ?? "", applications));
         }
 
-        return new Catalog(owner, systems);
+        return new Catalog(owner, environments, systems);
     }
 
+    private static (List<EnvironmentDefinition> Environments, HashSet<string> Declared) ValidateEnvironments(
+        List<RawEnvironment>? raw, List<string> errors)
+    {
+        // At least one: the service reports on exactly one environment, named by YGGDRASIL_ENVIRONMENT.
+        if (raw is null || raw.Count == 0)
+        {
+            errors.Add("environments: at least one environment is required");
+        }
+
+        var environments = new List<EnvironmentDefinition>();
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var (rawEnvironment, index) in (raw ?? []).Select((environment, index) => (environment, index)))
+        {
+            var where = $"environments[{index}]" + (string.IsNullOrWhiteSpace(rawEnvironment.Id) ? "" : $" ({rawEnvironment.Id})");
+            var id = rawEnvironment.Id?.Trim() ?? "";
+
+            CheckId(id, where, errors);
+            if (id.Length > 0 && !declared.Add(id))
+            {
+                errors.Add($"{where}: duplicate environment id '{id}'");
+            }
+
+            if (string.IsNullOrWhiteSpace(rawEnvironment.Name))
+            {
+                errors.Add($"{where}: name is required");
+            }
+
+            CheckOptions(rawEnvironment, where, errors, isOverride: false);
+            environments.Add(new EnvironmentDefinition(id, rawEnvironment.Name?.Trim() ?? ""));
+        }
+
+        return (environments, declared);
+    }
+
+    // The deployment options this service doesn't use but still validates, on an environment or on an
+    // application's override of one. Only those with a closed set of values; the rest (agent,
+    // approval, the timeouts) are left to the tools that read them. The rules are scripts/catalog.py's:
+    // a catalog Jenkins and deploy.sh accept must not stop this service.
+    private static void CheckOptions(RawOptions options, string where, List<string> errors, bool isOverride)
+    {
+        var mode = NullIfBlank(options.Mode);
+        if (mode is not null and not ("proxy" or "ports"))
+        {
+            errors.Add($"{where}: mode '{mode}' is not one of proxy, ports");
+        }
+
+        var trigger = NullIfBlank(options.Trigger);
+        if (trigger is not null and not ("manual" or "branch" or "release"))
+        {
+            errors.Add($"{where}: trigger '{trigger}' is not one of manual, branch, release");
+        }
+
+        if (options.Branches is not null && !IsGlobList(options.Branches))
+        {
+            errors.Add($"{where}: branches must be a branch glob or a non-empty list of them");
+        }
+
+        // Not for an override: one that switches an environment to trigger branch may rely on the
+        // environment's branches.
+        if (!isOverride && trigger == "branch" && options.Branches is null)
+        {
+            errors.Add($"{where}: branches is required when trigger is branch (e.g. release/*)");
+        }
+    }
+
+    // A value deserialized as `object` is a string for a scalar and a list for a sequence; anything
+    // else (a mapping, a nested list) is a mistake.
+    private static bool IsGlobList(object branches) => branches switch
+    {
+        string glob => !string.IsNullOrWhiteSpace(glob),
+        List<object?> globs => globs.Count > 0 && globs.All(glob => glob is string text && !string.IsNullOrWhiteSpace(text)),
+        _ => false,
+    };
+
     private static ApplicationDefinition? ValidateApplication(
-        RawApplication raw, string where, HashSet<string> applicationIds, List<string> errors)
+        RawApplication raw,
+        string where,
+        HashSet<string> applicationIds,
+        List<EnvironmentDefinition> environments,
+        HashSet<string> declared,
+        List<string> errors)
     {
         var id = raw.Id?.Trim() ?? "";
         if (id.Length > 0)
@@ -201,6 +284,31 @@ public static partial class CatalogLoader
             errors.Add($"{where}: checks has an empty entry");
         }
 
+        // Omitted: every environment. Listed: those, in catalog order whatever order they are written in.
+        var deploysTo = environments.Select(environment => environment.Id).ToList();
+        if (raw.Environments is not null)
+        {
+            if (raw.Environments.Count == 0)
+            {
+                errors.Add($"{where}: environments lists none (omit it to deploy to every environment)");
+            }
+
+            foreach (var (key, options) in raw.Environments)
+            {
+                if (!declared.Contains(key))
+                {
+                    errors.Add($"{where}: environments: '{key}' is not an environment " +
+                               $"({string.Join(", ", environments.Select(e => e.Id))})");
+                }
+                else if (options is not null)
+                {
+                    CheckOptions(options, $"{where}.environments.{key}", errors, isOverride: true);
+                }
+            }
+
+            deploysTo = deploysTo.Where(raw.Environments.ContainsKey).ToList();
+        }
+
         if (errors.Count > errorCount)
         {
             return null;
@@ -208,7 +316,7 @@ public static partial class CatalogLoader
 
         return new ApplicationDefinition(
             id, raw.Name!.Trim(), kind, repository, health!, metrics, metricsPath, host, checks,
-            new ContainerSelector(project, service));
+            new ContainerSelector(project, service), deploysTo);
     }
 
     private static void CheckId(string id, string where, List<string> errors)
@@ -256,6 +364,7 @@ public static partial class CatalogLoader
     private sealed class RawCatalog
     {
         public string? Owner { get; set; }
+        public List<RawEnvironment>? Environments { get; set; }
         public List<RawSystem>? Systems { get; set; }
     }
 
@@ -279,6 +388,26 @@ public static partial class CatalogLoader
         public string? Host { get; set; }
         public List<string?>? Checks { get; set; }
         public RawContainer? Container { get; set; }
+
+        // Environment id -> the options the application overrides there; null or {} overrides none.
+        public Dictionary<string, RawOptions?>? Environments { get; set; }
+    }
+
+    // Only the options with something to validate: agent, approval, waitTimeout, keepImages and
+    // checksTimeout are unmatched properties, like any other key this service doesn't read.
+    private class RawOptions
+    {
+        public string? Mode { get; set; }
+        public string? Trigger { get; set; }
+
+        // A glob or a list of globs.
+        public object? Branches { get; set; }
+    }
+
+    private sealed class RawEnvironment : RawOptions
+    {
+        public string? Id { get; set; }
+        public string? Name { get; set; }
     }
 
     private sealed class RawContainer
