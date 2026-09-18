@@ -41,7 +41,7 @@ public sealed record StatusOptions
         var environment = Get("YGGDRASIL_ENVIRONMENT");
         if (environment.Length == 0)
         {
-            errors.Add("YGGDRASIL_ENVIRONMENT is not set (development, homologation or production)");
+            errors.Add("YGGDRASIL_ENVIRONMENT is not set (the id of one of the environments in catalog.yaml)");
         }
 
         // Only ever used to build https://<host>.<domain>, so a scheme or a trailing dot is a mistake.

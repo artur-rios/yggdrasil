@@ -4,8 +4,8 @@
 #
 #     scripts/deploy.sh <environment> <stack> <app-dir> <version>
 #
-#   environment  development | homologation | production
-#   stack        an application id from catalog.yaml (heimdall-api, fortuna-ui, ...)
+#   environment  an environment id from catalog.yaml that the application deploys to
+#   stack        an application id from catalog.yaml
 #   app-dir      a checkout of the stack's repository at the commit to deploy
 #   version      the image tag, e.g. 1.4.0-3f2a9c1 (Jenkins passes <release>-<short sha>)
 #
@@ -14,12 +14,18 @@
 #
 # Jenkins runs exactly this; running it by hand does the same thing.
 #
+# The environment's options come from catalog.yaml, resolved for this application (defaults, then
+# the environment, then the application's override) by scripts/catalog.py: its mode, how long to
+# wait for health (waitTimeout) and how many images to keep (keepImages). DEPLOY_WAIT_TIMEOUT and
+# DEPLOY_KEEP_IMAGES in the environment override the last two for one run.
+#
 # Compose files, in order:
-#   stacks/<stack>.yml           the service definition when the repository has no Compose file of
-#                                its own (the UIs); otherwise <app-dir>/docker-compose.yml
-#   stacks/<stack>.<mode>.yml    proxy (homologation, production): Traefik labels, the edge and
-#                                telemetry networks, no host ports
-#                                ports (development): host ports on 127.0.0.1, no Traefik
+#   stacks/<stack>.yml                  the service definition when the repository has no Compose
+#                                       file of its own; otherwise <app-dir>/docker-compose.yml
+#   stacks/<stack>.<mode>.yml           proxy: Traefik labels, the edge and telemetry networks, no
+#                                       host ports; ports: host ports on 127.0.0.1, no Traefik
+#   stacks/<stack>.<environment>.yml    optional: anything only this environment needs (replicas,
+#                                       resource limits, an extra volume...)
 #
 # The env file is <secrets>/<environment>/<stack>.env, secrets being $YGG_SECRETS_DIR (default
 # /etc/yggdrasil). Templates for every file are in env/.
@@ -38,15 +44,14 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 secrets=${YGG_SECRETS_DIR:-/etc/yggdrasil}
 env_file="$secrets/$environment/$stack.env"
 
-case "$environment" in
-  development) mode=ports ;;
-  homologation | production) mode=proxy ;;
-  *) die "unknown environment '$environment'" ;;
-esac
-
 [[ "$stack" =~ ^[a-z0-9-]+$ ]] || die "invalid stack name '$stack'"
-grep -Eq "^[[:space:]]*- id: ${stack}[[:space:]]*\$" "$root/catalog.yaml" \
-  || die "'$stack' is not an application in catalog.yaml"
+[[ "$environment" =~ ^[a-z0-9-]+$ ]] || die "invalid environment name '$environment'"
+
+# Fails, naming the problem, when the stack is not in the catalog or does not deploy here.
+option() { python3 "$root/scripts/catalog.py" get "$stack" "$environment" "$1"; }
+mode=$(option mode) || exit 1
+wait_timeout=${DEPLOY_WAIT_TIMEOUT:-$(option waitTimeout)}
+keep=${DEPLOY_KEEP_IMAGES:-$(option keepImages)}
 [[ "$version" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid version '$version'"
 [[ -f "$env_file" ]] || die "missing env file $env_file (template: env/$environment/$stack.env.example)"
 
@@ -59,6 +64,7 @@ else
   die "neither stacks/$stack.yml nor $app_dir/docker-compose.yml exists"
 fi
 [[ -f "$root/stacks/$stack.$mode.yml" ]] && files+=(-f "$root/stacks/$stack.$mode.yml")
+[[ -f "$root/stacks/$stack.$environment.yml" ]] && files+=(-f "$root/stacks/$stack.$environment.yml")
 
 # Read by the Compose files. Shell variables win over the env file, so the tag cannot be overridden
 # by a stale value left in it. API_IMAGE_TAG is the name the API repositories' own Compose files use.
@@ -120,7 +126,7 @@ fi
 compose config --quiet
 compose build --pull
 
-if compose up --detach --remove-orphans --wait --wait-timeout "${DEPLOY_WAIT_TIMEOUT:-300}"; then
+if compose up --detach --remove-orphans --wait --wait-timeout "$wait_timeout"; then
   echo "deploy: $stack $version is healthy"
 else
   echo "deploy: $stack $version did not become healthy" >&2
@@ -143,7 +149,6 @@ fi
 
 # Keep the last few images of this stack for rollbacks; drop older ones. Images are named after the
 # stack (<stack>:<version>).
-keep=${DEPLOY_KEEP_IMAGES:-3}
 docker image ls "$stack" --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' \
   | sort -r | tail -n +"$((keep + 1))" | cut -f2 \
   | xargs -r docker image rm >/dev/null 2>&1 || true

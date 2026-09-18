@@ -95,34 +95,39 @@ jobs:
       - uses: actions/checkout@v5
       - name: Check shell scripts
         run: shellcheck scripts/*.sh
+      - run: pip install --quiet pyyaml
+      - name: Test the catalog tooling
+        run: python3 -m unittest discover -s scripts -v
       - name: Check the catalog
-        # rulesets.py and the Jenkins Job DSL both read it; a dry run parses it the same way.
-        run: |
-          pip install --quiet pyyaml
-          python3 - <<'PY'
-          import re, sys, yaml
-          catalog = yaml.safe_load(open("catalog.yaml", encoding="utf-8"))
-          ids = [a["id"] for s in catalog["systems"] for a in s["applications"]]
-          dupes = {i for i in ids if ids.count(i) > 1}
-          bad = [i for i in ids if not re.fullmatch(r"[a-z0-9-]+", i)]
-          if dupes or bad:
-              sys.exit(f"duplicate ids: {sorted(dupes)}; invalid ids: {bad}")
-          print(f"{len(catalog['systems'])} systems, {len(ids)} applications")
-          PY
+        # The same validation deploy.sh, platform.sh and rulesets.py run before using it.
+        run: python3 scripts/catalog.py validate
       - name: Validate the Compose files
         run: |
           secrets=$(mktemp -d)
-          cat > "$secrets/platform.env" <<'ENV'
-          ENVIRONMENT=ci
+          cat > "$secrets/platform.env" <<ENV
+          ENVIRONMENT=$(python3 scripts/catalog.py environments | head -n1)
           DOMAIN=example.com
           ACME_EMAIL=ci@example.com
-          CF_DNS_API_TOKEN=x
+          ACME_DNS_PROVIDER=cloudflare
           TRAEFIK_DASHBOARD_USERS='admin:x'
           GRAFANA_ADMIN_PASSWORD=x
           YGGDRASIL_STATUS_TOKEN=0000000000000000000000000000000000000000
+          YGG_SECRETS_DIR=$secrets
           ENV
-          docker compose --env-file "$secrets/platform.env" -f platform/compose.yml config --quiet
-          for ui in heimdall-ui fortuna-ui; do
-            APP_DIR=. docker compose --env-file "env/production/$ui.env.example" \
-              -f "stacks/$ui.yml" -f "stacks/$ui.proxy.yml" config --quiet
+          touch "$secrets/acme.env"
+          GITHUB_OWNER=$(python3 scripts/catalog.py owner) \
+            docker compose --env-file "$secrets/platform.env" -f platform/compose.yml config --quiet
+          # Every stack that has its service here, in both modes, with a dummy value for each
+          # variable it requires. (Stacks based on the application's own docker-compose.yml are
+          # validated by deploy.sh on the first deploy.)
+          for stack in $(python3 scripts/catalog.py applications --deployable); do
+            [[ -f "stacks/$stack.yml" ]] || continue
+            for mode in proxy ports; do
+              [[ -f "stacks/$stack.$mode.yml" ]] || continue
+              paths=("stacks/$stack.yml" "stacks/$stack.$mode.yml")
+              grep -ohE '[$][{][A-Z_]+' "${paths[@]}" | cut -c3- | sort -u \
+                | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s/$/=x/' > "$secrets/$stack.env"
+              APP_DIR=. docker compose --env-file "$secrets/$stack.env" -f "${paths[0]}" -f "${paths[1]}" config --quiet
+              echo "stacks/$stack.$mode.yml ok"
+            done
           done

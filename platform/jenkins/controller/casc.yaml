@@ -3,7 +3,7 @@
 # Code > Reload applies an edit without a restart.
 
 jenkins:
-  systemMessage: "yggdrasil - deployments for heimdall and fortuna. Configured as code: edit platform/jenkins/controller/casc.yaml, not this UI."
+  systemMessage: "yggdrasil deploy manager. Configured as code: edit platform/jenkins/controller/casc.yaml and catalog.yaml, not this UI."
   # The controller never builds anything; every stage runs on the agent of the environment it
   # deploys to.
   numExecutors: 0
@@ -17,29 +17,8 @@ jenkins:
   authorizationStrategy:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: false
-  nodes:
-    # The agent secret each host needs is shown on the node's page once the controller is up
-    # (Manage Jenkins > Nodes > <name>). It goes in that host's platform.env as JENKINS_AGENT_SECRET.
-    - permanent:
-        name: "homologation"
-        labelString: "homologation"
-        remoteFS: "/home/jenkins/agent"
-        numExecutors: 2
-        mode: EXCLUSIVE
-        launcher:
-          inbound:
-            webSocket: true
-        retentionStrategy: "always"
-    - permanent:
-        name: "production"
-        labelString: "production"
-        remoteFS: "/home/jenkins/agent"
-        numExecutors: 2
-        mode: EXCLUSIVE
-        launcher:
-          inbound:
-            webSocket: true
-        retentionStrategy: "always"
+  # Agents are not listed here: init.groovy.d/agents.groovy creates one per environment agent in
+  # catalog.yaml on every start.
 
 security:
   globalJobDslSecurityConfiguration:
@@ -77,7 +56,7 @@ unclassified:
             scm:
               github:
                 repoOwner: "${GITHUB_OWNER}"
-                repository: "yggdrasil"
+                repository: "${YGGDRASIL_REPOSITORY}"
                 credentialsId: "github-app"
                 traits:
                   - gitHubBranchDiscovery:
@@ -90,41 +69,49 @@ jobs:
       // next restart or Configuration as Code reload creates it. Platform components (kind
       // platform) are not deployed by Jenkins and get none.
       //
-      // Each job only ever sees two kinds of heads:
-      //   release/*  -> the branch build, which deploys to homologation
-      //   PR-*       -> pull requests; the pipeline acts only on release/* -> main and is a no-op for
-      //                 the rest (pull requests into develop show up here too)
+      // Each job only sees the heads that can deploy something:
+      //   main, and every `branches` glob of an environment with trigger: branch (release/*, say)
+      //   PR-*  -> pull requests; the pipeline acts only on release/x.y.z -> main and is a no-op for
+      //            the rest (pull requests into develop show up here too)
       //
       // No Groovy string interpolation (dollar-brace) in this script: Configuration as Code would try
       // to resolve it as one of its own variables.
       def catalog = new org.yaml.snakeyaml.Yaml().load(new File('/etc/jenkins/catalog.yaml').getText('UTF-8'))
       def owner = catalog.owner
-      def repositories = catalog.systems
+      def applications = catalog.systems
         .collectMany { it.applications }
         .findAll { it.kind != 'platform' }
-        .collect { it.repository ?: it.id }
-      repositories.each { repo ->
-        multibranchPipelineJob(repo) {
+      applications.each { app ->
+        def repo = app.repository ?: app.id
+        def branchGlobs = catalog.environments.collectMany { environment ->
+          def override = app.environments == null ? [:] : app.environments[environment.id]
+          if (app.environments != null && !app.environments.containsKey(environment.id)) return []
+          def options = environment + (override ?: [:])
+          if (options.trigger != 'branch') return []
+          options.branches instanceof String ? [options.branches] : (options.branches ?: [])
+        }
+        def heads = (['main', 'PR-*'] + branchGlobs).unique().join(' ')
+        multibranchPipelineJob(app.id) {
           displayName(repo)
           branchSources {
             branchSource {
               source {
                 github {
-                  id(repo)
+                  id(app.id)
                   repoOwner(owner)
                   repository(repo)
                   repositoryUrl('https://github.com/' + owner + '/' + repo)
                   configuredByUrl(false)
                   credentialsId('github-app')
                   traits {
-                    // 3 = all branches: a release branch is built as a branch (homologation) even
-                    // while it is also the head of a pull request (production).
+                    // 3 = all branches: a release branch is built as a branch (its trigger: branch
+                    // environments) even while it is the head of a pull request (trigger: release).
                     gitHubBranchDiscovery { strategyId(3) }
-                    // 2 = the pull request's head revision, not a merge with main: production runs
-                    // exactly the commit homologation ran.
+                    // 2 = the pull request's head revision, not a merge with main: the release
+                    // environments run exactly the commit the branch environments ran.
                     gitHubPullRequestDiscovery { strategyId(2) }
                     headWildcardFilter {
-                      includes('release/* PR-*')
+                      includes(heads)
                       excludes('')
                     }
                   }

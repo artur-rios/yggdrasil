@@ -15,6 +15,7 @@ public enum StatusLevel
 
 public sealed record EnvironmentStatus(
     string Environment,
+    string EnvironmentName,
     DateTimeOffset GeneratedAt,
     StatusLevel Status,
     IReadOnlyList<SystemStatus> Systems);
