@@ -2,18 +2,19 @@
 # pieces that host runs. The applications are not here -- each is its own Compose project (see
 # stacks/ and scripts/deploy.sh) and joins the two external networks this stack routes and scrapes:
 #
-#   edge       Traefik <-> the applications (and application <-> application, e.g. fortuna-api
-#              calling heimdall-api by its alias); the status API probes health endpoints here
+#   edge       Traefik <-> the applications (and application <-> application, one API calling
+#              another by its alias); the status API probes health endpoints here
 #   telemetry  Prometheus <-> everything it scrapes
 #
 # Both are created by scripts/platform.sh, not by this file, so an application stack can be
 # deployed, removed or redeployed without this project owning its network.
 #
-# One file for homologation and production. What differs is the env file (env/platform.env.example)
-# and which profiles COMPOSE_PROFILES turns on:
+# One file for every environment host. What differs is the env file (env/platform.env.example) and
+# which profiles COMPOSE_PROFILES turns on:
 #
-#   production     jenkins,agent   -- the controller and the agent that deploys on the VPS
-#   homologation   agent           -- only an agent, connecting out to the controller on the VPS
+#   jenkins,agent   the one host that runs the Jenkins controller, plus its own environment's agent
+#   agent           every other host Jenkins deploys to: only an agent, dialling out to the controller
+#   (none)          a host with the platform but nothing deployed by Jenkins
 #
 # Development (Docker Desktop) does not run this stack; see the README.
 #
@@ -22,7 +23,7 @@
 name: yggdrasil
 
 # Variables used only by a profile (Jenkins, agent) are not marked required here, because Compose
-# interpolates the whole file whatever the active profiles are: homologation would otherwise have to
+# interpolates the whole file whatever the active profiles are: an agent-only host would otherwise have to
 # define the controller's GitHub App settings. scripts/platform.sh checks them per profile instead.
 
 x-logging: &logging
@@ -62,19 +63,21 @@ services:
       - --entrypoints.websecure.http.tls.certresolver=letsencrypt
       - --entrypoints.websecure.http.tls.options=default@file
       # One wildcard certificate for the whole environment instead of one per host name. It is what
-      # makes DNS-01 worth it: homologation, behind NAT, can never answer an HTTP-01 challenge.
+      # makes DNS-01 worth it -- and a host behind NAT can never answer an HTTP-01 challenge anyway.
       - --entrypoints.websecure.http.tls.domains[0].main=${DOMAIN:?set DOMAIN in the env file}
       - --entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN}
 
       - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL in the env file}
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
       # Point at https://acme-staging-v02.api.letsencrypt.org/directory while trying things out:
-      # production Let's Encrypt rate-limits failed validations per hour.
+      # the production Let's Encrypt service rate-limits failed validations per hour.
       - --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare
-      # Check propagation against Cloudflare itself, not the host's resolver, which on a home
-      # network may cache the old answer for longer than the challenge waits.
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
+      # Any provider Traefik supports (https://doc.traefik.io/traefik/https/acme/#providers): its
+      # code here, and its credentials in acme.env next to platform.env.
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${ACME_DNS_PROVIDER:?set ACME_DNS_PROVIDER in the env file}
+      # Check propagation against public resolvers, not the host's, which on a home network may
+      # cache the old answer for longer than the challenge waits.
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=${ACME_DNS_RESOLVERS:-1.1.1.1:53,8.8.8.8:53}
 
       - --entrypoints.metrics.address=:8082
       - --metrics.prometheus=true
@@ -82,8 +85,10 @@ services:
       - --metrics.prometheus.addrouterslabels=true
 
       - --api.dashboard=true
-    environment:
-      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:?set CF_DNS_API_TOKEN in the env file}
+    # The DNS provider's credentials (CF_DNS_API_TOKEN for Cloudflare, AWS_* for Route 53, ...),
+    # kept out of platform.env so no other container ever sees them. Template: env/acme.env.example.
+    env_file:
+      - ${YGG_SECRETS_DIR:-/etc/yggdrasil}/acme.env
     ports:
       - "80:80"
       - "443:443"
@@ -261,12 +266,16 @@ services:
       JENKINS_URL: ${JENKINS_URL:-}
       JENKINS_ADMIN_ID: ${JENKINS_ADMIN_ID:-admin}
       JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:-}
-      GITHUB_OWNER: ${GITHUB_OWNER:-artur-rios}
+      # Both come from catalog.yaml: scripts/platform.sh exports them.
+      GITHUB_OWNER: ${GITHUB_OWNER:?run through scripts/platform.sh, which reads it from catalog.yaml}
+      YGGDRASIL_REPOSITORY: ${YGGDRASIL_REPOSITORY:-yggdrasil}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
     volumes:
       - ./jenkins/controller/casc.yaml:/etc/jenkins/casc.yaml:ro
-      # The Job DSL in casc.yaml creates one deploy job per catalog application.
+      # The Job DSL in casc.yaml creates one deploy job per catalog application, agents.groovy one
+      # agent per environment, and the pipeline reads each application's environments from it.
       - ../catalog.yaml:/etc/jenkins/catalog.yaml:ro
+      - ./jenkins/controller/init.groovy.d/agents.groovy:/var/jenkins_home/init.groovy.d/agents.groovy:ro
       # The GitHub App private key, converted to PKCS#8 (see the README). Read by casc.yaml.
       - ${GITHUB_APP_KEY_FILE:-/etc/yggdrasil/github-app.pem}:/run/secrets/github-app.pem:ro
       - jenkins:/var/jenkins_home
@@ -290,7 +299,7 @@ services:
     logging: *logging
     init: true
     environment:
-      # WebSocket over 443: the agent dials out, so a homologation machine behind NAT needs no
+      # WebSocket over 443: the agent dials out, so a host behind NAT needs no
       # inbound port, and the controller needs no TCP agent port.
       JENKINS_URL: ${JENKINS_AGENT_URL:-${JENKINS_URL}}
       JENKINS_WEB_SOCKET: "true"

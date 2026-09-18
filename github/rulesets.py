@@ -3,7 +3,7 @@
 
     python github/rulesets.py                 # apply to every catalog repository
     python github/rulesets.py --dry-run       # print what would be sent
-    python github/rulesets.py heimdall-api    # only the named repositories
+    python github/rulesets.py my-api my-web   # only the named repositories
 
 Needs PyYAML (pip install pyyaml; Ubuntu: apt install python3-yaml).
 
@@ -15,8 +15,9 @@ admin rights on the repositories. Per repository it sets:
                  the source to feature/ and fix/ branches cut from develop
   main           no deletion, no force push; changes only through a pull request, merge commit
                  only, whose checks pass -- Branch Policy (release/x.y.z snapshots of develop only)
-                 and deploy/production, the status Jenkins sets once the release is live. So main
-                 cannot receive a release that has not been deployed.
+                 and deploy/<environment> for each of the application's release environments
+                 (trigger: release in catalog.yaml), the statuses Jenkins sets once the release is
+                 live there. So main cannot receive a release that has not been deployed.
   tags v*        cannot be moved or deleted once created: a version names one commit forever
   settings       head branches are deleted when their pull request merges
 
@@ -32,9 +33,8 @@ import pathlib
 import subprocess
 import sys
 
-import yaml
-
-CATALOG = pathlib.Path(__file__).resolve().parent.parent / "catalog.yaml"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+import catalog as catalog_module  # noqa: E402  (scripts/catalog.py)
 
 # GitHub Actions' app id: required checks bound to it cannot be satisfied by a status someone posts
 # under the same name from elsewhere.
@@ -42,30 +42,28 @@ GITHUB_ACTIONS = 15368
 
 # The required checks of each repository come from the catalog's `checks`. Check names are job names
 # (or a job's `name:`). Only checks that run on every pull request can be required -- a
-# path-filtered workflow that does not run leaves its check pending forever, which is why
-# heimdall-api's Check OpenAPI Document is not listed there. Jenkins still waits for every check
+# path-filtered workflow that does not run leaves its check pending forever, so leave those out of
+# the catalog's `checks`. Jenkins still waits for every check
 # that does run before deploying (scripts/github.sh wait-checks).
 def load_catalog():
-    catalog = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    """owner, {repository: (checks, release environment ids)}"""
+    catalog = catalog_module.load()
     repositories = {}
-    for system in catalog["systems"]:
-        for app in system["applications"]:
-            if app.get("kind") == "platform":
-                continue  # not a repository of its own; deployed by scripts/platform.sh
-            repositories[app.get("repository", app["id"])] = app.get("checks", [])
+    for _, app in catalog_module.applications(catalog, deployable=True):
+        releases = [e["id"] for e in catalog_module.resolve(catalog, app["id"]) if e["trigger"] == "release"]
+        repositories[app.get("repository", app["id"])] = (app.get("checks", []), releases)
     return catalog["owner"], repositories
 
 
 ADMIN_BYPASS = [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
 
 
-def checks(names, deploy=False):
+def checks(names, deployments=()):
     required = [{"context": "branch-policy", "integration_id": GITHUB_ACTIONS}]
     required += [{"context": name, "integration_id": GITHUB_ACTIONS} for name in names]
-    if deploy:
-        # Posted by Jenkins through its GitHub App; not bound to an integration so the app can be
-        # replaced without editing this.
-        required.append({"context": "deploy/production"})
+    # Posted by Jenkins through its GitHub App; not bound to an integration so the app can be
+    # replaced without editing this.
+    required += [{"context": f"deploy/{environment}"} for environment in deployments]
     return {
         "type": "required_status_checks",
         "parameters": {
@@ -92,7 +90,7 @@ def pull_request(methods):
     }
 
 
-def rulesets(names):
+def rulesets(names, releases):
     return [
         {
             "name": "develop",
@@ -119,7 +117,7 @@ def rulesets(names):
                 # Merge commits only: squashing a release would give main commits develop never had,
                 # and the next release branch would conflict.
                 pull_request(["merge"]),
-                checks(names, deploy=True),
+                checks(names, releases),
             ],
         },
         {
@@ -149,7 +147,7 @@ def gh(*args, body=None, dry_run=False):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def apply(owner, repo, names, dry_run):
+def apply(owner, repo, names, releases, dry_run):
     print(f"{owner}/{repo}")
     base = f"repos/{owner}/{repo}"
 
@@ -157,7 +155,7 @@ def apply(owner, repo, names, dry_run):
     print("  default branch develop, delete head branches on merge")
 
     existing = {r["name"]: r["id"] for r in gh("api", f"{base}/rulesets") or []}
-    for ruleset in rulesets(names):
+    for ruleset in rulesets(names, releases):
         if ruleset["name"] in existing:
             gh("api", "-X", "PUT", f"{base}/rulesets/{existing[ruleset['name']]}", body=ruleset, dry_run=dry_run)
             print(f"  updated ruleset '{ruleset['name']}'")
@@ -173,13 +171,16 @@ def apply(owner, repo, names, dry_run):
 def main():
     dry_run = "--dry-run" in sys.argv
     only = [a for a in sys.argv[1:] if not a.startswith("--")]
-    owner, repositories = load_catalog()
+    try:
+        owner, repositories = load_catalog()
+    except catalog_module.CatalogError as error:
+        sys.exit(str(error))
     unknown = set(only) - set(repositories)
     if unknown:
         sys.exit(f"not application repositories in catalog.yaml: {', '.join(sorted(unknown))}")
-    for repo, names in repositories.items():
+    for repo, (names, releases) in repositories.items():
         if not only or repo in only:
-            apply(owner, repo, names, dry_run)
+            apply(owner, repo, names, releases, dry_run)
 
 
 if __name__ == "__main__":

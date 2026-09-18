@@ -6,7 +6,7 @@ namespace Yggdrasil.Status.Model;
 public sealed record Observation(DockerObservation Docker, ProbeResult? Probe);
 
 /// <summary>Turns the catalog plus one round of observations into the response of GET /api/status.</summary>
-public sealed class SnapshotBuilder(Catalog catalog, StatusOptions options)
+public sealed class SnapshotBuilder(EnvironmentCatalog catalog, StatusOptions options)
 {
     // Labels scripts/deploy.sh puts on the containers it starts.
     public const string VersionLabel = "yggdrasil.version";
@@ -30,7 +30,7 @@ public sealed class SnapshotBuilder(Catalog catalog, StatusOptions options)
         // environment can't disagree with what the applications show.
         var status = StatusRules.Aggregate(systems.SelectMany(system => system.Applications).Select(application => application.Status));
 
-        return new EnvironmentStatus(options.Environment, generatedAt, status, systems);
+        return new EnvironmentStatus(catalog.Environment.Id, catalog.Environment.Name, generatedAt, status, systems);
     }
 
     public ApplicationStatus BuildApplication(ApplicationDefinition application, Observation observation, DateTimeOffset now)

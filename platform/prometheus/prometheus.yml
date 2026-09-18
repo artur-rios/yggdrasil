@@ -4,7 +4,7 @@
 # Every target comes from catalog.yaml, through the status API's HTTP service discovery (its internal
 # port 8081, reachable on the telemetry network only). An application added to the catalog is
 # scraped from the next refresh on, with system, app and kind labels. A target whose container is
-# not running on this host (Jenkins in homologation, say) just shows as down. Prometheus scrapes
+# not running on this host (Jenkins on an agent-only host, say) just shows as down. Prometheus scrapes
 # itself through the same list: it is in the catalog like every other platform component.
 
 global:

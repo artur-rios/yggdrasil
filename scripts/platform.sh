@@ -16,6 +16,11 @@ env_file="$secrets/platform.env"
 
 compose() { docker compose --env-file "$env_file" -f "$root/platform/compose.yml" "$@"; }
 
+# Jenkins needs them and the catalog has them: no second copy in platform.env to drift.
+GITHUB_OWNER=$(python3 "$root/scripts/catalog.py" owner) || exit 1
+YGGDRASIL_REPOSITORY=$(python3 "$root/scripts/catalog.py" repository) || exit 1
+export GITHUB_OWNER YGGDRASIL_REPOSITORY
+
 # The profile-only variables compose.yml cannot mark as required (see the note at its top).
 check_profile_variables() {
   local profiles
@@ -32,8 +37,19 @@ check_profile_variables() {
   done
 }
 
+# ENVIRONMENT names this host's environment: it must be one in catalog.yaml.
+check_environment() {
+  local environment known
+  # shellcheck source=/dev/null
+  environment=$(set -a; . "$env_file"; echo "${ENVIRONMENT:-}")
+  known=$(python3 "$root/scripts/catalog.py" environments) || exit 1
+  grep -qx "$environment" <<<"$known" \
+    || die "ENVIRONMENT='$environment' in $env_file is not an environment in catalog.yaml ($(paste -sd, - <<<"$known"))"
+}
+
 case "${1:-}" in
   up)
+    check_environment
     check_profile_variables
     for network in edge telemetry; do
       docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null

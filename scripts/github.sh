@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The GitHub side of a production release, as small commands the pipeline calls one at a time.
+# The GitHub side of a release, as small commands the pipeline calls one at a time.
 # Needs GH_TOKEN (Jenkins passes the GitHub App's installation token), curl and jq.
 #
 #     scripts/github.sh wait-checks   <repo> <sha> [timeout-seconds]
@@ -8,10 +8,10 @@
 #     scripts/github.sh release       <repo> <version> <sha>             -> tag + GitHub release v<version>
 #     scripts/github.sh delete-branch <repo> <branch>
 #
-# <repo> is the repository name; the owner is $GITHUB_OWNER (default artur-rios).
+# <repo> is the repository name; the owner is $GITHUB_OWNER (the catalog's owner; the pipeline sets it).
 set -euo pipefail
 
-owner=${GITHUB_OWNER:-artur-rios}
+owner=${GITHUB_OWNER:?set GITHUB_OWNER to the GitHub owner of the repositories}
 api_url=${GITHUB_API_URL:-https://api.github.com}
 
 die() { echo "github: $*" >&2; exit 1; }

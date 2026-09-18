@@ -1,240 +1,193 @@
 # yggdrasil
 
-A self-hosted **deploy manager**. It builds, deploys and watches **systems**: products made of one or
-more applications that work together, such as a front end and its back end. It runs them on three
-environments, and adding a system or an application is a catalog entry, not a change to the platform.
+A self-hosted **deploy manager** for Docker applications. You describe your **systems** (products
+made of one or more applications, such as an API and its web front end) and your **environments**
+(development, staging, production, or as many as you need) in one catalog file. yggdrasil then:
 
-Today it manages:
+- **Enforces a release flow on GitHub**: `feature/`/`fix/` → `develop` → `release/x.y.z` → `main`, tagged `vx.y.z`.
+- **Deploys with a self-hosted Jenkins**, according to each environment's options:
+  - on branch pushes, on a green release pull request, or by hand
+  - with or without a manual approval
+  - on the host that runs the environment
+- **Rolls back** to the previous image when a deploy doesn't become healthy.
+- **Serves applications** behind Traefik with Let's Encrypt wildcard certificates (DNS-01, any DNS provider).
+- **Monitors everything**: Prometheus metrics and Loki logs, in Grafana.
+- **Shows it all in a console** for the web, Windows and Android. Each system has a status; expand it to see each application's health, version, commit, deploy time and container state, per environment.
 
-| System | Applications |
-|---|---|
-| **Heimdall**: identity and access management | `heimdall-api` (.NET 10), `heimdall-ui` (Flutter web) |
-| **Fortuna**: personal finance | `fortuna-api` (.NET 10), `fortuna-ui` (Flutter web) |
-| **Yggdrasil**: the platform itself | Traefik, the status API, the console, Prometheus, Loki, Alloy, Grafana, Jenkins |
+Adding an application, an environment or a whole system is a catalog entry, not a change to the platform.
 
-What it gives every application:
-
-- **A release flow enforced on GitHub**: `feature/`/`fix/` → `develop` → `release/x.y.z` → `main`, tagged `vx.y.z`.
-- **Deploys by a self-hosted Jenkins**:
-  - homologation when a release branch is pushed
-  - production when the release pull request is green, which is also when the PR gets merged and tagged
-- **Rollback** to the previous image when a deploy doesn't become healthy.
-- **TLS** from Let's Encrypt through Traefik.
-- **Monitoring**: Prometheus metrics and Loki logs, in Grafana.
-- **The console**: a responsive app for the web, Android and Windows, showing each system's status. Expand a system to see each of its applications: health, version, commit, when it was deployed, and container state.
-
-| | Development | Homologation | Production |
-|---|---|---|---|
-| Where | Windows, Docker Desktop | Same machine, Docker Engine inside WSL Ubuntu | Ubuntu VPS |
-| Reached at | `127.0.0.1:<port>` | `https://*.hml.<domain>` | `https://*.<domain>` |
-| Traefik + Let's Encrypt | no | yes (DNS-01, wildcard) | yes (DNS-01, wildcard) |
-| Status API + console | no | `https://yggdrasil.hml.<domain>` | `https://yggdrasil.<domain>` |
-| Prometheus, Loki, Alloy, Grafana | no | yes | yes |
-| Jenkins | no | agent `homologation` | controller + agent `production` |
-| PostgreSQL | Windows host | Windows host or WSL (see below) | the VPS |
-| Deploys when | you run it | `release/x.y.z` is pushed | the `release/x.y.z → main` PR is green |
-
-```
-                         GitHub (code, Actions = build + test, rulesets)
-                             │ webhooks                     ▲ status, merge, tag
-                             ▼                              │
-   VPS ─────────────────────────────────────────────────────┴───────────────  WSL (home)
-   Traefik :443 ── jenkins.<domain> ── Jenkins controller                      Traefik :443
-      │                                   │  WebSocket                            │
-      ├── heimdall.<domain>      ui       ├─────────── agent "production"         ├── *.hml.<domain>
-      ├── heimdall-api.<domain>  api      └─────────── agent "homologation" ◄─────┤   (same stacks)
-      ├── fortuna.<domain>       ui          (dials out from WSL; no inbound port) │
-      ├── fortuna-api.<domain>   api                                               │
-      ├── yggdrasil.<domain> ── console + status API ── probes every app, reads containers (read-only)
-      └── grafana.<domain> ── Prometheus (targets from the status API) + Loki ◄── Alloy (container logs)
+```mermaid
+flowchart LR
+    dev([Developer]) -- push / pull request --> gh
+    subgraph gh [GitHub]
+        repos[Application repositories<br/>Actions: build + test<br/>Rulesets: release flow]
+    end
+    gh -- webhooks --> jc
+    subgraph ctl [Controller host]
+        jc[Jenkins controller]
+    end
+    jc -. WebSocket .- a1
+    jc -. WebSocket .- a2
+    subgraph h1 [Environment host: staging]
+        a1[Agent] --> s1[Traefik · applications · status API · monitoring]
+    end
+    subgraph h2 [Environment host: production]
+        a2[Agent] --> s2[Traefik · applications · status API · monitoring]
+    end
+    jc -- status, merge, tag --> gh
+    console([Console<br/>web · Windows · Android]) -- /api/status --> s1
+    console -- /api/status --> s2
 ```
 
-## The catalog
+## Concepts
 
-[`catalog.yaml`](catalog.yaml) is the single list of what yggdrasil manages. It lists systems, and each system lists its applications: id (also the repository, Compose project and network alias), kind, health endpoint, metrics endpoint, public host name and required GitHub checks. Everything that needs to know which applications exist reads it:
-
-| Reads the catalog | For |
+| | |
 |---|---|
-| Jenkins (`casc.yaml` Job DSL) | One multibranch deploy job per application (except `kind: platform`) |
-| `github/rulesets.py` | Rulesets, required checks and settings of each repository |
-| Status API | What to probe, how applications group into systems, and Prometheus' scrape targets |
-| Console | Everything it shows, through the status API |
-| `scripts/deploy.sh` | Refuses stacks that are not in it |
+| **Application** | One deployable unit (an API, a web UI, a worker) with its own repository, container image and release cycle. |
+| **System** | What users think of as one product: a group of applications that work together. The console shows a system's status and, expanded, each of its applications. |
+| **Environment** | A place applications run, such as a laptop, a staging host or production. Options: exposure (`proxy` through Traefik or host `ports`), `trigger` (`manual`, `branch` or `release`), which Jenkins `agent` deploys it, whether it needs `approval`, timeouts and rollback depth. Each application deploys to all environments or to its own list, and can override any option per environment. |
+| **Catalog** | [`catalog.yaml`](catalog.yaml): the environments, systems and applications. Jenkins jobs and agents, GitHub rulesets, deploys, the status API, Prometheus and the console all read it. Reference: [docs/catalog.md](docs/catalog.md). |
 
-### Adding an application
+### Branches and releases
 
-To add, for example, a `hermes-api` and a `hermes-ui` as a new **Hermes** system:
+```mermaid
+gitGraph
+    commit id: "v1.3.0" tag: "v1.3.0"
+    branch develop
+    checkout develop
+    branch feature/login
+    checkout feature/login
+    commit id: "feat"
+    checkout develop
+    merge feature/login
+    branch fix/typo
+    checkout fix/typo
+    commit id: "fix"
+    checkout develop
+    merge fix/typo
+    branch release/1.4.0
+    checkout release/1.4.0
+    commit id: "deploy: branch environments" type: HIGHLIGHT
+    checkout main
+    merge release/1.4.0 id: "deploy: release environments" tag: "v1.4.0"
+```
 
-1. **Catalog**: add the system and its two applications to `catalog.yaml`, with `health` (a URL the status API can reach over the `edge` network, e.g. `http://hermes-api:8080/healthz`), `metrics` if the app exposes Prometheus metrics, `host` for public ones, and the `checks` its CI runs on every pull request.
-2. **Stack files** in `stacks/`:
-   - An API repository that has its own `docker-compose.yml` needs only `hermes-api.proxy.yml`: Traefik labels, the `edge` and `telemetry` networks with an alias equal to the id, and no host ports. Copy `heimdall-api.proxy.yml`.
-   - A repository without a Compose file also needs `hermes-ui.yml` (the service) and `hermes-ui.ports.yml` (development). Copy the heimdall-ui ones.
-3. **Env files**: the templates go in `env/<environment>/hermes-*.env.example`. The filled-in files go in `/etc/yggdrasil/<environment>/` on each host.
-4. **In the application's repository**: a `Jenkinsfile` (`@Library('yggdrasil') _` then `yggdrasilPipeline(stack: 'hermes-api')`), the `branch-policy.yml` workflow, and a `CONTRIBUTING.md` (copy them from any existing repository). Install the GitHub App on the repository.
-5. **Apply**:
-   - `python github/rulesets.py hermes-api hermes-ui` on your machine.
-   - `platform.sh up` on each host: the status API picks up the catalog, Prometheus the targets, and Jenkins, on restart, the new jobs.
+- `develop` and `main` only change through pull requests. Required checks: **Branch Policy**, the application's CI, and on `main` one `deploy/<environment>` status per release environment.
+- Into `develop` go only `feature/*` and `fix/*` branches cut from `develop`.
+- Into `main` go only `release/x.y.z` branches that are snapshots of `develop`, for a version not yet tagged.
+- `v*` tags can't be moved or deleted.
+- Repository admins can bypass all of it, for emergencies.
 
-Deployment labels (`yggdrasil.version`, `.commit`, `.deployed_at`) are added by `deploy.sh` to every container of every stack, so a new application reports its version in the console without any configuration.
+### What a release does
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer
+    participant GH as GitHub
+    participant J as Jenkins
+    participant B as Branch environments<br/>(e.g. staging)
+    participant R as Release environments<br/>(e.g. production)
+    Dev->>GH: push release/1.4.0
+    GH->>J: webhook
+    J->>B: deploy.sh (build, wait healthy, roll back on failure)
+    Dev->>GH: pull request release/1.4.0 → main
+    GH->>J: webhook
+    J->>GH: wait for every GitHub Actions check
+    loop each release environment, in catalog order
+        opt approval: true
+            Dev->>J: Deploy
+        end
+        J->>R: deploy.sh
+        J->>GH: status deploy/<environment> = success
+    end
+    J->>GH: merge (merge commit), tag + release v1.4.0, delete release/1.4.0
+```
+
+If a deploy fails, it rolls back to the image that was running, `deploy/<environment>` is set to failure, and the pull request stays open, blocked by the ruleset. **Rollback does not undo database migrations**, so keep each migration compatible with the previous release.
+
+### Inside an environment host
+
+```mermaid
+flowchart TB
+    net([Internet]) -- ":443" --> traefik[Traefik<br/>Let's Encrypt *.DOMAIN]
+    traefik --> apps[Applications<br/>one Compose project each]
+    traefik --> console[Console web]
+    traefik -- "/api/" --> status[Status API]
+    status -- probes health --> apps
+    status -- read-only --> proxy[Docker socket proxy]
+    prom[Prometheus] -- targets --> status
+    prom -- scrapes /metrics --> apps
+    alloy[Alloy] -- container logs --> loki[Loki]
+    grafana[Grafana] --> prom
+    grafana --> loki
+    agent[Jenkins agent] -- deploy.sh --> apps
+```
+
+Two Docker networks connect them: `edge` (Traefik, applications, status API) and `telemetry` (Prometheus and everything it scrapes). No container publishes a port except Traefik (80, 443). Metrics are served on a private port that is neither published nor routed.
 
 ## The console
 
-Three ways to open it, all the same Flutter app and UI:
+The same Flutter app on three platforms:
 
 | | How to get it | Environments |
 |---|---|---|
-| **Web** | `https://yggdrasil.<domain>` | Starts on the environment that serves it |
-| **Windows** | `yggdrasil-console-<version>-setup.exe` from the [GitHub release](https://github.com/artur-rios/yggdrasil/releases). Per-user install, no administrator rights | Add each one in Settings, then switch from the overview |
-| **Android** | `yggdrasil-console-<version>.apk` from the same release | Same as Windows (HTTPS only) |
+| **Web** | `https://yggdrasil.<DOMAIN>` on each environment host | Starts on the environment that serves it |
+| **Windows** | `yggdrasil-console-<version>-setup.exe` from the GitHub releases. Per-user install, no administrator rights | Add each one (URL and token) in Settings, then switch from the overview |
+| **Android** | `yggdrasil-console-<version>.apk` from the GitHub releases | Same as Windows (HTTPS only) |
 
-The installer and the APK are built by `.github/workflows/release.yml` whenever a `v*` tag is pushed. CI also builds them on every pull request as artifacts.
-
-- Every **system** is a card with the worst status of its applications: `up`, `degraded`, `down`, `not deployed` or `unknown`. Problems sort first, and "problems only" hides the rest.
-- **Expanding** a system lists its applications. For each one you see:
-  - its status and kind
-  - version, commit and when it was deployed
-  - the latest health probe and its latency
+- Every **system** is a card with the worst status of its applications: `up`, `degraded`, `down`, `not deployed` or `unknown`. Problems sort first.
+- **Expanding** a system lists its applications, each with:
+  - status and kind
+  - version, commit and deploy time
+  - latest health probe and latency
   - container state, health and restarts
   - links to the application and its repository
+- Data comes from each environment's **status API** (`GET /api/status`, bearer token). The console refreshes every 30 s while visible; the API probes every 15 s.
+- Contract: [docs/status-api.md](docs/status-api.md).
 
-  Tapping an application opens its full details.
-- **Environments**: the web console starts on the environment that serves it. Add others (name, URL, token) in Settings; the Windows and Android apps start there. Tokens are stored in the platform's secure storage. For one console to show another environment, list the console's origin in that environment's `YGGDRASIL_STATUS_CORS_ORIGINS`.
-- **Refresh**: data comes from that environment's status API (`GET /api/status`, bearer `YGGDRASIL_STATUS_TOKEN`). The console refreshes it every 30 seconds while it is visible. The API itself refreshes every 15 seconds: it probes each application's health endpoint and reads container state through a read-only Docker socket proxy.
+The installer and the APK are attached to every `v*` release of this repository by `.github/workflows/release.yml`.
 
-The contract between the two is [`docs/status-api.md`](docs/status-api.md).
+## Getting started
+
+1. **Fork this repository** and replace `catalog.yaml` with your own environments, systems and applications ([docs/catalog.md](docs/catalog.md)).
+2. **Stack files**: add a `stacks/<application>.proxy.yml` (and `stacks/<application>.yml`/`.ports.yml` when the repository has no Compose file of its own) per application. The ones here are working examples.
+3. **Each application repository** gets the three files in [`templates/application/`](templates/application).
+4. **Set up the hosts**: the GitHub App, DNS, one controller host, one host per environment, the env files. Follow [docs/setup.md](docs/setup.md).
+5. **Apply the GitHub rules**: `python github/rulesets.py --dry-run`, then without `--dry-run`.
+6. **Release**: cut a `release/x.y.z` branch in an application repository.
+
+[docs/examples/docker-desktop-wsl-vps](docs/examples/docker-desktop-wsl-vps/README.md) is a complete worked example on real hardware:
+- development on Docker Desktop (Windows)
+- a staging environment in WSL on the same machine
+- production on a Linux VPS
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `catalog.yaml` | Systems and their applications: the list everything else reads |
-| `status/` | The status API (.NET 10): probes, container state, `/api/status`, Prometheus service discovery |
-| `console/` | The console (Flutter): web, Android and Windows (installer in `console/windows/installer/`) |
-| `docs/status-api.md` | The status API contract |
-| `platform/compose.yml` | One host's platform: Traefik, the status API, the console, the Docker socket proxy, Prometheus, Loki, Alloy, Grafana, plus the Jenkins controller and agent under the `jenkins` and `agent` profiles |
-| `platform/jenkins/controller/casc.yaml` | Jenkins, configured entirely as code: users, agents, GitHub App credential, shared library, one multibranch job per catalog application |
-| `jenkins/library/vars/yggdrasilPipeline.groovy` | The pipeline every application's `Jenkinsfile` calls |
-| `stacks/` | Per-application Compose files and overlays: `*.proxy.yml` (Traefik, homologation and production), `*.ports.yml` (host ports, development) |
-| `scripts/deploy.sh` | Build, label, deploy, health-wait, roll back one stack. Jenkins runs this; so can you |
-| `scripts/github.sh` | Wait for checks, set status, merge, release, delete branch |
-| `scripts/platform.sh` | Bring a host's platform up or down |
-| `github/rulesets.py` | The GitHub rulesets and settings of every catalog repository, as code |
-| `env/` | Templates for every env file. The filled-in copies live on each host in `/etc/yggdrasil`, never in git |
-
-## The release flow
-
-```
-feature/x ─┐                              ┌─ deploy to homologation (Jenkins, on push)
-fix/y ─────┴─► develop ──► release/1.4.0 ─┤
-                                          └─ PR → main ─ all GitHub checks green
-                                                          ─ deploy to production (Jenkins)
-                                                          ─ status deploy/production = success
-                                                          ─ merge (merge commit), tag + release v1.4.0
-                                                          ─ delete release/1.4.0
-```
-
-Enforced on GitHub by `github/rulesets.py` and each repository's **Branch Policy** workflow:
-
-- `develop` and `main` accept changes only through pull requests: no direct pushes, force pushes or deletion.
-- Into `develop`: only `feature/*` or `fix/*` branches that were cut from `develop`.
-- Into `main`: only `release/x.y.z` branches that are snapshots of `develop`, for a version not yet tagged, with every check green **and** `deploy/production` set by Jenkins. So a release cannot reach `main` before it is live.
-- `v*` tags cannot be moved or deleted.
-- Repository admins (the owner) bypass all of it, for emergencies only.
-
-Each repository's `CONTRIBUTING.md` has the day-to-day version.
-
-If the production deploy fails, `deploy.sh` rolls back to the image that was running and Jenkins sets `deploy/production` to failure. The pull request stays open and can't be merged. Fix it on `develop` and cut a new release. **Rollback does not undo database migrations**: a migration must stay compatible with the previous release for one release.
-
-## Setting up
-
-### 1. The GitHub App (once)
-
-Jenkins talks to GitHub as a GitHub App, not as you. It therefore does **not** inherit your bypass: its merges go through the same rules.
-
-1. GitHub → Settings → Developer settings → GitHub Apps → **New GitHub App**, named e.g. `yggdrasil-jenkins`.
-   - Homepage URL: `https://jenkins.<domain>`
-   - Webhook URL: `https://jenkins.<domain>/github-webhook/`, active
-   - Repository permissions: **Contents** read and write (merge, tags, delete branches), **Pull requests** read and write, **Commit statuses** read and write, **Checks** read-only, **Metadata** read-only, **Administration** none
-   - Subscribe to events: **Push**, **Pull request**, **Repository**
-   - Where can it be installed: only this account
-2. Generate a private key, then convert it to the PKCS#8 format Jenkins requires:
-   ```bash
-   openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in yggdrasil-jenkins.*.private-key.pem -out /etc/yggdrasil/github-app.pem
-   ```
-3. Install the app on every catalog repository (today `heimdall-api`, `heimdall-ui`, `fortuna-api`, `fortuna-ui`) and on `yggdrasil`.
-
-### 2. Cloudflare
-
-- A zone for `<domain>`, and an API token with **Zone → DNS → Edit** on it.
-- Records: `*.<domain>` → VPS public IP. `*.hml.<domain>` → the Windows machine's LAN IP, **DNS only** (grey cloud).
-  Some home routers drop DNS answers that point at private addresses ("DNS rebinding protection"). If `*.hml` doesn't resolve at home, allow the domain in the router or add a hosts-file entry.
-
-### 3. Production: the VPS
-
-```bash
-# Docker Engine + Compose plugin: https://docs.docker.com/engine/install/ubuntu/
-sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
-sudo git clone https://github.com/artur-rios/yggdrasil.git /opt/yggdrasil
-sudo install -d -m 700 -o "$USER" /etc/yggdrasil /etc/yggdrasil/production
-
-cp /opt/yggdrasil/env/platform.env.example /etc/yggdrasil/platform.env
-# fill it in, with COMPOSE_PROFILES=jenkins for now (the agent secret does not exist yet) and
-# YGGDRASIL_STATUS_TOKEN=$(openssl rand -hex 32)
-/opt/yggdrasil/scripts/platform.sh up
-```
-
-Open `https://jenkins.<domain>` and sign in as `JENKINS_ADMIN_ID`. Under **Manage Jenkins → Nodes → production**, copy the agent secret into `JENKINS_AGENT_SECRET`, set `COMPOSE_PROFILES=jenkins,agent` and `DOCKER_GID=$(getent group docker | cut -d: -f3)`, and run `platform.sh up` again. Keep the `homologation` node's secret for step 4.
-
-Application env files: see [Application env files](#application-env-files). The cloned application repositories on the VPS are no longer needed: Jenkins checks out the exact commit it deploys.
-
-Docker publishes ports around `ufw`. Only Traefik publishes any (80 and 443). Keep it that way: nothing else in these stacks has a `ports:` entry in homologation or production.
-
-### 4. Homologation: WSL Ubuntu on the Windows machine
-
-Homologation must run on its **own** Docker Engine, not on Docker Desktop's:
-
-1. Docker Desktop → Settings → Resources → WSL integration: **turn it off for this distro**. Otherwise `docker` inside Ubuntu is Docker Desktop, the development engine, and both environments would fight over the same containers and ports.
-2. Install Docker Engine inside Ubuntu (same guide as the VPS) and enable systemd in `/etc/wsl.conf` (`[boot] systemd=true`).
-3. Networking: set `networkingMode=mirrored` in `%UserProfile%\.wslconfig` so Traefik's 80/443 in WSL are the Windows machine's 80/443, and the Windows PostgreSQL is reachable from WSL. Then allow inbound 80/443 for WSL in the Hyper-V firewall so other LAN devices (a phone testing the app) can reach it. **Docker Desktop must not publish 80 or 443 at the same time.**
-4. PostgreSQL: either keep using the Windows instance (with mirrored networking, `DB_HOST=host.docker.internal` resolves to the host; allow the WSL address in `pg_hba.conf`), or, closer to production, install PostgreSQL inside WSL.
-5. The same `platform.sh up` as the VPS, with `ENVIRONMENT=homologation`, `DOMAIN=hml.<domain>`, `COMPOSE_PROFILES=agent`, `JENKINS_AGENT_NAME=homologation`, its secret, and `JENKINS_AGENT_URL` **unset** (it connects to `JENKINS_URL` over the internet by WebSocket; no inbound port at home).
-
-WSL stops when idle. Keep the distro running (e.g. a scheduled task running `wsl -d Ubuntu --exec sleep infinity` at log-on) or homologation deploys will queue until it's back.
-
-### 5. Development: Docker Desktop
-
-There's no platform stack in development. Each application runs with host ports on `127.0.0.1` against the PostgreSQL installed on Windows, through the same `deploy.sh`, from Git Bash:
-
-```bash
-export YGG_SECRETS_DIR=D:/Repositories/yggdrasil/env      # filled-in *.env there are gitignored
-cp ../heimdall-api/docker/local.env.example env/development/heimdall-api.env   # and fill in
-scripts/deploy.sh development heimdall-api ../heimdall-api dev
-scripts/deploy.sh development heimdall-ui  ../heimdall-ui  dev
-```
-
-To debug from the IDE, keep running the APIs with `dotnet run` and the UIs with `flutter run -d chrome`, as before.
-
-### Application env files
-
-On each host, `/etc/yggdrasil/<environment>/<stack>.env`, where `<stack>` is a catalog application id (`heimdall-api`, `fortuna-ui`, ...). For the APIs, start from the repository's own `docker/production.env.example`, which documents every variable, then apply `env/<environment>/<stack>.env.example` from here. For the UIs, the template here is the whole file.
-
-Each web UI calls its API **same-origin**: the UI is built with `https://<ui-host>` as its API base URL, and Traefik sends `https://<ui-host>/api/…` to the API unchanged (every API route already starts with `/api/`; see `stacks/*-api.proxy.yml`), so no CORS is involved. fortuna-api has no CORS support at all. The APIs also keep their own host name (`<app>-api.<domain>`) for the mobile and desktop clients.
-
-## Observability
-
-- **Grafana**: `https://grafana.<domain>`, with Prometheus and Loki provisioned. Good starting dashboards to import: *ASP.NET Core* (19924), *Traefik* (17346), *Jenkins* (9964).
-- **Metrics**: each API serves `/metrics` (OpenTelemetry, Prometheus format) on port **9464**, which is not published and not routed. Prometheus takes its targets from the status API's HTTP service discovery, which lists every catalog entry with `metrics`, labelled `system`, `app` and `kind`. It reaches them over the `telemetry` network.
-- **Status**: the console, for "is it up, and which version?" at a glance. Grafana is for "why?".
-- **Logs**: Alloy ships the stdout of every container to Loki, with labels `environment`, `stack`, `service`, `container` and `level`. The APIs already log JSON (Serilog), so in Grafana, `{stack="heimdall-api"} | json | Level="Error"`. Their rolling files in the `logs` volumes stay the durable copy.
+| `catalog.yaml` | Environments, systems and applications: what everything else reads |
+| `stacks/` | Per-application Compose files and overlays: `<app>.proxy.yml`, `<app>.ports.yml`, optional `<app>.<environment>.yml` |
+| `scripts/deploy.sh` | Build, label, deploy, health-wait and roll back one application in one environment. Jenkins runs it; so can you |
+| `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
+| `scripts/platform.sh` | Brings a host's platform up or down |
+| `scripts/github.sh` | The GitHub side of a release: wait for checks, set status, merge, release, delete branch |
+| `platform/` | One host's platform: Traefik, status API, console, Docker socket proxy, Prometheus, Loki, Alloy, Grafana, and the Jenkins controller and agent |
+| `jenkins/library/` | The shared pipeline every application's `Jenkinsfile` calls |
+| `github/rulesets.py` | Rulesets, required checks and settings of every catalog repository |
+| `status/` | The status API (.NET 10) |
+| `console/` | The console (Flutter): web, Android, Windows |
+| `env/` | Templates for each host's `platform.env` and `acme.env` |
+| `templates/application/` | Files each application repository needs |
+| `docs/` | Catalog reference, setup guide, status API contract, worked example |
 
 ## Day to day
 
 | Task | How |
 |---|---|
-| Release | `git switch develop && git pull && git switch -c release/1.4.0 && git push -u origin release/1.4.0`, then open the PR into `main` |
-| Deploy by hand | `scripts/deploy.sh <env> <stack> <checkout> <tag>` on the host |
-| Update the platform | `git -C /opt/yggdrasil pull && /opt/yggdrasil/scripts/platform.sh up` |
-| Change Jenkins | Edit `casc.yaml`, pull on the VPS, `platform.sh up` (the controller reloads it on start) |
-| Change GitHub policies | Edit `github/rulesets.py`, run `python github/rulesets.py` (`--dry-run` first) |
-| Add a system or application | [Adding an application](#adding-an-application) |
-| See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<domain>/api/status` |
+| Release an application | `git switch -c release/1.4.0 develop && git push -u origin release/1.4.0`, then open the PR into `main` |
+| Deploy by hand | `scripts/deploy.sh <environment> <application> <checkout> <tag>` on the environment's host, or "Build with Parameters" → `DEPLOY_TO` in Jenkins for `manual` environments |
+| Add an application, environment or system | [docs/setup.md#adding-things](docs/setup.md#adding-things) |
+| Update a host's platform | `git pull && scripts/platform.sh up` |
+| Change GitHub rules | `python github/rulesets.py --dry-run`, then without |
+| See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |

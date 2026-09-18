@@ -189,6 +189,21 @@ public static class TestData
 
     public const string CatalogYaml = """
         owner: artur-rios
+        environments:
+          - id: development
+            name: Development
+            mode: ports
+            trigger: manual
+          - id: homologation
+            name: Homologation
+            mode: proxy
+            trigger: branch
+            branches: release/*
+          - id: production
+            name: Production
+            mode: proxy
+            trigger: release
+            approval: true
         systems:
           - id: heimdall
             name: Heimdall
@@ -206,6 +221,15 @@ public static class TestData
                 kind: web
                 health: http://heimdall-ui:8080/healthz
                 host: heimdall
+              # Not in production: left out of everything the production status API answers.
+              - id: heimdall-worker
+                name: Heimdall worker
+                kind: worker
+                health: http://heimdall-worker:8080/healthz
+                metrics: heimdall-worker:9464
+                environments:
+                  development:
+                  homologation: { waitTimeout: 600 }
           - id: yggdrasil
             name: Yggdrasil
             description: Deployment platform
@@ -224,9 +248,23 @@ public static class TestData
                 metricsPath: /prometheus/
                 host: jenkins
                 container: { project: yggdrasil, service: jenkins }
+          # Development only, so in production the whole system is left out.
+          - id: sandbox
+            name: Sandbox
+            description: Experiments
+            applications:
+              - id: sandbox-api
+                name: Sandbox API
+                kind: api
+                health: http://sandbox-api:8080/healthz
+                metrics: sandbox-api:9464
+                environments: { development: {} }
         """;
 
     public static Catalog Catalog() => CatalogLoader.Parse(CatalogYaml);
+
+    public static EnvironmentCatalog InEnvironment(string environment = "production") =>
+        EnvironmentCatalog.For(Catalog(), environment);
 
     public static ProbeResult Probe(bool healthy = true, long latencyMs = 12, int? statusCode = 200, string? error = null) =>
         new(healthy, statusCode, latencyMs, Now, error);

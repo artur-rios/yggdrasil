@@ -39,7 +39,7 @@ public static class Endpoints
 
         // The targets come from the catalog alone, so they are ready before the first refresh and
         // do not change while the process lives.
-        internalApi.MapGet("/prometheus/targets", (Catalog catalog) => Results.Ok(PrometheusTargets.From(catalog)));
+        internalApi.MapGet("/prometheus/targets", (EnvironmentCatalog catalog) => Results.Ok(PrometheusTargets.From(catalog)));
     }
 
     // 503 with Retry-After rather than a snapshot of "unknown": the process has not looked yet, and
@@ -60,7 +60,9 @@ public static class Endpoints
 
 public static class PrometheusTargets
 {
-    public static IReadOnlyList<ScrapeTargetGroup> From(Catalog catalog) =>
+    // This environment's applications only: one that is not deployed here has nothing to scrape, and
+    // would sit in Prometheus as a target that is always down.
+    public static IReadOnlyList<ScrapeTargetGroup> From(EnvironmentCatalog catalog) =>
         catalog.Systems
             .SelectMany(system => system.Applications
                 .Where(application => application.Metrics is not null)

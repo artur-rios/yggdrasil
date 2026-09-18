@@ -39,10 +39,13 @@ public sealed class StatusApiFactory : WebApplicationFactory<Program>
     /// <summary>Pretend every request arrived on the internal port (TestServer reports port 0).</summary>
     public bool OnInternalPort { get; init; }
 
+    /// <summary>YGGDRASIL_ENVIRONMENT; the test catalog has development, homologation and production.</summary>
+    public string Environment { get; init; } = "production";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("YGGDRASIL_STATUS_TOKEN", TestData.Token);
-        builder.UseSetting("YGGDRASIL_ENVIRONMENT", "production");
+        builder.UseSetting("YGGDRASIL_ENVIRONMENT", Environment);
         builder.UseSetting("YGGDRASIL_DOMAIN", "example.com");
         builder.UseSetting("YGGDRASIL_STATUS_CORS_ORIGINS", AllowedOrigin);
 
@@ -84,6 +87,7 @@ public class ApiTests : IClassFixture<StatusApiFactory>
     private const string ContractExample = """
         {
           "environment": "production",
+          "environmentName": "Production",
           "generatedAt": "2026-09-18T18:04:11Z",
           "status": "degraded",
           "systems": [
@@ -160,6 +164,7 @@ public class ApiTests : IClassFixture<StatusApiFactory>
         AssertSameShape(JsonNode.Parse(ContractExample)!, body, "$");
 
         Assert.Equal("production", (string?)body["environment"]);
+        Assert.Equal("Production", (string?)body["environmentName"]);
         var heimdall = body["systems"]![0]!;
         Assert.Equal("up", (string?)heimdall["status"]);
         var api = heimdall["applications"]![0]!;
@@ -208,6 +213,64 @@ public class ApiTests : IClassFixture<StatusApiFactory>
     }
 
     [Fact]
+    public async Task GivenApplicationsNotInTheEnvironment_WhenGettingStatus_ThenTheyAndTheSystemsTheyEmptyAreLeftOut()
+    {
+        var client = await factory.ReadyClientAsync();
+
+        var body = await GetJson(client, "/api/status");
+
+        // heimdall-worker and sandbox (whose only application is sandbox-api) are development-only.
+        Assert.Equal(["heimdall", "yggdrasil"], body["systems"]!.AsArray().Select(s => (string?)s!["id"]));
+        Assert.Equal(["heimdall-api", "heimdall-ui"], body["systems"]![0]!["applications"]!.AsArray().Select(a => (string?)a!["id"]));
+
+        using var sandbox = await client.SendAsync(Authorized("/api/systems/sandbox"));
+        Assert.Equal(HttpStatusCode.NotFound, sandbox.StatusCode);
+
+        // Never probed either: nothing in this environment is supposed to answer.
+        Assert.DoesNotContain(factory.Docker.Requests.ToList(), r => r.Contains("heimdall-worker") || r.Contains("sandbox-api"));
+    }
+
+    [Fact]
+    public async Task GivenAnotherEnvironment_WhenGettingStatus_ThenItsOwnApplicationsAndNameAreReported()
+    {
+        await using var development = new StatusApiFactory { Environment = "development" };
+        var client = await development.ReadyClientAsync();
+
+        var body = await GetJson(client, "/api/status");
+        var system = await GetJson(client, "/api/systems/sandbox");
+
+        Assert.Equal("development", (string?)body["environment"]);
+        Assert.Equal("Development", (string?)body["environmentName"]);
+        Assert.Equal(["heimdall", "yggdrasil", "sandbox"], body["systems"]!.AsArray().Select(s => (string?)s!["id"]));
+        Assert.Contains(body["systems"]![0]!["applications"]!.AsArray(), a => (string?)a!["id"] == "heimdall-worker");
+        Assert.Equal("sandbox-api", (string?)system["applications"]![0]!["id"]);
+    }
+
+    [Fact]
+    public async Task GivenAnEnvironmentNotInTheCatalog_WhenStarting_ThenStartupIsRefusedWithTheReason()
+    {
+        await using var staging = new StatusApiFactory { Environment = "staging" };
+        var stderr = new StringWriter();
+        var original = Console.Error;
+
+        // Program's own start-up check catches the error, prints it and returns before any host is
+        // started, which is all the factory gets to see.
+        Console.SetError(stderr);
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => staging.CreateClient());
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+
+        Assert.Contains("yggdrasil-status: invalid configuration:", stderr.ToString());
+        Assert.Contains("YGGDRASIL_ENVIRONMENT 'staging' is not an environment in the catalog (development, homologation, production)",
+            stderr.ToString());
+    }
+
+    [Fact]
     public async Task GivenNoToken_WhenGettingHealthz_Then200Ok()
     {
         var client = await factory.ReadyClientAsync();
@@ -250,6 +313,8 @@ public class ApiTests : IClassFixture<StatusApiFactory>
         Assert.Equal("""{"targets":["heimdall-api:9464"],"labels":{"system":"heimdall","app":"heimdall-api","kind":"api"}}""",
             targets[0]!.ToJsonString());
         Assert.Equal("/prometheus/", (string?)targets[2]!["labels"]!["__metrics_path__"]);
+        // Not heimdall-worker nor sandbox-api, which have metrics but are not deployed to production.
+        Assert.Equal(["heimdall-api", "traefik", "jenkins"], targets.Select(t => (string?)t!["labels"]!["app"]));
     }
 
     [Fact]

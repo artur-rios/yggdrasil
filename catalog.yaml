@@ -1,36 +1,86 @@
-# The catalog: every system yggdrasil manages, and the applications each one is made of.
+# The catalog: the environments yggdrasil deploys to, every system it manages, and the applications
+# each system is made of. Full reference: docs/catalog.md.
 #
-# A system is what a user thinks of as one product (heimdall, fortuna); an application is one
-# deployable unit of it -- an API, a web UI -- with its own repository, release cycle and container.
-# Everything that has to know "which applications exist" reads this file and nothing else:
+# A system is what a user thinks of as one product; an application is one deployable unit of it --
+# an API, a web UI, a worker -- with its own repository, release cycle and container. An environment
+# is a place applications run (a laptop, a staging host, production), with its own options: how
+# applications are exposed, what deploys to it, which Jenkins agent does it.
 #
-#   Jenkins        one multibranch deploy job per application      platform/jenkins/controller/casc.yaml
-#   GitHub         rulesets and required checks per repository     github/rulesets.py
-#   Prometheus     scrape targets (via the status API)             platform/prometheus/prometheus.yml
-#   Status API     what to probe, and how systems group apps       status/
-#   Console        what it shows                                   console/ (through the status API)
-#   deploy.sh      which stacks are valid                          scripts/deploy.sh
+# Everything that has to know "which applications and environments exist" reads this file:
 #
-# Adding an application is: an entry here, its stack files in stacks/, its env files on each host,
-# and a Jenkinsfile in its repository. See "Adding an application" in the README.
+#   Jenkins        deploy jobs, agents, and what each push or pull request deploys where
+#   GitHub         rulesets, required checks and the deploy/<environment> statuses on main
+#   deploy.sh      which environments an application has, and their options
+#   Status API     what to probe in its environment, and how systems group applications
+#   Prometheus     scrape targets (through the status API)
+#   Console        what it shows (through the status API)
 #
+# This is the catalog of one installation. Replace the systems below with your own; the
+# environments are the ones from docs/examples/docker-desktop-wsl-vps/README.md.
+
+# GitHub owner (user or organisation) of the application repositories and of this repository.
+owner: artur-rios
+
+# This repository's name under the owner: Jenkins loads its pipeline, scripts and stacks from its
+# main branch. Default yggdrasil; set it if your fork has another name.
+repository: yggdrasil
+
+# Environments, in promotion order. An application deploys to every one of them, with these options,
+# unless it lists its own (see `environments` under an application below).
+#
+#   mode          proxy: routed by Traefik with TLS, no host ports (stacks/<app>.proxy.yml)
+#                 ports: published on the host, no Traefik (stacks/<app>.ports.yml)
+#   trigger       manual:  only by hand (scripts/deploy.sh) or "Build with Parameters" in Jenkins
+#                 branch:  when a branch matching `branches` is pushed
+#                 release: when the release/x.y.z -> main pull request passes every GitHub check.
+#                          Release environments deploy one after the other, in this order, and the
+#                          pull request is merged and tagged once the last one succeeds.
+#   branches      For trigger branch: glob(s), e.g. release/* or [develop, hotfix/*].
+#   agent         Jenkins agent label that deploys here (default: the id). One agent per host.
+#   approval      true: Jenkins waits for someone to click "Deploy" before deploying here.
+#   waitTimeout   Seconds deploy.sh waits for the new containers to be healthy (default 300).
+#   keepImages    Images of each application kept for rollback (default 3).
+#   checksTimeout For trigger release: seconds to wait for the GitHub checks (default 3600).
+environments:
+  - id: development
+    name: Development
+    mode: ports
+    trigger: manual
+
+  - id: homologation
+    name: Homologation
+    mode: proxy
+    trigger: branch
+    branches: release/*
+
+  - id: production
+    name: Production
+    mode: proxy
+    trigger: release
+
 # Application fields:
 #   id              Also the repository name, the Compose project and the stack name, and the
 #                   network alias other containers reach it by. Lowercase, digits, dashes.
 #   name            Display name.
 #   kind            api | web | worker | platform -- what the console shows it as.
-#   repository      Defaults to id. Omit for platform components, which are not deployed by Jenkins.
+#   repository      Defaults to id. Platform components (kind platform) have none: they are not
+#                   deployed by Jenkins but by scripts/platform.sh, on every host that runs it.
 #   health          URL the status API probes over the Docker networks. A 2xx answer is healthy.
 #   metrics         host:port Prometheus scrapes. Omit when there is none.
 #   metricsPath     Path of the metrics endpoint when it is not /metrics.
 #   host            Public host name under the environment's DOMAIN (heimdall -> heimdall.<domain>).
 #                   Omit for applications that are not public.
-#   checks          GitHub check names required on develop and main, besides branch-policy (and
-#                   deploy/production on main). Only checks that run on every pull request.
+#   checks          GitHub check names required on develop and main, besides branch-policy (and,
+#                   on main, deploy/<environment> for each release environment). Only checks that
+#                   run on every pull request.
 #   container       Compose project and service to read container state from. Defaults to
 #                   project = id and the project's only service.
-
-owner: artur-rios
+#   environments    The environments this application deploys to, each optionally overriding
+#                   the environment's options. Omitted: every environment, with its defaults.
+#                   For example, skip development and ask for approval before production:
+#                     environments:
+#                       homologation: {}
+#                       production: { approval: true }
 
 systems:
   - id: heimdall
