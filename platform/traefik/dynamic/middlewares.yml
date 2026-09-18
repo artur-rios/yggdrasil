@@ -1,0 +1,21 @@
+# Dynamic configuration shared by every router. Watched: an edit applies without a restart.
+
+http:
+  middlewares:
+    # Attached to every public router as secure-headers@file. The UIs' nginx sets its own
+    # frame/nosniff headers too; repeating them here covers the APIs, Grafana and Jenkins.
+    secure-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        referrerPolicy: strict-origin-when-cross-origin
+        customResponseHeaders:
+          Server: ""
+          X-Powered-By: ""
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true

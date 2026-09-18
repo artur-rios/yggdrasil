@@ -1,0 +1,6 @@
+# Development: published on the loopback interface only, no Traefik.
+
+services:
+  ui:
+    ports:
+      - "${UI_PORT:-127.0.0.1:8082}:8080"

@@ -1,0 +1,62 @@
+// Every container on this Docker engine -> Loki.
+//
+// Labels are kept few on purpose (Loki indexes labels, not content): the environment, the Compose
+// project (stack) and service, the container, and the log level. Everything else stays in the JSON
+// line and is queried with `| json`.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "stack"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.containers.rules
+  forward_to    = [loki.process.containers.receiver]
+}
+
+loki.process "containers" {
+  stage.static_labels {
+    values = {
+      environment = sys.env("ENVIRONMENT"),
+    }
+  }
+
+  // Serilog's JsonFormatter writes "Level" (Information, Warning, ...); Traefik, Grafana and Loki
+  // write "level". Lines that are not JSON pass through without a level.
+  stage.json {
+    expressions = { level = "Level || level" }
+  }
+
+  stage.labels {
+    values = { level = "" }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

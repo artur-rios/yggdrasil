@@ -1,0 +1,4 @@
+# Everything here runs on Linux (the VPS, WSL, inside containers): a CRLF checkout on Windows would
+# break every shell script and some configs.
+* text=auto eol=lf
+*.pem binary

@@ -1,0 +1,143 @@
+# Jenkins Configuration as Code. ${VAR} is read from the controller's environment (platform/compose.yml)
+# and ${readFile:...} from a mounted file. Reapplied on every start; Manage Jenkins > Configuration as
+# Code > Reload applies an edit without a restart.
+
+jenkins:
+  systemMessage: "yggdrasil - deployments for heimdall and fortuna. Configured as code: edit platform/jenkins/controller/casc.yaml, not this UI."
+  # The controller never builds anything; every stage runs on the agent of the environment it
+  # deploys to.
+  numExecutors: 0
+  mode: EXCLUSIVE
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_ID}"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  nodes:
+    # The agent secret each host needs is shown on the node's page once the controller is up
+    # (Manage Jenkins > Nodes > <name>). It goes in that host's platform.env as JENKINS_AGENT_SECRET.
+    - permanent:
+        name: "homologation"
+        labelString: "homologation"
+        remoteFS: "/home/jenkins/agent"
+        numExecutors: 2
+        mode: EXCLUSIVE
+        launcher:
+          inbound:
+            webSocket: true
+        retentionStrategy: "always"
+    - permanent:
+        name: "production"
+        labelString: "production"
+        remoteFS: "/home/jenkins/agent"
+        numExecutors: 2
+        mode: EXCLUSIVE
+        launcher:
+          inbound:
+            webSocket: true
+        retentionStrategy: "always"
+
+security:
+  globalJobDslSecurityConfiguration:
+    useScriptSecurity: false
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # One GitHub App gives Jenkins everything: repository scans, webhooks, checkout, and the
+          # installation token the pipeline uses to read checks, set the deploy status, merge, tag
+          # and delete branches. The key must be PKCS#8 (see the README).
+          - gitHubApp:
+              id: "github-app"
+              description: "yggdrasil GitHub App"
+              appID: "${GITHUB_APP_ID}"
+              owner: "${GITHUB_OWNER}"
+              privateKey: "${readFile:/run/secrets/github-app.pem}"
+
+unclassified:
+  location:
+    url: "${JENKINS_URL}"
+  timestamper:
+    allPipelines: true
+  globalLibraries:
+    libraries:
+      - name: "yggdrasil"
+        defaultVersion: "main"
+        implicit: false
+        allowVersionOverride: false
+        includeInChangesets: false
+        retriever:
+          modernSCM:
+            libraryPath: "jenkins/library/"
+            scm:
+              github:
+                repoOwner: "${GITHUB_OWNER}"
+                repository: "yggdrasil"
+                credentialsId: "github-app"
+                traits:
+                  - gitHubBranchDiscovery:
+                      strategyId: 1
+
+jobs:
+  - script: |
+      // One multibranch job per application repository. It only ever sees two kinds of heads:
+      //   release/*  -> the branch build, which deploys to homologation
+      //   PR-*       -> pull requests; the pipeline acts only on release/* -> main and is a no-op for
+      //                 the rest (pull requests into develop show up here too)
+      //
+      // No Groovy string interpolation (dollar-brace) in this script: Configuration as Code would try
+      // to resolve it as one of its own variables.
+      def owner = System.getenv('GITHUB_OWNER')
+      ['heimdall-api', 'heimdall-ui', 'fortuna-api', 'fortuna-ui'].each { repo ->
+        multibranchPipelineJob(repo) {
+          displayName(repo)
+          branchSources {
+            branchSource {
+              source {
+                github {
+                  id(repo)
+                  repoOwner(owner)
+                  repository(repo)
+                  repositoryUrl('https://github.com/' + owner + '/' + repo)
+                  configuredByUrl(false)
+                  credentialsId('github-app')
+                  traits {
+                    // 3 = all branches: a release branch is built as a branch (homologation) even
+                    // while it is also the head of a pull request (production).
+                    gitHubBranchDiscovery { strategyId(3) }
+                    // 2 = the pull request's head revision, not a merge with main: production runs
+                    // exactly the commit homologation ran.
+                    gitHubPullRequestDiscovery { strategyId(2) }
+                    headWildcardFilter {
+                      includes('release/* PR-*')
+                      excludes('')
+                    }
+                  }
+                }
+              }
+              buildStrategies {
+                buildRegularBranches()
+                buildChangeRequests {
+                  ignoreTargetOnlyChanges(true)
+                  ignoreUntrustedChanges(true)
+                }
+              }
+            }
+          }
+          factory {
+            workflowBranchProjectFactory { scriptPath('Jenkinsfile') }
+          }
+          orphanedItemStrategy {
+            discardOldItems { numToKeep(20) }
+          }
+          triggers {
+            // Webhooks do the real work; a daily rescan is the safety net for a missed delivery.
+            periodicFolderTrigger { interval('1d') }
+          }
+        }
+      }

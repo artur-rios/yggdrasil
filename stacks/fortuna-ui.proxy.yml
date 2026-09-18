@@ -1,0 +1,19 @@
+# Homologation and production: routed by Traefik at UI_HOST. /api/ on the same host goes to
+# fortuna-api instead (stacks/fortuna-api.proxy.yml): that router's rule is longer, so Traefik gives it
+# priority over this one.
+
+services:
+  ui:
+    networks:
+      - edge
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: edge
+      traefik.http.routers.fortuna-ui.rule: Host(`${UI_HOST:?set UI_HOST in the env file}`)
+      traefik.http.routers.fortuna-ui.entrypoints: websecure
+      traefik.http.routers.fortuna-ui.middlewares: secure-headers@file
+      traefik.http.services.fortuna-ui.loadbalancer.server.port: "8080"
+
+networks:
+  edge:
+    external: true

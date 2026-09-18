@@ -1,0 +1,5 @@
+# Filled-in env files hold secrets. Only the templates are versioned.
+env/**/*.env
+env/*.env
+!*.env.example
+*.pem

@@ -1,0 +1,45 @@
+# Homologation and production overlay for heimdall-api, applied on top of the repository's own
+# docker-compose.yml by scripts/deploy.sh. It changes how the API is reached, nothing about what it
+# runs: no host port (Traefik is the only way in), the edge and telemetry networks, and the router.
+#
+# Two routers, one service:
+#   PUBLIC_HOST                the API's own host name, for the mobile and desktop clients
+#   UI_HOST + /api/            the same API under the web UI's own origin. Every API route already
+#                              starts with /api/, so nothing is rewritten: the browser build of
+#                              heimdall-ui uses https://<UI_HOST> as its API base URL and needs no CORS
+#                              (fortuna-api has none) and no preflight requests.
+#
+# /metrics is on port 9464, which is on neither the router nor the host: Prometheus reaches it over
+# the telemetry network as heimdall-api:9464.
+
+services:
+  api:
+    ports: !reset []
+    networks:
+      edge:
+        aliases: [heimdall-api]
+      telemetry:
+        aliases: [heimdall-api]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: edge
+      traefik.http.routers.heimdall-api.rule: Host(`${PUBLIC_HOST:?set PUBLIC_HOST in the env file}`)
+      traefik.http.routers.heimdall-api.entrypoints: websecure
+      traefik.http.routers.heimdall-api.middlewares: secure-headers@file
+      traefik.http.routers.heimdall-api.service: heimdall-api
+      traefik.http.routers.heimdall-api-same-origin.rule: Host(`${UI_HOST:?set UI_HOST in the env file}`) && PathPrefix(`/api/`)
+      traefik.http.routers.heimdall-api-same-origin.entrypoints: websecure
+      traefik.http.routers.heimdall-api-same-origin.middlewares: secure-headers@file
+      traefik.http.routers.heimdall-api-same-origin.service: heimdall-api
+      traefik.http.services.heimdall-api.loadbalancer.server.port: "8080"
+
+networks:
+  edge:
+    external: true
+  telemetry:
+    external: true

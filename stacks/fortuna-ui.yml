@@ -1,0 +1,26 @@
+# fortuna-ui: the Flutter web build served by nginx (the repository's Dockerfile). The repository has no
+# Compose file of its own, so this is the service definition; stacks/fortuna-ui.<mode>.yml adds either
+# Traefik (homologation, production) or a host port (development).
+#
+# The build args are compiled into the JavaScript bundle, so they differ per environment and are
+# public: never put a secret in them. That is also why the image is built on each environment's host
+# rather than once -- the same commit, a different bundle.
+
+services:
+  ui:
+    build:
+      context: ${APP_DIR:?APP_DIR is set by scripts/deploy.sh}
+      args:
+        # Empty starts the app at its instance setup screen.
+        FORTUNA_API_BASE_URL: ${FORTUNA_API_BASE_URL:-}
+        FORTUNA_GOOGLE_CLIENT_ID: ${FORTUNA_GOOGLE_CLIENT_ID:-}
+    image: fortuna-ui:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
