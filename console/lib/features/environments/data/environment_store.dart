@@ -97,8 +97,8 @@ abstract interface class TokenStore {
   Future<void> delete(String environmentId);
 }
 
-/// Keystore-backed on Android and WebCrypto-encrypted local storage on the
-/// web.
+/// Keystore-backed on Android, DPAPI-encrypted per Windows user on Windows,
+/// and WebCrypto-encrypted local storage on the web.
 class SecureTokenStore implements TokenStore {
   const SecureTokenStore(this._storage);
 
