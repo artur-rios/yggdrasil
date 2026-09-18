@@ -3,7 +3,8 @@
     python tool/generate_icons.py      (from console/, needs Pillow)
 
 Writes the Android adaptive icon (vector foreground + background colour +
-legacy PNGs) and the web favicon, PWA icons and maskable icons, all from the
+legacy PNGs), the web favicon, PWA icons and maskable icons, and the Windows
+executable icon (a multi-size .ico, which the installer reuses), all from the
 same shapes below, so they never drift apart. The output is committed; run
 this again only to change the design.
 """
@@ -97,6 +98,12 @@ def main() -> None:
     # Maskable: full bleed, glyph inside the central 80 % safe zone.
     render(192, glyph_scale=1.0, rounded=False).save(web / "icons/Icon-maskable-192.png")
     render(512, glyph_scale=1.0, rounded=False).save(web / "icons/Icon-maskable-512.png")
+
+    # Windows: every size the shell asks for, from the 16 px title bar to the 256 px tile.
+    sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+    render(256, glyph_scale=1.45, rounded=True).save(
+        ROOT / "windows/runner/resources/app_icon.ico", sizes=[(s, s) for s in sizes]
+    )
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ What it gives every application:
 - **Rollback** to the previous image when a deploy doesn't become healthy.
 - **TLS** from Let's Encrypt through Traefik.
 - **Monitoring**: Prometheus metrics and Loki logs, in Grafana.
-- **The console**: a responsive web and Android app showing each system's status. Expand a system to see each of its applications: health, version, commit, when it was deployed, and container state.
+- **The console**: a responsive app for the web, Android and Windows, showing each system's status. Expand a system to see each of its applications: health, version, commit, when it was deployed, and container state.
 
 | | Development | Homologation | Production |
 |---|---|---|---|
@@ -79,7 +79,15 @@ Deployment labels (`yggdrasil.version`, `.commit`, `.deployed_at`) are added by 
 
 ## The console
 
-`https://yggdrasil.<domain>` in a browser, or the Android app (the APK is a build artifact of this repository's CI).
+Three ways to open it, all the same Flutter app and UI:
+
+| | How to get it | Environments |
+|---|---|---|
+| **Web** | `https://yggdrasil.<domain>` | Starts on the environment that serves it |
+| **Windows** | `yggdrasil-console-<version>-setup.exe` from the [GitHub release](https://github.com/artur-rios/yggdrasil/releases). Per-user install, no administrator rights | Add each one in Settings, then switch from the overview |
+| **Android** | `yggdrasil-console-<version>.apk` from the same release | Same as Windows (HTTPS only) |
+
+The installer and the APK are built by `.github/workflows/release.yml` whenever a `v*` tag is pushed. CI also builds them on every pull request as artifacts.
 
 - Every **system** is a card with the worst status of its applications: `up`, `degraded`, `down`, `not deployed` or `unknown`. Problems sort first, and "problems only" hides the rest.
 - **Expanding** a system lists its applications. For each one you see:
@@ -90,7 +98,7 @@ Deployment labels (`yggdrasil.version`, `.commit`, `.deployed_at`) are added by 
   - links to the application and its repository
 
   Tapping an application opens its full details.
-- **Environments**: the web console starts on the environment that serves it. Add others (name, URL, token) in Settings; the Android app starts there. Tokens are stored in the platform's secure storage. For one console to show another environment, list the console's origin in that environment's `YGGDRASIL_STATUS_CORS_ORIGINS`.
+- **Environments**: the web console starts on the environment that serves it. Add others (name, URL, token) in Settings; the Windows and Android apps start there. Tokens are stored in the platform's secure storage. For one console to show another environment, list the console's origin in that environment's `YGGDRASIL_STATUS_CORS_ORIGINS`.
 - **Refresh**: data comes from that environment's status API (`GET /api/status`, bearer `YGGDRASIL_STATUS_TOKEN`). The console refreshes it every 30 seconds while it is visible. The API itself refreshes every 15 seconds: it probes each application's health endpoint and reads container state through a read-only Docker socket proxy.
 
 The contract between the two is [`docs/status-api.md`](docs/status-api.md).
@@ -101,7 +109,7 @@ The contract between the two is [`docs/status-api.md`](docs/status-api.md).
 |---|---|
 | `catalog.yaml` | Systems and their applications: the list everything else reads |
 | `status/` | The status API (.NET 10): probes, container state, `/api/status`, Prometheus service discovery |
-| `console/` | The console (Flutter): web and Android |
+| `console/` | The console (Flutter): web, Android and Windows (installer in `console/windows/installer/`) |
 | `docs/status-api.md` | The status API contract |
 | `platform/compose.yml` | One host's platform: Traefik, the status API, the console, the Docker socket proxy, Prometheus, Loki, Alloy, Grafana, plus the Jenkins controller and agent under the `jenkins` and `agent` profiles |
 | `platform/jenkins/controller/casc.yaml` | Jenkins, configured entirely as code: users, agents, GitHub App credential, shared library, one multibranch job per catalog application |
