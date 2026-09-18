@@ -3,11 +3,11 @@
 The status API (`status/`) runs once per environment host, next to Traefik. It reads `catalog.yaml`, probes every application, and answers the console (`console/`) and Prometheus. This document is the contract between the two: change it first, then both sides.
 
 - **Public:** `https://yggdrasil.<domain>/api/...`, the same host as the console, routed by Traefik.
-- **Internal:** `http://status:8080/...` on the `edge` and `telemetry` Docker networks.
+- **Internal:** `http://status:8080/...` on the `edge` and `telemetry` Docker networks. The `/internal/*` endpoints are on port 8081 (`http://status:8081/internal/...`).
 
 ## Authentication
 
-Every `/api/*` endpoint requires `Authorization: Bearer <token>`, where the token is `YGGDRASIL_STATUS_TOKEN` in the host's `platform.env`. A missing or wrong token gets `401` with an empty body. The comparison is constant-time.
+Every `/api/*` endpoint requires `Authorization: Bearer <token>`, where the token is `YGGDRASIL_STATUS_TOKEN` in the host's `platform.env`. A missing or wrong token gets `401` with an empty body and `WWW-Authenticate: Bearer`. Both sides are hashed with SHA-256 and compared in constant time, so neither the token nor its length leaks through timing. The API refuses to start with a token shorter than 32 characters.
 
 `/healthz` and `/internal/*` take no token. `/internal/*` answers only when the request arrives on the internal port **8081**, which is neither published nor routed; on 8080 it is `404`. That is how Prometheus reaches it without a secret.
 
@@ -72,7 +72,17 @@ The whole environment in one response. The console polls it (every 30 s by defau
 | `not_deployed` | No container for the application on this host | Every application is `not_deployed` |
 | `unknown` | The status API could not reach Docker, so it can't tell | — |
 
-Systems and the environment take the worst status of their applications, ranked `down` > `degraded` > `unknown` > `up`. `not_deployed` is neutral: it is ignored unless every application has it.
+A system, and the environment over all applications, is:
+
+1. `not_deployed` when no application is deployed;
+2. otherwise `down` when every *deployed* application is `down`;
+3. otherwise `degraded` when any application is `down` or `degraded` (one `down` next to one `up` is a degraded system, not a down one);
+4. otherwise `unknown` when any is `unknown`;
+5. otherwise `up`.
+
+`not_deployed` applications never make a system worse.
+
+When the Docker proxy is unreachable, applications whose probe fails are `down` and those whose probe passes are `unknown`. Applications that are not deployed on that host usually fail their probe (their host name does not resolve), so they show `down` too until Docker is back.
 
 ### Fields
 
@@ -80,7 +90,11 @@ Systems and the environment take the worst status of their applications, ranked 
 - **`repository`**: `https://github.com/<owner>/<repository>` for applications with a repository; `null` for platform components.
 - **`deployment`**: read from the container labels `scripts/deploy.sh` sets: `yggdrasil.version`, `yggdrasil.commit` and `yggdrasil.deployed_at`. `image` comes from the container. The object is `null` when there is no container. Each field is `null` when its label is missing, as for platform components.
 - **`container`**: from the Docker API through the read-only socket proxy. `health` is `healthy`, `unhealthy`, `starting` or `null` (no health check). `null` when there is no container.
-- **`probe`**: the last health probe, a `GET` to the catalog's `health` URL with a 5 s timeout. `error` is a short message such as `timeout` or `connection refused`, or `null`.
+- **`probe`**: the last health probe, a `GET` to the catalog's `health` URL with a 5 s timeout and no redirects followed (so a 3xx is unhealthy). `null` for `not_deployed` applications, which are not probed.
+  - `statusCode` is the HTTP answer.
+  - `error` is `null` whenever an answer came back, even a failing one. Otherwise it is one of `timeout`, `connection refused`, `name not resolved`, `host unreachable`, `connection reset` or `tls error`.
+- **Restarted recently**: `restartCount > 0` and `startedAt` less than 10 minutes ago. A fresh deploy is a new container with 0 restarts, so it doesn't count.
+- **`deployedAt`**: normalised to UTC (`...Z`) when the label parses as a date, otherwise passed through as written.
 
 ## `GET /api/systems/{id}`
 
@@ -105,8 +119,25 @@ One element of `systems`, shaped as above. `404` for an unknown id.
 
 A background loop refreshes every application every 15 s (`YGGDRASIL_STATUS_INTERVAL_SECONDS`), with the probes running in parallel. Requests are answered from the latest results and never wait for a probe; `generatedAt` is the time of the last completed refresh.
 
+Until the first refresh completes, a few seconds after start, `/api/status` and `/api/systems/{id}` answer `503` with `Retry-After: 5` and an empty body. That is deliberately different from an all-`unknown` answer, which would be indistinguishable from "Docker is unreachable". `/internal/prometheus/targets` comes from the catalog alone and answers from the start.
+
 Containers are found by the Compose labels on them:
 - `com.docker.compose.project` is the catalog's `container.project`, defaulting to the application id.
 - `com.docker.compose.service` is `container.service`, when the catalog sets one.
 
 When several containers match, the running one wins.
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `YGGDRASIL_STATUS_TOKEN` | — | Required, at least 32 characters |
+| `YGGDRASIL_ENVIRONMENT` | — | Required. Reported as `environment` |
+| `YGGDRASIL_DOMAIN` | — | Required. Builds application `url`s |
+| `YGGDRASIL_CATALOG_PATH` | `/app/catalog.yaml` | |
+| `YGGDRASIL_DOCKER_URL` | `http://docker-proxy:2375` | |
+| `YGGDRASIL_STATUS_INTERVAL_SECONDS` | `15` | 1–3600 |
+| `YGGDRASIL_STATUS_INTERNAL_PORT` | `8081` | Must not be 8080 |
+| `YGGDRASIL_STATUS_CORS_ORIGINS` | empty | Comma-separated origins |
+
+Every setting and the catalog are validated together at start-up. On any error, the service prints every problem and exits with code 1 instead of starting half-configured.

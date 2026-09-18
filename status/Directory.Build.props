@@ -1,0 +1,14 @@
+<Project>
+  <!--
+    Shared by the service and its tests. Warnings are errors because this service has one job:
+    telling the truth about what is running, and a nullable warning ignored today is the null
+    status of tomorrow.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>
