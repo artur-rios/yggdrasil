@@ -54,6 +54,40 @@ jobs:
           name: yggdrasil-console-android
           path: console/build/app/outputs/flutter-apk/app-release.apk
 
+  console-windows:
+    name: Console (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.4
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - name: Bundle the Visual C++ runtime
+        # A Flutter Windows app needs it and not every machine has it; shipping the three DLLs
+        # next to the executable is what Flutter's own deployment guide recommends.
+        shell: pwsh
+        run: |
+          foreach ($dll in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
+            Copy-Item "$env:WINDIR/System32/$dll" build/windows/x64/runner/Release
+          }
+      - name: Build the installer
+        # Inno Setup 6 is preinstalled on the windows-latest runners.
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DAppVersion=$version" windows/installer/yggdrasil.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yggdrasil-console-windows
+          path: console/build/windows/installer/*.exe
+
   platform:
     name: Platform
     runs-on: ubuntu-latest
