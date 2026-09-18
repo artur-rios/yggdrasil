@@ -85,15 +85,25 @@ unclassified:
 
 jobs:
   - script: |
-      // One multibranch job per application repository. It only ever sees two kinds of heads:
+      // One multibranch job per application in catalog.yaml (mounted read-only from this
+      // repository), so adding an application to the catalog is all it takes to get its job: the
+      // next restart or Configuration as Code reload creates it. Platform components (kind
+      // platform) are not deployed by Jenkins and get none.
+      //
+      // Each job only ever sees two kinds of heads:
       //   release/*  -> the branch build, which deploys to homologation
       //   PR-*       -> pull requests; the pipeline acts only on release/* -> main and is a no-op for
       //                 the rest (pull requests into develop show up here too)
       //
       // No Groovy string interpolation (dollar-brace) in this script: Configuration as Code would try
       // to resolve it as one of its own variables.
-      def owner = System.getenv('GITHUB_OWNER')
-      ['heimdall-api', 'heimdall-ui', 'fortuna-api', 'fortuna-ui'].each { repo ->
+      def catalog = new org.yaml.snakeyaml.Yaml().load(new File('/etc/jenkins/catalog.yaml').getText('UTF-8'))
+      def owner = catalog.owner
+      def repositories = catalog.systems
+        .collectMany { it.applications }
+        .findAll { it.kind != 'platform' }
+        .collect { it.repository ?: it.id }
+      repositories.each { repo ->
         multibranchPipelineJob(repo) {
           displayName(repo)
           branchSources {

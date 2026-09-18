@@ -19,12 +19,14 @@ compose() { docker compose --env-file "$env_file" -f "$root/platform/compose.yml
 # The profile-only variables compose.yml cannot mark as required (see the note at its top).
 check_profile_variables() {
   local profiles
+  # shellcheck source=/dev/null
   profiles=$(set -a; . "$env_file"; echo ",${COMPOSE_PROFILES:-},")
   local required=()
   [[ "$profiles" == *,jenkins,* ]] && required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD GITHUB_APP_ID GITHUB_APP_KEY_FILE)
   [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET DOCKER_GID)
   local name value
   for name in "${required[@]}"; do
+    # shellcheck source=/dev/null
     value=$(set -a; . "$env_file"; eval "echo \"\${$name:-}\"")
     [[ -n "$value" ]] || die "$name must be set in $env_file for profiles '${profiles//,/ }'"
   done

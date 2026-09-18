@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>Yggdrasil.Status</RootNamespace>
+    <!-- The runtime image is chiseled and carries no ICU. Nothing here is culture-sensitive: ids,
+         URLs and ISO timestamps only. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Yggdrasil.Status.Tests" />
+  </ItemGroup>
+
+</Project>

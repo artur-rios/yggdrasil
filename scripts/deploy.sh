@@ -5,9 +5,12 @@
 #     scripts/deploy.sh <environment> <stack> <app-dir> <version>
 #
 #   environment  development | homologation | production
-#   stack        heimdall-api | heimdall-ui | fortuna-api | fortuna-ui
+#   stack        an application id from catalog.yaml (heimdall-api, fortuna-ui, ...)
 #   app-dir      a checkout of the stack's repository at the commit to deploy
 #   version      the image tag, e.g. 1.4.0-3f2a9c1 (Jenkins passes <release>-<short sha>)
+#
+# Every container of the stack is labelled yggdrasil.version, yggdrasil.commit and
+# yggdrasil.deployed_at, which is where the status API and the console read "what is running" from.
 #
 # Jenkins runs exactly this; running it by hand does the same thing.
 #
@@ -42,6 +45,8 @@ case "$environment" in
 esac
 
 [[ "$stack" =~ ^[a-z0-9-]+$ ]] || die "invalid stack name '$stack'"
+grep -Eq "^[[:space:]]*- id: ${stack}[[:space:]]*\$" "$root/catalog.yaml" \
+  || die "'$stack' is not an application in catalog.yaml"
 [[ "$version" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid version '$version'"
 [[ -f "$env_file" ]] || die "missing env file $env_file (template: env/$environment/$stack.env.example)"
 
@@ -63,10 +68,45 @@ export API_IMAGE_TAG="$version"
 
 compose() { docker compose --project-name "$stack" --env-file "$env_file" "${files[@]}" "$@"; }
 
+# What the status API reports as the deployment. The tag is <version>-<commit> when Jenkins deploys;
+# a hand deploy may use any tag, and then the whole tag is the version.
+commit=$(git -C "$app_dir" rev-parse --short=7 HEAD 2>/dev/null || true)
+release=$version
+[[ -n "$commit" && "$version" == *"-$commit" ]] && release=${version%-"$commit"}
+deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Labels for every service of the stack, whatever the stack is: generated rather than written into
+# each stacks/*.yml, so a new application gets them without doing anything.
+# write_labels <version> <commit> <deployed-at>
+labels_file=$(mktemp)
+trap 'rm -f "$labels_file"' EXIT
+services=$(compose config --services)
+write_labels() {
+  {
+    echo "services:"
+    for service in $services; do
+      echo "  $service:"
+      echo "    labels:"
+      echo "      yggdrasil.version: \"$1\""
+      echo "      yggdrasil.commit: \"$2\""
+      echo "      yggdrasil.deployed_at: \"$3\""
+    done
+  } >"$labels_file"
+}
+write_labels "$release" "$commit" "$deployed_at"
+files+=(-f "$labels_file")
+
 # What is running now, to come back to. Empty on a first deploy.
 previous=$(docker ps --filter "label=com.docker.compose.project=$stack" --format '{{.Image}}' | head -n1)
 previous_tag=${previous##*:}
 [[ "$previous" == *:* ]] || previous_tag=""
+previous_labels=()
+if [[ -n "$previous" ]]; then
+  previous_container=$(docker ps --filter "label=com.docker.compose.project=$stack" --format '{{.ID}}' | head -n1)
+  for label in version commit deployed_at; do
+    previous_labels+=("$(docker inspect --format "{{index .Config.Labels \"yggdrasil.$label\"}}" "$previous_container" | sed "s/<no value>//")")
+  done
+fi
 
 echo "deploy: $stack $version to $environment (running: ${previous:-nothing})"
 
@@ -92,8 +132,10 @@ else
     # was running before. Database migrations the failed version applied are NOT undone -- the
     # applications' migrations must stay backward compatible for one release for this to be safe.
     echo "deploy: rolling back to $previous_tag" >&2
+    # Back to what the previous deployment said about itself, not the failed one's labels.
+    write_labels "${previous_labels[@]}"
     IMAGE_TAG="$previous_tag" API_IMAGE_TAG="$previous_tag" \
-      compose up --detach --no-build --wait --wait-timeout "${DEPLOY_WAIT_TIMEOUT:-300}" \
+      compose up --detach --no-build --wait --wait-timeout "${DEPLOY_ROLLBACK_WAIT_TIMEOUT:-300}" \
       || echo "deploy: ROLLBACK FAILED -- $stack is down" >&2
   fi
   exit 1

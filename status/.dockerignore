@@ -1,0 +1,12 @@
+# Only what the image build needs: the solution-level props and the service's own sources. Build
+# output from the host would otherwise be copied over the container's restore and win.
+**/bin/
+**/obj/
+**/TestResults/
+tests/
+.vs/
+.idea/
+*.user
+Dockerfile
+.dockerignore
+.gitignore

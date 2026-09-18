@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Applies the branching model's GitHub settings to the application repositories.
+"""Applies the branching model's GitHub settings to every application repository in catalog.yaml.
 
-    python github/rulesets.py            # apply to every repository below
-    python github/rulesets.py --dry-run  # print what would be sent
+    python github/rulesets.py                 # apply to every catalog repository
+    python github/rulesets.py --dry-run       # print what would be sent
+    python github/rulesets.py heimdall-api    # only the named repositories
+
+Needs PyYAML (pip install pyyaml; Ubuntu: apt install python3-yaml).
 
 Idempotent: rulesets are matched by name and updated in place. Needs an authenticated `gh` with
 admin rights on the repositories. Per repository it sets:
@@ -25,30 +28,33 @@ different rules, as soon as develop becomes the default branch.
 """
 
 import json
+import pathlib
 import subprocess
 import sys
 
-OWNER = "artur-rios"
+import yaml
+
+CATALOG = pathlib.Path(__file__).resolve().parent.parent / "catalog.yaml"
 
 # GitHub Actions' app id: required checks bound to it cannot be satisfied by a status someone posts
 # under the same name from elsewhere.
 GITHUB_ACTIONS = 15368
 
-# Check names are job names (or a job's `name:`). Only checks that run on every pull request can be
-# required -- a path-filtered workflow that does not run leaves its check pending forever, which is
-# why heimdall-api's Check OpenAPI Document is not listed. Jenkins still waits for every check that
-# does run before deploying (scripts/github.sh wait-checks).
-REPOSITORIES = {
-    "heimdall-api": ["test", "docker"],
-    "fortuna-api": ["test", "docker", "check", "audit"],
-    "heimdall-ui": ["Analyze and test", "Regenerate and compare"],
-    "fortuna-ui": [
-        "Analyze and test",
-        "API client matches api/fortuna.json",
-        "Vendored C header matches the one the API publishes",
-        "FFI bindings match the vendored header",
-    ],
-}
+# The required checks of each repository come from the catalog's `checks`. Check names are job names
+# (or a job's `name:`). Only checks that run on every pull request can be required -- a
+# path-filtered workflow that does not run leaves its check pending forever, which is why
+# heimdall-api's Check OpenAPI Document is not listed there. Jenkins still waits for every check
+# that does run before deploying (scripts/github.sh wait-checks).
+def load_catalog():
+    catalog = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    repositories = {}
+    for system in catalog["systems"]:
+        for app in system["applications"]:
+            if app.get("kind") == "platform":
+                continue  # not a repository of its own; deployed by scripts/platform.sh
+            repositories[app.get("repository", app["id"])] = app.get("checks", [])
+    return catalog["owner"], repositories
+
 
 ADMIN_BYPASS = [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
 
@@ -143,9 +149,9 @@ def gh(*args, body=None, dry_run=False):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def apply(repo, names, dry_run):
-    print(f"{OWNER}/{repo}")
-    base = f"repos/{OWNER}/{repo}"
+def apply(owner, repo, names, dry_run):
+    print(f"{owner}/{repo}")
+    base = f"repos/{owner}/{repo}"
 
     gh("api", "-X", "PATCH", base, body={"default_branch": "develop", "delete_branch_on_merge": True}, dry_run=dry_run)
     print("  default branch develop, delete head branches on merge")
@@ -166,8 +172,14 @@ def apply(repo, names, dry_run):
 
 def main():
     dry_run = "--dry-run" in sys.argv
-    for repo, names in REPOSITORIES.items():
-        apply(repo, names, dry_run)
+    only = [a for a in sys.argv[1:] if not a.startswith("--")]
+    owner, repositories = load_catalog()
+    unknown = set(only) - set(repositories)
+    if unknown:
+        sys.exit(f"not application repositories in catalog.yaml: {', '.join(sorted(unknown))}")
+    for repo, names in repositories.items():
+        if not only or repo in only:
+            apply(owner, repo, names, dry_run)
 
 
 if __name__ == "__main__":

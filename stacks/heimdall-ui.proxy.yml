@@ -5,7 +5,9 @@
 services:
   ui:
     networks:
-      - edge
+      edge:
+        # How the status API reaches its health check (catalog.yaml).
+        aliases: [heimdall-ui]
     labels:
       traefik.enable: "true"
       traefik.docker.network: edge

@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Yggdrasil.Status/Yggdrasil.Status.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Yggdrasil.Status.Tests/Yggdrasil.Status.Tests.csproj" />
+  </Folder>
+</Solution>

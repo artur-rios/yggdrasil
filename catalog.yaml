@@ -1,0 +1,132 @@
+# The catalog: every system yggdrasil manages, and the applications each one is made of.
+#
+# A system is what a user thinks of as one product (heimdall, fortuna); an application is one
+# deployable unit of it -- an API, a web UI -- with its own repository, release cycle and container.
+# Everything that has to know "which applications exist" reads this file and nothing else:
+#
+#   Jenkins        one multibranch deploy job per application      platform/jenkins/controller/casc.yaml
+#   GitHub         rulesets and required checks per repository     github/rulesets.py
+#   Prometheus     scrape targets (via the status API)             platform/prometheus/prometheus.yml
+#   Status API     what to probe, and how systems group apps       status/
+#   Console        what it shows                                   console/ (through the status API)
+#   deploy.sh      which stacks are valid                          scripts/deploy.sh
+#
+# Adding an application is: an entry here, its stack files in stacks/, its env files on each host,
+# and a Jenkinsfile in its repository. See "Adding an application" in the README.
+#
+# Application fields:
+#   id              Also the repository name, the Compose project and the stack name, and the
+#                   network alias other containers reach it by. Lowercase, digits, dashes.
+#   name            Display name.
+#   kind            api | web | worker | platform -- what the console shows it as.
+#   repository      Defaults to id. Omit for platform components, which are not deployed by Jenkins.
+#   health          URL the status API probes over the Docker networks. A 2xx answer is healthy.
+#   metrics         host:port Prometheus scrapes. Omit when there is none.
+#   metricsPath     Path of the metrics endpoint when it is not /metrics.
+#   host            Public host name under the environment's DOMAIN (heimdall -> heimdall.<domain>).
+#                   Omit for applications that are not public.
+#   checks          GitHub check names required on develop and main, besides branch-policy (and
+#                   deploy/production on main). Only checks that run on every pull request.
+#   container       Compose project and service to read container state from. Defaults to
+#                   project = id and the project's only service.
+
+owner: artur-rios
+
+systems:
+  - id: heimdall
+    name: Heimdall
+    description: Identity and access management
+    applications:
+      - id: heimdall-api
+        name: Heimdall API
+        kind: api
+        health: http://heimdall-api:8080/healthcheck
+        metrics: heimdall-api:9464
+        host: heimdall-api
+        checks: [test, docker]
+      - id: heimdall-ui
+        name: Heimdall web
+        kind: web
+        health: http://heimdall-ui:8080/healthz
+        host: heimdall
+        checks: [Analyze and test, Regenerate and compare]
+
+  - id: fortuna
+    name: Fortuna
+    description: Personal finance
+    applications:
+      - id: fortuna-api
+        name: Fortuna API
+        kind: api
+        health: http://fortuna-api:8080/healthcheck
+        metrics: fortuna-api:9464
+        host: fortuna-api
+        checks: [test, docker, check, audit]
+      - id: fortuna-ui
+        name: Fortuna web
+        kind: web
+        health: http://fortuna-ui:8080/healthz
+        host: fortuna
+        checks:
+          - Analyze and test
+          - API client matches api/fortuna.json
+          - Vendored C header matches the one the API publishes
+          - FFI bindings match the vendored header
+
+  # yggdrasil itself, so the console also answers "is the platform up?". Not deployed by Jenkins:
+  # scripts/platform.sh runs these.
+  - id: yggdrasil
+    name: Yggdrasil
+    description: Deployment platform
+    applications:
+      - id: traefik
+        name: Traefik
+        kind: platform
+        health: http://traefik:8082/ping
+        metrics: traefik:8082
+        container: { project: yggdrasil, service: traefik }
+      - id: status
+        name: Status API
+        kind: platform
+        health: http://status:8080/healthz
+        container: { project: yggdrasil, service: status }
+      - id: console
+        name: Console
+        kind: platform
+        health: http://console:8080/healthz
+        host: yggdrasil
+        container: { project: yggdrasil, service: console }
+      - id: prometheus
+        name: Prometheus
+        kind: platform
+        health: http://prometheus:9090/-/healthy
+        metrics: prometheus:9090
+        container: { project: yggdrasil, service: prometheus }
+      - id: loki
+        name: Loki
+        kind: platform
+        health: http://loki:3100/ready
+        metrics: loki:3100
+        container: { project: yggdrasil, service: loki }
+      - id: alloy
+        name: Alloy
+        kind: platform
+        health: http://alloy:12345/-/ready
+        metrics: alloy:12345
+        container: { project: yggdrasil, service: alloy }
+      - id: grafana
+        name: Grafana
+        kind: platform
+        health: http://grafana:3000/api/health
+        metrics: grafana:3000
+        host: grafana
+        container: { project: yggdrasil, service: grafana }
+      - id: jenkins
+        name: Jenkins
+        kind: platform
+        health: http://jenkins:8080/login
+        metrics: jenkins:8080
+        metricsPath: /prometheus/
+        host: jenkins
+        # Only the production host runs the controller; elsewhere it reports "not deployed".
+        container: { project: yggdrasil, service: jenkins }
