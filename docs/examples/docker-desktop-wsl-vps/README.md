@@ -60,7 +60,7 @@ Env file templates for every application in each environment are in [`env/`](env
 
 ## DNS
 
-Cloudflare hosts the domain (`ACME_DNS_PROVIDER=cloudflare`, `CF_DNS_API_TOKEN` in `acme.env`: an API token with **Zone → DNS → Edit**).
+Cloudflare hosts the domain (`ACME_DNS_PROVIDER=cloudflare`, `CF_DNS_API_TOKEN` in `acme.env`: an API token with **Zone → Zone → Read** and **Zone → DNS → Edit** on the zone; step by step in [dns.md](../../dns.md)).
 
 | Record | Points at | Proxy |
 |---|---|---|

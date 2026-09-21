@@ -153,7 +153,7 @@ The installer and the APK are attached to every `v*` release of this repository 
 1. **Fork this repository** and replace `catalog.yaml` with your own environments, systems and applications ([docs/catalog.md](docs/catalog.md)).
 2. **Stack files**: add a `stacks/<application>.proxy.yml` (and `stacks/<application>.yml`/`.ports.yml` when the repository has no Compose file of its own) per application. The ones here are working examples.
 3. **Each application repository** gets the three files in [`templates/application/`](templates/application).
-4. **Set up the hosts**: the GitHub App, DNS, one controller host, one host per environment, the env files. Follow [docs/setup.md](docs/setup.md).
+4. **Set up the hosts**: the GitHub App, DNS, one controller host, one host per environment, the env files. Follow [docs/setup.md](docs/setup.md), and [docs/dns.md](docs/dns.md) for the domain (Cloudflare, or free with DuckDNS).
 5. **Apply the GitHub rules**: `python github/rulesets.py --dry-run`, then without `--dry-run`.
 6. **Release**: cut a `release/x.y.z` branch in an application repository.
 
@@ -179,7 +179,7 @@ The installer and the APK are attached to every `v*` release of this repository 
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, status API contract, worked example |
+| `docs/` | Catalog reference, setup guide, DNS and certificates, status API contract, worked example |
 
 ## Day to day
 

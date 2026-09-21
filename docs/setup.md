@@ -17,7 +17,7 @@ flowchart LR
 ## What you need
 
 - A **GitHub** account or organisation with the application repositories, and your fork of this repository.
-- A **domain** whose DNS is hosted by a provider [Traefik supports](https://doc.traefik.io/traefik/https/acme/#providers) (Cloudflare, Route 53, DigitalOcean, OVH, Gandi...), and an API credential for it.
+- A **domain** whose DNS is hosted by a provider [Traefik supports](https://doc.traefik.io/traefik/https/acme/#providers) (Cloudflare, Route 53, DigitalOcean, OVH, Gandi...), and an API credential for it. No domain yet? A free DuckDNS subdomain works too: [dns.md](dns.md).
 - **One host per environment** that Jenkins deploys to, each with its own Docker Engine and the Compose plugin: a VPS, a VM, a WSL distribution... One of them, reachable from the internet over HTTPS, also runs the **Jenkins controller**.
 - On every host: `git`, `python3` with PyYAML (`apt install python3-yaml`), and `bash`.
 
@@ -47,6 +47,8 @@ Each environment has a `DOMAIN`, and every public host name of that environment 
 
 - For each environment, add a record `*.<DOMAIN>` → that host's address. A private address is fine for an environment only used on a LAN.
 - Create an API credential for your DNS provider that can edit the zone's records. It goes in `acme.env` on each host.
+
+Step by step with Cloudflare, or with a free DuckDNS subdomain, including the exact token permissions and a first run against Let's Encrypt's staging CA: [dns.md](dns.md).
 
 The controller's host name is `jenkins.<DOMAIN>` of its host's environment. It must be reachable from GitHub for webhooks.
 
