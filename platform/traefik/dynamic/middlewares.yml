@@ -16,6 +16,8 @@ http:
 
 tls:
   options:
+    # `default` applies to every TLS router without being referenced. Never refer to it as
+    # default@file: the default options have no provider namespace, and that name is unknown.
     default:
       minVersion: VersionTLS12
       sniStrict: true

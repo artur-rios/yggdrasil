@@ -63,7 +63,9 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
       - --entrypoints.websecure.http.tls.certresolver=letsencrypt
-      - --entrypoints.websecure.http.tls.options=default@file
+      # No tls.options here: the options named `default` in traefik/dynamic apply to every router by
+      # themselves, and have no provider namespace -- `default@file` is an unknown name, and Traefik
+      # then builds no HTTPS router at all.
       # One wildcard certificate for the whole environment instead of one per host name. It is what
       # makes DNS-01 worth it -- and a host behind NAT can never answer an HTTP-01 challenge anyway.
       - --entrypoints.websecure.http.tls.domains[0].main=${DOMAIN:?set DOMAIN in the env file}
