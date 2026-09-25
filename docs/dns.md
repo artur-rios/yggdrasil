@@ -303,12 +303,14 @@ itself, 30 days before it expires.
 
 | Symptom | Likely cause |
 |---|---|
-| `required variable ... is missing a value` | A variable of `platform.env` is empty: see [the checklist](#2-start-the-platform-against-the-staging-ca). If it isn't, the file has Windows line endings (`sed -i 's/$//' /etc/yggdrasil/platform.env`), or you ran `docker compose` instead of `platform.sh` |
+| `required variable ... is missing a value` | A variable of `platform.env` is empty: see [the checklist](#2-start-the-platform-against-the-staging-ca). If it isn't, the file has Windows line endings (`sed -i 's/
+$//' /etc/yggdrasil/platform.env`), or you ran `docker compose` instead of `platform.sh` |
+| `client version 1.24 is too old` in Traefik's logs, and no certificate | A Traefik older than v3.6.1 on Docker Engine 29 or later. `git pull` and `scripts/platform.sh up` to get the current image |
 | `could not find zone` / `zone not found` (Cloudflare) | The token lacks **Zone → Zone → Read**, or its zone resource isn't this domain |
 | `Authentication error` / `403` (Cloudflare) | Wrong token, an expired one, or its IP filtering excludes the host |
 | `NXDOMAIN` or `incorrect TXT record` | The domain isn't *Active* on Cloudflare yet (name servers), a typo in `DOMAIN`, or, on DuckDNS, the two validations overlapping: retry against staging |
 | `rateLimited` | Too many attempts against the production CA. Use the staging CA and wait (the limits reset within hours) |
-| The browser shows a Traefik default certificate | The certificate hasn't been issued yet: read the ACME lines in Traefik's logs |
+| `unrecognized name` TLS alert, or `SEC_E_ILLEGAL_MESSAGE` on Windows | Traefik has no certificate for that name yet, and refuses unknown names (`sniStrict`). Read the ACME lines and errors in Traefik's logs |
 | `ERR_TOO_MANY_REDIRECTS` | Cloudflare proxy with SSL/TLS mode *Flexible*: set **Full (strict)** |
 | Timeout on every host name | Ports 80/443 closed on the host or at the provider, or the record points at another address |
 | A LAN environment doesn't resolve at home | The router's DNS rebinding protection drops answers with private addresses: allow the domain there, or use hosts-file entries |
