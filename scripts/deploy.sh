@@ -28,7 +28,8 @@
 #                                       resource limits, an extra volume...)
 #
 # The env file is <secrets>/<environment>/<stack>.env, secrets being $YGG_SECRETS_DIR (default
-# /etc/yggdrasil). Templates for every file are in env/.
+# /etc/yggdrasil). Start it from the application repository's own env template; examples for the
+# sample applications are in docs/examples/docker-desktop-wsl-vps/env/.
 set -euo pipefail
 
 die() { echo "deploy: $*" >&2; exit 1; }
@@ -53,7 +54,7 @@ mode=$(option mode) || exit 1
 wait_timeout=${DEPLOY_WAIT_TIMEOUT:-$(option waitTimeout)}
 keep=${DEPLOY_KEEP_IMAGES:-$(option keepImages)}
 [[ "$version" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid version '$version'"
-[[ -f "$env_file" ]] || die "missing env file $env_file (template: env/$environment/$stack.env.example)"
+[[ -f "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"
 
 files=()
 if [[ -f "$root/stacks/$stack.yml" ]]; then
