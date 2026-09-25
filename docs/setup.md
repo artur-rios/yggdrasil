@@ -204,26 +204,116 @@ whose host runs it. Note it down: steps 7 and 9 need it.
 Jenkins talks to GitHub as a GitHub App, not as you. So it doesn't inherit your ruleset bypass, and
 its merges go through the same rules as everyone's.
 
-1. GitHub → your profile (or the organisation) → **Settings → Developer settings → GitHub Apps →
-   New GitHub App**:
+By the end of this step you have two things, both needed in step 9:
 
-   | Field | Value |
-   |---|---|
-   | GitHub App name | Anything unique, e.g. `acme-yggdrasil` |
-   | Homepage URL | `https://jenkins.<DOMAIN>` |
-   | Webhook → Active | **Unchecked for now**: the controller doesn't exist yet. Step 9 turns it on. |
-   | Webhook URL | `https://jenkins.<DOMAIN>/github-webhook/` (trailing slash included) |
-   | Webhook secret | Empty |
-   | Repository permissions | **Contents**: read and write · **Pull requests**: read and write · **Commit statuses**: read and write · **Checks**: read-only · **Metadata**: read-only |
-   | Subscribe to events | **Push**, **Pull request**, **Repository** |
-   | Where can this GitHub App be installed? | Only on this account |
+| What | Where it goes |
+|---|---|
+| The app's **App ID**, a number like `1234567` | `GITHUB_APP_ID` in the controller's `platform.env` |
+| The app's **private key**, a `.pem` file | `/etc/yggdrasil/github-app.pem` on the controller host |
 
-2. **Create GitHub App.** On its page, note the **App ID**.
-3. **Private keys → Generate a private key.** A `.pem` file downloads. Keep it: step 9 puts it on
-   the controller host.
-4. **Install App** → your owner → **Only select repositories**: every application repository in the
-   catalog, and your fork of yggdrasil. When you add an application later, add its repository here
-   too.
+Create the app under the **same owner** as the repositories (the `owner` in `catalog.yaml`): your
+personal account, or the organisation.
+
+### 7.1 Open the form
+
+| Owner | Path | Direct link |
+|---|---|---|
+| Personal account | Profile picture (top right) → **Settings** → **Developer settings** (last item of the left sidebar) → **GitHub Apps** → **New GitHub App** | `https://github.com/settings/apps/new` |
+| Organisation | The organisation's page → **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App** | `https://github.com/organizations/<owner>/settings/apps/new` |
+
+Creating an app in an organisation needs you to be one of its owners. GitHub may ask for your
+password or a two-factor code before showing the form.
+
+### 7.2 Fill in the form
+
+The form is one long page. Go through it top to bottom:
+
+**Basic information**
+
+| Field | Value | Why |
+|---|---|---|
+| GitHub App name | Anything unique on GitHub, e.g. `acme-yggdrasil` | Shown as the author of Jenkins' merges, tags and statuses |
+| Description | Optional, e.g. `Deploys with yggdrasil` | |
+| Homepage URL | `https://jenkins.<DOMAIN>` | Required by the form, only informational. `<DOMAIN>` is the domain of the controller's environment, from step 6 |
+
+**Identifying and authorizing users**, and **Post installation**: leave every field empty and every
+box unchecked. Jenkins acts as the app, never on behalf of a user.
+
+**Webhook**
+
+| Field | Value | Why |
+|---|---|---|
+| Active | **Unchecked for now** | The controller doesn't exist yet, and GitHub would pile up failed deliveries. Step 9.4 checks it |
+| Webhook URL | `https://jenkins.<DOMAIN>/github-webhook/`, trailing slash included | Where GitHub notifies Jenkins of pushes and pull requests. Fill it in now if the form allows; otherwise in step 9.4 |
+| Webhook secret | Empty | |
+| SSL verification | Enabled | The controller has a real certificate by the time the webhook is active |
+
+**Permissions → Repository permissions.** Expand the section, and set exactly these; leave every
+other one at *No access*:
+
+| Permission | Access | What Jenkins does with it |
+|---|---|---|
+| Contents | Read and write | Checks the code out, merges the release pull request, creates the `vx.y.z` tag and release, deletes the release branch |
+| Pull requests | Read and write | Finds release pull requests and merges them |
+| Commit statuses | Read and write | Sets the `deploy/<environment>` statuses that `main`'s ruleset requires |
+| Checks | Read-only | Waits for every GitHub Actions check of a release pull request before deploying |
+| Metadata | Read-only | Selected automatically: every app has it |
+
+**Organization permissions** and **Account permissions**: leave them all at *No access*.
+
+**Subscribe to events.** This list only shows events the permissions above allow, so set the
+permissions first. Check:
+
+| Event | Why |
+|---|---|
+| Push | A pushed branch that matches an environment's `branches` deploys there |
+| Pull request | A `release/x.y.z → main` pull request starts the release |
+| Repository | Jenkins notices renamed or deleted repositories |
+
+If the events can't be checked while the webhook is inactive, check them in step 9.4 when you
+activate it.
+
+**Where can this GitHub App be installed?** **Only on this account.** Nobody else should install
+your deploy app.
+
+Click **Create GitHub App**.
+
+### 7.3 Note the App ID
+
+GitHub opens the app's **General** page. In the **About** section at the top, copy the **App ID**
+(a number). Don't confuse it with the **Client ID** just below it, which starts with `Iv`: Jenkins
+doesn't use the client ID.
+
+You can come back to this page any time: **Developer settings → GitHub Apps → Edit** next to the app.
+
+### 7.4 Generate the private key
+
+1. On the same **General** page, scroll to **Private keys** at the bottom.
+2. Click **Generate a private key**. Your browser downloads a file named like
+   `acme-yggdrasil.2026-09-25.private-key.pem`.
+3. Keep it somewhere safe until step 9.1 copies it to the controller host, then delete your copy.
+
+The key lets anyone act as the app on every repository it's installed on: never commit it, and
+never paste it in a chat or an issue. GitHub keeps only its public half, so it can't show you the
+key again. If you lose it or it leaks, generate a new one here and **Delete** the old one: the App ID
+stays the same, only `/etc/yggdrasil/github-app.pem` changes.
+
+### 7.5 Install the app on the repositories
+
+Creating the app gives it no access to anything yet: installing it does.
+
+1. In the app's settings, click **Install App** in the left sidebar.
+2. Click **Install** next to your owner (the account or organisation from `catalog.yaml`).
+3. Choose **Only select repositories** and pick:
+   - every application repository in the catalog (`python3 scripts/catalog.py applications --deployable`
+     lists their ids; an application with a `repository` field uses that name);
+   - your fork of yggdrasil: Jenkins loads its pipeline library from it.
+4. GitHub lists the permissions from 7.2. Click **Install**.
+
+To change the repositories later (when you add an application, say), go to the owner's
+**Settings** → **Applications** → **Installed GitHub Apps** (for an organisation: **Settings** →
+**GitHub Apps**) → **Configure** next to the app → **Repository access**. A repository the app
+isn't installed on gets no Jenkins job branches and never deploys.
 
 ## 8. Prepare every host
 
@@ -335,7 +425,14 @@ exists once the controller has created the agent; then with its agent.
 
 ### 9.1 The GitHub App key
 
-Copy the `.pem` from step 7 to the host, and convert it to the PKCS#8 format Jenkins requires:
+Copy the `.pem` from [step 7.4](#74-generate-the-private-key) to the host. From your machine, in the
+folder it was downloaded to:
+
+```bash
+scp <app>.private-key.pem <user>@<controller-host>:~/
+```
+
+Then, on the host, convert it to the PKCS#8 format Jenkins requires, and delete the original:
 
 ```bash
 openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in <app>.private-key.pem -out /etc/yggdrasil/github-app.pem
@@ -396,9 +493,11 @@ curl -I https://jenkins.<DOMAIN>/login        # no -k: the certificate is truste
 1. Open `https://jenkins.<DOMAIN>` and sign in as `admin`. Jenkins has created, from the catalog:
    - one job per application;
    - one agent per environment it deploys to (**Manage Jenkins → Nodes**), all offline for now.
-2. Back in the GitHub App's settings (step 7), tick **Webhook → Active** and save. Under
-   **Advanced → Recent Deliveries**, the `ping` delivery should get a green check. Use *Redeliver*
-   after fixing anything.
+2. Back in the GitHub App's **General** page ([step 7.3](#73-note-the-app-id)), tick
+   **Webhook → Active**, check the Webhook URL is `https://jenkins.<DOMAIN>/github-webhook/` and
+   the events **Push**, **Pull request** and **Repository** are checked, and click **Save changes**.
+3. In the app's **Advanced** tab, under **Recent Deliveries**, the `ping` delivery should get a
+   green check. Use *Redeliver* after fixing anything.
 
 ### 9.5 The env files, second pass: this host's agent
 
@@ -548,7 +647,7 @@ Day to day from here: [README.md#day-to-day](../README.md#day-to-day).
 
 1. **Catalog:** add it under its system (or a new system) in `catalog.yaml`: `id`, `kind`, `health`, and if they apply `host`, `metrics` and `checks`. Add `environments` only if it doesn't deploy everywhere.
 2. **Stack files** in `stacks/`, as in [step 4](#4-write-the-stack-files).
-3. **The application's repository**, as in [step 5](#5-prepare-each-application-repository). Install the GitHub App on it.
+3. **The application's repository**, as in [step 5](#5-prepare-each-application-repository). Add it to the GitHub App's repositories ([step 7.5](#75-install-the-app-on-the-repositories)).
 4. **Env files** on each host it deploys to, as in [step 11](#11-application-env-files).
 5. **Apply:**
    - push the catalog and stack files to `main` of your fork
