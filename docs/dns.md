@@ -126,8 +126,10 @@ ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
 JENKINS_URL=https://jenkins.example.dev/
 ```
 
-The staging CA is for the first run only: see
-[Bring it up](#bring-it-up-either-option). Each environment host has its own `platform.env` with its
+These are only the DNS lines. The platform won't start, and even `platform.sh logs` fails, until
+the other required variables are filled in too: see
+[the checklist](#2-start-the-platform-against-the-staging-ca). The staging CA is for the first run
+only. Each environment host has its own `platform.env` with its
 own `DOMAIN` (`hml.example.dev` for homologation). The same token serves every host of the zone.
 
 ### A6. Bring it up
@@ -187,6 +189,10 @@ JENKINS_URL=https://jenkins.yourname.duckdns.org/
 
 Homologation's host gets `DOMAIN=yourname-hml.duckdns.org`.
 
+These are only the DNS lines. The platform won't start, and even `platform.sh logs` fails, until
+the other required variables are filled in too: see
+[the checklist](#2-start-the-platform-against-the-staging-ca).
+
 ### B3. Know the limits
 
 - **One TXT record per subdomain.** The certificate needs two validations at the same name
@@ -212,8 +218,30 @@ sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
 
 ### 2. Start the platform against the staging CA
 
-With `ACME_CA_SERVER` set to the staging URL as above, and the rest of `platform.env` filled in
-([setup.md](setup.md#92-the-env-files-first-pass) step 9.2):
+`platform.env` configures the whole platform, not only Traefik, and Compose reads all of it on every
+`platform.sh` command. So before the first one, check that **every** variable below has a value,
+not only the DNS ones. Otherwise it stops with `required variable ... is missing a value`.
+
+| Variable | Value |
+|---|---|
+| `ENVIRONMENT` | This host's environment id, exactly as in `catalog.yaml`. `python3 /opt/yggdrasil/scripts/catalog.py environments` lists them |
+| `DOMAIN`, `ACME_EMAIL`, `ACME_DNS_PROVIDER` | As above |
+| `ACME_CA_SERVER` | The staging URL, as above, for this first run |
+| `TRAEFIK_DASHBOARD_USERS` | The output of `htpasswd -nB admin`, in single quotes. Replace the template's placeholder |
+| `GRAFANA_ADMIN_PASSWORD` | Any password, e.g. the output of `openssl rand -hex 16` |
+| `YGGDRASIL_STATUS_TOKEN` | The output of `openssl rand -hex 32`. Keep a copy: the console asks for it |
+| `COMPOSE_PROFILES` | `jenkins` on the controller host, with the Jenkins variables of [setup.md step 9.2](setup.md#92-the-env-files-first-pass). **Empty** on another host while you only test DNS: the template's `agent` needs an agent secret that doesn't exist yet |
+
+The last three can be generated straight into the file:
+
+```bash
+sed -i "s/^GRAFANA_ADMIN_PASSWORD=.*/GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)/" /etc/yggdrasil/platform.env
+sed -i "s/^YGGDRASIL_STATUS_TOKEN=.*/YGGDRASIL_STATUS_TOKEN=$(openssl rand -hex 32)/" /etc/yggdrasil/platform.env
+grep -E '^(ENVIRONMENT|DOMAIN|ACME_|TRAEFIK_DASHBOARD_USERS|GRAFANA_ADMIN_PASSWORD|YGGDRASIL_STATUS_TOKEN|COMPOSE_PROFILES)' /etc/yggdrasil/platform.env
+```
+
+`/opt/yggdrasil/scripts/platform.sh config > /dev/null` checks the file without starting anything:
+no output means it's complete. Then start the platform:
 
 ```bash
 chmod 600 /etc/yggdrasil/*.env
@@ -275,6 +303,7 @@ itself, 30 days before it expires.
 
 | Symptom | Likely cause |
 |---|---|
+| `required variable ... is missing a value` | A variable of `platform.env` is empty: see [the checklist](#2-start-the-platform-against-the-staging-ca). If it isn't, the file has Windows line endings (`sed -i 's/$//' /etc/yggdrasil/platform.env`), or you ran `docker compose` instead of `platform.sh` |
 | `could not find zone` / `zone not found` (Cloudflare) | The token lacks **Zone → Zone → Read**, or its zone resource isn't this domain |
 | `Authentication error` / `403` (Cloudflare) | Wrong token, an expired one, or its IP filtering excludes the host |
 | `NXDOMAIN` or `incorrect TXT record` | The domain isn't *Active* on Cloudflare yet (name servers), a typo in `DOMAIN`, or, on DuckDNS, the two validations overlapping: retry against staging |
