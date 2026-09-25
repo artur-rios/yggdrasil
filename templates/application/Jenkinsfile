@@ -1,10 +1,13 @@
-// Deployment pipeline, run by the Jenkins of a yggdrasil installation. Replace <application-id>
-// with this application's id in that installation's catalog.yaml.
+// Deployment pipeline, run by the Jenkins of a yggdrasil installation. Keep this file named
+// Jenkinsfile, at the repository's root, and replace <application-id> with exactly this
+// application's id in that installation's catalog.yaml (the build fails otherwise).
 //
 // All the logic lives in yggdrasil's shared library; what deploys where comes from the catalog:
-// pushes to branches that an environment's `branches` match deploy there, and a green
-// release/x.y.z -> main pull request deploys to every release environment in order, then is merged
-// and tagged vx.y.z. Build and test stay in GitHub Actions; this file only deploys.
+//   - a push to a branch that an environment's `branches` match deploys there (trigger: branch);
+//   - Build with Parameters > DEPLOY_TO deploys to a trigger: manual environment that has an agent;
+//   - a green release/x.y.z -> main pull request deploys to every release environment in order,
+//     then is merged, tagged and released as vx.y.z (only if the application has one).
+// Build and test stay in GitHub Actions; this file only deploys.
 
 @Library('yggdrasil') _
 

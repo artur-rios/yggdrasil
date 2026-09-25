@@ -15,11 +15,15 @@ Every `/api/*` endpoint requires `Authorization: Bearer <token>`, where the toke
 
 `/healthz` and `/internal/*` take no token. `/internal/*` answers only when the request arrives on the internal port **8081**, which is neither published nor routed; on 8080 it is `404`. That is how Prometheus reaches it without a secret.
 
-CORS: the origins in `YGGDRASIL_STATUS_CORS_ORIGINS` (comma-separated, may be empty) may call `/api/*` with the `Authorization` header. This lets the console served by one environment show another environment. Same-origin use needs no entry.
+Generate the token with `openssl rand -hex 32`. The scheme `Bearer` is case-insensitive, and whitespace around the token is ignored.
+
+CORS: the origins in `YGGDRASIL_STATUS_CORS_ORIGINS`, in the host's `platform.env`, may call `/api/*` from a browser. This lets the console served by one environment show another environment. Same-origin use needs no entry.
+- Comma-separated, may be empty. Each origin is exactly `https://host` or `https://host:port`: no path or query (a trailing `/` is tolerated). An invalid entry stops the service at start-up.
+- Allowed: `GET` with the `Authorization` header. Preflight answers are cached for 1 hour.
 
 ## `GET /api/status`
 
-The whole environment in one response. The console polls it (every 30 s by default).
+The whole environment in one response. The console polls it every 30 s (fixed) while its overview is visible.
 
 ```json
 {
@@ -71,11 +75,11 @@ The whole environment in one response. The console polls it (every 30 s by defau
 
 | Status | Application | System / environment |
 |---|---|---|
-| `up` | Container running (and `healthy` if it has a health check), **and** the probe returns 2xx | Every application is `up` or `not_deployed` |
-| `degraded` | Container running, but the probe fails or is slower than 2 s, or Docker reports `unhealthy` or `starting`, or it restarted in the last 10 minutes | Anything else that is not `down` |
-| `down` | A container exists but is not running, or the probe fails and there is no container information to say otherwise | Every deployed application is `down` |
+| `up` | Container running (and `healthy` if it has a health check), **and** the probe returns 2xx | Every deployed application is `up` (`not_deployed` ones are ignored) |
+| `degraded` | Container running, but the probe fails or is slower than 2 s, or Docker reports `unhealthy` or `starting`, or it restarted in the last 10 minutes | At least one deployed application is `down` or `degraded`, but not all are `down` |
+| `down` | A container exists but is not `running` (any other Docker state: `created`, `exited`, `restarting`...), or the probe fails and there is no container information to say otherwise | Every deployed application is `down` |
 | `not_deployed` | No container for the application on this host | Every application is `not_deployed` |
-| `unknown` | The status API could not reach Docker, so it can't tell | — |
+| `unknown` | The status API could not reach Docker, so it can't tell | No application is `down` or `degraded`, and at least one is `unknown` |
 
 A system, and the environment over all applications, is:
 
@@ -98,7 +102,8 @@ When the Docker proxy is unreachable, applications whose probe fails are `down` 
 - **`container`**: from the Docker API through the read-only socket proxy. `health` is `healthy`, `unhealthy`, `starting` or `null` (no health check). `null` when there is no container.
 - **`probe`**: the last health probe, a `GET` to the catalog's `health` URL with a 5 s timeout and no redirects followed (so a 3xx is unhealthy). `null` for `not_deployed` applications, which are not probed.
   - `statusCode` is the HTTP answer.
-  - `error` is `null` whenever an answer came back, even a failing one. Otherwise it is one of `timeout`, `connection refused`, `name not resolved`, `host unreachable`, `connection reset` or `tls error`.
+  - `error` is `null` whenever an answer came back, even a failing one. Otherwise it is one of `timeout`, `connection refused`, `connection failed`, `connection reset`, `connection closed`, `name not resolved`, `host unreachable`, `tls error`, `invalid response` or `request failed` (anything else).
+  - `latencyMs` is set on failures too: the time until the probe gave up.
 - **Restarted recently**: `restartCount > 0` and `startedAt` less than 10 minutes ago. A fresh deploy is a new container with 0 restarts, so it doesn't count.
 - **`deployedAt`**: normalised to UTC (`...Z`) when the label parses as a date, otherwise passed through as written.
 
@@ -123,7 +128,9 @@ One element of `systems`, shaped as above. `404` for an unknown id, and for a sy
 
 ## How probing works
 
-A background loop refreshes every application every 15 s (`YGGDRASIL_STATUS_INTERVAL_SECONDS`), with the probes running in parallel. Requests are answered from the latest results and never wait for a probe; `generatedAt` is the time of the last completed refresh.
+A background loop refreshes every application every 15 s (`YGGDRASIL_STATUS_INTERVAL_SECONDS`), with the probes running in parallel. Requests are answered from the latest results and never wait for a probe; `generatedAt` is the time of the last completed refresh. A refresh that fails keeps the previous results, so a `generatedAt` that stops advancing means refreshes are failing: see `docker logs yggdrasil-status-1`.
+
+Authentication comes first: a wrong token gets `401` even while the API is starting.
 
 Until the first refresh completes, a few seconds after start, `/api/status` and `/api/systems/{id}` answer `503` with `Retry-After: 5` and an empty body. That is deliberately different from an all-`unknown` answer, which would be indistinguishable from "Docker is unreachable". `/internal/prometheus/targets` comes from the catalog alone and answers from the start.
 
@@ -131,19 +138,21 @@ Containers are found by the Compose labels on them:
 - `com.docker.compose.project` is the catalog's `container.project`, defaulting to the application id.
 - `com.docker.compose.service` is `container.service`, when the catalog sets one.
 
-When several containers match, the running one wins.
+When several containers match, the running one wins, then the newest.
 
 ## Configuration
 
-| Variable | Default | |
-|---|---|---|
-| `YGGDRASIL_STATUS_TOKEN` | — | Required, at least 32 characters |
-| `YGGDRASIL_ENVIRONMENT` | — | Required. The `id` of one of the catalog's `environments`; reported as `environment` |
-| `YGGDRASIL_DOMAIN` | — | Required. Builds application `url`s |
-| `YGGDRASIL_CATALOG_PATH` | `/app/catalog.yaml` | |
-| `YGGDRASIL_DOCKER_URL` | `http://docker-proxy:2375` | |
-| `YGGDRASIL_STATUS_INTERVAL_SECONDS` | `15` | 1–3600 |
-| `YGGDRASIL_STATUS_INTERNAL_PORT` | `8081` | Must not be 8080 |
-| `YGGDRASIL_STATUS_CORS_ORIGINS` | empty | Comma-separated origins |
+On a host, `platform/compose.yml` sets these from `platform.env`. The last column says where each one comes from.
 
-Every setting and the catalog are validated at start-up, the settings first, then the catalog, then that `YGGDRASIL_ENVIRONMENT` is one of the catalog's environments. On any error, the service prints every problem it found and exits with code 1 instead of starting half-configured.
+| Variable | Default | | Set on a host from |
+|---|---|---|---|
+| `YGGDRASIL_STATUS_TOKEN` | — | Required, at least 32 characters | `YGGDRASIL_STATUS_TOKEN` in `platform.env` |
+| `YGGDRASIL_ENVIRONMENT` | — | Required. The `id` of one of the catalog's `environments`; reported as `environment` | `ENVIRONMENT` in `platform.env` |
+| `YGGDRASIL_DOMAIN` | — | Required. Builds application `url`s. A bare domain: no scheme and no `/` | `DOMAIN` in `platform.env` |
+| `YGGDRASIL_CATALOG_PATH` | `/app/catalog.yaml` | | Fixed by `platform/compose.yml`: the host's `catalog.yaml` |
+| `YGGDRASIL_DOCKER_URL` | `http://docker-proxy:2375` | | Fixed by `platform/compose.yml` |
+| `YGGDRASIL_STATUS_INTERVAL_SECONDS` | `15` | 1–3600 | Not passed through: edit `platform/compose.yml` to change it |
+| `YGGDRASIL_STATUS_INTERNAL_PORT` | `8081` | Must not be 8080 | Not passed through (Prometheus expects 8081) |
+| `YGGDRASIL_STATUS_CORS_ORIGINS` | empty | Comma-separated origins | `YGGDRASIL_STATUS_CORS_ORIGINS` in `platform.env` |
+
+Every setting and the catalog are validated at start-up, in three stages: the settings, then the catalog, then that `YGGDRASIL_ENVIRONMENT` is one of the catalog's environments. The first stage with errors prints all of them (`yggdrasil-status: ...`, YAML errors with their line and column) and the service exits with code 1 instead of starting half-configured. Read them with `docker logs yggdrasil-status-1`.

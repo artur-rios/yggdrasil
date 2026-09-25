@@ -72,7 +72,7 @@ gitGraph
     merge release/1.4.0 id: "deploy: release environments" tag: "v1.4.0"
 ```
 
-- `develop` and `main` only change through pull requests. Required checks: **Branch Policy**, the application's CI, and on `main` one `deploy/<environment>` status per release environment.
+- `develop` and `main` only change through pull requests. Required checks: `branch-policy` (the Branch Policy workflow), the application's CI (the catalog's `checks`), and on `main` one `deploy/<environment>` status per release environment.
 - Into `develop` go only `feature/*` and `fix/*` branches cut from `develop`.
 - Into `main` go only `release/x.y.z` branches that are snapshots of `develop`, for a version not yet tagged.
 - `v*` tags can't be moved or deleted.
@@ -133,7 +133,7 @@ The same Flutter app on three platforms:
 | | How to get it | Environments |
 |---|---|---|
 | **Web** | `https://yggdrasil.<DOMAIN>` on each environment host | Starts on the environment that serves it |
-| **Windows** | `yggdrasil-console-<version>-setup.exe` from the GitHub releases. Per-user install, no administrator rights | Add each one (URL and token) in Settings, then switch from the overview |
+| **Windows** | `yggdrasil-console-<version>-setup.exe` from the GitHub releases. Per-user install by default, no administrator rights | Add each one (URL and token) in the **Environments** screen, then switch from the overview |
 | **Android** | `yggdrasil-console-<version>.apk` from the GitHub releases | Same as Windows (HTTPS only) |
 
 - Every **system** is a card with the worst status of its applications: `up`, `degraded`, `down`, `not deployed` or `unknown`. Problems sort first.
@@ -150,12 +150,17 @@ The installer and the APK are attached to every `v*` release of this repository 
 
 ## Getting started
 
-1. **Fork this repository** and replace `catalog.yaml` with your own environments, systems and applications ([docs/catalog.md](docs/catalog.md)).
-2. **Stack files**: add a `stacks/<application>.proxy.yml` (and `stacks/<application>.yml`/`.ports.yml` when the repository has no Compose file of its own) per application. The ones here are working examples.
-3. **Each application repository** gets the three files in [`templates/application/`](templates/application).
-4. **Set up the hosts**: the GitHub App, DNS, one controller host, one host per environment, the env files. Follow [docs/setup.md](docs/setup.md).
-5. **Apply the GitHub rules**: `python github/rulesets.py --dry-run`, then without `--dry-run`.
-6. **Release**: cut a `release/x.y.z` branch in an application repository.
+**[docs/setup.md](docs/setup.md) is the step-by-step guide**, from an empty GitHub account to a
+first release. In short:
+
+| | Step | Guide |
+|---|---|---|
+| **Prepare** | Plan environments and hosts, install the tools, fork this repository | [0–2](docs/setup.md#0-plan-the-installation) |
+| | Write `catalog.yaml` and the stack files | [3–4](docs/setup.md#3-write-the-catalog), [catalog.md](docs/catalog.md) |
+| | Add the [`templates/application/`](templates/application) files to each application repository | [5](docs/setup.md#5-prepare-each-application-repository) |
+| **Accounts** | A domain and its DNS (Cloudflare, or free with DuckDNS), and a GitHub App for Jenkins | [6–7](docs/setup.md#6-domain-and-dns), [dns.md](docs/dns.md) |
+| **Hosts** | Bring up the controller host, then every other environment host, then the application env files | [8–11](docs/setup.md#8-prepare-every-host) |
+| **Finish** | Apply the GitHub rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-github-rules) |
 
 [docs/examples/docker-desktop-wsl-vps](docs/examples/docker-desktop-wsl-vps/README.md) is a complete worked example on real hardware:
 - development on Docker Desktop (Windows)
@@ -179,15 +184,15 @@ The installer and the APK are attached to every `v*` release of this repository 
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, status API contract, worked example |
+| `docs/` | Catalog reference, setup guide, DNS and certificates, status API contract, worked example |
 
 ## Day to day
 
 | Task | How |
 |---|---|
 | Release an application | `git switch -c release/1.4.0 develop && git push -u origin release/1.4.0`, then open the PR into `main` |
-| Deploy by hand | `scripts/deploy.sh <environment> <application> <checkout> <tag>` on the environment's host, or "Build with Parameters" → `DEPLOY_TO` in Jenkins for `manual` environments |
+| Deploy by hand | `scripts/deploy.sh <environment> <application> <checkout> <version>` on the environment's host, or "Build with Parameters" → `DEPLOY_TO` in Jenkins for `manual` environments that set an `agent` |
 | Add an application, environment or system | [docs/setup.md#adding-things](docs/setup.md#adding-things) |
-| Update a host's platform | `git pull && scripts/platform.sh up` |
-| Change GitHub rules | `python github/rulesets.py --dry-run`, then without |
+| Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
+| Change GitHub rules | `python3 github/rulesets.py --dry-run`, then without |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |

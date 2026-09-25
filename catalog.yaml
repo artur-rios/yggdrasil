@@ -35,12 +35,16 @@ repository: yggdrasil
 #                 release: when the release/x.y.z -> main pull request passes every GitHub check.
 #                          Release environments deploy one after the other, in this order, and the
 #                          pull request is merged and tagged once the last one succeeds.
-#   branches      For trigger branch: glob(s), e.g. release/* or [develop, hotfix/*].
+#   branches      For trigger branch: glob(s), e.g. release/* or [develop, hotfix/*]. Use only *
+#                 (it matches / too).
 #   agent         Jenkins agent label that deploys here (default: the id). One agent per host.
+#                 Jenkins creates it, when it starts, for trigger branch or release, or when agent
+#                 is set.
 #   approval      true: Jenkins waits for someone to click "Deploy" before deploying here.
 #   waitTimeout   Seconds deploy.sh waits for the new containers to be healthy (default 300).
 #   keepImages    Images of each application kept for rollback (default 3).
-#   checksTimeout For trigger release: seconds to wait for the GitHub checks (default 3600).
+#   checksTimeout For trigger release: seconds to wait for the GitHub checks (default 3600). Only
+#                 the application's first release environment's value counts.
 environments:
   - id: development
     name: Development
@@ -63,18 +67,21 @@ environments:
 #                   network alias other containers reach it by. Lowercase, digits, dashes.
 #   name            Display name.
 #   kind            api | web | worker | platform -- what the console shows it as.
-#   repository      Defaults to id. Platform components (kind platform) have none: they are not
-#                   deployed by Jenkins but by scripts/platform.sh, on every host that runs it.
+#   repository      Defaults to id; to none for platform components (kind platform), which are not
+#                   deployed by Jenkins but started by platform/compose.yml on every host.
 #   health          URL the status API probes over the Docker networks. A 2xx answer is healthy.
 #   metrics         host:port Prometheus scrapes. Omit when there is none.
 #   metricsPath     Path of the metrics endpoint when it is not /metrics.
-#   host            Public host name under the environment's DOMAIN (heimdall -> heimdall.<domain>).
-#                   Omit for applications that are not public.
+#   host            The console's link, under the environment's DOMAIN (heimdall ->
+#                   https://heimdall.<domain>). It routes nothing: stacks/<id>.proxy.yml does, from
+#                   PUBLIC_HOST in the env file; keep them equal. Omit for applications that are not
+#                   public.
 #   checks          GitHub check names required on develop and main, besides branch-policy (and,
 #                   on main, deploy/<environment> for each release environment). Only checks that
 #                   run on every pull request.
-#   container       Compose project and service to read container state from. Defaults to
-#                   project = id and the project's only service.
+#   container       Compose project and service to read container state from. project defaults to
+#                   the id. Without service, any container of the project matches: set it when the
+#                   stack has more than one service.
 #   environments    The environments this application deploys to, each optionally overriding
 #                   the environment's options. Omitted: every environment, with its defaults.
 #                   For example, skip development and ask for approval before production:

@@ -3,3 +3,7 @@ env/**/*.env
 env/*.env
 !*.env.example
 *.pem
+
+# Python bytecode is regenerated on every run.
+__pycache__/
+*.pyc
