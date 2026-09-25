@@ -89,8 +89,9 @@ On Windows, use `python` if `python3` isn't on the path.
 
 ## 2. Fork yggdrasil
 
-Your installation lives in your own copy of this repository: your catalog, your stack files. Jenkins
-loads its pipeline and the catalog from its **`main`** branch, and every host runs a checkout of it.
+Your installation lives in your own copy of this repository: your catalog, your stack files. Its
+**`main`** branch is what counts: every host runs a checkout of it, and every deploy clones it
+([details](#where-jenkins-and-the-hosts-read-the-catalog)).
 
 1. On GitHub, **Fork** this repository into your owner (step 0). For a private copy, use
    *Import repository* or create an empty private repository and push a clone to it: forks of
@@ -129,7 +130,9 @@ replace it with yours. Full reference: [catalog.md](catalog.md).
    - `host`: its public host name under `DOMAIN`, if it has one.
    - `metrics`: `<id>:<port>`, if it exposes Prometheus metrics.
    - `checks`: the names of the GitHub Actions jobs that run on **every** pull request of that
-     repository. Look them up in a recent pull request's *Checks* tab.
+     repository. Look them up in a recent pull request's *Checks* tab, which shows
+     `<workflow> / <job>`: write only the job part (`test`, not `CI / test`). Don't list
+     `branch-policy`: it's always required.
 4. **Keep the `yggdrasil` system** at the end as it is: it makes the console show the platform's
    own health.
 5. Validate, and see what each application will do where:
@@ -152,6 +155,8 @@ Rules to keep:
 - The router names and the network alias are the application's `id`.
 - In `proxy` mode, nothing publishes a host port: only Traefik does.
 - Host names come from the env file (`PUBLIC_HOST`, `UI_HOST`), not hard-coded.
+- Use named volumes, not relative bind mounts (`./data:/data`). Under Jenkins, Compose runs inside
+  the agent container, so a relative path points into the agent's workspace, not the host.
 
 Delete the example stack files of applications you removed from the catalog. Then check and publish:
 
@@ -185,16 +190,20 @@ For every application in the catalog:
 
 ## 6. Domain and DNS
 
-Follow [dns.md](dns.md), up to and including *Configure the host* (A5 or B2). By the end you have:
+Follow [dns.md](dns.md) up to and including **A4** (Cloudflare) or **B1** (DuckDNS). By the end
+you have:
 
-- a `*.<DOMAIN>` record (or DuckDNS subdomain) per `proxy` environment, pointing at its host;
-- your DNS provider's API credential, for each host's `acme.env`.
+- a `*.<DOMAIN>` record (or DuckDNS subdomain) per `proxy` environment, pointing at its host's
+  public IP;
+- your DNS provider's API credential, which goes into each host's `acme.env` at step 9.2 or 10.
 
-Check each one resolves:
+Check each one resolves, from any machine:
 
 ```bash
-dig +short anything.<DOMAIN>     # or: nslookup anything.<DOMAIN>
+nslookup yggdrasil.<DOMAIN> 1.1.1.1
 ```
+
+It must print the host's IP. Test a name **under** the domain: the bare `<DOMAIN>` has no record.
 
 The controller's address will be `https://jenkins.<DOMAIN>`, with the `DOMAIN` of the environment
 whose host runs it. Note it down: steps 7 and 9 need it.
@@ -317,23 +326,41 @@ isn't installed on gets no Jenkins job branches and never deploys.
 
 ## 8. Prepare every host
 
-On **each** host that runs a `proxy` environment, the controller host included:
+On **each** host that runs a `proxy` environment, the controller host included. The commands are for
+Ubuntu or Debian, over SSH.
 
-1. **Docker Engine and the Compose plugin**, following
-   [docs.docker.com/engine/install](https://docs.docker.com/engine/install/). Then let your user run
-   Docker, and log out and back in:
+1. **Docker Engine and the Compose plugin.** Follow
+   [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) for your distribution:
+   add Docker's `apt` repository, then install the packages `docker-ce`, `docker-ce-cli`,
+   `containerd.io`, `docker-buildx-plugin` and `docker-compose-plugin`. Don't use the distribution's
+   own `docker.io` package: its Compose is often too old.
+
+   Then let your user run Docker without `sudo`:
    ```bash
    sudo usermod -aG docker "$USER"
    ```
+   - `usermod -aG docker`: adds (`-a`) your user to the group (`-G`) `docker`, whose members may use
+     the Docker socket.
+   - The change applies to new sessions only: `exit` your SSH session and connect again. Then
+     `id -nG` must list `docker`. Until then, Docker commands fail with
+     `permission denied ... docker.sock`.
+
 2. **The other tools**:
    ```bash
    sudo apt update && sudo apt install -y git python3 python3-yaml openssl apache2-utils
    ```
-   (`apache2-utils` provides `htpasswd`, for the Traefik dashboard password.)
-3. **The firewall**, on the host and in the provider's panel if it has its own:
+   - `python3-yaml`: PyYAML, which `scripts/catalog.py` needs to read the catalog.
+   - `apache2-utils`: provides `htpasswd`, for the Traefik dashboard password.
+
+3. **The firewall**, on the host and in the provider's panel if it has its own firewall or security
+   group:
    ```bash
    sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
+   sudo ufw status
    ```
+   OpenSSH is allowed first, so enabling the firewall doesn't cut your SSH session. `ufw status`
+   should list 22 (OpenSSH), 80 and 443 as `ALLOW`.
+
 4. **Your fork and the secrets directory.** Every host gets two directories:
 
    | Directory | Holds | In git? |
@@ -341,7 +368,7 @@ On **each** host that runs a `proxy` environment, the controller host included:
    | `/opt/yggdrasil` | A checkout of your fork: the catalog, the stack files, the scripts, the platform | Yes |
    | `/etc/yggdrasil` | This host's secrets: `platform.env`, `acme.env`, the GitHub App key, the application env files | **Never** |
 
-   Run these as your own user (not as `root`), one at a time:
+   Run these as your own user, one at a time:
 
    1. **Create the checkout's directory**, owned by you, so you can clone, `git pull` and run the
       scripts without `sudo`:
@@ -358,8 +385,7 @@ On **each** host that runs a `proxy` environment, the controller host included:
       ```bash
       git clone -b main https://github.com/<owner>/<repository>.git /opt/yggdrasil
       ```
-      - `-b main`: checks out the `main` branch, the one Jenkins reads. Hosts must run the same
-        catalog as Jenkins.
+      - `-b main`: checks out the `main` branch, where your catalog is.
       - `<owner>`: the GitHub user or organisation of your fork, the `owner` in `catalog.yaml`
         (e.g. `acme`).
       - `<repository>`: your fork's name, the `repository` in `catalog.yaml` (`yggdrasil` unless you
@@ -384,15 +410,21 @@ On **each** host that runs a `proxy` environment, the controller host included:
       *Allow write access* unchecked. Then clone with the SSH URL:
       `git clone -b main git@github.com:<owner>/<repository>.git /opt/yggdrasil`.
 
-   3. **Create the secrets directory**, readable only by you:
+   3. **Create the secrets directory**:
       ```bash
-      sudo install -d -m 700 -o "$USER" /etc/yggdrasil
+      sudo install -d -m 2750 -o "$USER" -g docker /etc/yggdrasil
       ```
-      - `-m 700`: permissions: you can read, write and enter it; nobody else can, except `root`.
       - `-o "$USER"`: you own it, so you can edit its files without `sudo`.
-      - `/etc/yggdrasil`: the default secrets directory, where `platform.sh`, `deploy.sh` and the
-        Jenkins agent look. To use another path, export `YGG_SECRETS_DIR=<path>` in your shell
-        profile **and** set `YGG_SECRETS_DIR=<path>` in `platform.env`.
+      - `-g docker`: its group is `docker`. The Jenkins agent reads the application env files from
+        here, and it runs in a container as the user `jenkins` (uid 1000), a member of the host's
+        `docker` group. Through the group it can read them whatever your own user id is. Members of
+        `docker` can already do anything on the host, so this exposes nothing new.
+      - `-m 2750`: you read and write (`7`), the `docker` group reads (`5`), nobody else gets in
+        (`0`). The leading `2` makes every file and subdirectory created inside belong to the
+        `docker` group too.
+      - `/etc/yggdrasil`: the default secrets directory, where `platform.sh` and `deploy.sh` look, and
+        what the agent container mounts. To use another path, export `YGG_SECRETS_DIR=<path>` in your
+        shell profile **and** set `YGG_SECRETS_DIR=<path>` in `platform.env`.
 
    4. **Copy the two platform env templates** into it:
       ```bash
@@ -400,23 +432,27 @@ On **each** host that runs a `proxy` environment, the controller host included:
       cp /opt/yggdrasil/env/acme.env.example /etc/yggdrasil/acme.env
       ```
       - `platform.env`: the platform's settings for this host (its environment, domain, passwords,
-        Jenkins). You fill it in during step 9 or 10.
+        Jenkins). You fill it in at step 9.2 or 10.
       - `acme.env`: the DNS provider's credential, which Traefik uses to get certificates. You fill
-        it in during step 9 or 10 too.
+        it in at step 9.2 or 10 too.
       - Type both lines as they are: the names are fixed, and the templates document every variable.
 
    5. **Lock the files down**:
       ```bash
-      chmod 600 /etc/yggdrasil/*.env
+      chmod 640 /etc/yggdrasil/*.env
       ```
-      - `600`: only you can read and write them. They will hold passwords and API tokens.
-      - `/etc/yggdrasil/*.env`: every env file in the directory, both files above. Run it again
-        whenever you add an env file.
+      - `640`: you read and write them, the `docker` group reads them, nobody else can. They will
+        hold passwords and API tokens.
+      - `/etc/yggdrasil/*.env`: every env file in the directory, both files above.
 
 5. **Check it**:
    ```bash
    docker run --rm hello-world && docker compose version && python3 /opt/yggdrasil/scripts/catalog.py validate
    ```
+   - `docker run --rm hello-world`: runs a test container, which prints `Hello from Docker!`.
+   - `docker compose version`: prints the Compose plugin's version: v2.24 or later.
+   - `catalog.py validate`: reads the catalog and prints how many environments, systems and
+     applications it has.
 
 ## 9. Bring up the controller host
 
@@ -426,83 +462,129 @@ exists once the controller has created the agent; then with its agent.
 ### 9.1 The GitHub App key
 
 Copy the `.pem` from [step 7.4](#74-generate-the-private-key) to the host. From your machine, in the
-folder it was downloaded to:
+folder it was downloaded to (PowerShell on Windows works too):
 
 ```bash
 scp <app>.private-key.pem <user>@<controller-host>:~/
 ```
 
-Then, on the host, convert it to the PKCS#8 format Jenkins requires, and delete the original:
+- `<app>.private-key.pem`: the downloaded file's name, e.g. `acme-yggdrasil.2026-09-25.private-key.pem`.
+- `<user>@<controller-host>`: your SSH login on the host, e.g. `ubuntu@203.0.113.10`.
+- `:~/`: puts it in your home directory on the host.
+
+Then, on the host, in your home directory, convert it and delete the original:
 
 ```bash
+cd ~
 openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in <app>.private-key.pem -out /etc/yggdrasil/github-app.pem
 chmod 600 /etc/yggdrasil/github-app.pem
+[ "$(id -u)" = 1000 ] || sudo chown 1000 /etc/yggdrasil/github-app.pem
 rm <app>.private-key.pem
 ```
 
+- `openssl pkcs8 -topk8 -nocrypt`: rewrites the key as an unencrypted PKCS#8 key, the only format
+  Jenkins' GitHub App credential accepts. GitHub's download is PKCS#1.
+- `chmod 600`: only the owner reads it.
+- The `chown` line: the Jenkins controller runs as uid 1000 and must be able to read the key. If
+  your own uid (`id -u`) is 1000, you already own it and the line does nothing.
+
 ### 9.2 The env files, first pass
 
-`/etc/yggdrasil/acme.env`: your DNS provider's credential (step 6), e.g. `CF_DNS_API_TOKEN=...`.
+`/etc/yggdrasil/acme.env`: your DNS provider's credential from step 6, e.g.
+`CF_DNS_API_TOKEN=<token>` ([dns.md A5](dns.md#a5-configure-the-host) or
+[B2](dns.md#b2-configure-the-host)).
 
-`/etc/yggdrasil/platform.env`: every variable is documented in the file. Fill in:
+`/etc/yggdrasil/platform.env`: every variable is documented in the file. Edit it with
+`nano /etc/yggdrasil/platform.env` and fill in:
 
 | Variable | Value |
 |---|---|
-| `ENVIRONMENT` | The id of the environment this host runs, e.g. `production` |
+| `ENVIRONMENT` | The id of the environment this host runs, exactly as in `catalog.yaml`, e.g. `production` |
 | `COMPOSE_PROFILES` | `jenkins` (**not** `jenkins,agent` yet) |
 | `DOMAIN` | This environment's domain, e.g. `example.dev` |
-| `ACME_EMAIL` | Your e-mail, for Let's Encrypt's expiry notices |
+| `ACME_EMAIL` | Your e-mail address: the Let's Encrypt account's contact. Not an `@example.com` one |
 | `ACME_DNS_PROVIDER` | `cloudflare`, `duckdns`, ... |
-| `ACME_CA_SERVER` | **Uncomment** it: the staging CA, for this first run |
-| `TRAEFIK_DASHBOARD_USERS` | The output of `htpasswd -nB admin`, in single quotes |
-| `GRAFANA_ADMIN_PASSWORD` | A password, e.g. `openssl rand -base64 24` |
-| `YGGDRASIL_STATUS_TOKEN` | `openssl rand -hex 32`. The console needs it: keep a copy in your password manager |
+| `ACME_CA_SERVER` | **Uncomment** it (remove the `#`): the staging CA, for this first run |
+| `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. See below |
+| `GRAFANA_ADMIN_PASSWORD` | A password for Grafana's `admin` user |
+| `YGGDRASIL_STATUS_TOKEN` | A random token, at least 32 characters. The console needs it: keep a copy in your password manager |
 | `JENKINS_URL` | `https://jenkins.<DOMAIN>/` |
 | `JENKINS_ADMIN_PASSWORD` | A password for the Jenkins `admin` user |
-| `GITHUB_APP_ID` | The App ID from step 7 |
-| `GITHUB_APP_KEY_FILE` | `/etc/yggdrasil/github-app.pem` |
+| `GITHUB_APP_ID` | The App ID from [step 7.3](#73-note-the-app-id) |
+| `GITHUB_APP_KEY_FILE` | `/etc/yggdrasil/github-app.pem`, from 9.1 |
 
-Leave the agent section for 9.5.
+Use letters and digits only in passwords: `platform.sh` reads the file with bash, and Compose and
+Jenkins read it too, so `$`, spaces, quotes or `;&()` break it. The secrets can be generated
+straight into the file:
+
+```bash
+f=/etc/yggdrasil/platform.env
+hash=$(htpasswd -nB admin)      # asks twice for the Traefik dashboard password you choose
+sed -i "s|^TRAEFIK_DASHBOARD_USERS=.*|TRAEFIK_DASHBOARD_USERS='$hash'|" "$f"
+sed -i "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)|" "$f"
+sed -i "s|^YGGDRASIL_STATUS_TOKEN=.*|YGGDRASIL_STATUS_TOKEN=$(openssl rand -hex 32)|" "$f"
+sed -i "s|^JENKINS_ADMIN_PASSWORD=.*|JENKINS_ADMIN_PASSWORD=$(openssl rand -hex 16)|" "$f"
+grep -E '^(GRAFANA_ADMIN_PASSWORD|YGGDRASIL_STATUS_TOKEN|JENKINS_ADMIN_PASSWORD)=' "$f"
+```
+
+- `htpasswd -nB admin`: prints `admin:<bcrypt hash>` for the user `admin`, without writing a file.
+- `openssl rand -hex 16` / `-hex 32`: 32 / 64 random hexadecimal characters.
+- `sed -i "s|^NAME=.*|NAME=value|" "$f"`: replaces the whole `NAME=` line of the file. `|` separates
+  the parts because the hash contains `/`.
+- The last line prints the generated passwords and token: save them in your password manager.
+
+Leave the agent section for 9.5. Then check the file:
+
+```bash
+/opt/yggdrasil/scripts/platform.sh config > /dev/null && echo "platform.env OK"
+```
+
+It prints `platform.env OK`, or names the missing variable. `platform.sh up` checks the rest
+(`ENVIRONMENT` against the catalog, the Jenkins variables) before starting anything.
 
 ### 9.3 Start it and check the certificate
 
 ```bash
 /opt/yggdrasil/scripts/platform.sh up
-/opt/yggdrasil/scripts/platform.sh logs traefik | grep -i acme     # Ctrl+C to stop
 ```
 
-The first start builds images and takes a few minutes. Then, from any machine:
+The first start builds images and takes several minutes. It returns once the services are up, with a
+table of them. Then follow [dns.md, Bring it up](dns.md#3-start-the-platform-against-the-staging-ca)
+from step 3:
 
-```bash
-curl -kvI https://yggdrasil.<DOMAIN> 2>&1 | grep -i issuer     # a "(STAGING)" issuer
-```
-
-Fix any error now, against the staging CA, which isn't rate limited: see
-[dns.md troubleshooting](dns.md#troubleshooting). Then switch to the real certificate: comment
-`ACME_CA_SERVER` out again in `platform.env`, and:
-
-```bash
-/opt/yggdrasil/scripts/platform.sh down
-docker volume rm yggdrasil_letsencrypt
-/opt/yggdrasil/scripts/platform.sh up
-curl -I https://jenkins.<DOMAIN>/login        # no -k: the certificate is trusted
-```
+1. Read Traefik's errors with `docker logs yggdrasil-traefik-1 2>&1 | grep -iE 'acme|error' | tail -20`.
+2. Check the staging certificate **from your own computer**: `curl -kvI https://yggdrasil.<DOMAIN> 2>&1 | grep -i issuer`
+   shows an issuer with `(STAGING)`.
+3. Fix any error now, against the staging CA, which isn't rate limited: see
+   [dns.md troubleshooting](dns.md#troubleshooting).
+4. Switch to the real certificate ([dns.md step 4](dns.md#4-switch-to-the-real-certificate)): put the
+   `#` back in front of `ACME_CA_SERVER` in `platform.env`, then:
+   ```bash
+   /opt/yggdrasil/scripts/platform.sh down
+   docker volume rm yggdrasil_letsencrypt
+   /opt/yggdrasil/scripts/platform.sh up
+   ```
+   From your computer, `curl -I https://jenkins.<DOMAIN>/login` now works without `-k`.
 
 ### 9.4 Jenkins and the webhook
 
-1. Open `https://jenkins.<DOMAIN>` and sign in as `admin`. Jenkins has created, from the catalog:
-   - one job per application;
+1. Open `https://jenkins.<DOMAIN>` and sign in as `admin` with `JENKINS_ADMIN_PASSWORD`. Jenkins has
+   created, from the catalog:
+   - one job per application, with no branches yet: the first scans find no `Jenkinsfile` on
+     `main`;
    - one agent per environment it deploys to (**Manage Jenkins → Nodes**), all offline for now.
 2. Back in the GitHub App's **General** page ([step 7.3](#73-note-the-app-id)), tick
    **Webhook → Active**, check the Webhook URL is `https://jenkins.<DOMAIN>/github-webhook/` and
    the events **Push**, **Pull request** and **Repository** are checked, and click **Save changes**.
-3. In the app's **Advanced** tab, under **Recent Deliveries**, the `ping` delivery should get a
-   green check. Use *Redeliver* after fixing anything.
+3. In the app's **Advanced** tab, **Recent Deliveries** lists what GitHub sent. If there's a `ping`,
+   it should have a green check. If there's none yet, push any commit to an application repository's
+   `develop`: its `push` delivery must get a green check and a `200` response. Use *Redeliver* after
+   fixing anything.
 
 ### 9.5 The env files, second pass: this host's agent
 
-Under **Manage Jenkins → Nodes → \<this environment's agent\>**, copy the secret shown in the
-connection command. Then, in `platform.env`:
+Under **Manage Jenkins → Nodes → \<this environment's agent\>**, copy the secret: the long
+hexadecimal string after `-secret` in the connection command. Then, in `platform.env`:
 
 | Variable | Value |
 |---|---|
@@ -510,7 +592,14 @@ connection command. Then, in `platform.env`:
 | `JENKINS_AGENT_NAME` | The agent's name: the environment's `agent` in the catalog, or its id |
 | `JENKINS_AGENT_SECRET` | The secret |
 | `JENKINS_AGENT_URL` | `http://jenkins:8080/`: on this host, the agent reaches the controller over the Docker network |
-| `DOCKER_GID` | The output of `getent group docker \| cut -d: -f3` |
+| `DOCKER_GID` | The id of the host's `docker` group: the output of the command below |
+
+```bash
+getent group docker | cut -d: -f3
+```
+
+The agent runs Docker through the host's socket, which belongs to that group. With a wrong value,
+deploys fail with `permission denied ... docker.sock`. Then:
 
 ```bash
 /opt/yggdrasil/scripts/platform.sh up
@@ -523,8 +612,8 @@ If this host's environment is `trigger: manual` with no `agent`, Jenkins has no 
 
 ## 10. Bring up the other environment hosts
 
-For each other host, prepared as in step 8. Its env files are simpler, because the controller is
-elsewhere:
+For each other host, prepared as in step 8, once the controller is up (step 9). Its env files are
+simpler, because the controller is elsewhere:
 
 - `acme.env`: the DNS credential, as in 9.2.
 - `platform.env`:
@@ -533,30 +622,39 @@ elsewhere:
   |---|---|
   | `ENVIRONMENT` | This host's environment id, e.g. `staging` |
   | `COMPOSE_PROFILES` | `agent` |
-  | `DOMAIN`, `ACME_*`, `TRAEFIK_DASHBOARD_USERS`, `GRAFANA_ADMIN_PASSWORD` | As in 9.2, with this environment's `DOMAIN` |
+  | `DOMAIN` | **This** environment's domain, e.g. `staging.example.dev` |
+  | `ACME_*`, `TRAEFIK_DASHBOARD_USERS`, `GRAFANA_ADMIN_PASSWORD` | As in 9.2, `ACME_CA_SERVER` uncommented for the first run |
   | `YGGDRASIL_STATUS_TOKEN` | A new `openssl rand -hex 32`: one token per environment |
   | `JENKINS_URL` | The **controller's** URL: `https://jenkins.<controller's DOMAIN>/` |
   | `JENKINS_AGENT_NAME`, `JENKINS_AGENT_SECRET` | From **Manage Jenkins → Nodes → \<this environment's agent\>** on the controller |
-  | `JENKINS_AGENT_URL` | **Empty** |
-  | `DOCKER_GID` | `getent group docker \| cut -d: -f3` |
+  | `JENKINS_AGENT_URL` | **Empty**: the agent then dials `JENKINS_URL` |
+  | `DOCKER_GID` | This host's `getent group docker \| cut -d: -f3`, as in 9.5 |
   | `JENKINS_ADMIN_PASSWORD`, `GITHUB_APP_*` | Not needed: leave them empty |
 
-Start with the staging CA, as in 9.3, then switch to the real certificate:
+Then, as on the controller host:
 
-```bash
-/opt/yggdrasil/scripts/platform.sh up
-```
+1. `/opt/yggdrasil/scripts/platform.sh config > /dev/null && echo "platform.env OK"`.
+2. `/opt/yggdrasil/scripts/platform.sh up`.
+3. Check the staging certificate from your computer:
+   `curl -kvI https://yggdrasil.<this DOMAIN> 2>&1 | grep -i issuer` shows `(STAGING)`.
+4. Put the `#` back in front of `ACME_CA_SERVER`, then
+   `platform.sh down`, `docker volume rm yggdrasil_letsencrypt`, `platform.sh up`.
 
 The agent dials the controller out over a WebSocket on 443, so this host needs no inbound port for
 Jenkins. Its node turns connected in Jenkins.
 
 **`ports` environments** (a developer laptop) need no platform, agent or DNS: `deploy.sh` publishes
-each application on `127.0.0.1`. Set one up any time:
+each application on `127.0.0.1`. Set one up any time, from your fork's checkout, with the application
+repositories cloned next to it:
 
 ```bash
 export YGG_SECRETS_DIR=~/yggdrasil-env      # holds <environment>/<application>.env
 scripts/deploy.sh development shop-api ../shop-api dev
 ```
+
+- `development`: the environment id. `shop-api`: the application id.
+- `../shop-api`: a checkout of the application's repository.
+- `dev`: the version to label the image with.
 
 ### Firewall
 
@@ -568,10 +666,18 @@ On each host, one file per application deployed to that host's environment: its 
 secrets, plus what its stack files need.
 
 ```bash
-install -d -m 700 /etc/yggdrasil/<environment>
+install -d -m 2750 /etc/yggdrasil/<environment>
 nano /etc/yggdrasil/<environment>/<application>.env
-chmod 600 /etc/yggdrasil/<environment>/<application>.env
+chmod 640 /etc/yggdrasil/<environment>/<application>.env
 ```
+
+- `<environment>`: this host's environment id, e.g. `production`. `<application>`: the application's
+  id, e.g. `shop-api`.
+- `install -d -m 2750`: creates the environment's directory, readable by the `docker` group like its
+  parent, so the Jenkins agent can read the files in it.
+- `chmod 640`: you read and write the file, the agent reads it through the group.
+
+What goes in it:
 
 - Start from the application repository's own env template, if it has one.
 - Add what the stack files read. The overlays in this repository use:
@@ -579,6 +685,11 @@ chmod 600 /etc/yggdrasil/<environment>/<application>.env
   - `UI_HOST`: for a web UI, or an API served under its UI's origin.
 - A web UI's build arguments (an API base URL, say) are compiled into its bundle: public, and
   different per environment.
+
+`deploy.sh` passes this file to Compose (`--env-file`): it fills in the `${VAR}` references of the
+Compose files. A variable reaches the application's container only where its `docker-compose.yml`
+or `stacks/<id>.yml` names it, in `environment:` (`DB_PASSWORD: ${DB_PASSWORD:?}`) or with
+`env_file:`.
 
 `python3 /opt/yggdrasil/scripts/catalog.py environments <application-id>` lists the environments an
 application deploys to. [examples/docker-desktop-wsl-vps/env](examples/docker-desktop-wsl-vps/env)
@@ -598,6 +709,9 @@ For each application repository, this:
 - deletes head branches on merge
 - creates the `develop`, `main` and `release tags` rulesets, with the checks from the catalog and one `deploy/<environment>` per release environment
 
+To apply to some repositories only, name them: `python3 github/rulesets.py shop-api shop-web` (the
+repository names: an application's `repository`, or its `id`).
+
 Rulesets on **private** repositories need a paid GitHub plan. From now on, `develop` and `main`
 change only through pull requests.
 
@@ -605,18 +719,20 @@ change only through pull requests.
 
 | Check | Where | Expected |
 |---|---|---|
-| Platform containers | `scripts/platform.sh ps` on each host | Every service `running (healthy)` |
+| Platform containers | `/opt/yggdrasil/scripts/platform.sh ps` on each host | Every service `Up`; `traefik`, `status` and `console` also `(healthy)`. `jenkins` only on the controller host, `agent` where the profile is on |
 | Certificates | `https://yggdrasil.<DOMAIN>` for each environment | No browser warning |
 | Webhooks | GitHub App → Advanced → Recent Deliveries | Green checks |
 | Agents | Jenkins → Manage Jenkins → Nodes | Every agent connected |
-| Jobs | Jenkins → each application's job → *Scan Repository Log* | Finishes with `Finished: SUCCESS`, and lists `main` and the matching branches |
+| Jobs | Jenkins → each application's job → *Scan Repository Log* | Ends with `Finished: SUCCESS`. Before the first release it lists no branch, or only matching `release/*` ones: `main` gets a `Jenkinsfile` when the first release merges |
+| Agent can read the env files | `docker exec yggdrasil-agent-1 ls /etc/yggdrasil/<environment>` on each host | Lists the application env files, no `Permission denied` |
 | Console | `https://yggdrasil.<DOMAIN>` | The platform system is `up`. Applications are `not deployed` until the first release |
 | Status API | `curl -H "Authorization: Bearer <YGGDRASIL_STATUS_TOKEN>" https://yggdrasil.<DOMAIN>/api/status` | JSON with every system of the catalog |
 | Grafana | `https://grafana.<DOMAIN>`, `admin` / `GRAFANA_ADMIN_PASSWORD` | Prometheus and Loki data sources work |
 
-**Windows and Android consoles**: install them from this repository's GitHub releases, then add
-each environment in Settings with its URL (`https://yggdrasil.<DOMAIN>`) and its
-`YGGDRASIL_STATUS_TOKEN`.
+**Windows and Android consoles**: download them from the releases of
+[artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil/releases) (your fork has none until you
+tag it `vX.Y.Z`). Then add each environment in the console's **Environments** screen with its URL
+(`https://yggdrasil.<DOMAIN>`) and its `YGGDRASIL_STATUS_TOKEN`.
 
 ## 14. The first release
 
@@ -641,6 +757,27 @@ passes. Fix it on `develop` (or on the host, for an env file) and cut a new rele
 
 Day to day from here: [README.md#day-to-day](../README.md#day-to-day).
 
+## Where Jenkins and the hosts read the catalog
+
+| Reader | Reads |
+|---|---|
+| Jenkins controller: jobs, agents, what a build deploys where | The controller host's `/opt/yggdrasil/catalog.yaml` |
+| Each deploy: `scripts/deploy.sh` and `stacks/` | A fresh clone of your fork's `main`, made by the agent for the build |
+| `platform.sh`, the status API, Prometheus, hand deploys | That host's `/opt/yggdrasil` |
+
+So a change to the catalog or the stack files goes to `main` first, then to every host:
+
+```bash
+cd /opt/yggdrasil && git pull
+scripts/platform.sh up
+docker restart yggdrasil-status-1                        # every host: re-reads the catalog
+docker restart yggdrasil-jenkins-1                       # the controller host only
+```
+
+`platform.sh up` alone isn't enough: the catalog is mounted into the running containers as a single
+file, and they keep seeing the old one until they restart. Jenkins creates new jobs and agents only
+when it starts; it never deletes agents (remove them in **Manage Jenkins → Nodes**).
+
 ## Adding things
 
 ### An application
@@ -651,9 +788,8 @@ Day to day from here: [README.md#day-to-day](../README.md#day-to-day).
 4. **Env files** on each host it deploys to, as in [step 11](#11-application-env-files).
 5. **Apply:**
    - push the catalog and stack files to `main` of your fork
-   - `python3 github/rulesets.py <id>`
-   - `git pull && scripts/platform.sh up` on the controller host, which restarts Jenkins with the new job
-   - `git pull && scripts/platform.sh up` on the other hosts, so their status APIs and Prometheus pick it up
+   - `python3 github/rulesets.py <repository>`
+   - on every host, pull and restart as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog): Jenkins creates the new job, the status APIs and Prometheus pick it up
 
 ### An environment
 
@@ -661,7 +797,7 @@ Day to day from here: [README.md#day-to-day](../README.md#day-to-day).
 2. **DNS:** its `*.<DOMAIN>` record, as in [step 6](#6-domain-and-dns).
 3. **Host:** prepare it as in [step 8](#8-prepare-every-host).
 4. **Apply:**
-   - `git pull && scripts/platform.sh up` on the controller host. Jenkins creates the new agent.
+   - On the controller host, pull and restart Jenkins as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog). Jenkins creates the new agent.
    - Bring the new host up as in [step 10](#10-bring-up-the-other-environment-hosts), with the new agent's secret.
    - `python3 github/rulesets.py`, if it's a release environment: `main` now also requires its `deploy/<id>`.
 5. **Env files:** for each application on the new host, as in [step 11](#11-application-env-files).
@@ -678,14 +814,22 @@ A system is only a grouping: add it with its applications to `catalog.yaml`, the
 
 ## Troubleshooting
 
+A service's log: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, e.g. `yggdrasil-jenkins-1`,
+`yggdrasil-agent-1`. (`platform.sh logs <service>` follows it live; Ctrl+C to stop.)
+
 | Symptom | Likely cause |
 |---|---|
+| `required variable ... is missing a value` | A variable of `platform.env` is empty: see [9.2](#92-the-env-files-first-pass) |
 | `platform: ENVIRONMENT='...' is not an environment in catalog.yaml` | A typo in `ENVIRONMENT`, or the host's checkout is behind: `git pull` in `/opt/yggdrasil` |
-| `platform: JENKINS_AGENT_SECRET must be set ...` | `COMPOSE_PROFILES` includes `agent` before the secret is filled in: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) |
-| `permission denied ... docker.sock` | Your user isn't in the `docker` group, or you haven't logged in again since adding it |
-| Jenkins starts, but with no jobs or credentials errors | `GITHUB_APP_ID` wrong, or the key not converted to PKCS#8 ([9.1](#91-the-github-app-key)). `platform.sh logs jenkins` says which |
-| A job's scan finds no branches | The GitHub App isn't installed on that repository, or the repository has no `Jenkinsfile` on the scanned branches |
-| An agent stays offline | Wrong `JENKINS_AGENT_SECRET` or `JENKINS_AGENT_NAME`, or `JENKINS_URL` not reachable from that host. `platform.sh logs agent` says which |
-| `deploy: missing env file ...` | The application's env file isn't at `/etc/yggdrasil/<environment>/<application>.env` ([step 11](#11-application-env-files)) |
+| `platform: JENKINS_AGENT_NAME must be set ...` (or `JENKINS_AGENT_SECRET`, `DOCKER_GID`) | `COMPOSE_PROFILES` includes `agent` before the agent exists: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) and [10](#10-bring-up-the-other-environment-hosts) |
+| `permission denied ... docker.sock` when you run `docker` | Your user isn't in the `docker` group, or you haven't reconnected since adding it ([8.1](#8-prepare-every-host)) |
+| `permission denied ... docker.sock` in a Jenkins build | `DOCKER_GID` isn't the host's `docker` group id ([9.5](#95-the-env-files-second-pass-this-hosts-agent)) |
+| `/etc/yggdrasil/github-app.pem` is a directory | `platform.sh up` ran with the `jenkins` profile before the key existed, and Docker created a directory in its place. `sudo rm -r` it, then do [9.1](#91-the-github-app-key) |
+| Jenkins starts, but with no jobs or credentials errors | `GITHUB_APP_ID` wrong, the key not converted to PKCS#8, or not readable by uid 1000 ([9.1](#91-the-github-app-key)). The Jenkins log says which |
+| A job's scan finds no branches | Expected before the first release (no `Jenkinsfile` on `main` yet). Otherwise, the GitHub App isn't installed on that repository |
+| An agent stays offline | Wrong `JENKINS_AGENT_SECRET` or `JENKINS_AGENT_NAME`, or `JENKINS_URL` not reachable from that host. The agent's log says which |
+| A new application or environment doesn't appear in Jenkins or the console | The containers still see the old catalog: restart them as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog) |
+| `deploy: missing or unreadable env file ...` | The application's env file isn't at `/etc/yggdrasil/<environment>/<application>.env`, or the agent can't read it: the directories must be group `docker` with mode `2750`, the file `640` ([8.4](#8-prepare-every-host), [11](#11-application-env-files)) |
+| A **Build with Parameters → `DEPLOY_TO`** build waits forever | The `manual` environment has no `agent` in the catalog, so Jenkins has no node for it. Set `agent`, or deploy it by hand with `scripts/deploy.sh` |
 | `deploy/<environment>` never appears on the pull request | The release environment's agent is offline, or a GitHub check never finishes (a path-filtered workflow in `checks`) |
 | Certificates, DNS, webhook deliveries | [dns.md troubleshooting](dns.md#troubleshooting) |

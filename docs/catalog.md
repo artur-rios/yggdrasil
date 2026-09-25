@@ -16,8 +16,22 @@ Every part of yggdrasil reads it:
 | Prometheus | Scrape targets, through the status API |
 | Console | Everything it shows, through the status API |
 
-`python3 scripts/catalog.py validate` checks it (CI runs it on every pull request). The other tools
-refuse to use a catalog that fails validation, and say why.
+Check it after every edit:
+
+```bash
+python3 scripts/catalog.py validate
+```
+
+- `validate` prints `catalog.yaml: N environments, N systems, N applications`, or every problem it
+  found. CI runs it on every pull request. `deploy.sh`, `platform.sh` and `github/rulesets.py`
+  refuse a catalog it rejects.
+- The **status API** validates the catalog again when it starts, with a few stricter rules (marked
+  *status API* in the tables below). A catalog that fails them stops the status API: it lists every
+  problem in its log (`docker logs yggdrasil-status-1`) and exits.
+- **Jenkins** doesn't validate it: a broken catalog shows up as a Job DSL or pipeline error.
+
+The catalog is read from each host's checkout when the containers start. After changing it, see
+[setup.md](setup.md#where-jenkins-and-the-hosts-read-the-catalog) for how to apply it.
 
 ## Top level
 
@@ -57,27 +71,29 @@ environments:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `id` | required | Lowercase letters, digits and dashes. Names the env files on hosts (`<secrets>/<id>/<app>.env`), the `ENVIRONMENT` of the host's `platform.env`, and the `deploy/<id>` status. |
+| `id` | required | Lowercase letters, digits and single dashes, starting and ending with a letter or digit (`dev`, `pre-prod`). Names the env files on hosts (`<secrets>/<id>/<app>.env`), the `ENVIRONMENT` of the host's `platform.env`, and the `deploy/<id>` status. |
 | `name` | required | Display name: Jenkins stages, the console. |
 | `mode` | `proxy` | `proxy`: routed by Traefik with TLS on the environment's `DOMAIN`, no host ports (`stacks/<app>.proxy.yml`). `ports`: published on the host's `127.0.0.1`, no Traefik (`stacks/<app>.ports.yml`); for a laptop. |
 | `trigger` | `manual` | What deploys here (see [Triggers](#triggers)). |
-| `branches` | — | For `trigger: branch`, required. A glob or a list of globs (`*` matches `/` too): `release/*`, `[develop, hotfix/*]`. |
+| `branches` | — | For `trigger: branch`, required. A glob or a list of globs: `release/*`, `[develop, hotfix/*]`. Use only `*`, which matches any characters, `/` included: `?` and `[...]` aren't matched the same way by every reader. Case-sensitive. Besides `main` and pull requests, these are the only branches Jenkins discovers for the application. |
 | `agent` | the id | Label of the Jenkins agent that deploys here. The agent runs on the environment's host. |
-| `approval` | `false` | `true`: Jenkins waits for someone to click **Deploy** before deploying here, without holding an agent while it waits. |
-| `waitTimeout` | `300` | Seconds `deploy.sh` waits for the new containers to be healthy before rolling back. |
-| `keepImages` | `3` | Images of each application kept on the host, for rollbacks. |
-| `checksTimeout` | `3600` | For `trigger: release`: seconds to wait for the pull request's GitHub checks. |
+| `approval` | `false` | `true`: Jenkins waits for someone to click **Deploy** before deploying here, without holding an agent while it waits. Applies to every deploy to this environment: branch, manual and release. Any signed-in Jenkins user can approve. A build still waiting after 4 hours, the pipeline's overall limit, is aborted. |
+| `waitTimeout` | `300` | Seconds `deploy.sh` waits for the new containers to be healthy before rolling back to the image that was running, if there is one. `DEPLOY_WAIT_TIMEOUT` overrides it for one run by hand. |
+| `keepImages` | `3` | Images of each application kept on the host after a successful deploy, the running one included: what rollbacks use. `DEPLOY_KEEP_IMAGES` overrides it for one run by hand. |
+| `checksTimeout` | `3600` | For `trigger: release`: seconds Jenkins waits for every GitHub Actions check on the release pull request before failing the build. Only the value on the application's **first** release environment counts. |
 
-The list order is the **promotion order**. It is the order release environments deploy in, and
-the order the console lists them.
+Any other key is an error. Numbers must be whole and at least 1; `approval` is `true` or `false`.
+
+The list order is the **promotion order**: the order release environments deploy in on a release
+pull request, and the order a push deploys to several matching `branch` environments.
 
 ### Triggers
 
 | Trigger | Deploys | Typical use |
 |---|---|---|
-| `manual` | Only when asked: `scripts/deploy.sh` on the host, or **Build with Parameters → `DEPLOY_TO`** on a branch job in Jenkins. Jenkins creates an agent for a manual environment only when it sets `agent` explicitly; without one, it's deploy-by-hand only. | A laptop; an environment for demos. |
-| `branch` | The pushed commit, whenever a branch matching `branches` is pushed. `release/x.y.z` deploys as version `x.y.z`; any other branch as its name (`develop`). | Staging from `release/*`; a dev server from `develop`. |
-| `release` | The head of a `release/x.y.z → main` pull request, once every GitHub Actions check on it passes. Release environments deploy one after another in catalog order, each setting `deploy/<id>` on the commit. After the last one succeeds, Jenkins merges the pull request, tags `vx.y.z` and deletes the branch. | Production; a pre-production environment right before it. |
+| `manual` | Only when asked: `scripts/deploy.sh` on the host, or **Build with Parameters → `DEPLOY_TO`** in Jenkins. `DEPLOY_TO` exists on the branches Jenkins discovers (`main`, and those matching a `branch` environment's globs), once the branch has been built once. Jenkins creates an agent for a manual environment only when it sets `agent`; without one, it's deploy-by-hand only, and a `DEPLOY_TO` build would wait forever for a node. | A laptop; an environment for demos. |
+| `branch` | The pushed commit, whenever a branch matching `branches` is pushed. `release/x.y.z` deploys as version `x.y.z`; any other branch as its name, with characters other than letters, digits, `_`, `.` and `-` replaced by `-` (`feature/x` → `feature-x`). The image tag is `<version>-<7-character commit>`. | Staging from `release/*`; a dev server from `develop`. |
+| `release` | The head of a `release/x.y.z → main` pull request, once every GitHub Actions check on it has passed (`branch-policy` included). Jenkins marks every `deploy/<id>` pending, then deploys the release environments one after another in catalog order, setting `deploy/<id>` after each. After the last one succeeds, it merges the pull request with a merge commit, creates the GitHub release and tag `vx.y.z`, and deletes the branch. Pushing to the branch meanwhile fails the build. | Production; a pre-production environment right before it. |
 
 An application with no `release` environment is never deployed or merged by Jenkins on a release
 pull request. Its release pull requests are merged by hand, and its `main` ruleset requires no
@@ -113,24 +129,25 @@ systems:
 
 | Field | Meaning |
 |---|---|
-| `id` | Lowercase letters, digits and dashes. |
-| `name`, `description` | Shown by the console. |
-| `applications` | The applications that make up the system. |
+| `id` | Required. Lowercase letters, digits and dashes. Unique (*status API*). |
+| `name` | Required (*status API*). Shown by the console. |
+| `description` | Optional. Shown by the console. |
+| `applications` | The applications that make up the system: at least one (*status API*). |
 
 ### Application fields
 
 | Field | Meaning |
 |---|---|
-| `id` | Unique across the catalog. It is also the repository name (unless `repository` says otherwise), the Compose project, the Jenkins job, the image name, and the network alias other containers reach it by. |
-| `name` | Display name. |
-| `kind` | `api`, `web`, `worker` or `platform`, shown by the console. `platform` marks the platform's own components (Traefik, Prometheus...): `scripts/platform.sh` runs them on every host, and Jenkins never deploys them. |
-| `repository` | Repository name under `owner`. Default: the id. |
-| `health` | URL the status API probes over the Docker networks, e.g. `http://shop-api:8080/healthz`. A 2xx answer is healthy. |
-| `metrics` | `host:port` Prometheus scrapes, if the application exposes metrics. |
-| `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. |
-| `host` | Public host name under the environment's `DOMAIN` (`shop` → `shop.example.com`). One label only: the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
-| `checks` | GitHub check names (job names) required on `develop` and `main`, besides `branch-policy`. Only list checks that run on **every** pull request: a path-filtered workflow that doesn't run would leave its required check pending forever. |
-| `container` | `{project, service}` to find the application's container, when it isn't the Compose project named after the id. |
+| `id` | Required. Unique across the catalog. It is also the repository name (unless `repository` says otherwise), the Compose project (`deploy.sh` names it so) and the Jenkins job. Its Compose files must name the image `<id>` (old images are pruned by that name) and give the service the network alias `<id>` on `edge` and `telemetry`, which `health` and `metrics` use. |
+| `name` | Required (*status API*). Display name. |
+| `kind` | Required. `api`, `web`, `worker` or `platform`, shown by the console. `platform` marks yggdrasil's own components (Traefik, Prometheus...). They are started by `platform/compose.yml` through `scripts/platform.sh`, not by the catalog: their entries only let the status API probe them and Prometheus scrape them. Jenkins creates no job, agent or ruleset for them. |
+| `repository` | Repository name under `owner`. Default: the id; none for `platform` components. |
+| `health` | Required. Absolute URL the status API probes over the Docker networks, e.g. `http://shop-api:8080/healthz`. A 2xx answer is healthy. |
+| `metrics` | `host:port` Prometheus scrapes, if the application exposes metrics (*status API*: must be `host:port`). |
+| `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. Starts with `/`, and needs `metrics` (*status API*). |
+| `host` | The link the console shows: `https://<host>.<DOMAIN>`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
+| `checks` | GitHub Actions job names required on `develop` and `main`, besides `branch-policy`: the job part of `<workflow> / <job>` in a pull request's Checks tab. Only checks from GitHub Actions satisfy them. Only list checks that run on **every** pull request: a path-filtered workflow that doesn't run would leave its required check pending forever. No empty entries (*status API*). |
+| `container` | `{project, service}`: the Compose labels that find the application's container. `project` defaults to the id, which is what `deploy.sh` uses. Without `service`, **any** container of the project matches (a running one first, then the newest), so set `service` when the stack has more than one service, e.g. `{ service: api }` next to a database. |
 | `environments` | See below. |
 
 ### Per-application environments
@@ -153,13 +170,33 @@ python3 scripts/catalog.py plan shop-web
 python3 scripts/catalog.py get shop-web production approval
 ```
 
-The Jenkins pipeline resolves options the same way. Its copy of the logic is in
-`jenkins/library/vars/yggdrasilPipeline.groovy`; keep the two in step if you change either.
+The same resolution is repeated in `jenkins/library/vars/yggdrasilPipeline.groovy` (what a build
+deploys), the Job DSL in `platform/jenkins/controller/casc.yaml` (which branches each job
+discovers) and `platform/jenkins/controller/init.groovy.d/agents.groovy` (which agents exist). The
+status API re-validates `mode`, `trigger` and `branches`. Change all of them together.
+
+## Command line
+
+`scripts/catalog.py` answers questions about the catalog. It needs PyYAML (`pip install pyyaml`;
+Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
+
+| Command | Prints |
+|---|---|
+| `python3 scripts/catalog.py validate` | `catalog.yaml: N environments, N systems, N applications`, or every problem |
+| `python3 scripts/catalog.py environments [<app>]` | Environment ids, one per line, in promotion order; with an application id, only those it deploys to |
+| `python3 scripts/catalog.py applications [--deployable]` | Application ids; `--deployable` leaves out `kind: platform` |
+| `python3 scripts/catalog.py plan <app>` | JSON: each environment the application deploys to, with every option resolved |
+| `python3 scripts/catalog.py get <app> <environment> <option>` | One resolved option. Lists are space-separated, booleans `true`/`false` |
+| `python3 scripts/catalog.py owner` / `repository` | The GitHub owner; this repository's name (default `yggdrasil`) |
+
+It exits with `0` on success, `1` for an invalid catalog, an unknown application or an application
+that doesn't deploy to that environment, and `2` for a wrong command.
 
 ## Recipes
 
-**A dev server that follows `develop`.** Add an environment, then run a host for it (see
-[setup.md](setup.md#adding-things)):
+**A dev server that follows `develop`.** Add the environment below and push it to `main`. Then pull
+and restart Jenkins on the controller host (it creates the new agent only when it starts), and bring
+up a host for it with that agent's secret ([setup.md](setup.md#an-environment)):
 
 ```yaml
   - id: dev
