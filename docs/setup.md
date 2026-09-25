@@ -244,18 +244,85 @@ On **each** host that runs a `proxy` environment, the controller host included:
    ```bash
    sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
    ```
-4. **Your fork**, on `main`, and the directory for secrets:
-   ```bash
-   sudo git clone -b main https://github.com/<owner>/<repository>.git /opt/yggdrasil
-   sudo chown -R "$USER": /opt/yggdrasil
-   sudo install -d -m 700 -o "$USER" /etc/yggdrasil
-   cp /opt/yggdrasil/env/platform.env.example /etc/yggdrasil/platform.env
-   cp /opt/yggdrasil/env/acme.env.example /etc/yggdrasil/acme.env
-   chmod 600 /etc/yggdrasil/*.env
-   ```
-   A private fork needs credentials to clone: a
-   [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
-   and the `git@github.com:` URL.
+4. **Your fork and the secrets directory.** Every host gets two directories:
+
+   | Directory | Holds | In git? |
+   |---|---|---|
+   | `/opt/yggdrasil` | A checkout of your fork: the catalog, the stack files, the scripts, the platform | Yes |
+   | `/etc/yggdrasil` | This host's secrets: `platform.env`, `acme.env`, the GitHub App key, the application env files | **Never** |
+
+   Run these as your own user (not as `root`), one at a time:
+
+   1. **Create the checkout's directory**, owned by you, so you can clone, `git pull` and run the
+      scripts without `sudo`:
+      ```bash
+      sudo install -d -o "$USER" /opt/yggdrasil
+      ```
+      - `install -d`: creates the directory (and any missing parent).
+      - `-o "$USER"`: makes you its owner. `$USER` is filled in by the shell with your user name;
+        type it as is.
+      - `/opt/yggdrasil`: where the checkout goes. Keep this path: the rest of this guide uses it.
+        Any other path works, since the scripts find the repository from their own location.
+
+   2. **Clone your fork** into it:
+      ```bash
+      git clone -b main https://github.com/<owner>/<repository>.git /opt/yggdrasil
+      ```
+      - `-b main`: checks out the `main` branch, the one Jenkins reads. Hosts must run the same
+        catalog as Jenkins.
+      - `<owner>`: the GitHub user or organisation of your fork, the `owner` in `catalog.yaml`
+        (e.g. `acme`).
+      - `<repository>`: your fork's name, the `repository` in `catalog.yaml` (`yggdrasil` unless you
+        renamed it).
+      - `/opt/yggdrasil`: the directory from the previous command.
+
+      For example: `git clone -b main https://github.com/acme/yggdrasil.git /opt/yggdrasil`.
+
+      A **private** fork needs a credential. Create a read-only
+      [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+      for this host and clone over SSH instead:
+      ```bash
+      ssh-keygen -t ed25519 -N "" -C "yggdrasil@$(hostname)" -f ~/.ssh/id_ed25519
+      cat ~/.ssh/id_ed25519.pub
+      ```
+      - `-t ed25519`: the key type. `-N ""`: no passphrase, so `git pull` works unattended.
+      - `-C "yggdrasil@$(hostname)"`: a label that tells you, on GitHub, which host the key belongs to.
+      - `-f ~/.ssh/id_ed25519`: where the key is written. That is SSH's default key, so `git` uses it
+        without further configuration. If the file already exists, skip `ssh-keygen` and use it.
+
+      Paste the printed public key in your fork → **Settings → Deploy keys → Add deploy key**, with
+      *Allow write access* unchecked. Then clone with the SSH URL:
+      `git clone -b main git@github.com:<owner>/<repository>.git /opt/yggdrasil`.
+
+   3. **Create the secrets directory**, readable only by you:
+      ```bash
+      sudo install -d -m 700 -o "$USER" /etc/yggdrasil
+      ```
+      - `-m 700`: permissions: you can read, write and enter it; nobody else can, except `root`.
+      - `-o "$USER"`: you own it, so you can edit its files without `sudo`.
+      - `/etc/yggdrasil`: the default secrets directory, where `platform.sh`, `deploy.sh` and the
+        Jenkins agent look. To use another path, export `YGG_SECRETS_DIR=<path>` in your shell
+        profile **and** set `YGG_SECRETS_DIR=<path>` in `platform.env`.
+
+   4. **Copy the two platform env templates** into it:
+      ```bash
+      cp /opt/yggdrasil/env/platform.env.example /etc/yggdrasil/platform.env
+      cp /opt/yggdrasil/env/acme.env.example /etc/yggdrasil/acme.env
+      ```
+      - `platform.env`: the platform's settings for this host (its environment, domain, passwords,
+        Jenkins). You fill it in during step 9 or 10.
+      - `acme.env`: the DNS provider's credential, which Traefik uses to get certificates. You fill
+        it in during step 9 or 10 too.
+      - Type both lines as they are: the names are fixed, and the templates document every variable.
+
+   5. **Lock the files down**:
+      ```bash
+      chmod 600 /etc/yggdrasil/*.env
+      ```
+      - `600`: only you can read and write them. They will hold passwords and API tokens.
+      - `/etc/yggdrasil/*.env`: every env file in the directory, both files above. Run it again
+        whenever you add an env file.
+
 5. **Check it**:
    ```bash
    docker run --rm hello-world && docker compose version && python3 /opt/yggdrasil/scripts/catalog.py validate
