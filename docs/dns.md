@@ -213,7 +213,7 @@ sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
 ### 2. Start the platform against the staging CA
 
 With `ACME_CA_SERVER` set to the staging URL as above, and the rest of `platform.env` filled in
-([setup.md](setup.md) step 3):
+([setup.md](setup.md#92-the-env-files-first-pass) step 9.2):
 
 ```bash
 chmod 600 /etc/yggdrasil/*.env
@@ -247,7 +247,7 @@ itself, 30 days before it expires.
 
 ### 4. Point the GitHub App and the applications at it
 
-- **GitHub App** ([setup.md](setup.md) step 1): Homepage URL `https://jenkins.<DOMAIN>` (only
+- **GitHub App** ([setup.md](setup.md#7-create-the-github-app) step 7): Homepage URL `https://jenkins.<DOMAIN>` (only
   informational, any URL works), Webhook URL `https://jenkins.<DOMAIN>/github-webhook/` (must be
   reachable from GitHub, trailing slash included), with the `DOMAIN` of the host that runs the
   controller. It must match `JENKINS_URL`. You can create the app before the domain exists, with the

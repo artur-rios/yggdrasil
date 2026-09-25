@@ -71,7 +71,7 @@ Homologation is only reachable on the LAN. The DNS-01 challenge still issues it 
 
 ## Production: the VPS
 
-Follow [setup.md](../../setup.md) steps 3 and 5, with:
+Follow [setup.md](../../setup.md) steps 8, 9 and 11, with:
 
 ```bash
 sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
@@ -98,7 +98,7 @@ Homologation needs its **own** Docker Engine, separate from Docker Desktop's: on
 2. **Docker Engine inside Ubuntu** (same install as the VPS), with systemd: `/etc/wsl.conf` → `[boot]` `systemd=true`, then `wsl --shutdown`.
 3. **Mirrored networking.** In `%UserProfile%\.wslconfig`, `[wsl2]` `networkingMode=mirrored`. This makes WSL's ports 80/443 the workstation's own, and lets WSL reach services on Windows. Then allow inbound 80/443 for WSL in the Hyper-V firewall, so other LAN devices (a phone testing the app) can reach it. **Docker Desktop must not publish 80 or 443 at the same time.**
 4. **PostgreSQL.** Keep using the one installed on Windows: with mirrored networking, `DB_HOST=host.docker.internal` resolves to the host, and `pg_hba.conf` must allow the WSL address. Or, closer to production, install PostgreSQL inside WSL.
-5. **The platform**, as in [setup.md](../../setup.md) step 4:
+5. **The platform**, as in [setup.md](../../setup.md#10-bring-up-the-other-environment-hosts) step 10:
    ```
    ENVIRONMENT=homologation
    DOMAIN=hml.<domain>

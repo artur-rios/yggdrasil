@@ -150,12 +150,17 @@ The installer and the APK are attached to every `v*` release of this repository 
 
 ## Getting started
 
-1. **Fork this repository** and replace `catalog.yaml` with your own environments, systems and applications ([docs/catalog.md](docs/catalog.md)).
-2. **Stack files**: add a `stacks/<application>.proxy.yml` (and `stacks/<application>.yml`/`.ports.yml` when the repository has no Compose file of its own) per application. The ones here are working examples.
-3. **Each application repository** gets the three files in [`templates/application/`](templates/application).
-4. **Set up the hosts**: the GitHub App, DNS, one controller host, one host per environment, the env files. Follow [docs/setup.md](docs/setup.md), and [docs/dns.md](docs/dns.md) for the domain (Cloudflare, or free with DuckDNS).
-5. **Apply the GitHub rules**: `python github/rulesets.py --dry-run`, then without `--dry-run`.
-6. **Release**: cut a `release/x.y.z` branch in an application repository.
+**[docs/setup.md](docs/setup.md) is the step-by-step guide**, from an empty GitHub account to a
+first release. In short:
+
+| | Step | Guide |
+|---|---|---|
+| **Prepare** | Plan environments and hosts, install the tools, fork this repository | [0–2](docs/setup.md#0-plan-the-installation) |
+| | Write `catalog.yaml` and the stack files | [3–4](docs/setup.md#3-write-the-catalog), [catalog.md](docs/catalog.md) |
+| | Add the [`templates/application/`](templates/application) files to each application repository | [5](docs/setup.md#5-prepare-each-application-repository) |
+| **Accounts** | A domain and its DNS (Cloudflare, or free with DuckDNS), and a GitHub App for Jenkins | [6–7](docs/setup.md#6-domain-and-dns), [dns.md](docs/dns.md) |
+| **Hosts** | Bring up the controller host, then every other environment host, then the application env files | [8–11](docs/setup.md#8-prepare-every-host) |
+| **Finish** | Apply the GitHub rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-github-rules) |
 
 [docs/examples/docker-desktop-wsl-vps](docs/examples/docker-desktop-wsl-vps/README.md) is a complete worked example on real hardware:
 - development on Docker Desktop (Windows)
