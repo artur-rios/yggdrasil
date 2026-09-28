@@ -95,8 +95,17 @@ release() {
 }
 
 delete_branch() {
-  local repo=$1 branch=$2
-  api DELETE "repos/$owner/$repo/git/refs/heads/$branch" >/dev/null
+  local repo=$1 branch=$2 out
+  # github/rulesets.py turns on "delete head branches on merge", so GitHub has usually deleted the
+  # branch already by the time this runs, and answers 422 "Reference does not exist": that is done.
+  if ! out=$(api DELETE "repos/$owner/$repo/git/refs/heads/$branch" 2>&1); then
+    if grep -q 'Reference does not exist' <<<"$out"; then
+      echo "github: $branch was already deleted"
+      return 0
+    fi
+    echo "$out" >&2
+    return 1
+  fi
 }
 
 command=${1:-}
