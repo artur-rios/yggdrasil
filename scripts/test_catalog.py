@@ -110,5 +110,74 @@ class DeployableTests(unittest.TestCase):
         self.assertEqual(ids, ["shop-api", "shop-web"])
 
 
+TEXT = """\
+# A comment that must survive.
+owner: someone
+
+environments:
+  - id: dev
+    name: Dev
+
+systems:
+  - id: shop
+    name: Shop
+    applications:
+      - id: shop-api
+        name: API
+        kind: api
+        health: http://shop-api:8080/healthz
+
+  # The platform, kept last.
+  - id: yggdrasil
+    name: Yggdrasil
+    applications:
+      - id: traefik
+        name: Traefik
+        kind: platform
+        health: http://traefik:8082/ping
+"""
+
+NEW = {"id": "shop-web", "name": "Web", "kind": "web", "health": "http://shop-web:8080/healthz",
+       "host": "shop", "checks": ["Analyze and test", "lint"]}
+
+
+class AddApplicationTests(unittest.TestCase):
+    def test_given_an_existing_system_when_adding_then_the_application_ends_that_system(self):
+        text = c.add_application(TEXT, {"id": "shop"}, NEW)
+        parsed = c.yaml.safe_load(text)
+        self.assertEqual([a["id"] for a in parsed["systems"][0]["applications"]], ["shop-api", "shop-web"])
+        self.assertEqual(c.application(parsed, "shop-web"), NEW)
+
+    def test_given_an_existing_system_when_adding_then_every_comment_stays(self):
+        text = c.add_application(TEXT, {"id": "shop"}, NEW)
+        self.assertIn("# A comment that must survive.", text)
+        self.assertLess(text.index("id: shop-web"), text.index("# The platform, kept last."))
+
+    def test_given_a_new_system_when_adding_then_it_goes_before_the_platform_and_its_comment(self):
+        text = c.add_application(TEXT, {"id": "blog", "name": "Blog", "description": "Writing"}, dict(NEW, id="blog-web"))
+        parsed = c.yaml.safe_load(text)
+        self.assertEqual([s["id"] for s in parsed["systems"]], ["shop", "blog", "yggdrasil"])
+        self.assertEqual(parsed["systems"][1]["description"], "Writing")
+        self.assertLess(text.index("id: blog-web"), text.index("# The platform, kept last."))
+
+    def test_given_no_platform_system_when_adding_a_system_then_it_is_appended(self):
+        base = TEXT[:TEXT.index("  # The platform")]
+        text = c.add_application(base, {"id": "blog"}, dict(NEW, id="blog-web"))
+        self.assertEqual([s["id"] for s in c.yaml.safe_load(text)["systems"]], ["shop", "blog"])
+
+    def test_given_an_invalid_application_when_adding_then_it_raises_and_names_the_problem(self):
+        with self.assertRaisesRegex(c.CatalogError, "kind"):
+            c.add_application(TEXT, {"id": "shop"}, dict(NEW, kind="database"))
+
+    def test_given_values_needing_quotes_when_adding_then_they_round_trip(self):
+        app = dict(NEW, name="Web: the UI", checks=["a, b", "#c"])
+        text = c.add_application(TEXT, {"id": "shop"}, app)
+        self.assertEqual(c.application(c.yaml.safe_load(text), "shop-web"), app)
+
+    def test_given_the_repository_catalog_when_adding_then_it_still_loads(self):
+        text = c.add_application(c.CATALOG.read_text(encoding="utf-8"), {"id": "new-system"}, dict(NEW, id="new-app"))
+        self.assertEqual(c.system_of(c.yaml.safe_load(text), "new-app")["id"], "new-system")
+
+
 if __name__ == "__main__":
     unittest.main()

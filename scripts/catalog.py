@@ -6,9 +6,16 @@
     python3 scripts/catalog.py get <app> <environment> <option>
     python3 scripts/catalog.py plan <app>                  JSON: the app's environments, options resolved
     python3 scripts/catalog.py applications [--deployable] ids
+    python3 scripts/catalog.py systems                    id<TAB>name, one per line
+    python3 scripts/catalog.py show <app>                 JSON: the application's fields and its system
     python3 scripts/catalog.py owner | repository         the GitHub owner, this repository's name
+    python3 scripts/catalog.py add-application < new.json adds an application, keeping the comments
 
-Used by scripts/deploy.sh and github/rulesets.py, and by CI to reject a broken catalog. The Jenkins
+add-application reads {"system": {"id", "name", "description"}, "application": {...}} on stdin. The
+application goes at the end of that system, or of a new system (name and description only count
+then), inserted before the yggdrasil system if it is the last one.
+
+Used by scripts/deploy.sh, scripts/ygg.sh and github/rulesets.py, and by CI to reject a broken catalog. The Jenkins
 shared library resolves the same options itself (it cannot run Python on the controller); keep
 resolve() and jenkins/library/vars/yggdrasilPipeline.groovy in step. Reference: docs/catalog.md.
 
@@ -193,6 +200,90 @@ def matches_branch(environment, branch):
     return any(fnmatch.fnmatchcase(branch, pattern) for pattern in environment["branches"])
 
 
+def system_of(catalog, app_id):
+    for system, app in applications(catalog):
+        if app["id"] == app_id:
+            return system
+    raise CatalogError(f"'{app_id}' is not an application in catalog.yaml")
+
+
+SYSTEM_LINE = re.compile(r"^  - id:\s*(\S+)\s*$")
+
+
+def _flow(value):
+    """A YAML value on one line: scalars as a block would write them (plain when they can be, so
+    URLs stay unquoted), lists and mappings in flow style."""
+    if isinstance(value, (list, dict)):
+        return yaml.safe_dump(value, default_flow_style=True, width=1 << 30, sort_keys=False).strip()
+    text = yaml.safe_dump(value, width=1 << 30, allow_unicode=True).strip()
+    return text[:-4].rstrip() if text.endswith("\n...") else text
+
+
+def _entry(fields, indent):
+    lines = []
+    for i, (key, value) in enumerate(fields.items()):
+        lead = "- " if i == 0 else "  "
+        lines.append(f"{' ' * indent}{lead}{key}: {_flow(value)}\n")
+    return lines
+
+
+def add_application(text, system, app):
+    """Returns the catalog text with `app` added to `system` (a mapping with at least an id). Works
+    on the text rather than a dump of the parsed YAML, so every comment stays where it was. Expects
+    the layout of the shipped catalog: `systems:` at column 0, each system as `  - id: <id>`."""
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    try:
+        start = next(i for i, line in enumerate(lines) if line.rstrip() == "systems:")
+    except StopIteration:
+        raise CatalogError("catalog.yaml has no top-level 'systems:' line") from None
+    heads = [i for i in range(start + 1, len(lines)) if SYSTEM_LINE.match(lines[i])]
+    ids = [SYSTEM_LINE.match(lines[i]).group(1) for i in heads]
+
+    def block_end(index):
+        # The block runs to the next system (or the end), less the blank lines and comments that
+        # introduce that next system.
+        end = heads[index + 1] if index + 1 < len(heads) else len(lines)
+        while end > heads[index] and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+            end -= 1
+        return end
+
+    if system["id"] in ids:
+        index = ids.index(system["id"])
+        end = block_end(index)
+        block = lines[heads[index]:end]
+        if not any(line.rstrip() == "    applications:" for line in block):
+            new = ["    applications:\n"] + _entry(app, 6)
+        else:
+            new = _entry(app, 6)
+        lines[end:end] = new
+    else:
+        fields = {"id": system["id"], "name": system.get("name") or system["id"]}
+        if system.get("description"):
+            fields["description"] = system["description"]
+        new = _entry(fields, 2) + ["    applications:\n"] + _entry(app, 6) + ["\n"]
+        if ids and ids[-1] == "yggdrasil":
+            # Before the platform's own system and the comments that introduce it.
+            at = heads[-1]
+            while at > start + 1 and (lines[at - 1].lstrip().startswith("#")):
+                at -= 1
+        else:
+            at = len(lines)
+            new = ["\n"] + new[:-1]
+        lines[at:at] = new
+    result = "".join(lines)
+
+    # The text edit must mean exactly "this application, in this system": check it on the parse.
+    parsed = yaml.safe_load(result) or {}
+    errors = validate(parsed)
+    if errors:
+        raise CatalogError("the application would make catalog.yaml invalid:\n  " + "\n  ".join(errors))
+    if application(parsed, app["id"]) != app or system_of(parsed, app["id"])["id"] != system["id"]:
+        raise CatalogError("catalog.yaml's layout is not the expected one: add the application by hand")
+    return result
+
+
 def main(argv):
     # Plain LF even on Windows: shell callers ($(catalog.py get ...) in Git Bash) would otherwise
     # get a trailing carriage return on every value.
@@ -200,6 +291,21 @@ def main(argv):
     try:
         catalog = load()
         command, args = (argv[0], argv[1:]) if argv else ("", [])
+        if command == "add-application" and not args:
+            request = json.load(sys.stdin)
+            if not isinstance(request, dict) or not isinstance(request.get("system"), dict) \
+                    or not isinstance(request.get("application"), dict):
+                raise CatalogError('add-application reads {"system": {...}, "application": {...}}')
+            system, app = request["system"], request["application"]
+            if not isinstance(system.get("id"), str) or not ID.match(system["id"]):
+                raise CatalogError(f"system id '{system.get('id')}' must be lowercase letters, digits and dashes")
+            if any(a["id"] == app.get("id") for _, a in applications(catalog)):
+                raise CatalogError(f"'{app.get('id')}' is already an application in catalog.yaml")
+            text = add_application(CATALOG.read_text(encoding="utf-8"), system, app)
+            with open(CATALOG, "w", encoding="utf-8", newline="\n") as file:
+                file.write(text)
+            print(f"catalog.yaml: added {app['id']} to {system['id']}")
+            return 0
         if command == "validate":
             apps = sum(1 for _ in applications(catalog))
             print(f"catalog.yaml: {len(catalog['environments'])} environments, "
@@ -225,6 +331,12 @@ def main(argv):
             print(catalog.get("repository") or "yggdrasil")
         elif command == "applications":
             print("\n".join(a["id"] for _, a in applications(catalog, deployable="--deployable" in args)))
+        elif command == "systems":
+            print("\n".join(f"{s['id']}\t{s.get('name', s['id'])}" for s in catalog.get("systems") or []))
+        elif command == "show" and len(args) == 1:
+            app = dict(application(catalog, args[0]))
+            app["system"] = system_of(catalog, args[0])["id"]
+            print(json.dumps(app, indent=2))
         else:
             print(__doc__, file=sys.stderr)
             return 2

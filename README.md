@@ -162,6 +162,9 @@ first release. In short:
 | **Hosts** | Bring up the controller host, then every other environment host, then the application env files | [8–11](docs/setup.md#8-prepare-every-host) |
 | **Finish** | Apply the GitHub rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-github-rules) |
 
+On an Ubuntu host, [`scripts/ygg.sh`](docs/cli.md) does the host steps from a menu: it installs
+the tools, sets up applications, shows what runs and changes their configuration.
+
 [docs/examples/docker-desktop-wsl-vps](docs/examples/docker-desktop-wsl-vps/README.md) is a complete worked example on real hardware:
 - development on Docker Desktop (Windows)
 - a staging environment in WSL on the same machine
@@ -173,6 +176,7 @@ first release. In short:
 |---|---|
 | `catalog.yaml` | Environments, systems and applications: what everything else reads |
 | `stacks/` | Per-application Compose files and overlays: `<app>.proxy.yml`, `<app>.ports.yml`, optional `<app>.<environment>.yml` |
+| `scripts/ygg.sh` | The host helper: a menu to install the tools, set up an application, see what runs and change an application's configuration ([docs/cli.md](docs/cli.md)) |
 | `scripts/deploy.sh` | Build, label, deploy, health-wait and roll back one application in one environment. Jenkins runs it; so can you |
 | `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
 | `scripts/platform.sh` | Brings a host's platform up or down |
@@ -184,7 +188,7 @@ first release. In short:
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, DNS and certificates, status API contract, worked example |
+| `docs/` | Catalog reference, setup guide, host helper, DNS and certificates, status API contract, worked example |
 
 ## Day to day
 
@@ -192,7 +196,9 @@ first release. In short:
 |---|---|
 | Release an application | `git switch -c release/1.4.0 develop && git push -u origin release/1.4.0`, then open the PR into `main` |
 | Deploy by hand | `scripts/deploy.sh <environment> <application> <checkout> <version>` on the environment's host, or "Build with Parameters" → `DEPLOY_TO` in Jenkins for `manual` environments that set an `agent` |
-| Add an application, environment or system | [docs/setup.md#adding-things](docs/setup.md#adding-things) |
+| Add an application, environment or system | `scripts/ygg.sh add` for an application ([docs/cli.md](docs/cli.md#set-up-an-application)); [docs/setup.md#adding-things](docs/setup.md#adding-things) for all three |
+| See what runs on a host | `scripts/ygg.sh status` |
+| Change an application's env file and redeploy it | `scripts/ygg.sh config <application>` |
 | Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
 | Change GitHub rules | `python3 github/rulesets.py --dry-run`, then without |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |
