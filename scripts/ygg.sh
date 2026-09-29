@@ -97,7 +97,9 @@ choose() {
   done
 }
 
-pause() { [[ -t 0 ]] && read -r -p "${dim}Enter to continue${reset} " _ || true; }
+pause() {
+  if [[ -t 0 ]]; then read -r -p "${dim}Enter to continue${reset} " _ || true; fi
+}
 
 # ---- Host facts ---------------------------------------------------------------------------------
 
@@ -741,7 +743,7 @@ print(json.dumps({"system": system, "application": app}))
   if [[ "$mode" == proxy ]] && ! docker network inspect edge >/dev/null 2>&1; then
     note "The platform isn't up on this host (no edge network): deploy after scripts/platform.sh up."
   elif [[ -f "$secrets/$environment/$id.env" ]] && docker_ok && confirm "Clone the repository and deploy $id to $environment now?"; then
-    clone "$id" "$repository" && deploy "$id" "$environment" || true
+    if clone "$id" "$repository"; then deploy "$id" "$environment" || true; fi
   fi
 
   title "Next"
@@ -931,7 +933,7 @@ configure_app() {
       Hide*) reveal="" ;;
       Apply*)
         note "Containers read their env file when they are created: deploy.sh recreates them (and rebuilds the image, which a web front end's build arguments need)."
-        deploy "$id" "$host_env" && changed="" || true
+        if deploy "$id" "$host_env"; then changed=""; fi
         pause
         ;;
       Back)
