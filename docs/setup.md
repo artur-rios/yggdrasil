@@ -329,6 +329,10 @@ isn't installed on gets no Jenkins job branches and never deploys.
 On **each** host that runs a `proxy` environment, the controller host included. The commands are for
 Ubuntu or Debian, over SSH.
 
+On Ubuntu, once 4.1 and 4.2 have cloned your fork, `scripts/ygg.sh install` in it does 1 to 3 and
+the rest of 4, asking before each one, and `scripts/ygg.sh check` covers 5
+([cli.md](cli.md#check-and-install)). The steps below are what it runs.
+
 1. **Docker Engine and the Compose plugin.** Follow
    [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) for your distribution:
    add Docker's `apt` repository, then install the packages `docker-ce`, `docker-ce-cli`,
@@ -781,6 +785,9 @@ when it starts; it never deletes agents (remove them in **Manage Jenkins → Nod
 ## Adding things
 
 ### An application
+
+`scripts/ygg.sh add` does 1, 2 and 4 on the host you run it on, and prints the rest
+([cli.md](cli.md#set-up-an-application)).
 
 1. **Catalog:** add it under its system (or a new system) in `catalog.yaml`: `id`, `kind`, `health`, and if they apply `host`, `metrics` and `checks`. Add `environments` only if it doesn't deploy everywhere.
 2. **Stack files** in `stacks/`, as in [step 4](#4-write-the-stack-files).
