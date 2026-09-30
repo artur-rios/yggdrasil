@@ -29,7 +29,9 @@
 #
 # The env file is <secrets>/<environment>/<stack>.env, secrets being $YGG_SECRETS_DIR (default
 # /etc/yggdrasil). Start it from the application repository's own env template; examples for the
-# sample applications are in docs/examples/docker-desktop-wsl-vps/env/.
+# sample applications are in docs/examples/docker-desktop-wsl-vps/env/. Its path is exported as
+# APP_ENV_FILE, for stacks that hand the whole file to the container (env_file:, as the stacks
+# scripts/ygg.sh generates do).
 set -euo pipefail
 
 die() { echo "deploy: $*" >&2; exit 1; }
@@ -70,6 +72,7 @@ fi
 # Read by the Compose files. Shell variables win over the env file, so the tag cannot be overridden
 # by a stale value left in it. API_IMAGE_TAG is the name the API repositories' own Compose files use.
 export APP_DIR="$app_dir"
+export APP_ENV_FILE="$env_file"
 export IMAGE_TAG="$version"
 export API_IMAGE_TAG="$version"
 

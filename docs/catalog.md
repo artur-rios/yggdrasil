@@ -188,6 +188,9 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py plan <app>` | JSON: each environment the application deploys to, with every option resolved |
 | `python3 scripts/catalog.py get <app> <environment> <option>` | One resolved option. Lists are space-separated, booleans `true`/`false` |
 | `python3 scripts/catalog.py owner` / `repository` | The GitHub owner; this repository's name (default `yggdrasil`) |
+| `python3 scripts/catalog.py systems` | `<id><TAB><name>`, one system per line |
+| `python3 scripts/catalog.py show <app>` | JSON: the application's fields, plus `system`, its system's id |
+| `python3 scripts/catalog.py add-application < new.json` | Adds an application, keeping every comment of `catalog.yaml`. Reads `{"system": {"id", "name", "description"}, "application": {...}}`: the application goes at the end of that system, or of a new one (then `name` and `description` count), placed before the `yggdrasil` system. Refuses anything that would make the catalog invalid. [`scripts/ygg.sh add`](cli.md) writes the JSON for you |
 
 It exits with `0` on success, `1` for an invalid catalog, an unknown application or an application
 that doesn't deploy to that environment, and `2` for a wrong command.
