@@ -28,7 +28,8 @@ check_profile_variables() {
   profiles=$(set -a; . "$env_file"; echo ",${COMPOSE_PROFILES:-},")
   local required=()
   [[ "$profiles" == *,jenkins,* ]] && required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD GITHUB_APP_ID GITHUB_APP_KEY_FILE)
-  [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET DOCKER_GID)
+  # DOCKER_GID too, but on every host: compose.yml requires it for the socket proxies.
+  [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET)
   local name value
   for name in "${required[@]}"; do
     # shellcheck source=/dev/null
@@ -43,7 +44,7 @@ check_environment() {
   # shellcheck source=/dev/null
   environment=$(set -a; . "$env_file"; echo "${ENVIRONMENT:-}")
   known=$(python3 "$root/scripts/catalog.py" environments) || exit 1
-  grep -qx "$environment" <<<"$known" \
+  grep -Fqx "$environment" <<<"$known" \
     || die "ENVIRONMENT='$environment' in $env_file is not an environment in catalog.yaml ($(paste -sd, - <<<"$known"))"
 }
 

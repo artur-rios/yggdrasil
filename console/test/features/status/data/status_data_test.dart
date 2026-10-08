@@ -220,7 +220,7 @@ void main() {
       expect(report.isStale, isFalse);
       expect(report.snapshot!.receivedAt, received);
       expect(report.snapshot!.status.environment, 'production');
-      expect(repository.lastFor('production'), same(report.snapshot));
+      expect(repository.lastFor(production), same(report.snapshot));
     });
 
     test('401 is an auth failure', () async {
@@ -263,7 +263,7 @@ void main() {
       final report = await repository.refresh(homologation, 't');
 
       expect(report.snapshot, isNull);
-      expect(repository.lastFor('production'), isNotNull);
+      expect(repository.lastFor(production), isNotNull);
     });
 
     test('an unexpected error is an invalid response', () async {
@@ -282,8 +282,27 @@ void main() {
       await repository.refresh(production, 't');
       repository.forget('production');
 
-      expect(repository.lastFor('production'), isNull);
+      expect(repository.lastFor(production), isNull);
     });
+
+    test(
+      'a snapshot from the URL an environment had before is not reused',
+      () async {
+        final source = FakeStatusSource();
+        final repository = StatusRepository(source);
+        final moved = production.copyWith(
+          url: 'https://yggdrasil.new.example.com',
+        );
+
+        await repository.refresh(production, 't');
+        source.respond = (_, _) =>
+            throw const StatusException(StatusFailureKind.network);
+        final report = await repository.refresh(moved, 't');
+
+        expect(report.snapshot, isNull);
+        expect(repository.lastFor(moved), isNull);
+      },
+    );
   });
 
   test('the demo environment follows the contract rules', () {

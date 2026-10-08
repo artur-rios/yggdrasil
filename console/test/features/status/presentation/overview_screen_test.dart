@@ -70,7 +70,7 @@ void main() {
     expect(find.text('Heimdall web'), findsOneWidget);
     expect(find.text('v1.4.0 · 3f2a9c1'), findsOneWidget);
     expect(find.text('12 ms'), findsOneWidget);
-    expect(find.text('running · healthy · 0 restarts'), findsNWidgets(2));
+    expect(find.text('running · healthy'), findsNWidgets(2));
     expect(find.text('Repository'), findsNWidgets(2));
 
     await tester.tap(systemHeader('heimdall'));
@@ -371,8 +371,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey<String>('settings')));
     await settle(tester);
 
-    // The settings list shows the adopted name.
-    expect(find.text('production'), findsOneWidget);
+    // The settings list shows the adopted name: the response's environmentName.
+    expect(find.text('Production'), findsOneWidget);
     expect(find.text(Environment.demoUrl), findsNothing);
   });
 }

@@ -56,7 +56,23 @@ mode=$(option mode) || exit 1
 wait_timeout=${DEPLOY_WAIT_TIMEOUT:-$(option waitTimeout)}
 keep=${DEPLOY_KEEP_IMAGES:-$(option keepImages)}
 [[ "$version" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid version '$version'"
-[[ -f "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"
+[[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"
+
+# One deploy of a stack to an environment at a time: two at once (two release branches pushed
+# together, or a push next to a manual deploy) would each take the other's half-started containers
+# for the version to roll back to. The env file is the lock, so the Jenkins agent, which mounts it,
+# and a deploy by hand on the host exclude each other. Released when this script exits.
+if command -v flock >/dev/null 2>&1; then
+  exec {lock}<"$env_file"
+  locked=0
+  flock --nonblock --conflict-exit-code 75 "$lock" || locked=$?
+  if ((locked == 75)); then
+    echo "deploy: another deploy of $stack to $environment is running; waiting for it to finish" >&2
+    flock "$lock"
+  elif ((locked != 0)); then
+    echo "deploy: cannot lock $env_file (its file system may not support it); going on unlocked" >&2
+  fi
+fi
 
 files=()
 if [[ -f "$root/stacks/$stack.yml" ]]; then
@@ -80,7 +96,8 @@ compose() { docker compose --project-name "$stack" --env-file "$env_file" "${fil
 
 # What the status API reports as the deployment. The tag is <version>-<commit> when Jenkins deploys;
 # a hand deploy may use any tag, and then the whole tag is the version.
-commit=$(git -C "$app_dir" rev-parse --short=7 HEAD 2>/dev/null || true)
+# Exactly 7 characters, as Jenkins writes it (--short can return more to stay unambiguous).
+commit=$(git -C "$app_dir" rev-parse HEAD 2>/dev/null | cut -c1-7 || true)
 release=$version
 [[ -n "$commit" && "$version" == *"-$commit" ]] && release=${version%-"$commit"}
 deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -106,13 +123,27 @@ write_labels() {
 write_labels "$release" "$commit" "$deployed_at"
 files+=(-f "$labels_file")
 
-# What is running now, to come back to. Empty on a first deploy.
-previous=$(docker ps --filter "label=com.docker.compose.project=$stack" --format '{{.Image}}' | head -n1)
-previous_tag=${previous##*:}
-[[ "$previous" == *:* ]] || previous_tag=""
+# The images this deploy builds and tags with the version (<stack>:<version>), as opposed to the
+# ones a stack also runs as they are (a database's postgres:16): only those are rolled back and
+# pruned.
+repositories=()
+while read -r image; do
+  if [[ "$image" == *":$version" ]]; then repositories+=("${image%":$version"}"); fi
+done < <(compose config --images | sort -u)
+
+# What is running now, to come back to: the newest running container of one of those images. Not
+# just any container of the project, whose tag ("16") would mean nothing. Empty on a first deploy.
+previous="" previous_tag="" previous_container=""
+while read -r id image; do
+  for repository in "${repositories[@]}"; do
+    if [[ "$image" == "$repository:"* ]]; then
+      previous=$image previous_tag=${image#"$repository":} previous_container=$id
+      break 2
+    fi
+  done
+done < <(docker ps --filter "label=com.docker.compose.project=$stack" --format '{{.ID}} {{.Image}}')
 previous_labels=()
 if [[ -n "$previous" ]]; then
-  previous_container=$(docker ps --filter "label=com.docker.compose.project=$stack" --format '{{.ID}}' | head -n1)
   for label in version commit deployed_at; do
     previous_labels+=("$(docker inspect --format "{{index .Config.Labels \"yggdrasil.$label\"}}" "$previous_container" | sed "s/<no value>//")")
   done
@@ -153,6 +184,8 @@ fi
 
 # Keep the last few images of this stack for rollbacks; drop older ones. Images are named after the
 # stack (<stack>:<version>).
-docker image ls "$stack" --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' \
-  | sort -r | tail -n +"$((keep + 1))" | cut -f2 \
-  | xargs -r docker image rm >/dev/null 2>&1 || true
+for repository in "${repositories[@]}"; do
+  docker image ls "$repository" --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' \
+    | sort -r | tail -n +"$((keep + 1))" | cut -f2 \
+    | xargs -r docker image rm >/dev/null 2>&1 || true
+done

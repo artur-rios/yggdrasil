@@ -1,0 +1,35 @@
+version: 2
+
+# Dependency update pull requests. Every pull request targets develop: main only receives release/*
+# pull requests (CONTRIBUTING.md), and the branch-policy workflow accepts dependabot/* heads into
+# develop.
+# Platform images in platform/compose.yml float on purpose (see its comments), so docker is not
+# listed here.
+
+updates:
+  - package-ecosystem: pub
+    directory: /console
+    target-branch: develop
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: nuget
+    directory: /status
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      microsoft:
+        patterns:
+          - "Microsoft.*"
+          - "System.*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - '*'

@@ -81,7 +81,7 @@ class StatusController extends Notifier<StatusViewState> {
 
     return StatusViewState(
       environment: environment,
-      snapshot: ref.read(statusRepositoryProvider).lastFor(environment.id),
+      snapshot: ref.read(statusRepositoryProvider).lastFor(environment),
     );
   }
 
@@ -105,9 +105,10 @@ class StatusController extends Notifier<StatusViewState> {
         .read(statusRepositoryProvider)
         .refresh(environment, token);
 
-    // The user may have switched environments meanwhile; the repository kept
-    // the result, but it is not what the screen shows any more.
-    if (state.environment?.id != environment.id) {
+    // The user may have switched environments, or pointed this one at another
+    // URL, meanwhile: the answer is not about what the screen shows any more.
+    if (state.environment?.id != environment.id ||
+        state.environment?.baseUrl != environment.baseUrl) {
       return;
     }
 
@@ -122,7 +123,7 @@ class StatusController extends Notifier<StatusViewState> {
     if (report.failure == null && snapshot != null) {
       await environments.adoptResponseName(
         environment.id,
-        snapshot.status.environment,
+        snapshot.status.displayName,
       );
     }
   }

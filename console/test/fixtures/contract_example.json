@@ -1,5 +1,6 @@
 {
   "environment": "production",
+  "environmentName": "Production",
   "generatedAt": "2026-09-18T18:04:11Z",
   "status": "degraded",
   "systems": [
@@ -26,7 +27,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-17T21:40:05Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,

@@ -114,7 +114,7 @@ public class ApiTests : IClassFixture<StatusApiFactory>
                     "state": "running",
                     "health": "healthy",
                     "startedAt": "2026-09-17T21:40:05Z",
-                    "restartCount": 0
+                    "restartCount": null
                   },
                   "probe": {
                     "healthy": true,
@@ -174,6 +174,8 @@ public class ApiTests : IClassFixture<StatusApiFactory>
         Assert.Equal("https://github.com/artur-rios/heimdall-api", (string?)api["repository"]);
         Assert.Equal("1.4.0", (string?)api["deployment"]!["version"]);
         Assert.Equal("2026-09-17T21:40:05Z", (string?)api["container"]!["startedAt"]);
+        Assert.True(api["container"]!.AsObject().ContainsKey("restartCount"));
+        Assert.Null(api["container"]!["restartCount"]);
         Assert.Matches(@"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", (string?)body["generatedAt"]);
 
         // The platform system: traefik up, jenkins not on this host and so neutral.

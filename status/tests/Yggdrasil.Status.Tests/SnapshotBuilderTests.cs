@@ -28,7 +28,7 @@ public class SnapshotBuilderTests
     public void GivenAContainerWithDeployLabels_WhenBuilt_ThenDeploymentAndContainerAreFilled()
     {
         var builder = new SnapshotBuilder(catalog, TestData.Options());
-        var container = new ContainerDetails("c1", "running", "healthy", TestData.Now.AddHours(-1), 0, "heimdall-api:1.4.0-3f2a9c1",
+        var container = new ContainerDetails("c1", "running", "healthy", TestData.Now.AddHours(-1), false, "heimdall-api:1.4.0-3f2a9c1",
             new Dictionary<string, string>
             {
                 ["yggdrasil.version"] = "1.4.0",
@@ -41,14 +41,15 @@ public class SnapshotBuilderTests
 
         Assert.Equal(StatusLevel.Up, app.Status);
         Assert.Equal(new DeploymentInfo("1.4.0", "3f2a9c1", "2026-09-17T21:40:02Z", "heimdall-api:1.4.0-3f2a9c1"), app.Deployment);
-        Assert.Equal(new ContainerInfo("running", "healthy", TestData.Now.AddHours(-1), 0), app.Container);
+        // restartCount stays null: Docker's container list, all the status API may read, has no count.
+        Assert.Equal(new ContainerInfo("running", "healthy", TestData.Now.AddHours(-1), null), app.Container);
     }
 
     [Fact]
     public void GivenAPlatformContainerWithoutDeployLabels_WhenBuilt_ThenEachDeploymentFieldIsNullButImage()
     {
         var builder = new SnapshotBuilder(catalog, TestData.Options());
-        var container = new ContainerDetails("c1", "running", null, TestData.Now.AddHours(-1), 0, "traefik:v3.5", new Dictionary<string, string>());
+        var container = new ContainerDetails("c1", "running", null, TestData.Now.AddHours(-1), false, "traefik:v3.5", new Dictionary<string, string>());
 
         var app = builder.BuildApplication(App("traefik"), new Observation(new DockerObservation.Found(container), TestData.Probe()), TestData.Now);
 
@@ -74,13 +75,13 @@ public class SnapshotBuilderTests
     {
         var builder = new SnapshotBuilder(catalog, TestData.Options());
         var up = new Observation(new DockerObservation.Found(
-            new ContainerDetails("c", "running", null, TestData.Now.AddDays(-1), 0, "i", new Dictionary<string, string>())), TestData.Probe());
+            new ContainerDetails("c", "running", null, TestData.Now.AddDays(-1), false, "i", new Dictionary<string, string>())), TestData.Probe());
 
         var snapshot = builder.Build(new Dictionary<string, Observation>
         {
             ["heimdall-api"] = up,
             ["heimdall-ui"] = new(new DockerObservation.Found(
-                new ContainerDetails("c", "exited", null, null, 0, "i", new Dictionary<string, string>())), TestData.Probe(false, statusCode: null, error: "connection refused")),
+                new ContainerDetails("c", "exited", null, null, false, "i", new Dictionary<string, string>())), TestData.Probe(false, statusCode: null, error: "connection refused")),
             ["traefik"] = up,
             ["jenkins"] = new(new DockerObservation.NotFound(), null),
         }, TestData.Now);

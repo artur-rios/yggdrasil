@@ -1,5 +1,6 @@
 {
   "environment": "production",
+  "environmentName": "Production",
   "generatedAt": "2026-09-18T18:04:11Z",
   "status": "degraded",
   "systems": [
@@ -26,7 +27,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-17T21:40:05Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -53,7 +54,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-12T14:02:44Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -88,7 +89,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-18T09:15:36Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": false,
@@ -115,7 +116,7 @@
             "state": "running",
             "health": null,
             "startedAt": "2026-09-15T19:48:15Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -150,7 +151,7 @@
             "state": "exited",
             "health": "unhealthy",
             "startedAt": "2026-09-18T17:51:24Z",
-            "restartCount": 5
+            "restartCount": null
           },
           "probe": {
             "healthy": false,
@@ -185,7 +186,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-01T08:00:12Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -212,7 +213,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-01T08:00:15Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -239,7 +240,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-01T08:00:15Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -266,7 +267,7 @@
             "state": "running",
             "health": null,
             "startedAt": "2026-09-01T08:00:14Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -293,7 +294,7 @@
             "state": "running",
             "health": "starting",
             "startedAt": "2026-09-18T18:01:47Z",
-            "restartCount": 2
+            "restartCount": null
           },
           "probe": {
             "healthy": false,
@@ -320,7 +321,7 @@
             "state": "running",
             "health": null,
             "startedAt": "2026-09-01T08:00:16Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -347,7 +348,7 @@
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-01T08:00:18Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,

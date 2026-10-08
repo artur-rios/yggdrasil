@@ -40,7 +40,10 @@ public sealed record ApplicationStatus(
 
 public sealed record DeploymentInfo(string? Version, string? Commit, string? DeployedAt, string? Image);
 
-public sealed record ContainerInfo(string State, string? Health, DateTimeOffset? StartedAt, int RestartCount);
+// RestartCount is always null: only the container inspect has it, and the inspect also carries every
+// container's environment, which the status API must not be able to read. Kept in the contract so a
+// console that reads it still finds the field.
+public sealed record ContainerInfo(string State, string? Health, DateTimeOffset? StartedAt, int? RestartCount);
 
 public sealed record ProbeResult(bool Healthy, int? StatusCode, long LatencyMs, DateTimeOffset CheckedAt, string? Error);
 

@@ -98,6 +98,11 @@ jobs:
       - run: pip install --quiet pyyaml
       - name: Test the catalog tooling
         run: python3 -m unittest discover -s scripts -v
+      - name: Test the Docker socket proxies against Traefik and Alloy
+        # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API.
+        env:
+          YGG_DOCKER_TESTS: "1"
+        run: python3 -m unittest scripts.test_socket_proxies -v
       - name: Check the catalog
         # The same validation deploy.sh, platform.sh and rulesets.py run before using it.
         run: python3 scripts/catalog.py validate
@@ -112,6 +117,7 @@ jobs:
           TRAEFIK_DASHBOARD_USERS='admin:x'
           GRAFANA_ADMIN_PASSWORD=x
           YGGDRASIL_STATUS_TOKEN=0000000000000000000000000000000000000000
+          DOCKER_GID=999
           YGG_SECRETS_DIR=$secrets
           ENV
           touch "$secrets/acme.env"

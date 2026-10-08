@@ -45,7 +45,7 @@ public sealed class SnapshotBuilder(EnvironmentCatalog catalog, StatusOptions op
             Url(application, options.Domain),
             Repository(application, catalog.Owner),
             container is null ? null : Deployment(container),
-            container is null ? null : new ContainerInfo(container.State, container.Health, container.StartedAt, container.RestartCount),
+            container is null ? null : new ContainerInfo(container.State, container.Health, container.StartedAt, null),
             observation.Probe);
     }
 

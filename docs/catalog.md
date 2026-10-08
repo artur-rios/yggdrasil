@@ -25,9 +25,10 @@ python3 scripts/catalog.py validate
 - `validate` prints `catalog.yaml: N environments, N systems, N applications`, or every problem it
   found. CI runs it on every pull request. `deploy.sh`, `platform.sh` and `github/rulesets.py`
   refuse a catalog it rejects.
-- The **status API** validates the catalog again when it starts, with a few stricter rules (marked
-  *status API* in the tables below). A catalog that fails them stops the status API: it lists every
-  problem in its log (`docker logs yggdrasil-status-1`) and exits.
+- The **status API** validates the catalog again when it starts. A catalog that fails its rules
+  stops the status API: it lists every problem in its log (`docker logs yggdrasil-status-1`) and
+  exits. `validate` checks the same rules (marked *status API* in the tables below), so CI rejects
+  such a catalog before any host loads it.
 - **Jenkins** doesn't validate it: a broken catalog shows up as a Job DSL or pipeline error.
 
 The catalog is read from each host's checkout when the containers start. After changing it, see
@@ -83,6 +84,8 @@ environments:
 | `checksTimeout` | `3600` | For `trigger: release`: seconds Jenkins waits for every GitHub Actions check on the release pull request before failing the build. Only the value on the application's **first** release environment counts. |
 
 Any other key is an error. Numbers must be whole and at least 1; `approval` is `true` or `false`.
+An application that switches an environment to `trigger: branch` needs `branches` from its override
+or from the environment.
 
 The list order is the **promotion order**: the order release environments deploy in on a release
 pull request, and the order a push deploys to several matching `branch` environments.
@@ -138,14 +141,14 @@ systems:
 
 | Field | Meaning |
 |---|---|
-| `id` | Required. Unique across the catalog. It is also the repository name (unless `repository` says otherwise), the Compose project (`deploy.sh` names it so) and the Jenkins job. Its Compose files must name the image `<id>` (old images are pruned by that name) and give the service the network alias `<id>` on `edge` and `telemetry`, which `health` and `metrics` use. |
+| `id` | Required. Unique across the catalog. It is also the repository name (unless `repository` says otherwise), the Compose project (`deploy.sh` names it so) and the Jenkins job. Its Compose files must tag the images they build with the version `deploy.sh` passes (`<id>:${IMAGE_TAG}`; `API_IMAGE_TAG` works too): those are the images it rolls back and prunes, while other services' images (a database's) are left alone and give the service the network alias `<id>` on `edge` and `telemetry`, which `health` and `metrics` use. |
 | `name` | Required (*status API*). Display name. |
 | `kind` | Required. `api`, `web`, `worker` or `platform`, shown by the console. `platform` marks yggdrasil's own components (Traefik, Prometheus...). They are started by `platform/compose.yml` through `scripts/platform.sh`, not by the catalog: their entries only let the status API probe them and Prometheus scrape them. Jenkins creates no job, agent or ruleset for them. |
-| `repository` | Repository name under `owner`. Default: the id; none for `platform` components. |
+| `repository` | Repository name under `owner`: letters, digits, `.`, `_` and `-` (*status API*). Default: the id; none for `platform` components. |
 | `health` | Required. Absolute URL the status API probes over the Docker networks, e.g. `http://shop-api:8080/healthz`. A 2xx answer is healthy. |
 | `metrics` | `host:port` Prometheus scrapes, if the application exposes metrics (*status API*: must be `host:port`). |
 | `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. Starts with `/`, and needs `metrics` (*status API*). |
-| `host` | The link the console shows: `https://<host>.<DOMAIN>`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
+| `host` | A lowercase host name: letters, digits and dashes (*status API*). The link the console shows: `https://<host>.<DOMAIN>`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
 | `checks` | GitHub Actions job names required on `develop` and `main`, besides `branch-policy`: the job part of `<workflow> / <job>` in a pull request's Checks tab. Only checks from GitHub Actions satisfy them. Only list checks that run on **every** pull request: a path-filtered workflow that doesn't run would leave its required check pending forever. No empty entries (*status API*). |
 | `container` | `{project, service}`: the Compose labels that find the application's container. `project` defaults to the id, which is what `deploy.sh` uses. Without `service`, **any** container of the project matches (a running one first, then the newest), so set `service` when the stack has more than one service, e.g. `{ service: api }` next to a database. |
 | `environments` | See below. |

@@ -8,12 +8,12 @@ public class StatusRulesTests
 {
     private static readonly DateTimeOffset Now = TestData.Now;
 
-    private static DockerObservation Running(string? health = null, int restarts = 0, DateTimeOffset? startedAt = null) =>
-        new DockerObservation.Found(new ContainerDetails("c1", "running", health, startedAt ?? Now.AddDays(-1), restarts, "img:1",
+    private static DockerObservation Running(string? health = null, bool restarted = false, DateTimeOffset? startedAt = null) =>
+        new DockerObservation.Found(new ContainerDetails("c1", "running", health, startedAt ?? Now.AddDays(-1), restarted, "img:1",
             new Dictionary<string, string>()));
 
     private static DockerObservation InState(string state) =>
-        new DockerObservation.Found(new ContainerDetails("c1", state, null, Now.AddDays(-1), 0, "img:1", new Dictionary<string, string>()));
+        new DockerObservation.Found(new ContainerDetails("c1", state, null, null, false, "img:1", new Dictionary<string, string>()));
 
     [Fact]
     public void GivenARunningContainerWithoutHealthCheckAndA2xxProbe_ThenUp() =>
@@ -46,12 +46,12 @@ public class StatusRulesTests
     [Fact]
     public void GivenARestartInTheLastTenMinutes_ThenDegraded() =>
         Assert.Equal(StatusLevel.Degraded,
-            StatusRules.ForApplication(Running(restarts: 1, startedAt: Now.AddMinutes(-9)), TestData.Probe(), Now));
+            StatusRules.ForApplication(Running(restarted: true, startedAt: Now.AddMinutes(-9)), TestData.Probe(), Now));
 
     [Fact]
     public void GivenARestartMoreThanTenMinutesAgo_ThenUp() =>
         Assert.Equal(StatusLevel.Up,
-            StatusRules.ForApplication(Running(restarts: 3, startedAt: Now.AddMinutes(-11)), TestData.Probe(), Now));
+            StatusRules.ForApplication(Running(restarted: true, startedAt: Now.AddMinutes(-11)), TestData.Probe(), Now));
 
     [Fact]
     public void GivenAFreshDeployWithNoRestart_ThenUp() =>

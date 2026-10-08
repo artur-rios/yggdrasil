@@ -14,6 +14,8 @@ void main() {
 
     test('reads the environment fields', () {
       expect(status.environment, 'production');
+      expect(status.environmentName, 'Production');
+      expect(status.displayName, 'Production');
       expect(status.generatedAt, DateTime.utc(2026, 9, 18, 18, 4, 11));
       expect(status.status, Status.degraded);
       expect(status.systems, hasLength(1));
@@ -52,7 +54,8 @@ void main() {
       expect(container.state, 'running');
       expect(container.health, 'healthy');
       expect(container.startedAt, DateTime.utc(2026, 9, 17, 21, 40, 5));
-      expect(container.restartCount, 0);
+      // The status API no longer has the count: null, as the contract says.
+      expect(container.restartCount, isNull);
 
       final probe = application.probe!;
       expect(probe.healthy, isTrue);
@@ -140,7 +143,7 @@ void main() {
 
       expect(worker.kind, ApplicationKind.worker);
       expect(worker.status, Status.down);
-      expect(worker.container!.restartCount, 5);
+      expect(worker.container!.restartCount, isNull);
     });
   });
 
@@ -265,6 +268,13 @@ void main() {
       final json = minimal()..['generatedAt'] = 'yesterday';
 
       expect(EnvironmentStatus.fromJson(json).generatedAt, isNull);
+    });
+
+    test('without environmentName, the id is the display name', () {
+      final status = EnvironmentStatus.fromJson(minimal());
+
+      expect(status.environmentName, isNull);
+      expect(status.displayName, 'homologation');
     });
 
     test('unknown extra fields are ignored', () {

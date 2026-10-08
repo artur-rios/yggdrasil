@@ -13,7 +13,7 @@ import 'package:yggdrasil_console/features/status/data/status_source.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
 import 'package:yggdrasil_console/features/status/presentation/status_controller.dart';
 
-/// The example of `docs/status-api.md`, verbatim.
+/// The example of `docs/status-api.md`, with the sample installation's systems.
 String contractExampleJson() =>
     File('test/fixtures/contract_example.json').readAsStringSync();
 
