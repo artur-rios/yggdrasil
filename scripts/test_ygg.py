@@ -144,10 +144,133 @@ class EnvironmentCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("'staging'", result.stderr)
 
+    def config(self, answers, *arguments):
+        """ygg.sh config driven through its prompts, with its own TMPDIR to see what it leaves there."""
+        self.tmp = self.temp / "tmp"
+        self.tmp.mkdir(exist_ok=True)
+        return subprocess.run(["bash", str(SCRIPT), "config", *arguments], input=answers, capture_output=True,
+                              text=True, env=dict(self.env, TMPDIR=str(self.tmp)))
+
+    def test_given_an_application_without_an_env_file_when_configured_then_it_is_written_from_its_stacks(self):
+        # Enter: create it; the DOMAIN platform.env doesn't set; 6: Back.
+        result = self.config("\ntest.example.com\n6\n", "heimdall-api", "homologation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        file = self.secrets / "homologation" / "heimdall-api.env"
+        self.assertIn("PUBLIC_HOST=heimdall-api-hml.test.example.com", file.read_text())
+        self.assertEqual(file.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
     def test_given_a_bad_usage_when_env_then_it_says_how(self):
         result = self.ygg("env", "start", "development", "production")
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage: scripts/ygg.sh env", result.stderr)
+
+
+class VariablesStoreTests(EnvironmentCommandTests):
+    def use_store(self):
+        import sys
+        sys.path.insert(0, str(SCRIPT.parent))
+        import vars as v
+        (self.secrets / "platform.env").unlink()
+        v.init(self.secrets, confirm=lambda prompt: "saved")
+        with v.Store.open(self.secrets) as store:
+            store.set("platform", "ENVIRONMENTS", "homologation,production", None, "set")
+
+    def test_given_a_store_when_env_status_then_environments_come_from_it(self):
+        self.use_store()
+        result = self.ygg("env", "status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("homologation", result.stdout)
+        self.assertNotIn("development", result.stdout)
+
+    def test_given_a_wrong_key_when_env_status_then_it_stops_instead_of_asking(self):
+        self.use_store()
+        import cryptography.fernet as f
+        (self.secrets / "vars.key").write_bytes(f.Fernet.generate_key())
+        result = self.ygg("env", "status")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("vars.key", result.stderr)
+
+    def test_given_a_reference_unresolved_in_an_environment_this_host_does_not_run_then_ygg_works(self):
+        self.use_store()
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            for environment in ("homologation", "production"):
+                store.set(f"app:heimdall-api@{environment}", "HEIMDALL_AUTH_TOKEN_SECRET", "s" * 40, None, "set")
+            store.set("app:fortuna-api", "FORTUNA_AUTH_TOKEN_SECRET",
+                      "${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}", None, "set")
+        result = self.ygg("env", "status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_given_a_damaged_store_when_env_status_then_the_message_carries_the_check_errors(self):
+        self.use_store()
+        import sqlite3
+        database = self.secrets / "vars.db"
+        conn = sqlite3.connect(database)
+        root = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='sqlite_autoindex_variables_1'").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        conn.close()
+        # One cell fewer in the index's page: the store opens, its integrity check fails.
+        data = bytearray(database.read_bytes())
+        header = page_size * (root - 1)
+        count = int.from_bytes(data[header + 3:header + 5], "big")
+        data[header + 3:header + 5] = (count - 1).to_bytes(2, "big")
+        database.write_bytes(bytes(data))
+        result = self.ygg("env", "status")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("integrity check", result.stderr)
+
+    def test_given_an_application_without_variables_when_configured_then_they_are_created_in_the_store(self):
+        self.use_store()
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            store.set("platform", "DOMAIN", "test.example.com", None, "set")
+        # Enter: create them from the stack files; 7: Back.
+        result = self.config("\n7\n", "heimdall-api", "homologation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("Stored heimdall-api's variables in homologation", result.stdout)
+        with v.Store.open(self.secrets) as store:
+            self.assertEqual(store.get("app:heimdall-api@homologation", "PUBLIC_HOST")[0],
+                             "heimdall-api-hml.test.example.com")
+        self.assertFalse((self.secrets / "homologation").exists())
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_given_variables_the_store_refuses_when_created_then_config_stops_and_says_nothing_was_stored(self):
+        self.use_store()
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            store.set("platform", "DOMAIN", "x$y.example.com", None, "set")
+        result = self.config("\n7\n", "heimdall-api", "homologation")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Stored", result.stdout)
+        self.assertIn("PUBLIC_HOST", result.stderr)
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_given_a_secret_flagged_value_when_set_in_config_then_the_mask_is_never_its_default(self):
+        self.use_store()
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            store.set("app:heimdall-api@homologation", "MY_SETTING", "hidden-value-123", True, "set")
+            store.set("app:heimdall-api@homologation", "LOG_LEVEL", "Debug", None, "set")
+        # 1: Set, MY_SETTING, Enter (an empty hidden answer); 1: Set, LOG_LEVEL, Enter (its value); 7: Back.
+        result = self.config("1\nMY_SETTING\n\n1\nLOG_LEVEL\n\n7\n", "heimdall-api", "homologation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with v.Store.open(self.secrets) as store:
+            self.assertEqual(store.get("app:heimdall-api@homologation", "MY_SETTING"), ("", True))
+            self.assertEqual(store.get("app:heimdall-api@homologation", "LOG_LEVEL"), ("Debug", False))
+
+    def test_given_no_cryptography_package_when_checked_then_it_is_listed_to_install(self):
+        hidden = self.temp / "hidden"
+        (hidden / "cryptography").mkdir(parents=True)
+        (hidden / "cryptography" / "__init__.py").write_text("raise ImportError('hidden by the test')\n")
+        result = self.ygg("check", PYTHONPATH=str(hidden))
+        self.assertIn("package python3-cryptography", result.stdout)
+
+    def test_given_vars_when_run_then_it_passes_through_to_vars_py(self):
+        self.use_store()
+        self.assertEqual(self.ygg("vars", "set", "platform", "DOMAIN=example.com").returncode, 0)
+        self.assertEqual(self.ygg("vars", "get", "platform", "DOMAIN").stdout, "example.com\n")
 
 
 if __name__ == "__main__":

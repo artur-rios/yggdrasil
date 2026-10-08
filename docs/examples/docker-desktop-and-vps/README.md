@@ -173,7 +173,34 @@ chmod 640 /etc/yggdrasil/*/*.env
 `scripts/ygg.sh config <application> <environment>` opens one of them, and redeploys after a change
 ([cli.md](../../cli.md#change-the-configuration)).
 
+**With the variables store** ([variables.md](../../variables.md)), the same templates are `vars import`
+input and nothing is copied into `/etc/yggdrasil` by hand. On the VPS, once:
+
+```bash
+cd /opt/yggdrasil
+scripts/ygg.sh vars init                  # prints the key: store it in your password manager
+e=docs/examples/docker-desktop-and-vps/env
+scripts/ygg.sh vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
+scripts/ygg.sh vars import heimdall-ui@development  $e/development/heimdall-ui.env.example
+scripts/ygg.sh vars edit heimdall-api@development    # fill in DB_PASSWORD and the secrets
+# ... and so on for each application and environment
+```
+
+Then give the values the environments share one home. `DB_HOST` is `host.docker.internal` in
+every application of an environment, so it moves up to `@development` (with `vars import --all` it
+is offered as a move-up; by hand: `vars set @development DB_HOST=...`, then `vars unset` it from the
+applications). fortuna-api's `FORTUNA_AUTH_TOKEN_SECRET` is heimdall-api's
+`HEIMDALL_AUTH_TOKEN_SECRET` of the same environment, so it becomes a reference instead of a copy:
+
+```bash
+scripts/ygg.sh vars set fortuna-api@development FORTUNA_AUTH_TOKEN_SECRET='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
+scripts/ygg.sh vars list fortuna-api@development --resolved
+```
+
 ## Local: Docker Desktop
+
+(To keep the `local` variables in the encrypted store instead of `env/local/*.env`, see
+[variables.md](../../variables.md#moving-to-the-store).)
 
 No platform stack and no Jenkins: `deploy.sh` publishes each application on the workstation and
 points the APIs at the PostgreSQL installed on Windows (`heimdall_local`, `fortuna_local`). From Git

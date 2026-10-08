@@ -47,11 +47,12 @@
 #   stacks/<stack>.<environment>.yml    optional: anything only this environment needs (replicas,
 #                                       resource limits, an extra volume...)
 #
-# The env file is <secrets>/<environment>/<stack>.env, secrets being $YGG_SECRETS_DIR (default
-# /etc/yggdrasil). Start it from the application repository's own env template; examples for the
-# sample applications are in docs/examples/docker-desktop-and-vps/env/. Its path is exported as
-# APP_ENV_FILE, for stacks that hand the whole file to the container (env_file:, as the stacks
-# scripts/ygg.sh generates do).
+# The variables come from the variables store when <secrets>/vars.db exists (rendered into a private
+# temporary file), else from <secrets>/<environment>/<stack>.env, secrets being $YGG_SECRETS_DIR
+# (default /etc/yggdrasil). Start that file from the application repository's own env template;
+# examples for the sample applications are in docs/examples/docker-desktop-and-vps/env/. Its path is
+# exported as APP_ENV_FILE, for stacks that hand the whole file to the container (env_file:, as the
+# stacks scripts/ygg.sh generates do).
 set -euo pipefail
 
 die() { echo "deploy: $*" >&2; exit 1; }
@@ -65,7 +66,6 @@ version=$4
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 secrets=${YGG_SECRETS_DIR:-/etc/yggdrasil}
-env_file="$secrets/$environment/$stack.env"
 
 [[ "$stack" =~ ^[a-z0-9-]+$ ]] || die "invalid stack name '$stack'"
 [[ "$environment" =~ ^[a-z0-9-]+$ ]] || die "invalid environment name '$environment'"
@@ -79,22 +79,61 @@ on_demand=$(option onDemand)
 [[ "$version" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid version '$version'"
 project="$stack-$environment"
 tag="$environment-$version"
-[[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"
+# The application's variables: rendered from the variables store when this machine has one
+# (docs/variables.md), else today's env file. The rendered file lives in a private directory and is
+# removed when this script exits.
+cleanup_paths=()
+trap 'rm -rf ${cleanup_paths[@]+"${cleanup_paths[@]}"}' EXIT
+if [[ -f "$secrets/vars.db" ]]; then
+  python3 "$root/scripts/vars.py" check "$stack" "$environment" >&2 \
+    || die "the variables store failed its check (scripts/ygg.sh vars check)"
+  # /run/yggdrasil for root; else the user's own runtime directory (a tmpfs only they read), else
+  # a directory of theirs under $TMPDIR.
+  run_base=/run/yggdrasil
+  if ! { mkdir -p "$run_base" 2>/dev/null && [[ -w "$run_base" ]]; }; then
+    if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -w "$XDG_RUNTIME_DIR" ]]; then
+      run_base="$XDG_RUNTIME_DIR/yggdrasil"
+    else
+      run_base="${TMPDIR:-/tmp}/yggdrasil-$(id -u)"
+    fi
+  fi
+  mkdir -p "$run_base" && chmod 700 "$run_base"
+  render_dir=$(mktemp -d "$run_base/deploy.XXXXXX")
+  cleanup_paths+=("$render_dir")
+  env_file="$render_dir/$stack-$environment.env"
+  (umask 077 && python3 "$root/scripts/vars.py" render "$stack" "$environment" >"$env_file") \
+    || die "could not render the variables of $stack in $environment"
+  # As without a store, where a missing env file stops the deploy: an application with nothing set
+  # here was never configured on this machine.
+  [[ -s "$env_file" ]] \
+    || die "$stack has no variables in $environment in the variables store: set them with scripts/ygg.sh config $stack $environment (or scripts/ygg.sh vars set $stack@$environment KEY=value)"
+else
+  env_file="$secrets/$environment/$stack.env"
+  [[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"
+  echo "deploy: reading $env_file; move to the variables store with scripts/ygg.sh vars init && scripts/ygg.sh vars import --all" >&2
+fi
 
 # One deploy of a stack to an environment at a time: two at once (two release branches pushed
 # together, or a push next to a manual deploy) would each take the other's half-started containers
-# for the version to roll back to. The env file is the lock, so the Jenkins agent, which mounts it,
-# and a deploy by hand on the host exclude each other. Released when this script exits.
-if command -v flock >/dev/null 2>&1; then
-  exec {lock}<"$env_file"
+# for the version to roll back to. The lock is a file in <secrets>/locks, which the Jenkins agent
+# mounts read-write, so the agent and a deploy by hand on the host exclude each other. Released when
+# this script exits.
+lock_file="$secrets/locks/$stack-$environment.lock"
+# An existing lock file is only opened for reading, so it may belong to the other user.
+if command -v flock >/dev/null 2>&1 \
+  && { mkdir -p "$secrets/locks" 2>/dev/null; [[ -e "$lock_file" ]] || (umask 002 && : >>"$lock_file") 2>/dev/null; } \
+  && [[ -r "$lock_file" ]]; then
+  exec {lock}<"$lock_file"
   locked=0
   flock --nonblock --conflict-exit-code 75 "$lock" || locked=$?
   if ((locked == 75)); then
     echo "deploy: another deploy of $stack to $environment is running; waiting for it to finish" >&2
     flock "$lock"
   elif ((locked != 0)); then
-    echo "deploy: cannot lock $env_file (its file system may not support it); going on unlocked" >&2
+    echo "deploy: cannot lock $lock_file; going on unlocked" >&2
   fi
+elif command -v flock >/dev/null 2>&1; then
+  echo "deploy: cannot create $lock_file; going on unlocked" >&2
 fi
 
 files=()
@@ -131,7 +170,7 @@ deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # each stacks/*.yml, so a new application gets them without doing anything.
 # write_labels <version> <commit> <deployed-at>
 labels_file=$(mktemp)
-trap 'rm -f "$labels_file"' EXIT
+cleanup_paths+=("$labels_file")
 services=$(compose config --services)
 write_labels() {
   {

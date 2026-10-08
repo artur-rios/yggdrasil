@@ -94,7 +94,7 @@ so the environments of one Docker engine never touch each other:
 | Traefik routers and services | `<application>-<environment>`, in the stacks' proxy overlays | `heimdall-api-production`, `heimdall-api-production-same-origin` |
 | Image tag | `<environment>-<version>`. The same commit is built once per environment (a web front end compiles environment values into its image); rollback and pruning only look at this environment's tags. The `yggdrasil.version` label stays the version alone | `heimdall-ui:production-1.4.0-3f2a9c1` |
 | Container label | `yggdrasil.environment`, on every container `deploy.sh` starts; Alloy makes it the `environment` label of the logs in Loki | `yggdrasil.environment=production` |
-| Env file | `<secrets>/<environment>/<application>.env`, as before | `/etc/yggdrasil/production/heimdall-api.env` |
+| Env file | `<secrets>/<environment>/<application>.env` on a host without a [variables store](variables.md); with one, the `<application>@<environment>` scope | `/etc/yggdrasil/production/heimdall-api.env` |
 | Public host name | The application's `host` plus the environment's `hostSuffix`, under the host's `DOMAIN` | `heimdall-dev.example.com` |
 
 Per host, not per environment:
@@ -186,6 +186,8 @@ systems:
 | `applications` | The applications that make up the system: at least one (*status API*). |
 
 ### Application fields
+
+An application's environment variables are not catalog fields: they come from the host's [variables store](variables.md) (`<application>@<environment>`, `<application>` and `@<environment>` scopes), or from `<secrets>/<environment>/<application>.env` on a host without one.
 
 | Field | Meaning |
 |---|---|
