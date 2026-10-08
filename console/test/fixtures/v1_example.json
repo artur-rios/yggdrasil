@@ -1,0 +1,375 @@
+{
+  "environment": "production",
+  "environmentName": "Production",
+  "generatedAt": "2026-09-18T18:04:11Z",
+  "status": "degraded",
+  "systems": [
+    {
+      "id": "heimdall",
+      "name": "Heimdall",
+      "description": "Identity and access management",
+      "status": "up",
+      "applications": [
+        {
+          "id": "heimdall-api",
+          "name": "Heimdall API",
+          "kind": "api",
+          "status": "up",
+          "url": "https://heimdall-api.example.com",
+          "repository": "https://github.com/artur-rios/heimdall-api",
+          "deployment": {
+            "version": "1.4.0",
+            "commit": "3f2a9c1",
+            "deployedAt": "2026-09-17T21:40:02Z",
+            "image": "heimdall-api:1.4.0-3f2a9c1"
+          },
+          "container": {
+            "state": "running",
+            "health": "healthy",
+            "startedAt": "2026-09-17T21:40:05Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 12,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "heimdall-ui",
+          "name": "Heimdall web",
+          "kind": "web",
+          "status": "up",
+          "url": "https://heimdall.example.com",
+          "repository": "https://github.com/artur-rios/heimdall-ui",
+          "deployment": {
+            "version": "1.3.2",
+            "commit": "b81d07e",
+            "deployedAt": "2026-09-12T14:02:40Z",
+            "image": "heimdall-ui:1.3.2-b81d07e"
+          },
+          "container": {
+            "state": "running",
+            "health": "healthy",
+            "startedAt": "2026-09-12T14:02:44Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 3,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "fortuna",
+      "name": "Fortuna",
+      "description": "Personal finance",
+      "status": "degraded",
+      "applications": [
+        {
+          "id": "fortuna-api",
+          "name": "Fortuna API",
+          "kind": "api",
+          "status": "degraded",
+          "url": "https://fortuna-api.example.com",
+          "repository": "https://github.com/artur-rios/fortuna-api",
+          "deployment": {
+            "version": "0.9.1",
+            "commit": "c47e2d9",
+            "deployedAt": "2026-09-18T09:15:31Z",
+            "image": "fortuna-api:0.9.1-c47e2d9"
+          },
+          "container": {
+            "state": "running",
+            "health": "healthy",
+            "startedAt": "2026-09-18T09:15:36Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": false,
+            "statusCode": 200,
+            "latencyMs": 2380,
+            "checkedAt": "2026-09-18T18:04:10Z",
+            "error": null
+          }
+        },
+        {
+          "id": "fortuna-ui",
+          "name": "Fortuna web",
+          "kind": "web",
+          "status": "up",
+          "url": "https://fortuna.example.com",
+          "repository": "https://github.com/artur-rios/fortuna-ui",
+          "deployment": {
+            "version": "0.9.0",
+            "commit": "5e0a1f3",
+            "deployedAt": "2026-09-15T19:48:12Z",
+            "image": "fortuna-ui:0.9.0-5e0a1f3"
+          },
+          "container": {
+            "state": "running",
+            "health": null,
+            "startedAt": "2026-09-15T19:48:15Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 4,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "huginn",
+      "name": "Huginn",
+      "description": "Background jobs (demo only)",
+      "status": "down",
+      "applications": [
+        {
+          "id": "huginn-worker",
+          "name": "Huginn worker",
+          "kind": "worker",
+          "status": "down",
+          "url": null,
+          "repository": "https://github.com/artur-rios/huginn-worker",
+          "deployment": {
+            "version": "2.0.0",
+            "commit": "9d3b6aa",
+            "deployedAt": "2026-09-18T17:51:20Z",
+            "image": "huginn-worker:2.0.0-9d3b6aa"
+          },
+          "container": {
+            "state": "exited",
+            "health": "unhealthy",
+            "startedAt": "2026-09-18T17:51:24Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": false,
+            "statusCode": null,
+            "latencyMs": null,
+            "checkedAt": "2026-09-18T18:04:10Z",
+            "error": "connection refused"
+          }
+        }
+      ]
+    },
+    {
+      "id": "yggdrasil",
+      "name": "Yggdrasil",
+      "description": "Deployment platform",
+      "status": "degraded",
+      "applications": [
+        {
+          "id": "traefik",
+          "name": "Traefik",
+          "kind": "platform",
+          "status": "up",
+          "url": null,
+          "repository": null,
+          "deployment": {
+            "version": null,
+            "commit": null,
+            "deployedAt": null,
+            "image": "traefik:v3.5"
+          },
+          "container": {
+            "state": "running",
+            "health": "healthy",
+            "startedAt": "2026-09-01T08:00:12Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 1,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "status",
+          "name": "Status API",
+          "kind": "platform",
+          "status": "up",
+          "url": null,
+          "repository": null,
+          "deployment": {
+            "version": null,
+            "commit": null,
+            "deployedAt": null,
+            "image": "yggdrasil-status:latest"
+          },
+          "container": {
+            "state": "running",
+            "health": "healthy",
+            "startedAt": "2026-09-01T08:00:15Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 2,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "console",
+          "name": "Console",
+          "kind": "platform",
+          "status": "up",
+          "url": "https://yggdrasil.example.com",
+          "repository": null,
+          "deployment": {
+            "version": null,
+            "commit": null,
+            "deployedAt": null,
+            "image": "yggdrasil-console:latest"
+          },
+          "container": {
+            "state": "running",
+            "health": "healthy",
+            "startedAt": "2026-09-01T08:00:15Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 2,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "prometheus",
+          "name": "Prometheus",
+          "kind": "platform",
+          "status": "up",
+          "url": null,
+          "repository": null,
+          "deployment": {
+            "version": null,
+            "commit": null,
+            "deployedAt": null,
+            "image": "prom/prometheus:v3.6.0"
+          },
+          "container": {
+            "state": "running",
+            "health": null,
+            "startedAt": "2026-09-01T08:00:14Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 5,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "loki",
+          "name": "Loki",
+          "kind": "platform",
+          "status": "degraded",
+          "url": null,
+          "repository": null,
+          "deployment": {
+            "version": null,
+            "commit": null,
+            "deployedAt": null,
+            "image": "grafana/loki:3.5.0"
+          },
+          "container": {
+            "state": "running",
+            "health": "starting",
+            "startedAt": "2026-09-18T18:01:47Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": false,
+            "statusCode": 503,
+            "latencyMs": 8,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "alloy",
+          "name": "Alloy",
+          "kind": "platform",
+          "status": "up",
+          "url": null,
+          "repository": null,
+          "deployment": {
+            "version": null,
+            "commit": null,
+            "deployedAt": null,
+            "image": "grafana/alloy:v1.10.0"
+          },
+          "container": {
+            "state": "running",
+            "health": null,
+            "startedAt": "2026-09-01T08:00:16Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 3,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "grafana",
+          "name": "Grafana",
+          "kind": "platform",
+          "status": "up",
+          "url": "https://grafana.example.com",
+          "repository": null,
+          "deployment": {
+            "version": null,
+            "commit": null,
+            "deployedAt": null,
+            "image": "grafana/grafana:12.2.0"
+          },
+          "container": {
+            "state": "running",
+            "health": "healthy",
+            "startedAt": "2026-09-01T08:00:18Z",
+            "restartCount": null
+          },
+          "probe": {
+            "healthy": true,
+            "statusCode": 200,
+            "latencyMs": 9,
+            "checkedAt": "2026-09-18T18:04:09Z",
+            "error": null
+          }
+        },
+        {
+          "id": "jenkins",
+          "name": "Jenkins",
+          "kind": "platform",
+          "status": "not_deployed",
+          "url": "https://jenkins.example.com",
+          "repository": null,
+          "deployment": null,
+          "container": null,
+          "probe": null
+        }
+      ]
+    }
+  ]
+}

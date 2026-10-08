@@ -1,5 +1,9 @@
-// Creates one permanent inbound (WebSocket) agent per environment agent in catalog.yaml, on every
-// controller start, so adding an environment to the catalog is all it takes to get its agent.
+// Creates one permanent inbound (WebSocket) agent per distinct environment agent in catalog.yaml, on
+// every controller start, so adding an environment to the catalog is all it takes to get its agent.
+// An agent is a host: environments that share a host set the same `agent` (agent: vps for
+// development, homologation and production on one VPS) and get one agent between them, whose two
+// executors deploy to any of them. Deploys of one application never overlap (each job has
+// disableConcurrentBuilds), and deploy.sh names everything per environment.
 //
 // An environment's agent is its `agent` option, or its id. Environments that only deploy by hand
 // (trigger: manual, no `agent` set, and no application overriding either) need no agent. Agents

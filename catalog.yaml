@@ -11,12 +11,14 @@
 #   Jenkins        deploy jobs, agents, and what each push or pull request deploys where
 #   GitHub         rulesets, required checks and the deploy/<environment> statuses on main
 #   deploy.sh      which environments an application has, and their options
-#   Status API     what to probe in its environment, and how systems group applications
+#   Status API     what to probe in its host's environments, and how systems group applications
 #   Prometheus     scrape targets (through the status API)
 #   Console        what it shows (through the status API)
 #
-# This is the catalog of one installation. Replace the systems below with your own; the
-# environments are the ones from docs/examples/docker-desktop-wsl-vps/README.md.
+# This is the catalog of one installation. Replace the systems below with your own. The
+# environments are the ones from docs/examples/docker-desktop-and-vps/README.md: local on a
+# developer's Docker Desktop, deployed by hand; development, homologation and production together on
+# one VPS, where production is always on and the other two run only while someone uses them.
 
 # GitHub owner (user or organisation) of the application repositories and of this repository.
 owner: artur-rios
@@ -28,7 +30,7 @@ repository: yggdrasil
 # Environments, in promotion order. An application deploys to every one of them, with these options,
 # unless it lists its own (see `environments` under an application below).
 #
-#   mode          proxy: routed by Traefik with TLS, no host ports (stacks/<app>.proxy.yml)
+#   mode          proxy: routed by Traefik with TLS, no host ports (stacks/<app>.proxy.yml). Default.
 #                 ports: published on the host, no Traefik (stacks/<app>.ports.yml)
 #   trigger       manual:  only by hand (scripts/deploy.sh) or "Build with Parameters" in Jenkins
 #                 branch:  when a branch matching `branches` is pushed
@@ -37,51 +39,82 @@ repository: yggdrasil
 #                          pull request is merged and tagged once the last one succeeds.
 #   branches      For trigger branch: glob(s), e.g. release/* or [develop, hotfix/*]. Use only *
 #                 (it matches / too).
-#   agent         Jenkins agent label that deploys here (default: the id). One agent per host.
-#                 Jenkins creates it, when it starts, for trigger branch or release, or when agent
-#                 is set.
+#   agent         Jenkins agent label that deploys here (default: the id). One agent per host:
+#                 environments that share a host share its agent (agent: vps below). Jenkins
+#                 creates it, when it starts, for trigger branch or release, or when agent is set.
 #   approval      true: Jenkins waits for someone to click "Deploy" before deploying here.
 #   waitTimeout   Seconds deploy.sh waits for the new containers to be healthy (default 300).
 #   keepImages    Images of each application kept for rollback (default 3).
 #   checksTimeout For trigger release: seconds to wait for the GitHub checks (default 3600). Only
 #                 the application's first release environment's value counts.
+#   hostSuffix    Appended to every application's `host` in this environment (default none):
+#                 heimdall with -dev is https://heimdall-dev.<DOMAIN>. How several environments
+#                 share one host, one DOMAIN, one *.DOMAIN certificate and one *.DOMAIN DNS record.
+#                 Lowercase letters, digits and dashes, not ending with a dash.
+#   onDemand      true: the environment runs only while it is used. scripts/ygg.sh env start|stop
+#                 <environment> turns it on and off; the status API shows its stopped applications
+#                 as "stopped", not as a problem; a deploy Jenkins starts by itself (trigger branch)
+#                 leaves a stopped application stopped (default false).
+#
+# Several environments can share one Docker engine: each application runs as the Compose project
+# <id>-<environment>, reachable on the Docker networks as <id>.<environment>. One platform stack per
+# host serves all of them (ENVIRONMENTS in its platform.env). Reference: docs/catalog.md.
 environments:
-  - id: development
-    name: Development
+  # A developer's own machine (Docker Desktop): host ports on 127.0.0.1, no platform stack, deployed
+  # by hand with scripts/deploy.sh local <app> <checkout> <version>.
+  - id: local
+    name: Local
     mode: ports
     trigger: manual
 
+  # The next three share one VPS, its agent and its DOMAIN; hostSuffix tells their hosts apart.
+  - id: development
+    name: Development
+    trigger: branch
+    branches: develop
+    agent: vps
+    hostSuffix: -dev
+    onDemand: true
+
   - id: homologation
     name: Homologation
-    mode: proxy
     trigger: branch
     branches: release/*
+    agent: vps
+    hostSuffix: -hml
+    onDemand: true
 
   - id: production
     name: Production
-    mode: proxy
     trigger: release
+    agent: vps
 
 # Application fields:
-#   id              Also the repository name, the Compose project and the stack name, and the
-#                   network alias other containers reach it by. Lowercase, digits, dashes.
+#   id              Also the repository name, the Jenkins job and the stack name. In each
+#                   environment the Compose project is <id>-<environment> (heimdall-api-production)
+#                   and the network alias other containers reach it by <id>.<environment>
+#                   (heimdall-api.production). Lowercase, digits, dashes.
 #   name            Display name.
 #   kind            api | web | worker | platform -- what the console shows it as.
 #   repository      Defaults to id; to none for platform components (kind platform), which are not
 #                   deployed by Jenkins but started by platform/compose.yml on every host.
 #   health          URL the status API probes over the Docker networks. A 2xx answer is healthy.
-#   metrics         host:port Prometheus scrapes. Omit when there is none.
+#                   Written with the plain id as host: for every application but a platform
+#                   component, the status API probes <id>.<environment> in each environment.
+#   metrics         host:port Prometheus scrapes, the host qualified the same way. Omit when there
+#                   is none.
 #   metricsPath     Path of the metrics endpoint when it is not /metrics.
-#   host            The console's link, under the environment's DOMAIN (heimdall ->
-#                   https://heimdall.<domain>). It routes nothing: stacks/<id>.proxy.yml does, from
-#                   PUBLIC_HOST in the env file; keep them equal. Omit for applications that are not
-#                   public.
+#   host            The console's link, with the environment's hostSuffix, under the host's DOMAIN
+#                   (heimdall -> https://heimdall.<domain>, https://heimdall-dev.<domain>). It routes
+#                   nothing: stacks/<id>.proxy.yml does, from PUBLIC_HOST in the env file; keep them
+#                   equal. Omit for applications that are not public.
 #   checks          GitHub check names required on develop and main, besides branch-policy (and,
 #                   on main, deploy/<environment> for each release environment). Only checks that
 #                   run on every pull request.
 #   container       Compose project and service to read container state from. project defaults to
-#                   the id. Without service, any container of the project matches: set it when the
-#                   stack has more than one service.
+#                   the id, and is suffixed with -<environment> like the id (platform components
+#                   excepted). Without service, any container of the project matches: set it when
+#                   the stack has more than one service.
 #   environments    The environments this application deploys to, each optionally overriding
 #                   the environment's options. Omitted: every environment, with its defaults.
 #                   For example, skip development and ask for approval before production:
@@ -185,5 +218,5 @@ systems:
         metrics: jenkins:8080
         metricsPath: /prometheus/
         host: jenkins
-        # Only the production host runs the controller; elsewhere it reports "not deployed".
+        # Only the host that runs the controller has it; elsewhere it reports "not deployed".
         container: { project: yggdrasil, service: jenkins }

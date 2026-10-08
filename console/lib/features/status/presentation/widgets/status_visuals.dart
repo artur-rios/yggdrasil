@@ -35,6 +35,14 @@ class StatusVisual {
         foreground: dark ? const Color(0xFFFFB4AB) : const Color(0xFFB3261E),
         container: dark ? const Color(0xFF5C1A16) : const Color(0xFFFFDAD6),
       ),
+      // Neutral like not deployed, but its own shape and a cooler tint: an
+      // on-demand environment that is off, not something missing.
+      Status.stopped => StatusVisual(
+        icon: Icons.pause_circle_outline,
+        label: statusLabel(status),
+        foreground: dark ? const Color(0xFFB4C8D6) : const Color(0xFF41566A),
+        container: dark ? const Color(0xFF2B353D) : const Color(0xFFE2EAF0),
+      ),
       Status.notDeployed => StatusVisual(
         icon: Icons.remove_circle_outline,
         label: statusLabel(status),
@@ -108,6 +116,81 @@ class StatusChip extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// An environment's name and status on the status's own tint, e.g.
+/// `✓ Production · Up`; with [onDemand], the tooltip says so.
+class EnvironmentStatusChip extends StatelessWidget {
+  const EnvironmentStatusChip({
+    super.key,
+    required this.name,
+    required this.status,
+    this.onDemand = false,
+    this.detail,
+  });
+
+  final String name;
+  final Status status;
+  final bool onDemand;
+
+  /// More for the tooltip, e.g. the applications' summary.
+  final String? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final visual = StatusVisual.of(status, theme.brightness);
+    final style = theme.textTheme.labelMedium?.copyWith(
+      color: visual.foreground,
+    );
+    final tooltip = <String>[
+      '$name: ${visual.label}${onDemand ? ' (on demand)' : ''}',
+      ?detail,
+    ].join('\n');
+
+    return Tooltip(
+      message: tooltip,
+      excludeFromSemantics: true,
+      child: Semantics(
+        label: '$name: ${visual.label}',
+        excludeSemantics: true,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: visual.container,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: visual.foreground.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(visual.icon, size: 16, color: visual.foreground),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: <InlineSpan>[
+                        TextSpan(text: name),
+                        TextSpan(
+                          text: ' · ${visual.label}',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                    style: style,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

@@ -176,7 +176,7 @@ void main() {
         .single
         .id;
 
-    await controller.adoptResponseName(id, 'production');
+    await controller.adoptResponseName(id, 'example.com');
     await controller.adoptResponseName(id, 'something-else');
 
     final environment = c
@@ -184,9 +184,9 @@ void main() {
         .requireValue
         .environments
         .single;
-    expect(environment.name, 'production');
+    expect(environment.name, 'example.com');
     expect(environment.nameFromResponse, isFalse);
-    expect(store.environments!.single.name, 'production');
+    expect(store.environments!.single.name, 'example.com');
   });
 
   test('adoptResponseName leaves a name the user chose', () async {
@@ -195,7 +195,7 @@ void main() {
     final controller = c.read(environmentsControllerProvider.notifier);
     await c.read(environmentsControllerProvider.future);
 
-    await controller.adoptResponseName('homologation', 'production');
+    await controller.adoptResponseName('homologation', 'example.com');
 
     expect(
       c.read(environmentsControllerProvider).requireValue.selected!.name,

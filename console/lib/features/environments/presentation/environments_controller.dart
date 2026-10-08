@@ -211,8 +211,9 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
     );
   }
 
-  /// Names a placeholder environment after the `environment` field of its
-  /// first successful response. Does nothing for one the user named.
+  /// Names a placeholder host after the `host` of its first successful
+  /// response (a v1 response's environment name). Does nothing for one the
+  /// user named.
   Future<void> adoptResponseName(String id, String name) async {
     final current = await future;
     final environment = current.byId(id);

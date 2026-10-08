@@ -14,14 +14,24 @@ import 'package:yggdrasil_console/features/status/data/status_source.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
 import 'package:yggdrasil_console/features/status/presentation/status_controller.dart';
 
-/// The example of `docs/status-api.md`, with the sample installation's systems.
+/// A v2 response like the example of `docs/status-api.md`: example.com with
+/// development and homologation (on demand, stopped) and production (up), the
+/// heimdall and fortuna systems and part of the yggdrasil platform.
 String contractExampleJson() =>
     File('test/fixtures/contract_example.json').readAsStringSync();
 
-/// The bundled demo: the contract example expanded to every status and kind.
+/// A v1 response (one environment per host), from a status API older than
+/// the v2 contract, with every status and kind.
+String v1ExampleJson() =>
+    File('test/fixtures/v1_example.json').readAsStringSync();
+
+/// The bundled demo: the default setup, three environments with every
+/// platform component.
 String demoJson() => File('assets/demo/status.json').readAsStringSync();
 
-EnvironmentStatus demoStatus() => parseStatusBody(demoJson());
+HostStatus demoStatus() => parseStatusBody(demoJson());
+
+HostStatus v1Status() => parseStatusBody(v1ExampleJson());
 
 const Environment production = Environment(
   id: 'production',
@@ -39,13 +49,12 @@ const Environment homologation = Environment(
 class FakeStatusSource implements StatusSource {
   FakeStatusSource([this.respond]);
 
-  Future<EnvironmentStatus> Function(Environment environment, String? token)?
-  respond;
+  Future<HostStatus> Function(Environment environment, String? token)? respond;
 
   final List<(Environment, String?)> calls = <(Environment, String?)>[];
 
   @override
-  Future<EnvironmentStatus> fetch(Environment environment, String? token) {
+  Future<HostStatus> fetch(Environment environment, String? token) {
     calls.add((environment, token));
 
     return respond?.call(environment, token) ?? Future.value(demoStatus());

@@ -283,7 +283,7 @@ public class StatusOptionsTests
         var all = new Dictionary<string, string?>
         {
             ["YGGDRASIL_STATUS_TOKEN"] = TestData.Token,
-            ["YGGDRASIL_ENVIRONMENT"] = "production",
+            ["YGGDRASIL_ENVIRONMENTS"] = "development,homologation,production",
             ["YGGDRASIL_DOMAIN"] = "example.com",
         };
         foreach (var (key, value) in values)
@@ -317,13 +317,51 @@ public class StatusOptionsTests
     }
 
     [Fact]
-    public void GivenMissingEnvironmentAndDomain_WhenLoaded_ThenBothAreReported()
+    public void GivenMissingEnvironmentsAndDomain_WhenLoaded_ThenBothAreReported()
     {
         var error = Assert.Throws<StartupException>(() =>
-            StatusOptions.Load(Config(("YGGDRASIL_ENVIRONMENT", ""), ("YGGDRASIL_DOMAIN", ""))));
+            StatusOptions.Load(Config(("YGGDRASIL_ENVIRONMENTS", ""), ("YGGDRASIL_DOMAIN", ""))));
 
-        Assert.Contains("YGGDRASIL_ENVIRONMENT is not set", error.Message);
+        Assert.Contains("YGGDRASIL_ENVIRONMENTS is not set", error.Message);
         Assert.Contains("YGGDRASIL_DOMAIN is not set", error.Message);
+    }
+
+    [Theory]
+    [InlineData("development,homologation,production", new[] { "development", "homologation", "production" })]
+    [InlineData(" production , development ,", new[] { "production", "development" })]
+    [InlineData("production,production", new[] { "production" })]
+    [InlineData("production", new[] { "production" })]
+    public void GivenEnvironments_WhenLoaded_ThenTheyAreSplitTrimmedAndDeduplicated(string value, string[] expected)
+    {
+        var options = StatusOptions.Load(Config(("YGGDRASIL_ENVIRONMENTS", value)));
+
+        Assert.Equal(expected, options.Environments);
+        Assert.Equal("YGGDRASIL_ENVIRONMENTS", options.EnvironmentsSetting);
+    }
+
+    [Fact]
+    public void GivenOnlyTheLegacyEnvironment_WhenLoaded_ThenItIsAListOfOne()
+    {
+        var options = StatusOptions.Load(Config(("YGGDRASIL_ENVIRONMENTS", ""), ("YGGDRASIL_ENVIRONMENT", "production")));
+
+        Assert.Equal(["production"], options.Environments);
+        Assert.Equal("YGGDRASIL_ENVIRONMENT", options.EnvironmentsSetting);
+    }
+
+    [Fact]
+    public void GivenBothSettings_WhenLoaded_ThenTheListWins()
+    {
+        var options = StatusOptions.Load(Config(("YGGDRASIL_ENVIRONMENTS", "development,production"), ("YGGDRASIL_ENVIRONMENT", "homologation")));
+
+        Assert.Equal(["development", "production"], options.Environments);
+    }
+
+    [Fact]
+    public void GivenOnlySeparators_WhenLoaded_ThenTheEnvironmentsAreNotSet()
+    {
+        var error = Assert.Throws<StartupException>(() => StatusOptions.Load(Config(("YGGDRASIL_ENVIRONMENTS", " , ,"))));
+
+        Assert.Contains("YGGDRASIL_ENVIRONMENTS is not set", error.Message);
     }
 
     [Fact]

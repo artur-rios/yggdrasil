@@ -1,5 +1,5 @@
 name: yggdrasil_console
-description: "The yggdrasil deploy console: the status of every system and application in each environment."
+description: "The yggdrasil deploy console: the status of every system and application on each host, in every environment."
 publish_to: 'none'
 
 version: 1.0.0+1

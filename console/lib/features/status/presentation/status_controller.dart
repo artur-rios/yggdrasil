@@ -15,7 +15,7 @@ final Provider<StatusRepository> statusRepositoryProvider =
       ),
     );
 
-/// What the overview shows for the selected environment.
+/// What the overview shows for the selected host (a saved [Environment]).
 class StatusViewState {
   const StatusViewState({
     this.environment,
@@ -50,7 +50,7 @@ statusControllerProvider = NotifierProvider<StatusController, StatusViewState>(
   StatusController.new,
 );
 
-/// Loads the selected environment's status on demand.
+/// Loads the selected host's status on demand.
 ///
 /// The polling itself belongs to the overview screen, which knows whether it
 /// is visible; this only fetches when asked, and never twice at once.
@@ -124,7 +124,7 @@ class StatusController extends Notifier<StatusViewState> {
     if (report.failure == null && snapshot != null) {
       await environments.adoptResponseName(
         environment.id,
-        snapshot.status.displayName,
+        snapshot.status.host,
       );
     }
   }

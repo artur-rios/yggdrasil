@@ -1,6 +1,9 @@
-/// An environment the console can show: a name and the base URL of that
-/// host's status API. The token is not part of it; it lives in secure storage
-/// under [id] (see `TokenStore`).
+/// A host the console can show (called a "host" everywhere in the UI): a name
+/// and the base URL of that host's status API. The token is not part of it; it
+/// lives in secure storage under [id] (see `TokenStore`).
+///
+/// Not to be confused with the environments the host runs (`development`,
+/// `production`, ...), which come from the status API's response.
 class Environment {
   const Environment({
     required this.id,
@@ -33,8 +36,8 @@ class Environment {
   /// console requests `<url>/api/status`.
   final String url;
 
-  /// Whether [name] is a placeholder to replace with the `environment` field
-  /// of the first successful response.
+  /// Whether [name] is a placeholder to replace with the `host` of the first
+  /// successful response.
   final bool nameFromResponse;
 
   bool get isDemo => url == demoUrl;

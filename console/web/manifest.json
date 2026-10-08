@@ -5,7 +5,7 @@
     "display": "standalone",
     "background_color": "#2E6B3F",
     "theme_color": "#2E6B3F",
-    "description": "The status of every system and application in each yggdrasil environment.",
+    "description": "The status of every system and application on each yggdrasil host, in every environment.",
     "orientation": "any",
     "prefer_related_applications": false,
     "icons": [

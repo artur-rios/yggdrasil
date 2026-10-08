@@ -13,10 +13,11 @@ import 'package:yggdrasil_console/features/status/presentation/status_controller
 
 import '../../../helpers.dart';
 
-EnvironmentStatus answerFrom(String host) => EnvironmentStatus(
-  environment: host,
+HostStatus answerFrom(String host) => HostStatus(
+  host: host,
   generatedAt: null,
   status: Status.up,
+  environments: const <HostEnvironment>[],
   systems: const <SystemStatus>[],
 );
 
@@ -25,16 +26,16 @@ void main() {
 
   // production's first request, to its old URL, is held until the test lets
   // it answer; requests to the new URL answer at once (or fail).
-  late Completer<EnvironmentStatus> oldHost;
+  late Completer<HostStatus> oldHost;
   late FakeStatusSource source;
   late ProviderContainer container;
 
   setUp(() async {
-    oldHost = Completer<EnvironmentStatus>();
+    oldHost = Completer<HostStatus>();
     source = FakeStatusSource(
       (environment, _) => environment.url == production.url
           ? oldHost.future
-          : Future<EnvironmentStatus>.value(answerFrom('new')),
+          : Future<HostStatus>.value(answerFrom('new')),
     );
     container = ProviderContainer(
       overrides: <Override>[
@@ -64,7 +65,7 @@ void main() {
     () async {
       expect(source.calls.last.$1.url, movedUrl);
       expect(
-        container.read(statusControllerProvider).snapshot?.status.environment,
+        container.read(statusControllerProvider).snapshot?.status.host,
         'new',
       );
 
@@ -73,7 +74,7 @@ void main() {
 
       final state = container.read(statusControllerProvider);
       expect(state.environment?.url, movedUrl);
-      expect(state.snapshot?.status.environment, 'new');
+      expect(state.snapshot?.status.host, 'new');
     },
   );
 
@@ -91,7 +92,7 @@ void main() {
       final state = container.read(statusControllerProvider);
       expect(state.failure?.kind, StatusFailureKind.network);
       expect(state.isStale, isTrue);
-      expect(state.snapshot?.status.environment, 'new');
+      expect(state.snapshot?.status.host, 'new');
     },
   );
 }

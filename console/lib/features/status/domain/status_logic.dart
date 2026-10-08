@@ -33,8 +33,8 @@ int _compare(
   return byName != 0 ? byName : idA.compareTo(idB);
 }
 
-/// The systems shown for the "problems only" filter: those whose own status,
-/// or any application's, needs attention.
+/// The systems shown for the "problems only" filter: those whose overall
+/// status needs attention. A stopped on-demand environment is not a problem.
 List<SystemStatus> visibleSystems(
   Iterable<SystemStatus> systems, {
   required bool problemsOnly,
@@ -48,9 +48,9 @@ List<SystemStatus> visibleSystems(
   return sorted.where(hasProblem).toList();
 }
 
-bool hasProblem(SystemStatus system) =>
-    system.status.isProblem ||
-    system.applications.any((application) => application.status.isProblem);
+/// Whether the system's overall status (the rollup of its environments)
+/// needs attention.
+bool hasProblem(SystemStatus system) => system.status.isProblem;
 
 /// How many applications of each status, in severity order, zeros omitted.
 Map<Status, int> countByStatus(Iterable<ApplicationStatus> applications) {
@@ -66,11 +66,14 @@ Map<Status, int> countByStatus(Iterable<ApplicationStatus> applications) {
   return <Status, int>{for (final status in ordered) status: counts[status]!};
 }
 
-/// The one-line summary of a system, e.g. `2 applications · 1 degraded`.
+/// The one-line summary of some applications, e.g. `2 applications · 1
+/// degraded`.
 ///
-/// Every status other than `up` is counted; when all are up it says so.
-String systemSummary(SystemStatus system) {
-  final total = system.applications.length;
+/// Every status other than `up` is counted; when all are up, or all stopped,
+/// it says so.
+String applicationsSummary(Iterable<ApplicationStatus> applications) {
+  final list = applications.toList();
+  final total = list.length;
   final parts = <String>[
     '$total ${total == 1 ? 'application' : 'applications'}',
   ];
@@ -79,10 +82,12 @@ String systemSummary(SystemStatus system) {
     return parts.single;
   }
 
-  final counts = countByStatus(system.applications);
+  final counts = countByStatus(list);
+  final only = counts.length == 1 ? counts.keys.single : null;
 
-  if (counts.length == 1 && counts.containsKey(Status.up)) {
-    parts.add(total == 1 ? 'up' : 'all up');
+  if (only == Status.up || only == Status.stopped) {
+    final label = statusLabel(only!).toLowerCase();
+    parts.add(total == 1 ? label : 'all $label');
   } else {
     for (final entry in counts.entries) {
       if (entry.key != Status.up) {
@@ -94,21 +99,39 @@ String systemSummary(SystemStatus system) {
   return parts.join(' · ');
 }
 
-/// The one-line summary of an environment, e.g.
-/// `4 systems · 13 applications · 1 down · 2 degraded`.
-String environmentSummary(EnvironmentStatus environment) {
-  final applications = <ApplicationStatus>[
-    for (final system in environment.systems) ...system.applications,
-  ];
-  final systems = environment.systems.length;
+/// The one-line summary of a system in one environment, e.g.
+/// `2 applications · all up`.
+String environmentSummary(SystemEnvironment environment) =>
+    applicationsSummary(environment.applications);
+
+/// The one-line summary of a host, e.g.
+/// `3 systems · 3 environments · 1 down · 2 degraded`.
+///
+/// Only problems are counted: stopped and not deployed applications are
+/// normal on a host with on-demand environments. A platform component appears
+/// in every environment's report with the same result; it is counted once.
+String hostSummary(HostStatus host) {
+  final systems = host.systems.length;
+  final environments = host.environments.length;
   final parts = <String>[
     '$systems ${systems == 1 ? 'system' : 'systems'}',
-    '${applications.length} '
-        '${applications.length == 1 ? 'application' : 'applications'}',
+    '$environments ${environments == 1 ? 'environment' : 'environments'}',
+  ];
+  final seen = <String>{};
+  final applications = <ApplicationStatus>[
+    for (final system in host.systems)
+      for (final environment in system.environments)
+        for (final application in environment.applications)
+          if (seen.add(
+            application.kind == ApplicationKind.platform
+                ? application.id
+                : '${environment.environment}/${application.id}',
+          ))
+            application,
   ];
 
   for (final entry in countByStatus(applications).entries) {
-    if (entry.key != Status.up) {
+    if (entry.key.isProblem) {
       parts.add('${entry.value} ${statusLabel(entry.key).toLowerCase()}');
     }
   }
@@ -121,6 +144,7 @@ String statusLabel(Status status) => switch (status) {
   Status.up => 'Up',
   Status.degraded => 'Degraded',
   Status.down => 'Down',
+  Status.stopped => 'Stopped',
   Status.notDeployed => 'Not deployed',
   Status.unknown => 'Unknown',
 };

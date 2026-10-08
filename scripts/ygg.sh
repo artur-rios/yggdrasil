@@ -6,14 +6,24 @@
 #     scripts/ygg.sh install            installs what is missing (Ubuntu; asks before each part)
 #     scripts/ygg.sh add                sets up a new API, web front end or worker: catalog entry,
 #                                       stack files, env file, checkout, first deploy
-#     scripts/ygg.sh status             what runs on this host, per catalog application
-#     scripts/ygg.sh config [<app>]     shows and changes an application's env file, and redeploys
+#     scripts/ygg.sh status             what runs on this host, per environment and application
+#     scripts/ygg.sh config [<app>] [<environment>]
+#                                       shows and changes an application's env file in one of the
+#                                       host's environments, and redeploys
+#     scripts/ygg.sh env status         the host's environments: on demand or not, running or stopped
+#     scripts/ygg.sh env start <environment>
+#     scripts/ygg.sh env stop <environment> [--force]
+#                                       starts or stops every application of an environment of this
+#                                       host; stop refuses an environment that is not onDemand
+#                                       (catalog.yaml) unless --force
 #
 # It drives the same pieces docs/setup.md does by hand -- scripts/catalog.py, scripts/deploy.sh,
 # scripts/platform.sh, the stacks/ files and the env files under $YGG_SECRETS_DIR (default
 # /etc/yggdrasil) -- so anything it does can also be done, or undone, by hand. Checkouts of the
-# applications it deploys go under $YGG_APPS_DIR (default ~/yggdrasil-apps). $YGG_ENVIRONMENT names
-# this host's environment where platform.env doesn't (a laptop). Reference: docs/cli.md.
+# applications it deploys go under $YGG_APPS_DIR (default ~/yggdrasil-apps). The host's environments
+# are ENVIRONMENTS in platform.env (ENVIRONMENT in one from before 0.5); $YGG_ENVIRONMENT names the
+# one environment of a machine without platform.env (a laptop), and overrides platform.env.
+# Reference: docs/cli.md.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -28,7 +38,7 @@ COMPOSE_MINIMUM=2.24.0
 # Distribution packages that clash with Docker's own (docs.docker.com/engine/install/ubuntu).
 CONFLICTING=(docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc)
 # Variables the stacks read that deploy.sh sets itself: never asked for in an env file.
-DEPLOY_VARIABLES='^(APP_DIR|APP_ENV_FILE|IMAGE_TAG|API_IMAGE_TAG)$'
+DEPLOY_VARIABLES='^(APP_DIR|APP_ENV_FILE|IMAGE_TAG|API_IMAGE_TAG|YGG_ENVIRONMENT)$'
 
 if [[ -t 1 ]]; then
   bold=$'\e[1m' dim=$'\e[2m' red=$'\e[31m' green=$'\e[32m' yellow=$'\e[33m' reset=$'\e[0m'
@@ -143,17 +153,59 @@ need_docker() {
     || die "can't reach Docker as $me: is the daemon running, and are you in the docker group (log out and in after '$0 install')?"
 }
 
-# The environment this host runs: $YGG_ENVIRONMENT, else ENVIRONMENT in platform.env, else asked
+# The environments this host runs, in catalog order, in host_envs: $YGG_ENVIRONMENT (one), else
+# ENVIRONMENTS in platform.env, else ENVIRONMENT there (a platform.env from before 0.5), else asked
 # once. A `ports` machine (a developer laptop) has no platform, so it has no platform.env to say.
-host_environment() {
-  [[ -z "$host_env" ]] && host_env=$(env_value "$secrets/platform.env" ENVIRONMENT)
-  if [[ -z "$host_env" ]]; then
-    local environments
-    mapfile -t environments < <(catalog environments)
-    choose host_env "Which environment does this host run? ($secrets/platform.env doesn't say)" "${environments[@]}"
+host_envs=()
+host_environments() {
+  ((${#host_envs[@]})) && return 0
+  local configured source known listed environment
+  if [[ -n "$host_env" ]]; then
+    configured=$host_env source="YGG_ENVIRONMENT"
+  else
+    source="ENVIRONMENTS in $secrets/platform.env"
+    configured=$(env_value "$secrets/platform.env" ENVIRONMENTS)
+    [[ -n "$configured" ]] || configured=$(env_value "$secrets/platform.env" ENVIRONMENT)
   fi
-  catalog environments | grep -Fqx "$host_env" \
-    || die "ENVIRONMENT='$host_env' in $secrets/platform.env is not an environment in catalog.yaml"
+  mapfile -t known < <(catalog environments)
+  if [[ -z "${configured//[ ,]/}" ]]; then
+    choose configured "Which environment does this host run? ($secrets/platform.env doesn't say; YGG_ENVIRONMENT=<id> skips this question)" "${known[@]}"
+    source="your answer"
+  fi
+  IFS=', ' read -r -a listed <<<"$configured"
+  for environment in "${listed[@]}"; do
+    [[ -z "$environment" ]] || printf '%s\n' "${known[@]}" | grep -Fqx "$environment" \
+      || die "'$environment' ($source) is not an environment in catalog.yaml"
+  done
+  for environment in "${known[@]}"; do
+    printf '%s\n' "${listed[@]}" | grep -Fqx "$environment" && host_envs+=("$environment")
+  done
+  return 0
+}
+
+on_this_host() { printf '%s\n' "${host_envs[@]}" | grep -Fqx "$1"; }
+
+# pick_environment <variable> <question> [<given>] [<app>]: one of the host's environments (those
+# the application deploys to, given one): the given one, checked; the only one; or asked.
+pick_environment() {
+  local _variable=$1 _question=$2 _given=${3:-} _app=${4:-} _environment _candidates=()
+  host_environments
+  for _environment in "${host_envs[@]}"; do
+    if [[ -z "$_app" ]] || catalog environments "$_app" | grep -Fqx "$_environment"; then
+      _candidates+=("$_environment")
+    fi
+  done
+  if [[ -n "$_given" ]]; then
+    on_this_host "$_given" || die "'$_given' is not an environment of this host ($(IFS=,; echo "${host_envs[*]}"))"
+    printf '%s\n' "${_candidates[@]}" | grep -Fqx "$_given" || die "'$_app' does not deploy to $_given (catalog.yaml)"
+    printf -v "$_variable" '%s' "$_given"
+  elif ((${#_candidates[@]} == 1)); then
+    printf -v "$_variable" '%s' "${_candidates[0]}"
+  elif ((${#_candidates[@]} == 0)); then
+    die "${_app:-nothing} deploys to none of this host's environments ($(IFS=,; echo "${host_envs[*]}"))"
+  else
+    choose "$_variable" "$_question" "${_candidates[@]}"
+  fi
 }
 
 # The applications of the catalog that deploy to an environment.
@@ -291,12 +343,16 @@ check_report() {
     else
       row missing "catalog" "invalid: python3 scripts/catalog.py validate"
     fi
-    local environment
-    environment=$(env_value "$secrets/platform.env" ENVIRONMENT)
-    if [[ -n "$environment" ]]; then
-      row ok "environment" "$environment (platform.env)"
+    local environments
+    environments=$(env_value "$secrets/platform.env" ENVIRONMENTS)
+    if [[ -n "$host_env" ]]; then
+      row ok "environments" "$host_env (YGG_ENVIRONMENT)"
+    elif [[ -n "$environments" ]]; then
+      row ok "environments" "$environments (platform.env)"
+    elif environments=$(env_value "$secrets/platform.env" ENVIRONMENT) && [[ -n "$environments" ]]; then
+      row warn "environments" "$environments (platform.env's ENVIRONMENT, from before 0.5: rename it ENVIRONMENTS)"
     else
-      row warn "environment" "platform.env sets no ENVIRONMENT: the menu asks for it"
+      row warn "environments" "platform.env sets no ENVIRONMENTS: the menu asks for it"
     fi
   fi
 
@@ -472,28 +528,31 @@ EOF
 stack_proxy() {
   local id=$1 service=$2 port=$3 host=$4 metrics=$5 own=$6
   say "# $id in proxy environments: written by scripts/ygg.sh. No host port: Traefik is the only way in."
-  say "# On the edge network, the alias $id is how the status API reaches its health check (catalog.yaml)."
-  [[ -n "$metrics" ]] && say "# On the telemetry network, Prometheus scrapes its metrics."
-  [[ -n "$host" ]] && say "# Routed at PUBLIC_HOST from the env file: the catalog's host, $host, under the DOMAIN."
+  say "# Several environments can share a host, so names carry YGG_ENVIRONMENT (set by scripts/deploy.sh)."
+  say "# On the edge network, the alias $id.<environment> is how the status API reaches its health check."
+  [[ -n "$metrics" ]] && say "# On the telemetry network, Prometheus scrapes its metrics at the same alias."
+  [[ -n "$host" ]] && say "# Routed at PUBLIC_HOST from the env file: the catalog's host, $host, with the environment's"
+  [[ -n "$host" ]] && say "# hostSuffix, under the DOMAIN. Labels are a list: Compose substitutes variables in values only."
   printf '\nservices:\n  %s:\n' "$service"
   [[ -n "$own" ]] && say "    ports: !reset []"
   say "    networks:"
   # The repository's own Compose file may run other services (a database) on the default network.
   [[ -n "$own" ]] && say "      default: {}"
-  printf '      edge:\n        aliases: [%s]\n' "$id"
-  [[ -n "$metrics" ]] && printf '      telemetry:\n        aliases: [%s]\n' "$id"
+  local alias="\"$id.\${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}\""
+  printf '      edge:\n        aliases: [%s]\n' "$alias"
+  [[ -n "$metrics" ]] && printf '      telemetry:\n        aliases: [%s]\n' "$alias"
   if [[ -n "$own" ]]; then
     printf '    logging:\n      driver: json-file\n      options:\n        max-size: 10m\n        max-file: "5"\n'
   fi
   if [[ -n "$host" ]]; then
     cat <<EOF
     labels:
-      traefik.enable: "true"
-      traefik.docker.network: edge
-      traefik.http.routers.$id.rule: Host(\`\${PUBLIC_HOST:?set PUBLIC_HOST in the env file}\`)
-      traefik.http.routers.$id.entrypoints: websecure
-      traefik.http.routers.$id.middlewares: secure-headers@file
-      traefik.http.services.$id.loadbalancer.server.port: "$port"
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.$id-\${YGG_ENVIRONMENT}.rule=Host(\`\${PUBLIC_HOST:?set PUBLIC_HOST in the env file}\`)
+      - traefik.http.routers.$id-\${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.$id-\${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.$id-\${YGG_ENVIRONMENT}.loadbalancer.server.port=$port
 EOF
   fi
   printf '\nnetworks:\n  edge:\n    external: true\n'
@@ -529,27 +588,28 @@ stack_files() {
 # its stack files read. The ones deploy.sh sets itself are left out.
 create_env_file() {
   local id=$1 environment=$2 dir="$secrets/$2" file="$secrets/$2/$1.env"
-  local mode host domain="" name default files
+  local mode host suffix domain="" name default files
   if [[ ! -w "$secrets" ]]; then
     warn "Can't write to $secrets: create it with '$0 install' (or set YGG_SECRETS_DIR), then run '$0 config $id'."
     return 1
   fi
   mode=$(catalog get "$id" "$environment" mode)
+  suffix=$(catalog get "$id" "$environment" hostSuffix)
   host=$(app_field "$id" host)
   mapfile -t files < <(stack_files "$id" "$environment")
   if [[ "$mode" == proxy && -n "$host" ]]; then
     domain=$(env_value "$secrets/platform.env" DOMAIN)
-    [[ -n "$domain" && "$domain" != example.com ]] || ask domain "This environment's DOMAIN (platform.env doesn't say)" "example.com"
+    [[ -n "$domain" && "$domain" != example.com ]] || ask domain "This host's DOMAIN (platform.env doesn't say)" "example.com"
   fi
   [[ -d "$dir" ]] || install -d -m 2750 "$dir"
   {
-    say "# $id in $environment. Created by scripts/ygg.sh; change it with: scripts/ygg.sh config $id"
+    say "# $id in $environment. Created by scripts/ygg.sh; change it with: scripts/ygg.sh config $id $environment"
     say "# It fills in the \${VAR}s of the Compose files, and reaches the container where they hand it"
     say "# over (env_file, or environment: entries). Never commit it."
     if [[ -n "$domain" ]]; then
       say ""
-      say "# The host name Traefik routes to it: the catalog's host under this environment's DOMAIN."
-      say "PUBLIC_HOST=$host.$domain"
+      say "# The host name Traefik routes to it: the catalog's host, with $environment's hostSuffix, under DOMAIN."
+      say "PUBLIC_HOST=$host$suffix.$domain"
     fi
     if ((${#files[@]})); then
       while read -r name; do
@@ -575,17 +635,23 @@ checkout_version() {
   echo "${tag#v}-$commit"
 }
 
-# The image tag of what runs now, empty when nothing does.
-running_tag() {
+# The version deployed now in an environment (running or stopped), without the image tag's
+# <environment>- prefix; empty when nothing is deployed. running_version <app> <environment>
+running_version() {
   local image
-  image=$(docker ps --filter "label=com.docker.compose.project=$1" --format '{{.Image}}' | head -n1)
-  [[ "$image" == *:* ]] && echo "${image##*:}"
+  # The first line in bash, not `| head -n1`, which could SIGPIPE docker under pipefail.
+  image=$(docker ps --all --filter "label=com.docker.compose.project=$1-$2" --format '{{.Image}}')
+  image=${image%%$'\n'*}
+  [[ "$image" == *:* ]] && image=${image##*:} && echo "${image#"$2"-}"
   return 0
 }
 
+# Whether any container of the application runs in the environment. is_running <app> <environment>
+is_running() { [[ -n "$(docker ps --filter "label=com.docker.compose.project=$1-$2" --format '{{.ID}}')" ]]; }
+
 # deploy <app> <environment>: deploy.sh from the application's checkout.
 deploy() {
-  local id=$1 environment=$2 dir="$apps_dir/$1" version default running commit
+  local id=$1 environment=$2 dir="$apps_dir/$1" version default running commit start=""
   need_docker
   if [[ ! -d "$dir/.git" ]]; then
     ask_match dir "Checkout of $id's repository to build from (a directory)" '.' "a path" "$dir"
@@ -593,7 +659,7 @@ deploy() {
     [[ -d "$dir" ]] || die "no such directory: $dir"
   fi
   default=$(checkout_version "$dir")
-  running=$(running_tag "$id")
+  running=$(running_version "$id" "$environment")
   if [[ -n "$running" ]]; then
     commit=$(git -C "$dir" rev-parse HEAD | cut -c1-7)
     if [[ "$running" == *"-$commit" || "$running" == "$commit" ]]; then
@@ -603,7 +669,12 @@ deploy() {
     fi
   fi
   ask_match version "Version to label the image with" '^[A-Za-z0-9_.-]+$' "letters, digits, dots, dashes, underscores" "$default"
-  if "$root/scripts/deploy.sh" "$environment" "$id" "$dir" "$version"; then
+  # deploy.sh stops an on-demand environment's application again when it was not running before;
+  # deploying by hand is usually using it, so ask.
+  if [[ "$(catalog get "$id" "$environment" onDemand)" == true ]] && ! is_running "$id" "$environment"; then
+    confirm "$environment is on demand and $id isn't running there: leave it running after the deploy?" && start=1
+  fi
+  if DEPLOY_START=$start "$root/scripts/deploy.sh" "$environment" "$id" "$dir" "$version"; then
     say "${green}$id $version runs in $environment.${reset}"
   else
     warn "The deploy failed: its output above says why (a missing env file variable, a health check that never passes...)."
@@ -636,7 +707,7 @@ add_application() {
   say ""
 
   while true; do
-    ask_match id "Application id (lowercase, digits, dashes; the Compose project and network alias)" "$ID_PATTERN" "lowercase letters, digits and dashes"
+    ask_match id "Application id (lowercase, digits, dashes; the image, and the Compose project and network alias with the environment)" "$ID_PATTERN" "lowercase letters, digits and dashes"
     catalog show "$id" >/dev/null 2>&1 || break
     warn "'$id' is already an application in catalog.yaml."
   done
@@ -692,7 +763,7 @@ add_application() {
   title "Summary"
   say "  $id ($kind) in system $system, repository $(catalog owner)/$repository"
   say "  health     http://$id:$port$path"
-  [[ -n "$host" ]] && say "  host       $host.<DOMAIN>"
+  [[ -n "$host" ]] && say "  host       $host<hostSuffix>.<DOMAIN> (each environment's hostSuffix)"
   [[ -n "$metrics" ]] && say "  metrics    $id:$metrics"
   say "  stacks     $([[ -z "$own" ]] && echo "stacks/$id.yml, stacks/$id.ports.yml, ")stacks/$id.proxy.yml"
   confirm "Write it?" y || return 0
@@ -730,10 +801,9 @@ print(json.dumps({"system": system, "application": app}))
   fi
 
   title "This host"
-  host_environment
-  environment=$host_env
+  pick_environment environment "Which of this host's environments do you set it up in now? (the others: scripts/ygg.sh config $id <environment>)" "" "$id"
   mode=$(catalog get "$id" "$environment" mode)
-  say "This host runs $environment ($mode)."
+  say "Setting it up in $environment ($mode)."
   if [[ -f "$secrets/$environment/$id.env" ]]; then
     say "Its env file exists: $secrets/$environment/$id.env"
   elif create_env_file "$id" "$environment"; then
@@ -753,15 +823,18 @@ print(json.dumps({"system": system, "application": app}))
   say "3. Install the GitHub App on $repository (step 7.5), then: python3 github/rulesets.py $repository"
   say "4. On every host: cd /opt/yggdrasil && git pull && docker restart yggdrasil-status-1"
   say "   (and yggdrasil-jenkins-1 on the controller host), so they see the new catalog."
-  say "5. On every other host it deploys to: scripts/ygg.sh config $id, to create its env file there."
+  say "5. In every other environment it deploys to, on this host or another: scripts/ygg.sh config $id <environment>,"
+  say "   to create its env file there."
 }
 
 # ---- What runs ----------------------------------------------------------------------------------
 
-# One application's row: its containers' state, health and the deploy labels.
+# One application's row in one environment: its containers' state, health and the deploy labels.
+# app_row <app> <environment> <on demand: true|false>. A stopped application of an on-demand
+# environment is normal, so it is not shown in red.
 app_row() {
-  local id=$1 containers state health version commit deployed total running unhealthy line
-  mapfile -t containers < <(docker ps -a --filter "label=com.docker.compose.project=$id" --format '{{.ID}}')
+  local id=$1 environment=$2 on_demand=$3 containers state health version commit deployed total running unhealthy line
+  mapfile -t containers < <(docker ps -a --filter "label=com.docker.compose.project=$id-$environment" --format '{{.ID}}')
   if ((${#containers[@]} == 0)); then
     printf '  %-22s %s\n' "$id" "${dim}not deployed${reset}"
     return
@@ -783,36 +856,55 @@ app_row() {
     printf -v state '%s%-15s%s' "$green" "running $running/$total" "$reset"
   elif ((running > 0)); then
     printf -v state '%s%-15s%s' "$yellow" "running $running/$total" "$reset"
+  elif [[ "$on_demand" == true ]]; then
+    printf -v state '%s%-15s%s' "$dim" "stopped" "$reset"
   else
     printf -v state '%s%-15s%s' "$red" "stopped" "$reset"
   fi
   printf '  %-22s %s %-10s %-16s %-8s %s\n' "$id" "$state" "$health" "${version:--}" "${commit:--}" "${deployed:--}"
 }
 
+# environment_title <environment>: its name, id, and whether it runs on demand.
+environment_title() {
+  local name on_demand
+  name=$(catalog environment "$1" name)
+  on_demand=$(catalog environment "$1" onDemand)
+  title "$name ($1)$([[ "$on_demand" == true ]] && echo ", on demand") on $(hostname)"
+}
+
 show_status() {
   need_catalog
   need_docker
-  host_environment
-  local apps pick id containers
-  mapfile -t apps < <(applications_in "$host_env")
+  host_environments
+  local environment apps pick id containers choices=()
   while true; do
-    title "Applications in $host_env on $(hostname)"
-    printf '  %s%-22s %-15s %-10s %-16s %-8s %s%s\n' "$bold" APPLICATION STATE HEALTH VERSION COMMIT DEPLOYED "$reset"
-    for id in "${apps[@]}"; do app_row "$id"; done
-    ((${#apps[@]})) || say "  (no application of the catalog deploys to $host_env)"
+    choices=()
+    for environment in "${host_envs[@]}"; do
+      environment_title "$environment"
+      mapfile -t apps < <(applications_in "$environment")
+      printf '  %s%-22s %-15s %-10s %-16s %-8s %s%s\n' "$bold" APPLICATION STATE HEALTH VERSION COMMIT DEPLOYED "$reset"
+      for id in "${apps[@]}"; do
+        app_row "$id" "$environment" "$(catalog get "$id" "$environment" onDemand)"
+        choices+=("$id in $environment")
+      done
+      ((${#apps[@]})) || say "  (no application of the catalog deploys to $environment)"
+    done
     local platform
     platform=$(docker ps --filter label=com.docker.compose.project=yggdrasil --format '{{.Names}}' | wc -l)
+    say ""
     note "  Platform: $platform containers running (scripts/platform.sh ps for details)."
     say ""
-    choose pick "Then:" "Refresh" "Show an application's logs" "Restart an application" "Platform services" "Back"
+    choose pick "Then:" "Refresh" "Show an application's logs" "Restart an application" \
+      "Start or stop an environment" "Platform services" "Back"
     case $pick in
       Refresh) ;;
       Show*|Restart*)
-        ((${#apps[@]})) || continue
-        choose id "Which application?" "${apps[@]}"
-        mapfile -t containers < <(docker ps -a --filter "label=com.docker.compose.project=$id" --format '{{.Names}}')
+        ((${#choices[@]})) || continue
+        choose id "Which application?" "${choices[@]}"
+        environment=${id##* in } id=${id%% in *}
+        mapfile -t containers < <(docker ps -a --filter "label=com.docker.compose.project=$id-$environment" --format '{{.Names}}')
         if ((${#containers[@]} == 0)); then
-          warn "$id is not deployed here."
+          warn "$id is not deployed in $environment here."
         elif [[ "$pick" == Show* ]]; then
           for id in "${containers[@]}"; do title "$id"; docker logs --tail 100 "$id" 2>&1 || true; done
           pause
@@ -820,10 +912,130 @@ show_status() {
           docker restart "${containers[@]}"
         fi
         ;;
+      Start*) run environment_command; pause ;;
       Platform*) "$root/scripts/platform.sh" ps || true; pause ;;
       Back) return ;;
     esac
   done
+}
+
+# ---- Environments -------------------------------------------------------------------------------
+
+# The containers of an application in an environment: all of them, or only the running ones.
+# project_containers <app> <environment> [running]
+project_containers() {
+  local filter=(--filter "label=com.docker.compose.project=$1-$2")
+  if [[ -n "${3:-}" ]]; then
+    docker ps "${filter[@]}" --format '{{.ID}}'
+  else
+    docker ps -a "${filter[@]}" --format '{{.ID}}'
+  fi
+}
+
+# Every application of the environment, as deploy.sh left it: started with docker start, no build,
+# no new container.
+start_environment() {
+  local environment=$1 id containers count=0
+  title "Starting $environment"
+  for id in $(applications_in "$environment"); do
+    mapfile -t containers < <(project_containers "$id" "$environment")
+    if ((${#containers[@]} == 0)); then
+      note "  $id: not deployed in $environment"
+      continue
+    fi
+    docker start "${containers[@]}" >/dev/null
+    say "  $id: started"
+    count=$((count + 1))
+  done
+  ((count)) || { warn "Nothing of $environment is deployed on this host."; return 0; }
+  note "Their health checks take a moment: scripts/ygg.sh status (or env status) shows when they are up."
+}
+
+# stop_environment <environment> <force: yes|"">: the applications that are onDemand there (every
+# one with force).
+stop_environment() {
+  local environment=$1 force=$2 id containers count=0
+  if [[ "$(catalog environment "$environment" onDemand)" != true && -z "$force" ]]; then
+    die "$environment is not on demand (onDemand in catalog.yaml): it is meant to stay up. Add --force to stop it anyway."
+  fi
+  title "Stopping $environment"
+  for id in $(applications_in "$environment"); do
+    if [[ -z "$force" && "$(catalog get "$id" "$environment" onDemand)" != true ]]; then
+      note "  $id: not on demand in $environment (its override in catalog.yaml): left as it is"
+      continue
+    fi
+    mapfile -t containers < <(project_containers "$id" "$environment" running)
+    ((${#containers[@]})) || continue
+    docker stop "${containers[@]}" >/dev/null
+    say "  $id: stopped"
+    count=$((count + 1))
+  done
+  ((count)) || say "Nothing of $environment was running."
+  return 0
+}
+
+# One line per environment of the host: on demand or not, and how many of its applications run.
+environments_status() {
+  local environment id total running deployed state on_demand
+  title "Environments on $(hostname)"
+  printf '  %s%-16s %-20s %-10s %s%s\n' "$bold" ENVIRONMENT NAME "ON DEMAND" STATE "$reset"
+  for environment in "${host_envs[@]}"; do
+    total=0 running=0 deployed=0
+    for id in $(applications_in "$environment"); do
+      total=$((total + 1))
+      [[ -n "$(project_containers "$id" "$environment")" ]] && deployed=$((deployed + 1))
+      [[ -n "$(project_containers "$id" "$environment" running)" ]] && running=$((running + 1))
+    done
+    on_demand=$(catalog environment "$environment" onDemand)
+    if ((deployed == 0)); then
+      state="${dim}not deployed${reset}"
+    elif ((running == 0)); then
+      state="$([[ "$on_demand" == true ]] && echo "$dim" || echo "$red")stopped${reset}"
+    elif ((running == deployed)); then
+      state="${green}running${reset} ($running of $total applications)"
+    else
+      state="${yellow}partly running${reset} ($running of $deployed deployed)"
+    fi
+    printf '  %-16s %-20s %-10s %s\n' "$environment" "$(catalog environment "$environment" name)" \
+      "$([[ "$on_demand" == true ]] && echo yes || echo no)" "$state"
+  done
+}
+
+# env [start|stop|status] [<environment>] [--force]: without an action, asks.
+environment_command() {
+  need_catalog
+  need_docker
+  host_environments
+  local action="" environment="" force="" argument
+  for argument in "$@"; do
+    case $argument in
+      --force) force=yes ;;
+      start | stop | status) [[ -z "$action" ]] && action=$argument || environment=$argument ;;
+      *) [[ -z "$environment" ]] || die "usage: scripts/ygg.sh env start <environment> | stop <environment> [--force] | status"
+         environment=$argument ;;
+    esac
+  done
+  if [[ -z "$action" ]]; then
+    environments_status
+    say ""
+    choose action "Then:" start stop back
+    [[ "$action" == back ]] && return 0
+  fi
+  case $action in
+    status) environments_status ;;
+    start)
+      pick_environment environment "Start which environment?" "$environment"
+      start_environment "$environment"
+      ;;
+    stop)
+      pick_environment environment "Stop which environment?" "$environment"
+      if [[ -z "$force" && "$(catalog environment "$environment" onDemand)" != true && -t 0 && $# -eq 0 ]]; then
+        warn "$environment is not on demand: it is meant to stay up."
+        confirm "Stop every application of $environment anyway?" && force=yes || return 0
+      fi
+      stop_environment "$environment" "$force"
+      ;;
+  esac
 }
 
 # ---- Configuration ------------------------------------------------------------------------------
@@ -882,24 +1094,29 @@ quote_value() {
 
 configure_app() {
   need_catalog
-  host_environment
-  local id=${1:-} apps file pick name value reveal="" changed=""
-  mapfile -t apps < <(applications_in "$host_env")
+  host_environments
+  local id=${1:-} environment=${2:-} apps=() file pick name value reveal="" changed="" candidate
   if [[ -z "$id" ]]; then
-    ((${#apps[@]})) || die "no application of the catalog deploys to $host_env"
+    # Every application of the host's environments, each once.
+    for candidate in "${host_envs[@]}"; do
+      mapfile -t -O "${#apps[@]}" apps < <(applications_in "$candidate")
+    done
+    mapfile -t apps < <(printf '%s\n' "${apps[@]}" | awk 'NF && !seen[$0]++')
+    ((${#apps[@]})) || die "no application of the catalog deploys to this host's environments ($(IFS=,; echo "${host_envs[*]}"))"
     choose id "Which application?" "${apps[@]}"
   fi
-  printf '%s\n' "${apps[@]}" | grep -Fqx "$id" || die "'$id' does not deploy to $host_env (catalog.yaml)"
-  file="$secrets/$host_env/$id.env"
+  catalog show "$id" >/dev/null || exit 1
+  pick_environment environment "$id in which environment?" "$environment" "$id"
+  file="$secrets/$environment/$id.env"
   if [[ ! -f "$file" ]]; then
-    say "$id has no env file on this host yet ($file)."
+    say "$id has no env file in $environment on this host yet ($file)."
     confirm "Create it from its stack files?" y || return 0
-    create_env_file "$id" "$host_env" || return 1
+    create_env_file "$id" "$environment" || return 1
   fi
   [[ -r "$file" && -w "$file" ]] || die "$file is not readable and writable by $me"
 
   while true; do
-    title "$id in $host_env: $file"
+    title "$id in $environment: $file"
     show_env "$file" "$reveal"
     say ""
     choose pick "Then:" \
@@ -935,7 +1152,7 @@ configure_app() {
       Hide*) reveal="" ;;
       Apply*)
         note "Containers read their env file when they are created: deploy.sh recreates them (and rebuilds the image, which a web front end's build arguments need)."
-        if deploy "$id" "$host_env"; then changed=""; fi
+        if deploy "$id" "$environment"; then changed=""; fi
         pause
         ;;
       Back)
@@ -974,6 +1191,7 @@ menu() {
       "Set up a new application (API, web front end or worker)" \
       "See what runs on this host" \
       "Change an application's configuration" \
+      "Start or stop an environment (on demand)" \
       "Quit"
     case $pick in
       Check*) run check_host; pause ;;
@@ -981,6 +1199,7 @@ menu() {
       Set*) run add_application; pause ;;
       See*) run show_status ;;
       Change*) run configure_app ;;
+      Start*) run environment_command; pause ;;
       Quit) return ;;
     esac
   done
@@ -992,7 +1211,8 @@ case ${1:-} in
   install) install_host ;;
   add) add_application ;;
   status) show_status ;;
-  config) configure_app "${2:-}" ;;
+  config) configure_app "${2:-}" "${3:-}" ;;
+  env) shift; environment_command "$@" ;;
   -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command '$1': scripts/ygg.sh [check | install | add | status | config [<app>]]" ;;
+  *) die "unknown command '$1': scripts/ygg.sh [check | install | add | status | config [<app>] [<environment>] | env status | env start <environment> | env stop <environment> [--force]]" ;;
 esac

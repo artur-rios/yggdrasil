@@ -5,6 +5,23 @@ This repository is deployed by [yggdrasil](https://github.com/<owner>/<repositor
 that catalog, which decides its environments, its Jenkins deploy job, its GitHub rulesets and
 required checks, and its place in the console.
 
+## Environments
+
+The catalog decides where each branch goes. With yggdrasil's default catalog:
+
+| Environment | Deployed by | Runs |
+|---|---|---|
+| `local` | You, on your machine (`scripts/deploy.sh local <application-id> ...` in yggdrasil, or this repository's own instructions) | While you run it |
+| `development` | Jenkins, on every push to `develop` | On demand |
+| `homologation` | Jenkins, on every push of a `release/x.y.z` branch | On demand |
+| `production` | Jenkins, on a green `release/x.y.z → main` pull request, which it then merges and tags | Always |
+
+An on-demand environment runs only while someone uses it. On its host,
+`scripts/ygg.sh env start <environment>` (in the yggdrasil checkout) turns it on and
+`scripts/ygg.sh env stop <environment>` off again. While it is off, Jenkins still deploys to it:
+it builds the new version, checks it becomes healthy (rolling back otherwise), and switches it off
+again, so the next `env start` runs the new version.
+
 ## Branching model
 
 ```
@@ -77,7 +94,9 @@ changelog (step 1 below), never on the release branch.
    git switch develop && git pull && git switch -c release/1.4.0 && git push -u origin release/1.4.0
    ```
    Jenkins deploys it to every environment with `trigger: branch` whose `branches` match
-   `release/1.4.0`, as version `1.4.0` (image tag `1.4.0-<7-character commit>`).
+   `release/1.4.0` (homologation, with the default catalog), as version `1.4.0` (image tag
+   `<environment>-1.4.0-<7-character commit>`). To try it there, turn the environment on (see
+   [Environments](#environments)).
 3. Open a pull request `release/1.4.0 → main`.
 4. When every **GitHub Actions** check on its head commit has passed (`branch-policy` included;
    Jenkins waits up to the catalog's `checksTimeout`, 1 hour by default), Jenkins marks every
@@ -106,7 +125,8 @@ Then either re-run the build in Jenkins (**Build with Parameters** on the `PR-<n
 or fix it on `develop` through a `fix/` branch and cut a new release (the failed version was never
 tagged, so you may reuse it: close the pull request, delete the branch, and cut it again).
 
-Follow a release in the yggdrasil console: select each environment in turn, and expand this
-system's card to see this application's version, commit, deploy time and health.
+Follow a release in the yggdrasil console: this system's card has a status per environment
+(`Stopped` for an on-demand environment that is off: not a problem); expand it to see this
+application's version, commit, deploy time and health in each environment.
 
 Repository administrators can bypass these rules. That is for emergencies, not routine work.

@@ -21,31 +21,52 @@ public sealed class StatusApiFactory : WebApplicationFactory<Program>
 {
     public const string AllowedOrigin = "https://yggdrasil.hml.example.com";
 
+    // One host, three environments: production running, development and homologation (on demand)
+    // stopped, as `scripts/ygg.sh env stop` leaves them. Jenkins runs on another host.
     public FakeDocker Docker { get; } = new FakeDocker()
-        .Add(new FakeContainer("api1", "heimdall-api", Health: "healthy", ExtraLabels: new()
-        {
-            ["yggdrasil.version"] = "1.4.0",
-            ["yggdrasil.commit"] = "3f2a9c1",
-            ["yggdrasil.deployed_at"] = "2026-09-17T21:40:02Z",
-        }))
-        .Add(new FakeContainer("ui1", "heimdall-ui", Image: "heimdall-ui:1.4.0-3f2a9c1"))
+        .Add(new FakeContainer("api-prod", "heimdall-api-production", Health: "healthy", Image: "heimdall-api:production-1.4.0-3f2a9c1",
+            ExtraLabels: new()
+            {
+                ["yggdrasil.version"] = "1.4.0",
+                ["yggdrasil.commit"] = "3f2a9c1",
+                ["yggdrasil.deployed_at"] = "2026-09-17T21:40:02Z",
+                ["yggdrasil.environment"] = "production",
+            }))
+        .Add(new FakeContainer("ui-prod", "heimdall-ui-production", Image: "heimdall-ui:production-1.4.0-3f2a9c1"))
+        .Add(new FakeContainer("api-dev", "heimdall-api-development", State: "exited", Image: "heimdall-api:development-1.5.0-8d01e7a"))
+        .Add(new FakeContainer("ui-dev", "heimdall-ui-development", State: "exited", Image: "heimdall-ui:development-1.5.0-8d01e7a"))
+        .Add(new FakeContainer("worker-dev", "heimdall-worker-development", State: "exited", Image: "heimdall-worker:development-1.5.0-8d01e7a"))
+        .Add(new FakeContainer("sandbox-dev", "sandbox-development", Service: "api", State: "exited", Image: "sandbox-api:development-0.1.0-1a2b3c4"))
+        .Add(new FakeContainer("api-hml", "heimdall-api-homologation", State: "exited", Image: "heimdall-api:homologation-1.4.0-3f2a9c1"))
+        .Add(new FakeContainer("ui-hml", "heimdall-ui-homologation", State: "created", Image: "heimdall-ui:homologation-1.4.0-3f2a9c1"))
         .Add(new FakeContainer("traefik1", "yggdrasil", Service: "traefik", Image: "traefik:v3.5"));
 
+    // By the environment-qualified network aliases; a plain "heimdall-api" would not resolve on a host.
     public FakeProbes Probes { get; } = new FakeProbes()
-        .Answer("heimdall-api", HttpStatusCode.OK)
-        .Answer("heimdall-ui", HttpStatusCode.OK)
+        .Answer("heimdall-api.production", HttpStatusCode.OK)
+        .Answer("heimdall-ui.production", HttpStatusCode.OK)
         .Answer("traefik", HttpStatusCode.OK);
+
+    public List<string> ProbedHosts { get; } = [];
 
     /// <summary>Pretend every request arrived on the internal port (TestServer reports port 0).</summary>
     public bool OnInternalPort { get; init; }
 
-    /// <summary>YGGDRASIL_ENVIRONMENT; the test catalog has development, homologation and production.</summary>
-    public string Environment { get; init; } = "production";
+    /// <summary>YGGDRASIL_ENVIRONMENTS; the test catalog has local, development, homologation and production.</summary>
+    public string Environments { get; init; } = "development,homologation,production";
+
+    /// <summary>YGGDRASIL_ENVIRONMENT, the legacy setting; null leaves it unset.</summary>
+    public string? LegacyEnvironment { get; init; }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("YGGDRASIL_STATUS_TOKEN", TestData.Token);
-        builder.UseSetting("YGGDRASIL_ENVIRONMENT", Environment);
+        builder.UseSetting("YGGDRASIL_ENVIRONMENTS", Environments);
+        if (LegacyEnvironment is not null)
+        {
+            builder.UseSetting("YGGDRASIL_ENVIRONMENT", LegacyEnvironment);
+        }
+
         builder.UseSetting("YGGDRASIL_DOMAIN", "example.com");
         builder.UseSetting("YGGDRASIL_STATUS_CORS_ORIGINS", AllowedOrigin);
 
@@ -53,7 +74,7 @@ public sealed class StatusApiFactory : WebApplicationFactory<Program>
         {
             services.AddSingleton(TestData.Catalog());
             services.AddHttpClient<DockerClient>().ConfigurePrimaryHttpMessageHandler(() => Docker);
-            services.AddHttpClient<HealthProber>().ConfigurePrimaryHttpMessageHandler(() => Probes);
+            services.AddHttpClient<HealthProber>().ConfigurePrimaryHttpMessageHandler(() => new Recording(Probes, ProbedHosts));
             if (OnInternalPort)
             {
                 services.AddSingleton<InternalPortPolicy, AlwaysInternal>();
@@ -78,6 +99,20 @@ public sealed class StatusApiFactory : WebApplicationFactory<Program>
     {
         public override bool IsInternal(HttpContext context) => true;
     }
+
+    // Notes the host of every probe, then lets the fake answer it.
+    private sealed class Recording(HttpMessageHandler inner, List<string> hosts) : DelegatingHandler(inner)
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            lock (hosts)
+            {
+                hosts.Add(request.RequestUri!.Host);
+            }
+
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
 }
 
 public class ApiTests : IClassFixture<StatusApiFactory>
@@ -86,43 +121,107 @@ public class ApiTests : IClassFixture<StatusApiFactory>
     // these property names at every level.
     private const string ContractExample = """
         {
-          "environment": "production",
-          "environmentName": "Production",
-          "generatedAt": "2026-09-18T18:04:11Z",
-          "status": "degraded",
+          "host": "example.com",
+          "generatedAt": "2026-10-08T18:04:11Z",
+          "status": "up",
+          "environments": [
+            { "id": "development", "name": "Development", "onDemand": true, "status": "stopped" },
+            { "id": "homologation", "name": "Homologation", "onDemand": true, "status": "stopped" },
+            { "id": "production", "name": "Production", "onDemand": false, "status": "up" }
+          ],
           "systems": [
             {
               "id": "heimdall",
               "name": "Heimdall",
               "description": "Identity and access management",
               "status": "up",
-              "applications": [
+              "environments": [
                 {
-                  "id": "heimdall-api",
-                  "name": "Heimdall API",
-                  "kind": "api",
+                  "environment": "development",
+                  "status": "stopped",
+                  "applications": [
+                    {
+                      "id": "heimdall-api",
+                      "name": "Heimdall API",
+                      "kind": "api",
+                      "status": "stopped",
+                      "url": "https://heimdall-api-dev.example.com",
+                      "repository": "https://github.com/acme/heimdall-api",
+                      "deployment": {
+                        "version": "1.5.0",
+                        "commit": "8d01e7a",
+                        "deployedAt": "2026-10-07T14:12:40Z",
+                        "image": "heimdall-api:development-1.5.0-8d01e7a"
+                      },
+                      "container": {
+                        "state": "exited",
+                        "health": null,
+                        "startedAt": null,
+                        "restartCount": null
+                      },
+                      "probe": null
+                    }
+                  ]
+                },
+                {
+                  "environment": "homologation",
+                  "status": "stopped",
+                  "applications": [
+                    {
+                      "id": "heimdall-api",
+                      "name": "Heimdall API",
+                      "kind": "api",
+                      "status": "stopped",
+                      "url": "https://heimdall-api-hml.example.com",
+                      "repository": "https://github.com/acme/heimdall-api",
+                      "deployment": {
+                        "version": "1.4.0",
+                        "commit": "3f2a9c1",
+                        "deployedAt": "2026-10-01T09:30:12Z",
+                        "image": "heimdall-api:homologation-1.4.0-3f2a9c1"
+                      },
+                      "container": {
+                        "state": "exited",
+                        "health": null,
+                        "startedAt": null,
+                        "restartCount": null
+                      },
+                      "probe": null
+                    }
+                  ]
+                },
+                {
+                  "environment": "production",
                   "status": "up",
-                  "url": "https://heimdall-api.example.com",
-                  "repository": "https://github.com/artur-rios/heimdall-api",
-                  "deployment": {
-                    "version": "1.4.0",
-                    "commit": "3f2a9c1",
-                    "deployedAt": "2026-09-17T21:40:02Z",
-                    "image": "heimdall-api:1.4.0-3f2a9c1"
-                  },
-                  "container": {
-                    "state": "running",
-                    "health": "healthy",
-                    "startedAt": "2026-09-17T21:40:05Z",
-                    "restartCount": null
-                  },
-                  "probe": {
-                    "healthy": true,
-                    "statusCode": 200,
-                    "latencyMs": 12,
-                    "checkedAt": "2026-09-18T18:04:09Z",
-                    "error": null
-                  }
+                  "applications": [
+                    {
+                      "id": "heimdall-api",
+                      "name": "Heimdall API",
+                      "kind": "api",
+                      "status": "up",
+                      "url": "https://heimdall-api.example.com",
+                      "repository": "https://github.com/acme/heimdall-api",
+                      "deployment": {
+                        "version": "1.4.0",
+                        "commit": "3f2a9c1",
+                        "deployedAt": "2026-10-02T21:40:02Z",
+                        "image": "heimdall-api:production-1.4.0-3f2a9c1"
+                      },
+                      "container": {
+                        "state": "running",
+                        "health": "healthy",
+                        "startedAt": "2026-10-02T21:40:05Z",
+                        "restartCount": null
+                      },
+                      "probe": {
+                        "healthy": true,
+                        "statusCode": 200,
+                        "latencyMs": 12,
+                        "checkedAt": "2026-10-08T18:04:09Z",
+                        "error": null
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -163,25 +262,46 @@ public class ApiTests : IClassFixture<StatusApiFactory>
 
         AssertSameShape(JsonNode.Parse(ContractExample)!, body, "$");
 
-        Assert.Equal("production", (string?)body["environment"]);
-        Assert.Equal("Production", (string?)body["environmentName"]);
+        Assert.Equal("example.com", (string?)body["host"]);
+        Assert.Matches(@"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", (string?)body["generatedAt"]);
+        Assert.Equal("up", (string?)body["status"]);
+        Assert.Equal(
+            """[{"id":"development","name":"Development","onDemand":true,"status":"stopped"},""" +
+            """{"id":"homologation","name":"Homologation","onDemand":true,"status":"stopped"},""" +
+            """{"id":"production","name":"Production","onDemand":false,"status":"up"}]""",
+            body["environments"]!.ToJsonString());
+
         var heimdall = body["systems"]![0]!;
         Assert.Equal("up", (string?)heimdall["status"]);
-        var api = heimdall["applications"]![0]!;
+        Assert.Equal(["development:stopped", "homologation:stopped", "production:up"],
+            heimdall["environments"]!.AsArray().Select(e => $"{e!["environment"]}:{e["status"]}"));
+
+        var api = Application(body, "heimdall", "production", "heimdall-api");
         Assert.Equal("up", (string?)api["status"]);
         Assert.Equal("api", (string?)api["kind"]);
         Assert.Equal("https://heimdall-api.example.com", (string?)api["url"]);
         Assert.Equal("https://github.com/artur-rios/heimdall-api", (string?)api["repository"]);
         Assert.Equal("1.4.0", (string?)api["deployment"]!["version"]);
+        Assert.Equal("heimdall-api:production-1.4.0-3f2a9c1", (string?)api["deployment"]!["image"]);
         Assert.Equal("2026-09-17T21:40:05Z", (string?)api["container"]!["startedAt"]);
         Assert.True(api["container"]!.AsObject().ContainsKey("restartCount"));
         Assert.Null(api["container"]!["restartCount"]);
-        Assert.Matches(@"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", (string?)body["generatedAt"]);
 
-        // The platform system: traefik up, jenkins not on this host and so neutral.
+        // Stopped in an on-demand environment: neutral, with the container but no probe.
+        var development = Application(body, "heimdall", "development", "heimdall-api");
+        Assert.Equal("stopped", (string?)development["status"]);
+        Assert.Equal("https://heimdall-api-dev.example.com", (string?)development["url"]);
+        Assert.Equal("exited", (string?)development["container"]!["state"]);
+        Assert.True(development.AsObject().ContainsKey("probe"));
+        Assert.Null(development["probe"]);
+        Assert.Equal("https://heimdall-preview.example.com", (string?)Application(body, "heimdall", "development", "heimdall-ui")["url"]);
+        Assert.Equal("stopped", (string?)Application(body, "heimdall", "homologation", "heimdall-ui")["status"]);
+
+        // The platform system in every environment: traefik up, jenkins not on this host and so neutral.
         var yggdrasil = body["systems"]![1]!;
         Assert.Equal("up", (string?)yggdrasil["status"]);
-        var jenkins = yggdrasil["applications"]![1]!;
+        Assert.Equal(TestData.HostEnvironments, yggdrasil["environments"]!.AsArray().Select(e => (string?)e!["environment"]));
+        var jenkins = Application(body, "yggdrasil", "development", "jenkins");
         Assert.Equal("not_deployed", (string?)jenkins["status"]);
         Assert.Null(jenkins["deployment"]);
         Assert.Null(jenkins["repository"]);
@@ -189,8 +309,32 @@ public class ApiTests : IClassFixture<StatusApiFactory>
         // Written as null, not left out.
         Assert.True(jenkins.AsObject().ContainsKey("container"));
         Assert.True(jenkins.AsObject().ContainsKey("probe"));
+        Assert.Equal("up", (string?)Application(body, "yggdrasil", "homologation", "traefik")["status"]);
+    }
 
-        Assert.Equal("up", (string?)body["status"]);
+    [Fact]
+    public async Task GivenTheHost_WhenRefreshed_ThenEachApplicationIsLookedForUnderItsEnvironmentsProjectAndProbedAtItsAlias()
+    {
+        await using var host = new StatusApiFactory();
+        await host.ReadyClientAsync();
+
+        var requests = host.Docker.Requests.ToList();
+        Assert.Contains(requests, r => r.Contains(Uri.EscapeDataString("com.docker.compose.project=heimdall-api-production")));
+        Assert.Contains(requests, r => r.Contains(Uri.EscapeDataString("com.docker.compose.project=heimdall-api-development")));
+        Assert.DoesNotContain(requests, r => r.Contains(Uri.EscapeDataString("com.docker.compose.project=heimdall-api\"")));
+
+        // Running ones at their environment's alias, platform components at their plain name, and
+        // stopped ones not at all.
+        var probed = host.ProbedHosts.ToList();
+        Assert.Contains("heimdall-api.production", probed);
+        Assert.Contains("heimdall-ui.production", probed);
+        Assert.DoesNotContain(probed, h => h.EndsWith(".development", StringComparison.Ordinal) || h.EndsWith(".homologation", StringComparison.Ordinal));
+        Assert.DoesNotContain("heimdall-api", probed);
+        // A platform component once per refresh, not once per environment: as often as one application
+        // in one environment.
+        Assert.Equal(probed.Count(h => h == "heimdall-api.production"), probed.Count(h => h == "traefik"));
+        Assert.Equal(requests.Count(r => r.Contains("heimdall-api-production")),
+            requests.Count(r => r.Contains(Uri.EscapeDataString("com.docker.compose.service=traefik"))));
     }
 
     [Fact]
@@ -215,43 +359,64 @@ public class ApiTests : IClassFixture<StatusApiFactory>
     }
 
     [Fact]
-    public async Task GivenApplicationsNotInTheEnvironment_WhenGettingStatus_ThenTheyAndTheSystemsTheyEmptyAreLeftOut()
+    public async Task GivenApplicationsNotInAnEnvironment_WhenGettingStatus_ThenTheyAreLeftOutOfItAndSystemsOnlyListTheirEnvironments()
     {
         var client = await factory.ReadyClientAsync();
 
         var body = await GetJson(client, "/api/status");
 
-        // heimdall-worker and sandbox (whose only application is sandbox-api) are development-only.
-        Assert.Equal(["heimdall", "yggdrasil"], body["systems"]!.AsArray().Select(s => (string?)s!["id"]));
-        Assert.Equal(["heimdall-api", "heimdall-ui"], body["systems"]![0]!["applications"]!.AsArray().Select(a => (string?)a!["id"]));
+        // scratch (local only) is on no environment of this host; sandbox only in development.
+        Assert.Equal(["heimdall", "yggdrasil", "sandbox"], body["systems"]!.AsArray().Select(s => (string?)s!["id"]));
+        var heimdall = body["systems"]![0]!["environments"]!.AsArray();
+        Assert.Equal(["heimdall-api", "heimdall-ui", "heimdall-worker"], heimdall[0]!["applications"]!.AsArray().Select(a => (string?)a!["id"]));
+        Assert.Equal(["heimdall-api", "heimdall-ui"], heimdall[2]!["applications"]!.AsArray().Select(a => (string?)a!["id"]));
+        // heimdall-worker has no container in homologation: listed, as not_deployed.
+        Assert.Equal("not_deployed", (string?)Application(body, "heimdall", "homologation", "heimdall-worker")["status"]);
 
-        using var sandbox = await client.SendAsync(Authorized("/api/systems/sandbox"));
-        Assert.Equal(HttpStatusCode.NotFound, sandbox.StatusCode);
+        var sandbox = await GetJson(client, "/api/systems/sandbox");
+        Assert.Equal(["development"], sandbox["environments"]!.AsArray().Select(e => (string?)e!["environment"]));
+        Assert.Equal("stopped", (string?)sandbox["status"]);
 
-        // Never probed either: nothing in this environment is supposed to answer.
-        Assert.DoesNotContain(factory.Docker.Requests.ToList(), r => r.Contains("heimdall-worker") || r.Contains("sandbox-api"));
+        using var scratch = await client.SendAsync(Authorized("/api/systems/scratch"));
+        Assert.Equal(HttpStatusCode.NotFound, scratch.StatusCode);
+
+        // Never looked for either: nothing on this host is supposed to run it.
+        Assert.DoesNotContain(factory.Docker.Requests.ToList(), r => r.Contains("scratch-api"));
     }
 
     [Fact]
-    public async Task GivenAnotherEnvironment_WhenGettingStatus_ThenItsOwnApplicationsAndNameAreReported()
+    public async Task GivenEnvironmentsInAnotherOrder_WhenGettingStatus_ThenTheyAreReportedInCatalogOrder()
     {
-        await using var development = new StatusApiFactory { Environment = "development" };
-        var client = await development.ReadyClientAsync();
+        await using var host = new StatusApiFactory { Environments = "production, development" };
+        var client = await host.ReadyClientAsync();
 
         var body = await GetJson(client, "/api/status");
-        var system = await GetJson(client, "/api/systems/sandbox");
 
-        Assert.Equal("development", (string?)body["environment"]);
-        Assert.Equal("Development", (string?)body["environmentName"]);
-        Assert.Equal(["heimdall", "yggdrasil", "sandbox"], body["systems"]!.AsArray().Select(s => (string?)s!["id"]));
-        Assert.Contains(body["systems"]![0]!["applications"]!.AsArray(), a => (string?)a!["id"] == "heimdall-worker");
-        Assert.Equal("sandbox-api", (string?)system["applications"]![0]!["id"]);
+        Assert.Equal(["development", "production"], body["environments"]!.AsArray().Select(e => (string?)e!["id"]));
+        Assert.Equal(["development", "production"],
+            body["systems"]![0]!["environments"]!.AsArray().Select(e => (string?)e!["environment"]));
+        Assert.DoesNotContain(host.Docker.Requests.ToList(), r => r.Contains("homologation"));
     }
 
     [Fact]
-    public async Task GivenAnEnvironmentNotInTheCatalog_WhenStarting_ThenStartupIsRefusedWithTheReason()
+    public async Task GivenOnlyTheLegacyEnvironment_WhenGettingStatus_ThenItIsTheHostsOnlyEnvironment()
     {
-        await using var staging = new StatusApiFactory { Environment = "staging" };
+        await using var legacy = new StatusApiFactory { Environments = "", LegacyEnvironment = "production" };
+        var client = await legacy.ReadyClientAsync();
+
+        var body = await GetJson(client, "/api/status");
+
+        Assert.Equal("""[{"id":"production","name":"Production","onDemand":false,"status":"up"}]""", body["environments"]!.ToJsonString());
+        Assert.Equal(["heimdall", "yggdrasil"], body["systems"]!.AsArray().Select(s => (string?)s!["id"]));
+        Assert.Equal("up", (string?)body["status"]);
+    }
+
+    [Theory]
+    [InlineData("staging,production", null, "YGGDRASIL_ENVIRONMENTS: 'staging' is not an environment in the catalog (local, development, homologation, production)")]
+    [InlineData("", "staging", "YGGDRASIL_ENVIRONMENT: 'staging' is not an environment in the catalog (local, development, homologation, production)")]
+    public async Task GivenAnEnvironmentNotInTheCatalog_WhenStarting_ThenStartupIsRefusedWithTheReason(string environments, string? legacy, string expected)
+    {
+        await using var staging = new StatusApiFactory { Environments = environments, LegacyEnvironment = legacy };
         var stderr = new StringWriter();
         var original = Console.Error;
 
@@ -268,8 +433,7 @@ public class ApiTests : IClassFixture<StatusApiFactory>
         }
 
         Assert.Contains("yggdrasil-status: invalid configuration:", stderr.ToString());
-        Assert.Contains("YGGDRASIL_ENVIRONMENT 'staging' is not an environment in the catalog (development, homologation, production)",
-            stderr.ToString());
+        Assert.Contains(expected, stderr.ToString());
     }
 
     [Fact]
@@ -311,12 +475,18 @@ public class ApiTests : IClassFixture<StatusApiFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var targets = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsArray();
-        Assert.Equal(3, targets.Count);
-        Assert.Equal("""{"targets":["heimdall-api:9464"],"labels":{"system":"heimdall","app":"heimdall-api","kind":"api"}}""",
+        Assert.Equal(8, targets.Count);
+        Assert.Equal("""{"targets":["heimdall-api.development:9464"],"labels":{"system":"heimdall","app":"heimdall-api","kind":"api","environment":"development"}}""",
             targets[0]!.ToJsonString());
-        Assert.Equal("/prometheus/", (string?)targets[2]!["labels"]!["__metrics_path__"]);
-        // Not heimdall-worker nor sandbox-api, which have metrics but are not deployed to production.
-        Assert.Equal(["heimdall-api", "traefik", "jenkins"], targets.Select(t => (string?)t!["labels"]!["app"]));
+        Assert.Equal("""{"targets":["jenkins:8080"],"labels":{"system":"yggdrasil","app":"jenkins","kind":"platform","__metrics_path__":"/prometheus/"}}""",
+            targets[6]!.ToJsonString());
+        Assert.Equal(
+        [
+            "heimdall-api.development", "heimdall-api.homologation", "heimdall-api.production",
+            "heimdall-worker.development", "heimdall-worker.homologation",
+            "traefik", "jenkins",
+            "sandbox-api.development",
+        ], targets.Select(t => (string?)t!["labels"]!["app"] + (t["labels"]!["environment"] is { } e ? $".{e}" : "")));
     }
 
     [Fact]
@@ -375,12 +545,18 @@ public class ApiTests : IClassFixture<StatusApiFactory>
 
         var body = await GetJson(client, "/api/status");
 
-        var applications = body["systems"]!.AsArray().SelectMany(s => s!["applications"]!.AsArray()).ToDictionary(a => (string)a!["id"]!, a => (string?)a!["status"]);
-        Assert.Equal("unknown", applications["heimdall-api"]);
+        Assert.Equal("unknown", (string?)Application(body, "heimdall", "production", "heimdall-api")["status"]);
+        // Without Docker a stopped application can't be told from a broken one: its probe fails.
+        Assert.Equal("down", (string?)Application(body, "heimdall", "development", "heimdall-api")["status"]);
         // Jenkins does not answer its probe (no such host) and Docker can't say it isn't deployed.
-        Assert.Equal("down", applications["jenkins"]);
+        Assert.Equal("down", (string?)Application(body, "yggdrasil", "production", "jenkins")["status"]);
         Assert.Equal("degraded", (string?)body["status"]);
     }
+
+    private static JsonNode Application(JsonNode body, string system, string environment, string id) =>
+        body["systems"]!.AsArray().Single(s => (string?)s!["id"] == system)!["environments"]!.AsArray()
+            .Single(e => (string?)e!["environment"] == environment)!["applications"]!.AsArray()
+            .Single(a => (string?)a!["id"] == id)!;
 
     private static HttpRequestMessage Authorized(string path)
     {
@@ -407,7 +583,7 @@ public class ApiTests : IClassFixture<StatusApiFactory>
     }
 
     // Same property names at every level, and the same JSON kind (object, array, string, number...)
-    // wherever both sides have a value; arrays are compared by their first element.
+    // wherever both sides have a value; arrays element by element, as far as the shorter one goes.
     private static void AssertSameShape(JsonNode expected, JsonNode actual, string path)
     {
         Assert.True(expected.GetValueKind() == actual.GetValueKind(),
@@ -430,8 +606,15 @@ public class ApiTests : IClassFixture<StatusApiFactory>
 
                 break;
 
-            case JsonArray expectedArray when expectedArray.Count > 0 && actual.AsArray().Count > 0:
-                AssertSameShape(expectedArray[0]!, actual.AsArray()[0]!, $"{path}[0]");
+            case JsonArray expectedArray:
+                foreach (var (expectedItem, actualItem, index) in expectedArray.Zip(actual.AsArray(), Enumerable.Range(0, expectedArray.Count)))
+                {
+                    if (expectedItem is not null && actualItem is not null)
+                    {
+                        AssertSameShape(expectedItem, actualItem, $"{path}[{index}]");
+                    }
+                }
+
                 break;
         }
     }

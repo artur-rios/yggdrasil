@@ -493,7 +493,7 @@ class ProxyContainerTests(unittest.TestCase):
         fake = self.fakes["alloy-docker-proxy"]
         fake.requests.clear()
         _, blocked = self.start_client(
-            "alloy", "--env=ENVIRONMENT=test", f"--volume={ALLOY_CONFIG}:/etc/alloy/config.alloy:ro",
+            "alloy", f"--volume={ALLOY_CONFIG}:/etc/alloy/config.alloy:ro",
             "--tmpfs=/var/lib/alloy/data", self.services["alloy"]["image"],
             "run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy")
         self.wait_for(lambda: any(path.endswith("/logs") for _, path in fake.requests), "alloy to tail the logs", 60)

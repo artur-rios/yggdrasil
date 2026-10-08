@@ -2,16 +2,17 @@ namespace Yggdrasil.Status.Tests;
 
 public class CatalogLoaderTests
 {
+    // Only that it loads, and the platform it ships with: the systems and environments are the
+    // installation's own, and every other test uses TestData's catalog.
     [Fact]
-    public void GivenTheRepositoryCatalog_WhenLoaded_ThenEverySystemAndApplicationIsRead()
+    public void GivenTheRepositoryCatalog_WhenLoaded_ThenItIsValid()
     {
         var catalog = CatalogLoader.LoadFile(Path.Combine(AppContext.BaseDirectory, "catalog.yaml"));
 
-        Assert.Equal("artur-rios", catalog.Owner);
-        Assert.Equal(["development", "homologation", "production"], catalog.Environments.Select(e => e.Id));
+        Assert.NotEmpty(catalog.Owner);
+        Assert.NotEmpty(catalog.Environments);
         Assert.All(catalog.Environments, e => Assert.NotEmpty(e.Name));
-        Assert.Equal(["heimdall", "fortuna", "yggdrasil"], catalog.Systems.Select(s => s.Id));
-        Assert.Contains(catalog.Applications, a => a.Id == "jenkins" && a.MetricsPath == "/prometheus/");
+        Assert.Contains(catalog.Applications, a => a.Id == "jenkins" && a.Kind == ApplicationKind.Platform && a.MetricsPath == "/prometheus/");
     }
 
     [Fact]
@@ -33,11 +34,15 @@ public class CatalogLoaderTests
         Assert.Equal("heimdall-api", api.Host);
         Assert.Equal(["test", "docker"], api.Checks);
         Assert.Equal(new ContainerSelector("heimdall-api", null), api.Container);
-        Assert.Equal(["development", "homologation", "production"], api.Environments);
+        Assert.Equal(["local", "development", "homologation", "production"], api.Environments);
+        Assert.Equal(
+            [new ApplicationEnvironment("local", "", false), new ApplicationEnvironment("development", "-dev", true),
+             new ApplicationEnvironment("homologation", "-hml", true), new ApplicationEnvironment("production", "", false)],
+            api.Deployments);
 
         Assert.Equal(
-            [new EnvironmentDefinition("development", "Development"), new EnvironmentDefinition("homologation", "Homologation"),
-             new EnvironmentDefinition("production", "Production")],
+            [new EnvironmentDefinition("local", "Local"), new EnvironmentDefinition("development", "Development", "-dev", true),
+             new EnvironmentDefinition("homologation", "Homologation", "-hml", true), new EnvironmentDefinition("production", "Production")],
             catalog.Environments);
 
         var jenkins = catalog.Systems[1].Applications[1];
@@ -191,6 +196,101 @@ public class CatalogLoaderTests
     }
 
     [Theory]
+    [InlineData("hostSuffix: -dev, onDemand: true", "-dev", true)]
+    [InlineData("hostSuffix: '', onDemand: false", "", false)]
+    [InlineData("hostSuffix: x2, onDemand: yes", "x2", true)]
+    [InlineData("hostSuffix: -a-1, onDemand: off", "-a-1", false)]
+    [InlineData("hostSuffix: , onDemand: ", "", false)]
+    public void GivenHostSuffixAndOnDemand_WhenParsed_ThenTheEnvironmentHasThem(string options, string hostSuffix, bool onDemand)
+    {
+        var catalog = CatalogLoader.Parse(Minimal("kind: api", environments: $"- {{ id: dev, name: Dev, {options} }}"));
+
+        Assert.Equal(new EnvironmentDefinition("dev", "Dev", hostSuffix, onDemand), catalog.Environments.Single());
+        Assert.Equal(new ApplicationEnvironment("dev", hostSuffix, onDemand), catalog.Applications.Single().Deployments.Single());
+    }
+
+    [Fact]
+    public void GivenApplicationOverrides_WhenParsed_ThenEachOptionResolvesDefaultThenEnvironmentThenOverride()
+    {
+        var catalog = CatalogLoader.Parse(Minimal(
+            "kind: api\n        environments:\n" +
+            "          dev: { hostSuffix: '' }\n" +
+            "          hml: { onDemand: false, hostSuffix: -staging }\n" +
+            "          prod: { onDemand: true }\n" +
+            "          other:",
+            environments: "- { id: dev, name: Dev, hostSuffix: -dev, onDemand: true }\n" +
+                          "  - { id: hml, name: Hml, hostSuffix: -hml, onDemand: true }\n" +
+                          "  - { id: prod, name: Prod }\n" +
+                          "  - { id: other, name: Other, hostSuffix: -o }"));
+
+        Assert.Equal(
+            [
+                new ApplicationEnvironment("dev", "", true),
+                new ApplicationEnvironment("hml", "-staging", false),
+                new ApplicationEnvironment("prod", "", true),
+                new ApplicationEnvironment("other", "-o", false),
+            ],
+            catalog.Applications.Single().Deployments);
+        Assert.Equal(new ApplicationEnvironment("hml", "-staging", false), catalog.Applications.Single().In("hml"));
+        Assert.Null(catalog.Applications.Single().In("nope"));
+    }
+
+    [Theory]
+    [InlineData("- { id: dev, name: Dev, hostSuffix: -Dev }", "environments[0] (dev): hostSuffix '-Dev' may only hold lowercase letters, digits and dashes")]
+    [InlineData("- { id: dev, name: Dev, hostSuffix: dev- }", "environments[0] (dev): hostSuffix 'dev-' may only hold")]
+    [InlineData("- { id: dev, name: Dev, hostSuffix: '-' }", "environments[0] (dev): hostSuffix '-' may only hold")]
+    [InlineData("- { id: dev, name: Dev, hostSuffix: .dev }", "environments[0] (dev): hostSuffix '.dev' may only hold")]
+    [InlineData("- { id: dev, name: Dev, hostSuffix: -d_v }", "environments[0] (dev): hostSuffix '-d_v' may only hold")]
+    [InlineData("- { id: dev, name: Dev, onDemand: sometimes }", "environments[0] (dev): onDemand must be true or false")]
+    [InlineData("- { id: dev, name: Dev, onDemand: 1 }", "environments[0] (dev): onDemand must be true or false")]
+    [InlineData("- { id: dev, name: Dev, onDemand: [true] }", "environments[0] (dev): onDemand must be true or false")]
+    public void GivenAnInvalidHostSuffixOrOnDemand_WhenParsed_ThenTheErrorNamesIt(string environments, string expected)
+    {
+        var error = Assert.Throws<CatalogException>(() => CatalogLoader.Parse(Minimal("kind: api", environments: environments)));
+
+        Assert.Contains(expected, error.Message);
+    }
+
+    [Theory]
+    [InlineData("environments: { dev: { hostSuffix: -X } }", "applications[0] (app).environments.dev: hostSuffix '-X' may only hold")]
+    [InlineData("environments: { dev: { onDemand: maybe } }", "applications[0] (app).environments.dev: onDemand must be true or false")]
+    public void GivenAnInvalidOverrideOfHostSuffixOrOnDemand_WhenParsed_ThenTheErrorNamesIt(string field, string expected)
+    {
+        var error = Assert.Throws<CatalogException>(() => CatalogLoader.Parse(Minimal("kind: api\n        " + field)));
+
+        Assert.Contains(expected, error.Message);
+    }
+
+    [Fact]
+    public void GivenAHostThatTheSuffixMakesLongerThanADnsLabel_WhenParsed_ThenEveryEnvironmentWhereItIsIsNamed()
+    {
+        var host = new string('h', 59);
+        var yaml = Minimal($"kind: api\n        host: {host}",
+            environments: "- { id: dev, name: Dev, hostSuffix: -dev }\n  - { id: hml, name: Hml, hostSuffix: -hml1 }\n  - { id: prod, name: Prod }");
+
+        var error = Assert.Throws<CatalogException>(() => CatalogLoader.Parse(yaml));
+
+        Assert.Contains($"applications[0] (app): host '{host}' with the hostSuffix '-hml1' of hml must be one DNS label of at most 63 characters",
+            error.Message);
+        // 59 + 4 is exactly 63: allowed.
+        Assert.DoesNotContain("of dev", error.Message);
+        Assert.DoesNotContain("of prod", error.Message);
+    }
+
+    [Fact]
+    public void GivenADottedHost_WhenASuffixIsAppended_ThenItIsRefusedButWithoutOneItIsFine()
+    {
+        var yaml = Minimal("kind: api\n        host: api.heimdall",
+            environments: "- { id: dev, name: Dev, hostSuffix: -dev }\n  - { id: prod, name: Prod }");
+
+        var error = Assert.Throws<CatalogException>(() => CatalogLoader.Parse(yaml));
+
+        Assert.Contains("host 'api.heimdall' with the hostSuffix '-dev' of dev must be one DNS label", error.Message);
+        Assert.DoesNotContain("of prod", error.Message);
+        Assert.Equal("api.heimdall", CatalogLoader.Parse(Minimal("kind: api\n        host: api.heimdall")).Applications.Single().Host);
+    }
+
+    [Theory]
     [InlineData("- { id: dev, name: Dev, mode: docker }", "environments[0] (dev): mode 'docker' is not one of proxy, ports")]
     [InlineData("- { id: dev, name: Dev, trigger: nightly }", "environments[0] (dev): trigger 'nightly' is not one of manual, branch, release")]
     [InlineData("- { id: dev, name: Dev, trigger: branch }", "environments[0] (dev): branches is required when trigger is branch")]
@@ -233,28 +333,49 @@ public class CatalogLoaderTests
     }
 
     [Fact]
-    public void GivenAnEnvironmentId_WhenNarrowingTheCatalogToIt_ThenOnlyItsApplicationsAndTheirSystemsRemain()
+    public void GivenTheHostsEnvironments_WhenNarrowingTheCatalogToThem_ThenOnlyTheirApplicationsAndTheirSystemsRemain()
     {
-        var production = TestData.InEnvironment("production");
-        var development = TestData.InEnvironment("development");
+        var production = TestData.OnHost("production");
+        var shared = TestData.OnHost();
 
-        Assert.Equal(new EnvironmentDefinition("production", "Production"), production.Environment);
+        Assert.Equal([new EnvironmentDefinition("production", "Production")], production.Environments);
         Assert.Equal("artur-rios", production.Owner);
         // heimdall-worker is not deployed to production, and sandbox-api, the only application of
         // sandbox, is not either: the system goes with it.
         Assert.Equal(["heimdall", "yggdrasil"], production.Systems.Select(s => s.Id));
         Assert.Equal(["heimdall-api", "heimdall-ui", "traefik", "jenkins"], production.Applications.Select(a => a.Id));
 
-        Assert.Equal(["heimdall", "yggdrasil", "sandbox"], development.Systems.Select(s => s.Id));
-        Assert.Contains(development.Applications, a => a.Id == "heimdall-worker");
+        // scratch is local only, and local is not on this host.
+        Assert.Equal(["heimdall", "yggdrasil", "sandbox"], shared.Systems.Select(s => s.Id));
+        Assert.Contains(shared.Applications, a => a.Id == "heimdall-worker");
+        Assert.Equal(["heimdall-api", "heimdall-ui"],
+            HostCatalog.In(shared.Systems[0], shared.Environments.Single(e => e.Id == "production")).Select(a => a.Id));
     }
 
     [Fact]
-    public void GivenAnEnvironmentIdNotInTheCatalog_WhenNarrowingTheCatalogToIt_ThenStartupIsRefused()
+    public void GivenTheHostsEnvironmentsInAnyOrder_WhenNarrowing_ThenTheyAreInCatalogOrder()
     {
-        var error = Assert.Throws<StartupException>(() => EnvironmentCatalog.For(TestData.Catalog(), "staging"));
+        var host = TestData.OnHost("production", "development", "homologation");
 
-        Assert.Contains("YGGDRASIL_ENVIRONMENT 'staging' is not an environment in the catalog (development, homologation, production)", error.Message);
+        Assert.Equal(["development", "homologation", "production"], host.Environments.Select(e => e.Id));
+    }
+
+    [Fact]
+    public void GivenEnvironmentIdsNotInTheCatalog_WhenNarrowing_ThenStartupIsRefusedNamingEachOne()
+    {
+        var error = Assert.Throws<StartupException>(() => HostCatalog.For(TestData.Catalog(), ["staging", "production", "qa"]));
+
+        Assert.Contains("YGGDRASIL_ENVIRONMENTS: 'staging' is not an environment in the catalog (local, development, homologation, production)", error.Message);
+        Assert.Contains("YGGDRASIL_ENVIRONMENTS: 'qa' is not an environment in the catalog", error.Message);
+        Assert.DoesNotContain("'production'", error.Message);
+    }
+
+    [Fact]
+    public void GivenTheLegacySetting_WhenAnIdIsNotInTheCatalog_ThenTheErrorNamesThatSetting()
+    {
+        var error = Assert.Throws<StartupException>(() => HostCatalog.For(TestData.Catalog(), ["staging"], "YGGDRASIL_ENVIRONMENT"));
+
+        Assert.Contains("YGGDRASIL_ENVIRONMENT: 'staging' is not an environment", error.Message);
     }
 
     // One system "sys" with one application "app"; `fields` supplies kind and anything else, each

@@ -12,6 +12,10 @@
 // With --web it also serves a `flutter build web` output with an SPA
 // fallback, so the console and the API share one origin as behind Traefik.
 //
+// The default fixture is the v2 demo (one host, three environments); pass
+// `--fixture test/fixtures/v1_example.json` to see how the console shows a
+// host whose status API still answers with the v1 contract.
+//
 // Development only: nothing here is hardened.
 
 import 'dart:convert';
