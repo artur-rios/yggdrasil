@@ -4,6 +4,18 @@ env/*.env
 !*.env.example
 *.pem
 
+# The variables store (docs/variables.md) in a checkout (YGG_SECRETS_DIR=$PWD/env): the database, its
+# key and journal, the lock files, the rendered last-good copies, and the *.env.imported files that
+# `vars import --all` renames the env files to. Backups hold the same secrets.
+env/vars.db*
+env/vars.key
+env/locks/
+env/last-good/
+env/*.env.imported
+env/**/*.env.imported
+vars-*.db
+vars-*.key
+
 # Python bytecode is regenerated on every run.
 __pycache__/
 *.pyc

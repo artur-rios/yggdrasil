@@ -227,8 +227,9 @@ scripts/ygg.sh vars import --all
 ```
 
 NTFS does not enforce the `0640` mode, so the files protect nothing against other accounts of that
-machine. `.gitignore` covers `env/**/*.env` but not `env/vars.db` or `env/vars.key`: add them to
-`.git/info/exclude` so they are never committed.
+machine. The repository's `.gitignore` keeps `env/vars.db`, `env/vars.key`, `env/locks/`, the
+`*.env.imported` files and `vars-*.db` / `vars-*.key` backups out of git, but a file outside `env/`
+is yours to protect.
 
 ## Backup and recovery
 
@@ -278,7 +279,8 @@ environment with `docker inspect`).
 Known limitation: with a lost key, `platform.sh down`, `ps`, `logs` and `config` also need the
 store. Start with `platform.sh up --last-good`, and use Compose directly for the rest, e.g.
 `docker compose -p yggdrasil ps`, `docker compose -p yggdrasil logs <service>`,
-`docker compose -p yggdrasil down`.
+`docker compose -p yggdrasil down`. Compose may also need the platform's settings to read the project:
+if it complains about missing variables, add `--env-file <secrets>/last-good/platform.env`.
 
 **Leave the store.** `scripts/ygg.sh vars export <scope> [--resolved] > file` writes any scope as
 an env file, to use files again: delete `vars.db` and the scripts read the files as before.

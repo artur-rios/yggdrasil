@@ -199,6 +199,9 @@ scripts/ygg.sh vars list fortuna-api@development --resolved
 
 ## Local: Docker Desktop
 
+(To keep the `local` variables in the encrypted store instead of `env/local/*.env`, see
+[variables.md](../../variables.md#moving-to-the-store).)
+
 No platform stack and no Jenkins: `deploy.sh` publishes each application on the workstation and
 points the APIs at the PostgreSQL installed on Windows (`heimdall_local`, `fortuna_local`). From Git
 Bash, in your checkout of the fork, with the application repositories cloned next to it
