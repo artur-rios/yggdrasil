@@ -394,3 +394,139 @@ class EditTests(StoreTestCase):
         self.assertIn("B=it's", saved.read_text())
         self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.cli("get", "platform", "A").stdout, "1\n")
+
+
+class ImportTests(StoreTestCase):
+    def tree(self):
+        (self.dir / "platform.env").write_text("ENVIRONMENTS=development,homologation\nDOMAIN=example.com\n")
+        (self.dir / "acme.env").write_text("CF_DNS_API_TOKEN=abc\n")
+        for env in ("development", "homologation"):
+            (self.dir / env).mkdir()
+            (self.dir / env / "heimdall-api.env").write_text(
+                f"DB_HOST=host.docker.internal\nLOCALE=pt-BR\nDB_NAME=heimdall_{env}\n")
+            (self.dir / env / "fortuna-api.env").write_text(f"DB_HOST=host.docker.internal\nFORTUNA_X={env}\n")
+
+    def test_given_a_file_when_imported_then_existing_keys_are_kept_unless_replace(self):
+        with self.store() as s:
+            s.set("platform", "DOMAIN", "kept.example.com", None, "set")
+            set_keys, kept = s.import_text("platform", "DOMAIN=new.example.com\nA=1\n", False, "import")
+            self.assertEqual((set_keys, kept), (["A"], ["DOMAIN"]))
+            self.assertEqual(s.get("platform", "DOMAIN")[0], "kept.example.com")
+            s.import_text("platform", "DOMAIN=new.example.com\n", True, "import")
+            self.assertEqual(s.get("platform", "DOMAIN")[0], "new.example.com")
+
+    def test_given_a_secrets_tree_when_imported_all_then_every_file_lands_and_is_renamed(self):
+        self.tree()
+        with self.store() as s:
+            v.import_all(s, self.dir, v.load_catalog(), "no")
+            self.assertEqual(s.get("platform", "DOMAIN")[0], "example.com")
+            self.assertEqual(s.get("platform:acme", "CF_DNS_API_TOKEN")[0], "abc")
+            self.assertEqual(s.get("app:heimdall-api@homologation", "DB_NAME")[0], "heimdall_homologation")
+        self.assertTrue((self.dir / "platform.env.imported").exists())
+        self.assertTrue((self.dir / "development" / "heimdall-api.env.imported").exists())
+        self.assertFalse((self.dir / "development" / "heimdall-api.env").exists())
+
+    def test_given_move_up_yes_when_imported_all_then_shared_values_move_to_the_wider_layer(self):
+        self.tree()
+        with self.store() as s:
+            v.import_all(s, self.dir, v.load_catalog(), "yes")
+            # identical in every environment of heimdall-api -> application layer
+            self.assertEqual(s.get("app:heimdall-api", "LOCALE")[0], "pt-BR")
+            self.assertIsNone(s.get("app:heimdall-api@development", "LOCALE"))
+            # identical in every application of an environment -> environment layer
+            self.assertEqual(s.get("env:development", "DB_HOST")[0], "host.docker.internal")
+            self.assertIsNone(s.get("app:fortuna-api@development", "DB_HOST"))
+            # what resolves is unchanged
+            self.assertEqual(s.resolve("heimdall-api", "development")["DB_NAME"][0], "heimdall_development")
+            self.assertEqual(s.resolve("fortuna-api", "homologation")["DB_HOST"][0], "host.docker.internal")
+
+    def test_given_import_all_run_twice_then_the_second_run_imports_nothing_and_renames_nothing(self):
+        self.tree()
+        with self.store() as s:
+            v.import_all(s, self.dir, v.load_catalog(), "no")
+            before = len(s.history(None, None, 10**6))
+            report = v.import_all(s, self.dir, v.load_catalog(), "no")
+            self.assertEqual(len(s.history(None, None, 10**6)), before)
+        self.assertIn("nothing to import", " ".join(report))
+
+    def test_given_an_env_file_of_an_unknown_application_when_imported_all_then_it_is_left_alone(self):
+        self.tree()
+        (self.dir / "development" / "unknown-app.env").write_text("A=1\n")
+        with self.store() as s:
+            report = v.import_all(s, self.dir, v.load_catalog(), "no")
+        self.assertTrue((self.dir / "development" / "unknown-app.env").exists())
+        self.assertIn("unknown-app", " ".join(report))
+
+
+class BackupCheckTests(StoreTestCase):
+    def test_given_a_backup_when_restored_then_values_read_with_its_key(self):
+        self.cli("set", "platform", "DOMAIN=example.com")
+        target = self.dir / "backups"
+        result = self.cli("backup", str(target))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        database = next(target.glob("vars-*.db"))
+        key = next(target.glob("vars-*.key"))
+        self.assertEqual(database.stat().st_mode & 0o777, 0o600)
+        restored = self.dir / "restored"
+        restored.mkdir()
+        shutil.copy(database, restored / "vars.db")
+        shutil.copy(key, restored / "vars.key")
+        with v.Store.open(restored, readonly=True) as s:
+            self.assertEqual(s.get("platform", "DOMAIN")[0], "example.com")
+
+    def test_given_a_healthy_store_when_checked_then_exit_0(self):
+        self.cli("set", "heimdall-api@development", "A=1")
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_given_a_broken_reference_when_checked_then_exit_1_naming_it(self):
+        self.cli("set", "fortuna-api@development", "X=${ref:heimdall-api:NOPE}")
+        result = self.cli("check", "fortuna-api", "development")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("heimdall-api:NOPE", result.stdout + result.stderr)
+
+    def test_given_an_undecryptable_value_when_checked_then_exit_1(self):
+        self.cli("set", "platform", "DOMAIN=example.com")
+        conn = sqlite3.connect(self.dir / "vars.db")
+        conn.execute("UPDATE variables SET value=? WHERE key='DOMAIN'", (b"garbage",))
+        conn.commit()
+        conn.close()
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("DOMAIN", result.stdout + result.stderr)
+
+    def test_given_a_corrupted_file_when_checked_then_exit_1(self):
+        self.cli("set", "platform", "DOMAIN=example.com")
+        data = bytearray((self.dir / "vars.db").read_bytes())
+        data[100:4096] = b"\xff" * (4096 - 100)
+        (self.dir / "vars.db").write_bytes(bytes(data))
+        self.assertEqual(self.cli("check").returncode, 1)
+
+    def test_given_a_value_of_an_unknown_application_when_checked_then_a_warning_not_an_error(self):
+        conn = sqlite3.connect(self.dir / "vars.db")
+        with self.store() as s:
+            s.set("app:gone-app@development", "A", "1", None, "set")
+        conn.close()
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("gone-app", result.stdout + result.stderr)
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_given_a_read_only_directory_when_reading_then_it_works_and_writes_nothing(self):
+        self.cli("set", "platform", "DOMAIN=example.com")
+        os.chmod(self.dir, 0o555)
+        self.addCleanup(os.chmod, self.dir, 0o755)
+        self.assertEqual(self.cli("get", "platform", "DOMAIN").stdout, "example.com\n")
+        self.assertEqual(self.cli("render-platform").returncode, 0)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir() if p.name.startswith("vars.db")), ["vars.db"])
+
+    def test_given_a_writer_holding_a_transaction_when_reading_read_only_then_the_reader_waits_and_succeeds(self):
+        self.cli("set", "platform", "DOMAIN=example.com")
+        writer = sqlite3.connect(self.dir / "vars.db")
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            result = self.cli("get", "platform", "DOMAIN")
+        finally:
+            writer.rollback()
+            writer.close()
+        self.assertEqual(result.stdout, "example.com\n")

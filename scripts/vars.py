@@ -298,6 +298,16 @@ class Store:
             self.conn.execute("DELETE FROM variables WHERE scope=? AND key=?", (scope, key))
             self._record(command, scope, key, old[0], None, old[1])
 
+    def import_text(self, scope, text, replace, command):
+        set_keys, kept = [], []
+        for key, value in parse_env_text(text).items():
+            if self.get(scope, key) is not None and not replace:
+                kept.append(key)
+                continue
+            self.set(scope, key, value, None, command)
+            set_keys.append(key)
+        return set_keys, kept
+
     def layered(self, application, environment):
         """The three layers merged, references not followed: key -> (value, origin, secret)."""
         merged = {}
@@ -530,6 +540,156 @@ def cmd_export(args):
     sys.stdout.write(render_lines(values))
 
 
+def _ask(question):
+    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def import_all(store, directory, cat, move_up):
+    environments, applications = _ids(cat)
+    report, imported = [], []
+    sources = [(directory / "platform.env", "platform"), (directory / "acme.env", "platform:acme")]
+    for environment in sorted(environments):
+        folder = directory / environment
+        for file in sorted(folder.glob("*.env")) if folder.is_dir() else []:
+            if file.stem in applications:
+                sources.append((file, f"app:{file.stem}@{environment}"))
+            else:
+                report.append(f"left alone {file}: {file.stem} is not an application in catalog.yaml")
+    for file, scope in sources:
+        if not file.is_file():
+            continue
+        set_keys, kept = store.import_text(scope, file.read_text(), False, "import")
+        report.append(f"{file} -> {show_scope(scope)}: {len(set_keys)} set"
+                      + (f", kept existing {', '.join(kept)}" if kept else ""))
+        imported.append(file)
+    if not imported:
+        return report + ["nothing to import"]
+    if move_up != "no":
+        report += _move_up(store, cat, move_up)
+    for file in imported:
+        file.rename(file.with_name(file.name + ".imported"))
+    return report
+
+
+def _move_up(store, cat, mode):
+    environments, applications = _ids(cat)
+    report = []
+
+    def offer(description):
+        return mode == "yes" or _ask(f"Move {description}?")
+
+    # The environment layer first: a value every application of an environment shares (DB_HOST) belongs
+    # there, not copied into each application's layer by step 2.
+    # 1. Same value in every application of an environment -> env:<environment>.
+    for environment in sorted(environments):
+        scopes = [f"app:{a}@{environment}" for a in sorted(applications) if store.items(f"app:{a}@{environment}")]
+        if len(scopes) < 2:
+            continue
+        values = [{k: val for k, val, _ in store.items(s)} for s in scopes]
+        for key in sorted(set.intersection(*(set(x) for x in values))):
+            if len({x[key] for x in values}) == 1 and store.get(f"env:{environment}", key) is None \
+                    and offer(f"{key} (same in {len(scopes)} applications of {environment}) to @{environment}"):
+                store.set(f"env:{environment}", key, values[0][key], None, "import move-up")
+                for scope in scopes:
+                    store.unset(scope, key, "import move-up")
+                report.append(f"moved {key} to @{environment}")
+    # 2. Same value in every environment of an application -> app:<application>.
+    for application in sorted(applications):
+        scopes = [f"app:{application}@{e}" for e in sorted(environments) if store.items(f"app:{application}@{e}")]
+        if len(scopes) < 2:
+            continue
+        values = [{k: val for k, val, _ in store.items(s)} for s in scopes]
+        for key in sorted(set.intersection(*(set(x) for x in values))):
+            if len({x[key] for x in values}) == 1 and store.get(f"app:{application}", key) is None \
+                    and offer(f"{key} of {application} (same in {len(scopes)} environments) to {application}"):
+                store.set(f"app:{application}", key, values[0][key], None, "import move-up")
+                for scope in scopes:
+                    store.unset(scope, key, "import move-up")
+                report.append(f"moved {key} to {application}")
+    return report
+
+
+def backup(directory, target):
+    target = pathlib.Path(target)
+    target.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    database, key = target / f"vars-{stamp}.db", target / f"vars-{stamp}.key"
+    source = sqlite3.connect(f"file:{pathlib.Path(directory) / 'vars.db'}?mode=ro", uri=True)
+    copy = sqlite3.connect(database)
+    with copy:
+        source.backup(copy)
+    copy.close()
+    source.close()
+    key.write_bytes((pathlib.Path(directory) / "vars.key").read_bytes())
+    for path in (database, key):
+        os.chmod(path, 0o600)
+    return database, key
+
+
+def check(store, cat, application=None, environment=None):
+    errors, warnings = [], []
+    integrity = store.conn.execute("PRAGMA integrity_check").fetchone()[0]
+    if integrity != "ok":
+        return [f"integrity check: {integrity}"], warnings
+    environments, applications = _ids(cat)
+    scopes = [row[0] for row in store.conn.execute("SELECT DISTINCT scope FROM variables ORDER BY scope")]
+    if application is not None:
+        wanted = {f"env:{environment}", f"app:{application}", f"app:{application}@{environment}"}
+        scopes = [s for s in scopes if s in wanted]
+    for scope in scopes:
+        for key, blob in store.conn.execute("SELECT key, value FROM variables WHERE scope=?", (scope,)):
+            try:
+                store.decrypt(blob, scope, key)
+            except VarsError as error:
+                errors.append(str(error))
+        match = re.fullmatch(rf"(?:app:({ID})(?:@({ID}))?|env:({ID}))", scope)
+        if match and ((match[1] and match[1] not in applications) or (match[2] and match[2] not in environments)
+                      or (match[3] and match[3] not in environments)):
+            warnings.append(f"{show_scope(scope)}: not in catalog.yaml any more")
+    pairs = [(application, environment)] if application else [
+        (a, e) for a in sorted(applications) for e in sorted(environments)]
+    if not errors:
+        for app, env in pairs:
+            try:
+                store.resolve(app, env)
+            except VarsError as error:
+                errors.append(str(error))
+    return errors, warnings
+
+
+def cmd_import(args):
+    cat = load_catalog()
+    with Store.open() as store:
+        if args.all:
+            for line in import_all(store, pathlib.Path(args.dir or secrets_dir()), cat, args.move_up):
+                print(line)
+            return
+        if not args.scope or not args.file:
+            raise VarsError("import needs <scope> <file>, or --all")
+        scope = parse_scope(args.scope, cat)
+        set_keys, kept = store.import_text(scope, pathlib.Path(args.file).read_text(), args.replace, "import")
+        print(f"{len(set_keys)} set" + (f"; kept existing (--replace to overwrite): {', '.join(kept)}" if kept else ""))
+
+
+def cmd_backup(args):
+    database, key = backup(secrets_dir(), args.dir)
+    print(f"Wrote {database} and {key}")
+
+
+def cmd_check(args):
+    if bool(args.application) != bool(args.environment):
+        raise VarsError("check takes no argument, or <application> <environment>")
+    with Store.open(readonly=True) as store:
+        errors, warnings = check(store, load_catalog(), args.application, args.environment)
+    for line in warnings:
+        print(f"warning: {line}")
+    for line in errors:
+        print(f"error: {line}")
+    if errors:
+        raise VarsError(f"{len(errors)} problem(s) in {secrets_dir() / 'vars.db'}")
+    print("vars.db: ok")
+
+
 def parser():
     p = argparse.ArgumentParser(prog="vars.py", description="The yggdrasil variables store (docs/variables.md).")
     sub = p.add_subparsers(dest="command", required=True)
@@ -581,6 +741,21 @@ def parser():
     s.add_argument("scope")
     s.add_argument("--resolved", action="store_true")
     s.set_defaults(run=cmd_export)
+    s = sub.add_parser("import")
+    s.add_argument("scope", nargs="?")
+    s.add_argument("file", nargs="?")
+    s.add_argument("--replace", action="store_true")
+    s.add_argument("--all", action="store_true")
+    s.add_argument("--dir")
+    s.add_argument("--move-up", choices=("ask", "yes", "no"), default="ask")
+    s.set_defaults(run=cmd_import)
+    s = sub.add_parser("backup")
+    s.add_argument("dir")
+    s.set_defaults(run=cmd_backup)
+    s = sub.add_parser("check")
+    s.add_argument("application", nargs="?")
+    s.add_argument("environment", nargs="?")
+    s.set_defaults(run=cmd_check)
     return p
 
 
