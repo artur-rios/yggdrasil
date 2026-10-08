@@ -128,7 +128,8 @@ def init(directory, confirm):
         conn.executescript(SCHEMA)
         conn.execute("PRAGMA journal_mode=DELETE")
         conn.executemany("INSERT INTO meta VALUES (?, ?)",
-                         [("schema_version", str(SCHEMA_VERSION)), ("created_at", now())])
+                         [("schema_version", str(SCHEMA_VERSION)), ("created_at", now()),
+                          ("key_check", Fernet(key).encrypt(b"yggdrasil").decode())])
         conn.commit()
         conn.close()
         _restrict(database)
@@ -174,6 +175,13 @@ class Store:
         if version is None or int(version[0]) > SCHEMA_VERSION:
             raise VarsError(f"{database} has schema version {version and version[0]}, newer than this "
                             f"yggdrasil understands ({SCHEMA_VERSION}): update yggdrasil")
+        check = conn.execute("SELECT value FROM meta WHERE key='key_check'").fetchone()
+        if check is not None:
+            try:
+                fernet.decrypt(check[0].encode())
+            except InvalidToken:
+                conn.close()
+                raise VarsError(f"the key does not match this store: wrong or missing key ({key_file})") from None
         return cls(directory, conn, fernet)
 
     def __enter__(self):

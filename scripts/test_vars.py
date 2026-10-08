@@ -125,8 +125,16 @@ class SetGetTests(StoreTestCase):
         with self.store() as s:
             s.set("platform", "DOMAIN", "example.com", None, "set")
         (self.dir / "vars.key").write_text(v.Fernet.generate_key().decode() + "\n")
-        with self.store(readonly=True) as s, self.assertRaises(v.VarsError) as caught:
-            s.get("platform", "DOMAIN")
+        for readonly in (True, False):
+            with self.assertRaises(v.VarsError) as caught:
+                self.store(readonly=readonly)
+            self.assertIn("vars.key", str(caught.exception))
+
+    def test_given_a_wrong_key_file_when_setting_a_new_key_then_it_fails_naming_the_key_file(self):
+        (self.dir / "vars.key").write_text(v.Fernet.generate_key().decode() + "\n")
+        with self.assertRaises(v.VarsError) as caught:
+            with self.store() as s:
+                s.set("platform", "NEW", "1", None, "set")
         self.assertIn("vars.key", str(caught.exception))
 
     def test_given_no_key_file_when_opening_then_it_fails_naming_the_key_file(self):
@@ -155,6 +163,13 @@ class CliBasicsTests(StoreTestCase):
         result = self.cli("get", "platform", "NOPE")
         self.assertEqual(result.returncode, 1)
         self.assertIn("vars:", result.stderr)
+
+    def test_given_a_wrong_key_when_set_then_exit_1_naming_the_key_file(self):
+        (self.dir / "vars.key").write_text(v.Fernet.generate_key().decode() + "\n")
+        result = self.cli("set", "platform", "NEW=1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("vars:", result.stderr)
+        self.assertIn("vars.key", result.stderr)
 
     def test_given_list_keys_then_only_names(self):
         self.cli("set", "platform", "A=1", "B=2")
