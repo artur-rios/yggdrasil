@@ -37,19 +37,47 @@ class PlatformTests(unittest.TestCase):
         return self.log.read_text() if self.log.exists() else ""
 
     def test_given_an_environment_of_the_catalog_when_up_then_compose_brings_it_up(self):
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up --detach", self.docker_calls())
+
+    def test_given_several_environments_of_the_catalog_when_up_then_compose_brings_it_up(self):
+        result = self.up("ENVIRONMENTS=development,homologation,production\nCOMPOSE_PROFILES=\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up --detach", self.docker_calls())
+
+    def test_given_only_the_legacy_environment_when_up_then_it_counts_as_a_list_of_one(self):
         result = self.up("ENVIRONMENT=production\nCOMPOSE_PROFILES=\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("up --detach", self.docker_calls())
 
+    def test_given_both_when_up_then_environments_wins(self):
+        result = self.up("ENVIRONMENT=production\nENVIRONMENTS=production,nowhere\nCOMPOSE_PROFILES=\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("'nowhere' (ENVIRONMENTS", result.stderr)
+
+    def test_given_one_unknown_environment_among_several_when_up_then_it_is_refused(self):
+        result = self.up("ENVIRONMENTS=development,staging\nCOMPOSE_PROFILES=\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("'staging' (ENVIRONMENTS", result.stderr)
+        self.assertIn("is not an environment in catalog.yaml", result.stderr)
+        self.assertEqual(self.docker_calls(), "")
+
+    def test_given_no_environment_when_up_then_it_is_refused(self):
+        result = self.up("COMPOSE_PROFILES=\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ENVIRONMENTS must be set", result.stderr)
+        self.assertEqual(self.docker_calls(), "")
+
     def test_given_an_environment_pattern_when_up_then_it_is_refused(self):
         # A regular expression that matches "production" is still not an environment id.
-        result = self.up("ENVIRONMENT='prod.*'\nCOMPOSE_PROFILES=\n")
+        result = self.up("ENVIRONMENTS='prod.*'\nCOMPOSE_PROFILES=\n")
         self.assertEqual(result.returncode, 1)
         self.assertIn("is not an environment in catalog.yaml", result.stderr)
         self.assertEqual(self.docker_calls(), "")
 
     def test_given_the_agent_profile_without_its_variables_when_up_then_it_is_refused(self):
-        result = self.up("ENVIRONMENT=production\nCOMPOSE_PROFILES=agent\nJENKINS_URL=https://jenkins.example.com/\n")
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=agent\nJENKINS_URL=https://jenkins.example.com/\n")
         self.assertEqual(result.returncode, 1)
         self.assertIn("JENKINS_AGENT_NAME must be set", result.stderr)
         self.assertEqual(self.docker_calls(), "")

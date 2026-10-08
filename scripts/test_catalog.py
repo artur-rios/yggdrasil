@@ -45,6 +45,14 @@ class ValidateTests(unittest.TestCase):
         envs = copy.deepcopy(BASE["environments"]) + [{"id": "dev", "name": "Again"}]
         self.assertTrue(any("duplicate 'dev'" in e for e in c.validate(catalog(environments=envs))))
 
+    def test_given_two_applications_with_the_same_project_name_when_validated_then_it_is_an_error(self):
+        envs = copy.deepcopy(BASE["environments"]) + [{"id": "api-dev", "name": "API dev"}]
+        value = catalog(environments=envs)
+        # shop-api in dev and shop in api-dev would both be the Compose project shop-api-dev.
+        value["systems"][0]["applications"].append(
+            {"id": "shop", "name": "Shop", "kind": "worker", "health": "http://shop:8080/healthz"})
+        self.assertTrue(any("Compose project 'shop-api-dev'" in e for e in c.validate(value)))
+
     def test_given_bad_mode_and_trigger_when_validated_then_both_are_reported(self):
         envs = [{"id": "x", "name": "X", "mode": "nope", "trigger": "never"}]
         errors = c.validate(catalog(environments=envs, systems=[]))
@@ -83,6 +91,37 @@ class ValidateTests(unittest.TestCase):
         errors = c.validate(value)
         self.assertTrue(any("prod'.checksTimeout" in e for e in errors), errors)
         self.assertTrue(any("environments.prod.keepImages" in e for e in errors), errors)
+
+    def test_given_valid_host_suffix_and_on_demand_when_validated_then_there_are_no_errors(self):
+        value = catalog()
+        value["environments"][1].update(hostSuffix="-hml", onDemand=True)
+        value["systems"][0]["applications"][0].update(host="shop-api", environments={"prod": {"hostSuffix": "", "onDemand": False}})
+        self.assertEqual(c.validate(value), [])
+
+    def test_given_malformed_host_suffix_and_on_demand_when_validated_then_each_is_reported(self):
+        for suffix in ("-dev-", "-Dev", ".dev", 3, None):
+            with self.subTest(suffix=suffix):
+                value = catalog()
+                value["environments"][0]["hostSuffix"] = suffix
+                self.assertTrue(any("'dev'.hostSuffix" in e for e in c.validate(value)), suffix)
+        value = catalog()
+        value["environments"][0]["onDemand"] = "yes"
+        value["systems"][0]["applications"][1]["environments"]["prod"]["onDemand"] = 1
+        errors = c.validate(value)
+        self.assertTrue(any("'dev'.onDemand" in e for e in errors), errors)
+        self.assertTrue(any("environments.prod.onDemand" in e for e in errors), errors)
+
+    def test_given_a_host_that_would_not_stay_one_label_with_the_suffix_when_validated_then_it_is_an_error(self):
+        value = catalog()
+        value["environments"][1]["hostSuffix"] = "-hml"
+        value["systems"][0]["applications"][0]["host"] = "a" * 60
+        errors = c.validate(value)
+        self.assertTrue(any("'shop-api'.host" in e and "'staging'" in e for e in errors), errors)
+        value["systems"][0]["applications"][0]["host"] = "api.shop"
+        self.assertTrue(any("'shop-api'.host" in e for e in c.validate(value)))
+        # Without a suffix in its environments, a host keeps its own rules.
+        value["systems"][0]["applications"][0]["environments"] = {"prod": {}}
+        self.assertEqual(c.validate(value), [])
 
     def test_given_a_branch_override_with_no_branches_anywhere_when_validated_then_it_is_an_error(self):
         # Neither the override nor the environment names a branch: that environment would never deploy.
@@ -163,6 +202,24 @@ class ResolveTests(unittest.TestCase):
         self.assertTrue(plan[1]["approval"])
         self.assertEqual(plan[1]["waitTimeout"], 900)
         self.assertEqual(plan[1]["trigger"], "release")
+
+    def test_given_host_suffix_and_on_demand_when_resolved_then_default_environment_then_override(self):
+        value = catalog()
+        value["environments"][1].update(hostSuffix="-hml", onDemand=True)
+        value["systems"][0]["applications"][1]["environments"]["staging"] = {"onDemand": False}
+        api = c.resolve(value, "shop-api")
+        self.assertEqual([(e["hostSuffix"], e["onDemand"]) for e in api], [("", False), ("-hml", True), ("", False)])
+        web = c.resolve(value, "shop-web")
+        self.assertEqual([(e["hostSuffix"], e["onDemand"]) for e in web], [("-hml", False), ("", False)])
+
+    def test_given_an_environment_when_its_options_are_asked_then_defaults_apply_without_overrides(self):
+        value = catalog()
+        value["environments"][1]["onDemand"] = True
+        staging = c.environment_options(value, "staging")
+        self.assertEqual((staging["onDemand"], staging["hostSuffix"], staging["agent"]), (True, "", "staging"))
+        self.assertEqual(staging["branches"], ["release/*"])
+        with self.assertRaises(c.CatalogError):
+            c.environment_options(value, "qa")
 
     def test_given_an_unknown_application_when_resolved_then_it_raises(self):
         with self.assertRaises(c.CatalogError):

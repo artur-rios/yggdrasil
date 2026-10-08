@@ -6,7 +6,7 @@ import 'status_source.dart';
 class StatusSnapshot {
   const StatusSnapshot({required this.status, required this.receivedAt});
 
-  final EnvironmentStatus status;
+  final HostStatus status;
   final DateTime receivedAt;
 }
 

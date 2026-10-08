@@ -5,8 +5,14 @@ An interactive menu, on an Ubuntu host (a VPS, a VM, WSL or a laptop), for what
 
 - install the tools, or check they are there
 - set up a new API, web front end or worker
-- see what runs on the host
+- see what runs on the host, in each of its environments
 - change an application's configuration and redeploy it
+- switch an on-demand environment on and off
+
+A host runs one environment or several: `ENVIRONMENTS` in its `platform.env` lists them
+(`development,homologation,production` on the VPS of the
+[example](examples/docker-desktop-and-vps/README.md)). Where a command needs one environment and
+the host has several, it takes it as an argument or asks.
 
 It runs the same pieces as the guide: `scripts/catalog.py`, `scripts/deploy.sh`,
 `scripts/platform.sh`, the files in `stacks/` and the env files in `/etc/yggdrasil`. So whatever it
@@ -26,7 +32,8 @@ What do you want to do?
   3) Set up a new application (API, web front end or worker)
   4) See what runs on this host
   5) Change an application's configuration
-  6) Quit
+  6) Start or stop an environment (on demand)
+  7) Quit
 >
 ```
 
@@ -37,14 +44,17 @@ Each menu entry is also a command, for scripts and for going straight to it:
 | `scripts/ygg.sh check` | Lists what is installed and what is missing, without changing anything |
 | `scripts/ygg.sh install` | Installs what `check` found missing, asking before each part |
 | `scripts/ygg.sh add` | Sets up a new application |
-| `scripts/ygg.sh status` | Shows the applications of this host's environment, their state and version |
-| `scripts/ygg.sh config [<app>]` | Shows and changes an application's env file, and redeploys it |
+| `scripts/ygg.sh status` | Shows the applications of each of this host's environments, their state and version |
+| `scripts/ygg.sh config [<app>] [<environment>]` | Shows and changes an application's env file in one of this host's environments, and redeploys it |
+| `scripts/ygg.sh env status` | One line per environment of this host: on demand or not, running or stopped |
+| `scripts/ygg.sh env start <environment>` | Starts every application of an environment of this host |
+| `scripts/ygg.sh env stop <environment> [--force]` | Stops them. Refuses an environment that isn't `onDemand` in the catalog, unless `--force` |
 
 | Environment variable | Default | What |
 |---|---|---|
 | `YGG_SECRETS_DIR` | `/etc/yggdrasil` | Where the env files are, as for `deploy.sh` and `platform.sh` |
 | `YGG_APPS_DIR` | `~/yggdrasil-apps` | Where `add` clones the applications it deploys, and where redeploys build from |
-| `YGG_ENVIRONMENT` | `ENVIRONMENT` in `platform.env` | This host's environment. Without either, it asks. Set it on a laptop, which has no platform |
+| `YGG_ENVIRONMENT` | `ENVIRONMENTS` in `platform.env` | One environment this host runs, overriding `platform.env`. Without either (nor the `ENVIRONMENT` of a `platform.env` from before 0.5), it asks. Set it on a laptop, which has no platform |
 
 ## Check and install
 
@@ -53,7 +63,7 @@ Each menu entry is also a command, for scripts and for going straight to it:
 | Group | Checks |
 |---|---|
 | **Tools** | Ubuntu; `git`, `curl`, `openssl`, `python3`, `htpasswd` (apache2-utils) and PyYAML; Docker Engine; Compose 2.24 or later; Buildx; whether your user can reach the Docker daemon |
-| **This host** | The secrets directory and its group; `platform.env` and `acme.env`; the catalog is valid; the host's environment; the platform is running; ufw |
+| **This host** | The secrets directory and its group; `platform.env` and `acme.env`; the catalog is valid; the host's environments (`ENVIRONMENTS`, or a warning for the `ENVIRONMENT` of a `platform.env` from before 0.5); the platform is running; ufw |
 
 `install` works on Ubuntu only. It needs root or `sudo`, and asks before each part:
 
@@ -76,7 +86,7 @@ Then bring the platform up with `scripts/platform.sh up`, as in the guide.
 
 | It asks | Default | Becomes |
 |---|---|---|
-| Id | | The catalog `id`, the Compose project, the network alias, the image name |
+| Id | | The catalog `id`, the image name, and with the environment the Compose project (`<id>-<environment>`) and the network alias (`<id>.<environment>`) |
 | Display name | the id | `name` |
 | Kind | | `kind`: `api`, `web` or `worker` |
 | System | | An existing system, or a new one with its own id, name and description |
@@ -86,7 +96,7 @@ Then bring the platform up with `scripts/platform.sh up`, as in the guide.
 | Container port | `8080` | The port in `health` and in the Traefik service |
 | Health path | `/health`, `/healthz` for web | `health: http://<id>:<port><path>` |
 | How to check health inside the container | | A `healthcheck:` using `wget` or `curl`, or none if the Dockerfile has a `HEALTHCHECK` |
-| Public host | the id; none for a worker | `host`, and the `PUBLIC_HOST` router |
+| Public host | the id; none for a worker | `host`, and the `PUBLIC_HOST` router (`<host><hostSuffix>.<DOMAIN>` in each environment) |
 | Metrics port | none | `metrics: <id>:<port>`, and the telemetry network |
 | Build arguments | none | For a web front end without its own Compose file: build `args`, filled from the env file |
 | GitHub checks | none | `checks` |
@@ -103,13 +113,21 @@ It then writes:
   | Only a Dockerfile | `stacks/<id>.yml`: the service, built from the checkout, with the whole env file passed to the container (`env_file`) · `stacks/<id>.proxy.yml`: the edge network and Traefik · `stacks/<id>.ports.yml`: a port on `127.0.0.1`, `HOST_PORT` in the env file |
   | Its own `docker-compose.yml` | `stacks/<id>.proxy.yml`: `ports: !reset []`, the default network kept (for its database, say), edge, and Traefik. In `ports` environments its own Compose file is used as it is |
 
-- **The env file** for this host's environment, `/etc/yggdrasil/<environment>/<id>.env`. It holds
-  every variable the stack files read, except the ones `deploy.sh` sets itself, plus `PUBLIC_HOST`
-  (`<host>.<DOMAIN>`) in a `proxy` environment. It offers to open it in your editor.
+  The proxy overlay names the alias `<id>.${YGG_ENVIRONMENT}` and the Traefik router and service
+  `<id>-${YGG_ENVIRONMENT}`, so several environments of one host don't collide; `deploy.sh` sets
+  `YGG_ENVIRONMENT`.
+
+- **The env file** for one of this host's environments (it asks which, when the host has several),
+  `/etc/yggdrasil/<environment>/<id>.env`. It holds every variable the stack files read, except the
+  ones `deploy.sh` sets itself, plus `PUBLIC_HOST` (`<host><hostSuffix>.<DOMAIN>`, e.g.
+  `shop-dev.example.com` in an environment with `hostSuffix: -dev`) in a `proxy` environment. It
+  offers to open it in your editor. For the host's other environments, run
+  `scripts/ygg.sh config <id> <environment>` afterwards.
 - **A first deploy**, if you agree: it clones the repository into `~/yggdrasil-apps/<id>` (enter
   the SSH URL for a private repository) and runs `deploy.sh`. The version defaults to
   `<latest tag>-<commit>`, the way Jenkins labels releases. In a `proxy` environment the platform
-  must be up first.
+  must be up first. In an `onDemand` environment where it isn't running, it asks whether to leave it
+  running afterwards; otherwise `deploy.sh` stops it again once it is healthy.
 
 Last, it lists what the catalog can't do for you: push the catalog and stack files to `main`, set up
 the application's repository, install the GitHub App on it, apply the rules, and restart the status
@@ -119,25 +137,73 @@ The generated files are a starting point, like the examples in `stacks/`: edit t
 
 ## See what runs
 
-`status` lists every catalog application that deploys to this host's environment:
+`status` lists, for each environment of this host, every catalog application that deploys to it:
 
 ```text
-== Applications in production on vps-1 ==
+== Development (development), on demand on vps-1 ==
+  APPLICATION            STATE           HEALTH     VERSION          COMMIT   DEPLOYED
+  heimdall-api           stopped         -          1.5.0            9b0c4d2  2026-10-07T14:12:40Z
+  heimdall-ui            stopped         -          1.5.0            e41a7f0  2026-10-07T14:15:02Z
+
+== Homologation (homologation), on demand on vps-1 ==
+  APPLICATION            STATE           HEALTH     VERSION          COMMIT   DEPLOYED
+  heimdall-api           not deployed
+  heimdall-ui            not deployed
+
+== Production (production) on vps-1 ==
   APPLICATION            STATE           HEALTH     VERSION          COMMIT   DEPLOYED
   heimdall-api           running 1/1     healthy    1.4.0            3f2a9c1  2026-09-28T19:55:01Z
   heimdall-ui            running 1/1     healthy    1.4.0            7348de1  2026-09-28T23:58:36Z
-  shop-web               not deployed
+
   Platform: 10 containers running (scripts/platform.sh ps for details).
 ```
 
 The version, commit and deploy time are the labels `deploy.sh` puts on every container, the same
-ones the status API reads. From there you can show an application's last 100 log lines, restart
-its containers, or list the platform's services.
+ones the status API reads. A stopped application is shown in red, except in an on-demand
+environment, where stopped is normal. From there you can show an application's last 100 log
+lines or restart its containers (it asks for the application and environment, e.g.
+`heimdall-api in production`), start or stop an environment, or list the platform's services.
+
+## Start and stop environments
+
+An environment with `onDemand: true` in the catalog runs only while someone uses it. `env` switches
+it:
+
+```bash
+scripts/ygg.sh env start development     # docker start on every container of each <app>-development project
+scripts/ygg.sh env stop development      # docker stop on the running ones
+scripts/ygg.sh env status
+```
+
+```text
+== Environments on vps-1 ==
+  ENVIRONMENT      NAME                 ON DEMAND  STATE
+  development      Development          yes        running (2 of 4 applications)
+  homologation     Homologation         yes        stopped
+  production       Production           no         running (4 of 4 applications)
+```
+
+- `start` and `stop` act only on an environment of this host (`ENVIRONMENTS` in `platform.env`, or
+  `YGG_ENVIRONMENT`); any other is refused. They start and stop the containers `deploy.sh` left,
+  without building or recreating anything. A start takes as long as the health checks do: `status`
+  shows when the applications are healthy.
+- `stop` refuses an environment that isn't `onDemand` (production, say), because it is meant to
+  stay up: `--force` stops it anyway. Without `--force` it also leaves alone an application whose
+  catalog entry sets `onDemand: false` for that environment.
+- Without arguments (`scripts/ygg.sh env`, or the menu), it shows `env status` and asks what to do
+  and which environment; stopping an environment that isn't on demand then asks for confirmation.
+- Deploys respect the switch: Jenkins' deploys on a push to `develop` or `release/*` leave a stopped
+  on-demand environment stopped (after checking the new version is healthy), while a
+  **Build with Parameters → `DEPLOY_TO`** deploy leaves it running.
 
 ## Change the configuration
 
-`config` opens an application's env file on this host, `/etc/yggdrasil/<environment>/<id>.env`. If
-the file doesn't exist yet, as on a new host, it creates it from the stack files as `add` does. Then:
+`config` opens an application's env file in one of this host's environments,
+`/etc/yggdrasil/<environment>/<id>.env`. Without arguments it asks for the application, then, when
+it deploys to more than one of the host's environments, for the environment;
+`scripts/ygg.sh config heimdall-api development` goes straight there. An environment that isn't on
+this host, or that the application doesn't deploy to, is refused. If the file doesn't exist yet, as
+on a new host, it creates it from the stack files as `add` does. Then:
 
 - **Set** or **remove** a variable. Values with spaces, `#`, `$`, `"` or `\` are written in single
   quotes, which Compose reads literally; a value with a single quote is refused (use **Edit**).
@@ -150,7 +216,8 @@ the file doesn't exist yet, as on a new host, it creates it from the stack files
   and a web front end's build arguments are compiled into its image, so the image is rebuilt and
   the containers recreated. It builds from `~/yggdrasil-apps/<id>`, or asks for a checkout. By
   default it keeps the running version's label when the checkout is at that commit. If the new
-  version doesn't become healthy, `deploy.sh` rolls back as usual.
+  version doesn't become healthy, `deploy.sh` rolls back as usual. In an on-demand environment
+  where the application is stopped, it asks whether to leave it running afterwards.
 
 The file keeps its owner, group and mode (`640`, group `docker`), so the Jenkins agent can still
 read it. Changes you don't apply reach the application on its next deploy, from Jenkins or by hand.

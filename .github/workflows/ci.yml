@@ -110,7 +110,7 @@ jobs:
         run: |
           secrets=$(mktemp -d)
           cat > "$secrets/platform.env" <<ENV
-          ENVIRONMENT=$(python3 scripts/catalog.py environments | head -n1)
+          ENVIRONMENTS=$(python3 scripts/catalog.py environments | paste -sd, -)
           DOMAIN=example.com
           ACME_EMAIL=ci@example.com
           ACME_DNS_PROVIDER=cloudflare

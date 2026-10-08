@@ -11,19 +11,30 @@ public enum StatusLevel
     Down,
     NotDeployed,
     Unknown,
+    // Stopped normally in an on-demand environment: neutral, like NotDeployed.
+    Stopped,
 }
 
-public sealed record EnvironmentStatus(
-    string Environment,
-    string EnvironmentName,
+/// <summary>GET /api/status: the host, every environment it runs, and every system across them.</summary>
+public sealed record HostStatus(
+    string Host,
     DateTimeOffset GeneratedAt,
     StatusLevel Status,
+    IReadOnlyList<EnvironmentSummary> Environments,
     IReadOnlyList<SystemStatus> Systems);
+
+public sealed record EnvironmentSummary(string Id, string Name, bool OnDemand, StatusLevel Status);
 
 public sealed record SystemStatus(
     string Id,
     string Name,
     string Description,
+    StatusLevel Status,
+    IReadOnlyList<SystemEnvironmentStatus> Environments);
+
+/// <summary>A system in one environment: its applications there.</summary>
+public sealed record SystemEnvironmentStatus(
+    string Environment,
     StatusLevel Status,
     IReadOnlyList<ApplicationStatus> Applications);
 

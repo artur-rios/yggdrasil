@@ -1,4 +1,5 @@
-# Development: published on the loopback interface only, no Traefik.
+# Ports environments (local, on a developer's machine): published on the loopback interface
+# only, no Traefik. UI_PORT in the env file changes the address.
 
 services:
   ui:

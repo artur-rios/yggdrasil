@@ -10,7 +10,7 @@ namespace Yggdrasil.Status;
 /// and a burst of requests can't turn into a burst of probes against the applications.
 /// </summary>
 public sealed class StatusRefresher(
-    EnvironmentCatalog catalog,
+    HostCatalog catalog,
     StatusOptions options,
     IServiceProvider services,
     SnapshotBuilder builder,
@@ -19,7 +19,8 @@ public sealed class StatusRefresher(
     ILogger<StatusRefresher> logger) : BackgroundService
 {
     private Dictionary<string, StatusLevel> previous = [];
-    private StatusLevel? previousEnvironment;
+    private Dictionary<string, StatusLevel> previousEnvironments = [];
+    private StatusLevel? previousHost;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -53,33 +54,47 @@ public sealed class StatusRefresher(
         var docker = services.GetRequiredService<DockerClient>();
         var prober = services.GetRequiredService<HealthProber>();
 
-        // Every application at once: a refresh takes as long as the slowest probe (at most the 5 s
-        // timeout plus Docker's answer), not the sum of them.
-        var observations = await Task.WhenAll(catalog.Applications.Select(async application =>
+        // Every application in every environment at once, and each platform component once: a refresh
+        // takes as long as the slowest probe (at most the 5 s timeout plus Docker's answer), not the sum
+        // of them.
+        var observations = await Task.WhenAll(catalog.Targets.Select(async target =>
         {
-            var found = await docker.FindAsync(application.Container, cancellationToken);
+            var found = await docker.FindAsync(target.Container, cancellationToken);
 
-            // Nothing to probe when Docker says there is no container: the health URL would only fail
-            // to resolve, and the console would show that as an error on an application that simply
-            // isn't meant to run here.
-            var probe = found is DockerObservation.NotFound
+            // Nothing to probe when Docker says there is no container, or that it is stopped in an
+            // on-demand environment: the health URL would only fail to resolve, and the console would
+            // show that as an error on an application that simply isn't meant to run now.
+            var probe = found is DockerObservation.NotFound || StatusRules.IsStopped(found, target.OnDemand)
                 ? null
-                : await prober.ProbeAsync(application.Health, cancellationToken);
+                : await prober.ProbeAsync(target.Health, cancellationToken);
 
-            return (application.Id, Observation: new Observation(found, probe));
+            return (target.Key, Observation: new Observation(found, probe));
         }));
 
-        var byId = observations.ToDictionary(o => o.Id, o => o.Observation);
-        var snapshot = builder.Build(byId, time.GetUtcNow());
+        var byKey = observations.ToDictionary(o => o.Key, o => o.Observation);
+        var snapshot = builder.Build(byKey, time.GetUtcNow());
         store.Set(snapshot);
-        LogChanges(snapshot, byId);
+        LogChanges(snapshot, byKey);
     }
 
-    // Transitions only, not every refresh: one line when heimdall-api goes down is what someone
-    // searching Loki wants; four lines a minute saying it is still up is noise.
-    private void LogChanges(EnvironmentStatus snapshot, Dictionary<string, Observation> observations)
+    // Transitions only, not every refresh: one line when heimdall-api goes down in production is what
+    // someone searching Loki wants; four lines a minute saying it is still up is noise.
+    private void LogChanges(HostStatus snapshot, Dictionary<string, Observation> observations)
     {
-        var current = snapshot.Systems.SelectMany(s => s.Applications).ToDictionary(a => a.Id, a => a.Status);
+        // By target key ("heimdall-api.production", "traefik"); a platform component is in every
+        // environment's report with the one status, so it is logged once.
+        var current = new Dictionary<string, StatusLevel>();
+        foreach (var system in snapshot.Systems)
+        {
+            foreach (var environment in system.Environments)
+            {
+                foreach (var application in environment.Applications)
+                {
+                    var key = application.Kind == ApplicationKind.Platform ? application.Id : $"{application.Id}.{environment.Environment}";
+                    current[key] = application.Status;
+                }
+            }
+        }
 
         foreach (var (id, status) in current)
         {
@@ -107,12 +122,22 @@ public sealed class StatusRefresher(
                 id, Json.Name(status), had ? Json.Name(before) : "nothing", docker + probe);
         }
 
-        if (previousEnvironment != snapshot.Status)
+        var environments = snapshot.Environments.ToDictionary(e => e.Id, e => e.Status);
+        foreach (var (id, status) in environments)
         {
-            logger.LogInformation("Environment {Environment} is {Status}", snapshot.Environment, Json.Name(snapshot.Status));
+            if (!previousEnvironments.TryGetValue(id, out var before) || before != status)
+            {
+                logger.LogInformation("Environment {Environment} is {Status}", id, Json.Name(status));
+            }
+        }
+
+        if (previousHost != snapshot.Status)
+        {
+            logger.LogInformation("Host {Host} is {Status}", snapshot.Host, Json.Name(snapshot.Status));
         }
 
         previous = current;
-        previousEnvironment = snapshot.Status;
+        previousEnvironments = environments;
+        previousHost = snapshot.Status;
     }
 }

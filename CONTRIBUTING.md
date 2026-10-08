@@ -41,8 +41,8 @@ flutter build apk --release
 CI checks the formatting of `lib` and `test`; format `tool` too when you change it
 (`dart format lib test tool`). `python tool/generate_icons.py` regenerates the launcher icons (needs Pillow).
 
-How the console behaves at run time (environments, tokens, the offline demo, the container image) is described in
-[console/README.md](console/README.md).
+How the console behaves at run time (hosts and their environments, tokens, the offline demo, the container image) is
+described in [console/README.md](console/README.md).
 
 #### Against a mock status API
 

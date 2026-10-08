@@ -263,34 +263,51 @@ public static class TestData
 
     public static readonly DateTimeOffset Now = new(2026, 9, 18, 18, 4, 11, TimeSpan.Zero);
 
+    /// <summary>The environments of the test host: every one of the catalog's but local.</summary>
+    public static readonly string[] HostEnvironments = ["development", "homologation", "production"];
+
     public static StatusOptions Options(string domain = "example.com") => new()
     {
         Token = Token,
-        Environment = "production",
+        Environments = HostEnvironments,
         Domain = domain,
         CatalogPath = "catalog.yaml",
         DockerUrl = new Uri("http://docker-proxy:2375"),
         RefreshInterval = TimeSpan.FromSeconds(15),
         InternalPort = 8081,
-        CorsOrigins = ["https://yggdrasil.hml.example.com"],
+        CorsOrigins = ["https://yggdrasil.example.com"],
     };
 
+    // The shape of the default catalog.yaml: a local environment on another machine, and three that
+    // share one host, two of them on demand. Not the repository's file, which is the installation's
+    // own and changes with it.
     public const string CatalogYaml = """
         owner: artur-rios
         environments:
-          - id: development
-            name: Development
+          - id: local
+            name: Local
             mode: ports
             trigger: manual
+          - id: development
+            name: Development
+            trigger: branch
+            branches: develop
+            agent: vps
+            hostSuffix: -dev
+            onDemand: true
           - id: homologation
             name: Homologation
             mode: proxy
             trigger: branch
             branches: release/*
+            agent: vps
+            hostSuffix: -hml
+            onDemand: true
           - id: production
             name: Production
             mode: proxy
             trigger: release
+            agent: vps
             approval: true
         systems:
           - id: heimdall
@@ -304,12 +321,19 @@ public static class TestData
                 metrics: heimdall-api:9464
                 host: heimdall-api
                 checks: [test, docker]
+              # Every environment, with its own suffix in development.
               - id: heimdall-ui
                 name: Heimdall web
                 kind: web
                 health: http://heimdall-ui:8080/healthz
                 host: heimdall
-              # Not in production: left out of everything the production status API answers.
+                environments:
+                  local:
+                  development: { hostSuffix: -preview }
+                  homologation:
+                  production: {}
+              # Not in production: left out of everything the production environment reports. Always on
+              # in homologation.
               - id: heimdall-worker
                 name: Heimdall worker
                 kind: worker
@@ -317,7 +341,7 @@ public static class TestData
                 metrics: heimdall-worker:9464
                 environments:
                   development:
-                  homologation: { waitTimeout: 600 }
+                  homologation: { waitTimeout: 600, onDemand: false }
           - id: yggdrasil
             name: Yggdrasil
             description: Deployment platform
@@ -336,7 +360,7 @@ public static class TestData
                 metricsPath: /prometheus/
                 host: jenkins
                 container: { project: yggdrasil, service: jenkins }
-          # Development only, so in production the whole system is left out.
+          # Development only, so outside it the whole system is left out.
           - id: sandbox
             name: Sandbox
             description: Experiments
@@ -346,13 +370,25 @@ public static class TestData
                 kind: api
                 health: http://sandbox-api:8080/healthz
                 metrics: sandbox-api:9464
+                container: { project: sandbox, service: api }
                 environments: { development: {} }
+          # Local only: on no environment of the test host.
+          - id: scratch
+            name: Scratch
+            description: Local experiments
+            applications:
+              - id: scratch-api
+                name: Scratch API
+                kind: api
+                health: http://scratch-api:8080/healthz
+                metrics: scratch-api:9464
+                environments: { local: {} }
         """;
 
     public static Catalog Catalog() => CatalogLoader.Parse(CatalogYaml);
 
-    public static EnvironmentCatalog InEnvironment(string environment = "production") =>
-        EnvironmentCatalog.For(Catalog(), environment);
+    public static HostCatalog OnHost(params string[] environments) =>
+        HostCatalog.For(Catalog(), environments.Length == 0 ? HostEnvironments : environments);
 
     public static ProbeResult Probe(bool healthy = true, long latencyMs = 12, int? statusCode = 200, string? error = null) =>
         new(healthy, statusCode, latencyMs, Now, error);

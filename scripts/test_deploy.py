@@ -1,8 +1,8 @@
 """Tests for scripts/deploy.sh, against a fake `docker` on PATH.   python3 -m unittest discover -s scripts
 
 The fake records every call and answers from files in its state directory, so these run anywhere
-bash and git do, without a Docker engine. They use heimdall-ui in development (ports mode) from the
-repository's own catalog.yaml.
+bash and git do, without a Docker engine. They use heimdall-ui from the repository's own
+catalog.yaml: in local (ports mode, always on) and in development (proxy mode, on demand).
 """
 
 import os
@@ -16,7 +16,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "scripts" / "deploy.sh"
 STACK = "heimdall-ui"
-ENVIRONMENT = "development"
+ENVIRONMENT = "local"
+ON_DEMAND = "development"
 
 FAKE_DOCKER = textwrap.dedent(r"""
     #!/usr/bin/env bash
@@ -60,8 +61,13 @@ FAKE_DOCKER = textwrap.dedent(r"""
 
     case "$1" in
       ps)
+        # $state/ps: "<id> <image> [<state>]", newest first; the state defaults to running. Without
+        # --all, only running containers, as docker ps does.
         format=${*: -1}
-        while read -r id image; do
+        all=""
+        [[ " $* " == *" --all "* || " $* " == *" -a "* ]] && all=1
+        while read -r id image container_state; do
+          [[ -n "$all" || "${container_state:-running}" == running ]] || continue
           case $format in
             *.ID*.Image*) echo "$id $image" ;;
             *.Image*) echo "$image" ;;
@@ -73,7 +79,15 @@ FAKE_DOCKER = textwrap.dedent(r"""
         label=$(sed -n 's/.*"yggdrasil\.\([a-z_]*\)".*/\1/p' <<<"$3")
         sed -n "s/^$label=//p" "$state/labels.$4" 2>/dev/null || true
         ;;
-      image) ;;
+      image)
+        # $state/images: "<created><TAB><repository>:<tag>". image ls <repository> answers with
+        # "<created><TAB><tag>", the format deploy.sh asks for.
+        if [[ "$2" == ls ]]; then
+          while IFS=$'\t' read -r created image; do
+            [[ "${image%%:*}" == "$3" ]] && printf '%s\t%s\n' "$created" "${image#*:}"
+          done <"$state/images" 2>/dev/null || true
+        fi
+        ;;
       network) ;;
       *) echo "fake docker: unexpected call: $*" >&2; exit 64 ;;
     esac
@@ -96,9 +110,10 @@ class DeployTests(unittest.TestCase):
         docker.chmod(0o755)
 
         secrets = self.temp / "secrets"
-        (secrets / ENVIRONMENT).mkdir(parents=True)
+        for environment in (ENVIRONMENT, ON_DEMAND):
+            (secrets / environment).mkdir(parents=True)
+            (secrets / environment / f"{STACK}.env").write_text("HEIMDALL_API_BASE_URL=http://localhost:8080\n")
         self.env_file = secrets / ENVIRONMENT / f"{STACK}.env"
-        self.env_file.write_text("HEIMDALL_API_BASE_URL=http://localhost:8080\n")
 
         self.app = self.temp / "app"
         self.app.mkdir()
@@ -121,29 +136,46 @@ class DeployTests(unittest.TestCase):
         path = self.state / name
         return path.read_text() if path.exists() else ""
 
-    def deploy(self, version=None):
+    def deploy(self, version=None, environment=ENVIRONMENT, **env):
         version = version or f"2.0.0-{self.commit}"
-        return subprocess.run(["bash", str(DEPLOY), ENVIRONMENT, STACK, str(self.app), version],
-                              env=self.env, capture_output=True, text=True)
+        return subprocess.run(["bash", str(DEPLOY), environment, STACK, str(self.app), version],
+                              env=dict(self.env, **env), capture_output=True, text=True)
+
+    def compose_calls(self, command):
+        return [line for line in self.read("calls").splitlines()
+                if line.startswith("compose ") and f" {command}" in line.split(" IMAGE_TAG=")[0]]
 
     def test_given_a_healthy_release_when_deployed_then_labelled_and_not_rolled_back(self):
-        self.given("ps", "c1 heimdall-ui:1.0.0-aaaaaaa")
+        self.given("ps", "c1 heimdall-ui:local-1.0.0-aaaaaaa")
         result = self.deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.read("ups").strip(), "1")
-        self.assertEqual(self.read("up1.tag").strip(), f"2.0.0-{self.commit}")
+        self.assertEqual(self.read("up1.tag").strip(), f"local-2.0.0-{self.commit}")
         labels = self.read("up1.labels")
+        self.assertIn('yggdrasil.environment: "local"', labels)
         self.assertIn('yggdrasil.version: "2.0.0"', labels)
         self.assertIn(f'yggdrasil.commit: "{self.commit}"', labels)
 
+    def test_given_an_environment_when_deployed_then_the_project_is_named_after_the_stack_and_the_environment(self):
+        result = self.deploy(environment=ON_DEMAND, DEPLOY_START="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        compose = [line for line in self.read("calls").splitlines() if line.startswith("compose ")]
+        self.assertTrue(compose)
+        for line in compose:
+            self.assertIn(f"--project-name {STACK}-{ON_DEMAND} ", line)
+        self.assertIn(f"-f {ROOT}/stacks/{STACK}.proxy.yml", compose[0])
+        self.assertEqual(self.read("up1.tag").strip(), f"development-2.0.0-{self.commit}")
+        ps = [line for line in self.read("calls").splitlines() if line.startswith("ps ")]
+        self.assertTrue(all(f"label=com.docker.compose.project={STACK}-{ON_DEMAND}" in line for line in ps), ps)
+
     def test_given_an_unhealthy_release_when_deployed_then_it_rolls_back_to_the_previous_image_and_labels(self):
-        self.given("ps", "c1 heimdall-ui:1.0.0-aaaaaaa")
+        self.given("ps", "c1 heimdall-ui:local-1.0.0-aaaaaaa")
         self.given("labels.c1", "version=1.0.0\ncommit=aaaaaaa\ndeployed_at=2026-01-01T00:00:00Z")
         self.given("up_results", "1\n0")
         result = self.deploy()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("rolling back to 1.0.0-aaaaaaa", result.stderr)
-        self.assertEqual(self.read("up2.tag").strip(), "1.0.0-aaaaaaa")
+        self.assertIn("rolling back to local-1.0.0-aaaaaaa", result.stderr)
+        self.assertEqual(self.read("up2.tag").strip(), "local-1.0.0-aaaaaaa")
         labels = self.read("up2.labels")
         self.assertIn('yggdrasil.version: "1.0.0"', labels)
         self.assertIn('yggdrasil.commit: "aaaaaaa"', labels)
@@ -154,17 +186,34 @@ class DeployTests(unittest.TestCase):
         # is not a version of the application.
         self.given("services", "db\nui")
         self.given("other_images", "postgres:16")
-        self.given("ps", "d1 postgres:16\nc1 heimdall-ui:1.0.0-aaaaaaa")
+        self.given("ps", "d1 postgres:16\nc1 heimdall-ui:local-1.0.0-aaaaaaa")
         self.given("labels.c1", "version=1.0.0\ncommit=aaaaaaa\ndeployed_at=2026-01-01T00:00:00Z")
         self.given("up_results", "1\n0")
         result = self.deploy()
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(self.read("up2.tag").strip(), "1.0.0-aaaaaaa", result.stderr)
+        self.assertEqual(self.read("up2.tag").strip(), "local-1.0.0-aaaaaaa", result.stderr)
         self.assertIn('yggdrasil.version: "1.0.0"', self.read("up2.labels"))
 
     def test_given_only_other_images_running_when_the_release_fails_then_there_is_nothing_to_roll_back_to(self):
         self.given("other_images", "postgres:16")
         self.given("ps", "d1 postgres:16")
+        self.given("up_results", "1")
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.read("ups").strip(), "1", result.stderr)
+
+    def test_given_a_stopped_previous_deployment_when_the_release_fails_then_it_still_rolls_back_to_it(self):
+        self.given("ps", "c1 heimdall-ui:local-1.0.0-aaaaaaa exited")
+        self.given("labels.c1", "version=1.0.0\ncommit=aaaaaaa\ndeployed_at=2026-01-01T00:00:00Z")
+        self.given("up_results", "1\n0")
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.read("up2.tag").strip(), "local-1.0.0-aaaaaaa", result.stderr)
+
+    def test_given_an_image_without_this_environments_tag_when_the_release_fails_then_it_is_not_a_rollback_target(self):
+        # A container left from before tags carried the environment (or by a deploy by hand to
+        # another tag scheme): not this environment's image, so nothing to come back to.
+        self.given("ps", "c1 heimdall-ui:1.0.0-aaaaaaa")
         self.given("up_results", "1")
         result = self.deploy()
         self.assertEqual(result.returncode, 1)
@@ -176,6 +225,64 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(self.read("ups").strip(), "1")
         self.assertNotIn("rolling back", result.stderr)
+
+    # On demand: development has onDemand: true in the catalog, local has not.
+
+    def test_given_an_on_demand_environment_that_was_stopped_when_deployed_then_it_is_stopped_again(self):
+        self.given("ps", "c1 heimdall-ui:development-1.0.0-aaaaaaa exited")
+        result = self.deploy(environment=ON_DEMAND)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("ups").strip(), "1")
+        self.assertEqual(len(self.compose_calls("stop")), 1, self.read("calls"))
+        self.assertIn("deploy: development is on demand and heimdall-ui was not running: stopped it again "
+                      "(scripts/ygg.sh env start development to use it)", result.stdout)
+
+    def test_given_an_on_demand_environment_first_deploy_when_deployed_then_it_is_stopped_after_becoming_healthy(self):
+        result = self.deploy(environment=ON_DEMAND)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.read("calls")
+        self.assertLess(calls.index(" up --detach"), calls.index(" stop "), calls)
+
+    def test_given_an_on_demand_environment_that_was_running_when_deployed_then_it_keeps_running(self):
+        self.given("ps", "c1 heimdall-ui:development-1.0.0-aaaaaaa")
+        result = self.deploy(environment=ON_DEMAND)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.compose_calls("stop"), [])
+
+    def test_given_deploy_start_when_an_on_demand_environment_was_stopped_then_it_is_left_running(self):
+        self.given("ps", "c1 heimdall-ui:development-1.0.0-aaaaaaa exited")
+        result = self.deploy(environment=ON_DEMAND, DEPLOY_START="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.compose_calls("stop"), [])
+
+    def test_given_an_environment_that_is_not_on_demand_when_it_was_stopped_then_it_is_left_running(self):
+        self.given("ps", "c1 heimdall-ui:local-1.0.0-aaaaaaa exited")
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.compose_calls("stop"), [])
+
+    def test_given_an_on_demand_environment_that_was_stopped_when_the_release_fails_then_it_rolls_back_and_stops(self):
+        self.given("ps", "c1 heimdall-ui:development-1.0.0-aaaaaaa exited")
+        self.given("labels.c1", "version=1.0.0\ncommit=aaaaaaa\ndeployed_at=2026-01-01T00:00:00Z")
+        self.given("up_results", "1\n0")
+        result = self.deploy(environment=ON_DEMAND)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.read("up2.tag").strip(), "development-1.0.0-aaaaaaa", result.stderr)
+        self.assertEqual(len(self.compose_calls("stop")), 1, self.read("calls"))
+
+    def test_given_images_of_several_environments_when_pruning_then_only_this_environments_old_ones_go(self):
+        self.given("images", "\n".join([
+            "2026-01-05\theimdall-ui:local-5.0.0-eeeeeee",
+            "2026-01-04\theimdall-ui:development-4.0.0-ddddddd",
+            "2026-01-03\theimdall-ui:local-3.0.0-ccccccc",
+            "2026-01-02\theimdall-ui:local-2.0.0-bbbbbbb",
+            "2026-01-01\theimdall-ui:development-1.0.0-aaaaaaa",
+            "2026-01-01\theimdall-ui:local-1.0.0-aaaaaaa",
+        ]))
+        result = self.deploy(DEPLOY_KEEP_IMAGES="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        removed = [line.split(" IMAGE_TAG=")[0] for line in self.read("calls").splitlines() if line.startswith("image rm ")]
+        self.assertEqual(removed, ["image rm heimdall-ui:local-2.0.0-bbbbbbb heimdall-ui:local-1.0.0-aaaaaaa"])
 
     @unittest.skipUnless(shutil.which("flock"), "needs flock (util-linux)")
     def test_given_a_deploy_when_it_runs_then_it_holds_the_lock_on_the_env_file(self):

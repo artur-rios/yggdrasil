@@ -39,7 +39,7 @@ public static class Endpoints
 
         // The targets come from the catalog alone, so they are ready before the first refresh and
         // do not change while the process lives.
-        internalApi.MapGet("/prometheus/targets", (EnvironmentCatalog catalog) => Results.Ok(PrometheusTargets.From(catalog)));
+        internalApi.MapGet("/prometheus/targets", (HostCatalog catalog) => Results.Ok(PrometheusTargets.From(catalog)));
     }
 
     // 503 with Retry-After rather than a snapshot of "unknown": the process has not looked yet, and
@@ -60,20 +60,30 @@ public static class Endpoints
 
 public static class PrometheusTargets
 {
-    // This environment's applications only: one that is not deployed here has nothing to scrape, and
-    // would sit in Prometheus as a target that is always down.
-    public static IReadOnlyList<ScrapeTargetGroup> From(EnvironmentCatalog catalog) =>
+    public const string EnvironmentLabel = "environment";
+
+    // This host's environments only: an application that is not deployed to one of them has nothing to
+    // scrape, and would sit in Prometheus as a target that is always down. An application once per
+    // environment, at its environment's network alias and labelled with it; a platform component once.
+    public static IReadOnlyList<ScrapeTargetGroup> From(HostCatalog catalog) =>
         catalog.Systems
             .SelectMany(system => system.Applications
                 .Where(application => application.Metrics is not null)
-                .Select(application =>
+                .SelectMany(catalog.TargetsOf)
+                .Select(target =>
                 {
+                    var application = target.Application;
                     var labels = new Dictionary<string, string>
                     {
                         ["system"] = system.Id,
                         ["app"] = application.Id,
                         ["kind"] = KindName(application.Kind),
                     };
+
+                    if (target.Environment is not null)
+                    {
+                        labels[EnvironmentLabel] = target.Environment;
+                    }
 
                     // Prometheus reads labels starting with "__" as scrape settings; this one replaces
                     // the job's default /metrics for this target only.
@@ -82,7 +92,7 @@ public static class PrometheusTargets
                         labels["__metrics_path__"] = application.MetricsPath;
                     }
 
-                    return new ScrapeTargetGroup([application.Metrics!], labels);
+                    return new ScrapeTargetGroup([target.Metrics!], labels);
                 }))
             .ToList();
 

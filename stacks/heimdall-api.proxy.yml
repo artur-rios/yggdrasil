@@ -1,42 +1,50 @@
-# Homologation and production overlay for heimdall-api, applied on top of the repository's own
+# heimdall-api in proxy environments: an overlay applied on top of the repository's own
 # docker-compose.yml by scripts/deploy.sh. It changes how the API is reached, nothing about what it
-# runs: no host port (Traefik is the only way in), the edge and telemetry networks, and the router.
+# runs: no host port (Traefik is the only way in), the edge and telemetry networks, and the routers.
+#
+# Several environments can run on one host, so everything shared between their containers is named
+# after the environment, from YGG_ENVIRONMENT (exported by deploy.sh; a docker compose run without it
+# stops, saying so):
+#   network alias   heimdall-api.<environment>, e.g. heimdall-api.production, on edge and telemetry
+#   Traefik         routers heimdall-api-<environment> and
+#                   heimdall-api-<environment>-same-origin, service heimdall-api-<environment>
+# The labels are a list, not a mapping, because Compose substitutes variables in values only.
 #
 # Two routers, one service:
 #   PUBLIC_HOST                the API's own host name, for the mobile and desktop clients
 #   UI_HOST + /api/            the same API under the web UI's own origin. Every API route already
 #                              starts with /api/, so nothing is rewritten: the browser build of
 #                              heimdall-ui uses https://<UI_HOST> as its API base URL and needs no CORS
-#                              (fortuna-api has none) and no preflight requests.
+#                              and no preflight requests.
 #
 # /metrics is on port 9464, which is on neither the router nor the host: Prometheus reaches it over
-# the telemetry network as heimdall-api:9464.
+# the telemetry network as heimdall-api.<environment>:9464.
 
 services:
   api:
     ports: !reset []
     networks:
       edge:
-        aliases: [heimdall-api]
+        aliases: ["heimdall-api.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
       telemetry:
-        aliases: [heimdall-api]
+        aliases: ["heimdall-api.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "5"
     labels:
-      traefik.enable: "true"
-      traefik.docker.network: edge
-      traefik.http.routers.heimdall-api.rule: Host(`${PUBLIC_HOST:?set PUBLIC_HOST in the env file}`)
-      traefik.http.routers.heimdall-api.entrypoints: websecure
-      traefik.http.routers.heimdall-api.middlewares: secure-headers@file
-      traefik.http.routers.heimdall-api.service: heimdall-api
-      traefik.http.routers.heimdall-api-same-origin.rule: Host(`${UI_HOST:?set UI_HOST in the env file}`) && PathPrefix(`/api/`)
-      traefik.http.routers.heimdall-api-same-origin.entrypoints: websecure
-      traefik.http.routers.heimdall-api-same-origin.middlewares: secure-headers@file
-      traefik.http.routers.heimdall-api-same-origin.service: heimdall-api
-      traefik.http.services.heimdall-api.loadbalancer.server.port: "8080"
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}.rule=Host(`${PUBLIC_HOST:?set PUBLIC_HOST in the env file}`)
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}.service=heimdall-api-${YGG_ENVIRONMENT}
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-same-origin.rule=Host(`${UI_HOST:?set UI_HOST in the env file}`) && PathPrefix(`/api/`)
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-same-origin.entrypoints=websecure
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-same-origin.middlewares=secure-headers@file
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-same-origin.service=heimdall-api-${YGG_ENVIRONMENT}
+      - traefik.http.services.heimdall-api-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
 
 networks:
   edge:

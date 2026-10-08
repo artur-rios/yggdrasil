@@ -1,20 +1,25 @@
-# Homologation and production: routed by Traefik at UI_HOST. /api/ on the same host goes to
-# heimdall-api instead (stacks/heimdall-api.proxy.yml): that router's rule is longer, so Traefik gives it
-# priority over this one.
+# heimdall-ui in proxy environments: routed by Traefik at UI_HOST. /api/ on the same host goes to
+# heimdall-api instead (stacks/heimdall-api.proxy.yml): that router's rule is longer, so Traefik
+# gives it priority over this one.
+#
+# Named after the environment, from YGG_ENVIRONMENT (exported by scripts/deploy.sh), so that
+# several environments can share one host: the alias heimdall-ui.<environment> and the router and
+# service heimdall-ui-<environment>. The labels are a list because Compose substitutes variables in
+# values only.
 
 services:
   ui:
     networks:
       edge:
-        # How the status API reaches its health check (catalog.yaml).
-        aliases: [heimdall-ui]
+        # How the status API reaches its health check (catalog.yaml, qualified with the environment).
+        aliases: ["heimdall-ui.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
     labels:
-      traefik.enable: "true"
-      traefik.docker.network: edge
-      traefik.http.routers.heimdall-ui.rule: Host(`${UI_HOST:?set UI_HOST in the env file}`)
-      traefik.http.routers.heimdall-ui.entrypoints: websecure
-      traefik.http.routers.heimdall-ui.middlewares: secure-headers@file
-      traefik.http.services.heimdall-ui.loadbalancer.server.port: "8080"
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.heimdall-ui-${YGG_ENVIRONMENT}.rule=Host(`${UI_HOST:?set UI_HOST in the env file}`)
+      - traefik.http.routers.heimdall-ui-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.heimdall-ui-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.heimdall-ui-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
 
 networks:
   edge:

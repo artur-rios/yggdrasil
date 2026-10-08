@@ -5,13 +5,14 @@
 #
 #   docker build -t yggdrasil-console console/
 #   docker build -t yggdrasil-console \
-#     --build-arg 'YGGDRASIL_ENVIRONMENTS=[{"name":"production","url":"https://yggdrasil.example.com"}]' \
+#     --build-arg 'YGGDRASIL_ENVIRONMENTS=[{"name":"vps","url":"https://yggdrasil.example.com"}]' \
 #     console/
 #
-# YGGDRASIL_ENVIRONMENTS is compiled into main.dart.js and is readable by
-# anyone who loads the page: names and URLs only, never a token. Without it the
-# console shows the environment it is served from (its own origin), whose
-# status API Traefik routes under /api/ on the same host.
+# YGGDRASIL_ENVIRONMENTS (a list of hosts; the name predates the console
+# calling them hosts) is compiled into main.dart.js and is readable by anyone
+# who loads the page: names and URLs only, never a token. Without it the
+# console shows the host it is served from (its own origin), whose status API
+# Traefik routes under /api/ on the same host.
 
 # ---------------------------------------------------------------------------
 # Build stage: a pinned Flutter SDK compiles the web bundle.
@@ -59,7 +60,7 @@ RUN flutter pub get --enforce-lockfile
 COPY --chown=flutter:flutter . .
 
 # Read by lib/core/config/app_config.dart. Optional: a JSON list of
-# {"name", "url"} offered when the user has saved no environments of their own.
+# {"name", "url"} hosts offered when the user has saved no hosts of their own.
 ARG YGGDRASIL_ENVIRONMENTS=
 
 # --no-web-resources-cdn bundles CanvasKit and fonts into build/web so the

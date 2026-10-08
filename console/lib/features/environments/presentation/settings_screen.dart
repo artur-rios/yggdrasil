@@ -6,7 +6,8 @@ import '../domain/environment.dart';
 import 'environment_dialogs.dart';
 import 'environments_controller.dart';
 
-/// Add, edit and remove environments, and set their tokens.
+/// The "Hosts" screen: add, edit and remove the saved hosts (status API URL
+/// and token; `Environment` in the code), and set their tokens.
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
@@ -59,7 +60,7 @@ class SettingsScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: Text('Remove ${environment.name}?'),
         content: const Text(
-          'The environment and its saved token are removed from this device.',
+          'The host and its saved token are removed from this device.',
         ),
         actions: <Widget>[
           TextButton(
@@ -87,11 +88,11 @@ class SettingsScreen extends ConsumerWidget {
     final environments = ref.watch(environmentsControllerProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Environments')),
+      appBar: AppBar(title: const Text('Hosts')),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => addEnvironment(context, ref),
         icon: const Icon(Icons.add),
-        label: const Text('Add'),
+        label: const Text('Add host'),
       ),
       body: switch (environments) {
         AsyncData<EnvironmentsState>(:final value) => Center(
@@ -102,7 +103,7 @@ class SettingsScreen extends ConsumerWidget {
               children: <Widget>[
                 if (value.environments.isEmpty)
                   const ListTile(
-                    title: Text('No environments'),
+                    title: Text('No hosts'),
                     subtitle: Text(
                       'Add the base URL of a yggdrasil host, e.g. '
                       'https://yggdrasil.example.com.',
@@ -142,7 +143,7 @@ class SettingsScreen extends ConsumerWidget {
           ),
         ),
         AsyncError<EnvironmentsState>(:final error) => Center(
-          child: Text('Could not load the environments: $error'),
+          child: Text('Could not load the hosts: $error'),
         ),
         _ => const Center(child: CircularProgressIndicator()),
       },

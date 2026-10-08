@@ -88,7 +88,7 @@ class _TokenDialogState extends State<_TokenDialog> {
   );
 }
 
-/// The result of the environment editor.
+/// The result of the host editor.
 class EnvironmentEdit {
   const EnvironmentEdit(this.environment, this.token);
 
@@ -98,7 +98,7 @@ class EnvironmentEdit {
   final String? token;
 }
 
-/// Adds an environment ([existing] `null`) or edits one.
+/// Adds a host ([existing] `null`) or edits one.
 Future<EnvironmentEdit?> showEnvironmentEditor(
   BuildContext context, {
   Environment? existing,
@@ -168,9 +168,7 @@ class _EnvironmentEditorState extends State<_EnvironmentEditor> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(
-      widget.existing == null ? 'Add environment' : 'Edit environment',
-    ),
+    title: Text(widget.existing == null ? 'Add host' : 'Edit host'),
     scrollable: true,
     content: SizedBox(
       width: 420,
@@ -185,7 +183,7 @@ class _EnvironmentEditorState extends State<_EnvironmentEditor> {
               autofocus: widget.existing == null,
               decoration: const InputDecoration(
                 labelText: 'Name',
-                hintText: 'production',
+                hintText: 'vps',
               ),
               validator: (value) =>
                   (value ?? '').trim().isEmpty ? 'Enter a name' : null,

@@ -1,11 +1,13 @@
 # DNS and certificates
 
-Every environment served through Traefik (`mode: proxy`) needs a **domain**: `DOMAIN` in its
-`platform.env`. Every public host name of that environment is one label under it
-(`<name>.<DOMAIN>`). Traefik gets one certificate for `<DOMAIN>` and `*.<DOMAIN>` from Let's
-Encrypt, with the DNS-01 challenge. So the DNS provider must:
+Every host that serves environments through Traefik (`mode: proxy`) needs a **domain**: `DOMAIN`
+in its `platform.env`. Every public host name of every environment on that host is one label under
+it: the application's `host` plus the environment's `hostSuffix`, so `heimdall.<DOMAIN>` in
+production and `heimdall-dev.<DOMAIN>` in development. Traefik gets one certificate for `<DOMAIN>`
+and `*.<DOMAIN>` from Let's Encrypt, with the DNS-01 challenge, and it covers all of them. So the
+DNS provider must:
 
-- resolve `*.<DOMAIN>` to the environment's host, and
+- resolve `*.<DOMAIN>` to the host, and
 - let Traefik create TXT records through an API: the `_acme-challenge` record that proves you own
   the domain.
 
@@ -20,13 +22,14 @@ This guide covers two ways to do it:
 |---|---|---|
 | Cost | The domain: about US$1–12 a year. Cloudflare's DNS is free | Free |
 | Host names | `heimdall.example.dev` | `heimdall.yourname.duckdns.org` |
-| Environments | Any number: `example.dev`, `hml.example.dev`, ... | One DuckDNS subdomain per environment (5 free) |
+| Hosts | Any number: `example.dev` for one, `staging.example.dev` for another, ... | One DuckDNS subdomain per host (5 free) |
+| Environments per host | Any number, told apart by `hostSuffix`: `heimdall-dev.example.dev`, `heimdall-hml.example.dev` | The same: `heimdall-dev.yourname.duckdns.org` |
 | Extras | Optional proxy: hides the host's IP, DDoS protection, caching | None |
 | Reliability | Production grade | A free, volunteer-run service. Fine for personal projects and trials |
 
 For anything other people depend on, prefer a domain of your own.
 
-With `DOMAIN=example.dev`, one host serves:
+With `DOMAIN=example.dev`, one host serves, for all its environments:
 
 | Host name | What |
 |---|---|
@@ -34,9 +37,11 @@ With `DOMAIN=example.dev`, one host serves:
 | `grafana.<DOMAIN>` | Grafana |
 | `traefik.<DOMAIN>` | The Traefik dashboard. Answers `401` until you sign in |
 | `jenkins.<DOMAIN>` | The Jenkins controller, only on the host whose `COMPOSE_PROFILES` includes `jenkins`. GitHub's webhooks go here |
-| `<name>.<DOMAIN>` | Each deployed application, at the `PUBLIC_HOST` or `UI_HOST` of its env file (the same name as its `host` in `catalog.yaml`). Traefik answers `404` until the application is deployed |
+| `<name><hostSuffix>.<DOMAIN>` | Each deployed application in each environment, at the `PUBLIC_HOST` or `UI_HOST` of its env file (its `host` in `catalog.yaml` plus the environment's `hostSuffix`: `heimdall-dev`, `heimdall-hml`, `heimdall`). Traefik answers `404` until the application is deployed there |
 
-A wildcard record covers them all: adding an application never needs a DNS change. The bare
+A wildcard record covers them all: adding an application, or an environment to the host, never
+needs a DNS change. The console, Grafana, Traefik and Jenkins are per host, not per environment:
+they have no suffix. The bare
 `<DOMAIN>` (`example.dev` itself) needs no record, and nothing is served there, so always test with
 a name under it, such as `yggdrasil.<DOMAIN>`.
 
@@ -81,17 +86,18 @@ Only for a domain bought elsewhere.
 
 ### A3. Add the DNS records
 
-Your domain → **DNS → Records → Add record**, one record per environment:
+Your domain → **DNS → Records → Add record**, one record per host:
 
 | Type | Name | IPv4 address | Proxy status |
 |---|---|---|---|
-| `A` | `*` | The production host's public IP (**not** the example `203.0.113.10`) | **DNS only** (grey cloud) to start |
-| `A` | `*.hml` | The homologation host's IP, if you have one | **DNS only**, always |
+| `A` | `*` | The host's public IP (**not** the example `203.0.113.10`) | **DNS only** (grey cloud) to start |
 
-The name follows the environment's `DOMAIN`: `DOMAIN=example.dev` → record `*`,
-`DOMAIN=hml.example.dev` → record `*.hml`. A private address (`192.168.x.x`) is fine for an
-environment only used on a LAN: Let's Encrypt never connects to the host, it only reads the TXT
-record.
+With the default layout, that one record is all: the VPS runs development, homologation and
+production under the one `DOMAIN`. Only another host, with a `DOMAIN` of its own, needs another
+record, named after it: `DOMAIN=staging.example.dev` → record `*.staging`.
+
+A private address (`192.168.x.x`) is fine for a host only used on a LAN, or behind NAT: Let's
+Encrypt never connects to the host, it only reads the TXT record.
 
 Start with **DNS only**: nothing sits between you and the host while you set things up. The proxy is
 [step A7](#a7-optional-the-cloudflare-proxy).
@@ -169,8 +175,8 @@ JENKINS_URL=https://jenkins.example.dev/
   Traefik at Let's Encrypt's staging service for the first run: see
   [Bring it up](#bring-it-up-either-option).
 - `JENKINS_URL` uses the `DOMAIN` of the host that runs the controller, on every host.
-- Each environment host has its own `platform.env` with its own `DOMAIN` (`hml.example.dev` for
-  homologation). The same token serves every host of the zone.
+- Each host has its own `platform.env` with its own `DOMAIN`; the environments of a host share
+  it. The same token serves every host of the zone.
 
 These are only the DNS lines. The platform won't start until the other required variables are filled
 in too: see [the checklist](#2-fill-in-every-required-variable).
@@ -192,8 +198,9 @@ once the real certificate works ([step 4](#4-switch-to-the-real-certificate)):
 2. Edit the `*` record and switch it to **Proxied**. Renewals keep working: DNS-01 never goes
    through the proxy.
 3. Proxy **one level only**. The free certificate at Cloudflare's edge covers `example.dev` and
-   `*.example.dev`, not `*.hml.example.dev`: keep deeper records on DNS only. A LAN-only environment
-   can't be proxied anyway.
+   `*.example.dev`, not `*.staging.example.dev`. `hostSuffix` keeps every environment of a host at
+   one level (`heimdall-dev.example.dev`), so all of them can be proxied; keep deeper records, of
+   another host, on DNS only. A host only reachable on a LAN can't be proxied anyway.
 4. **Web UIs**: Cloudflare caches `.js` files by default, and Flutter's `main.dart.js` has no hash
    in its name, so after a deploy browsers can get the previous build. Add a Cache Rule (*Caching →
    Cache Rules*) that bypasses the cache for the UI host names, or purge the cache after a release.
@@ -210,9 +217,9 @@ resolves every name below it too, so `yourname.duckdns.org` also answers for
 ### B1. Create the subdomains
 
 1. Sign in at [duckdns.org](https://www.duckdns.org) (GitHub, Google, ...).
-2. Add one subdomain **per environment**: `yourname` for production, `yourname-hml` for
-   homologation. Every name under a subdomain shares its address, so `hml.yourname.duckdns.org`
-   can't point at a different host than `yourname.duckdns.org`.
+2. Add one subdomain **per host**: `yourname` for the VPS, which covers all its environments
+   (`heimdall-dev.yourname.duckdns.org`). Every name under a subdomain shares its address, so a
+   second host needs a subdomain of its own, `yourname-staging`, not `staging.yourname`.
 3. Set each subdomain's **current ip** to its host's public IPv4 address and click *update ip*.
 4. Copy the **token** at the top of the page. It is one token for the whole account.
 
@@ -239,8 +246,8 @@ ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
 JENKINS_URL=https://jenkins.yourname.duckdns.org/
 ```
 
-Remove the `#` in front of `ACME_CA_SERVER`, as in A5. Homologation's host gets
-`DOMAIN=yourname-hml.duckdns.org`.
+Remove the `#` in front of `ACME_CA_SERVER`, as in A5. A second host gets
+`DOMAIN=yourname-staging.duckdns.org`.
 
 These are only the DNS lines. The platform won't start until the other required variables are filled
 in too: see [the checklist](#2-fill-in-every-required-variable).
@@ -285,7 +292,7 @@ Otherwise `platform.sh` stops with `required variable ... is missing a value`.
 
 | Variable | Value |
 |---|---|
-| `ENVIRONMENT` | This host's environment id, exactly as in `catalog.yaml`. `python3 /opt/yggdrasil/scripts/catalog.py environments` lists them |
+| `ENVIRONMENTS` | This host's environment ids, comma-separated, exactly as in `catalog.yaml` (`development,homologation,production`). `python3 /opt/yggdrasil/scripts/catalog.py environments` lists them |
 | `DOMAIN`, `ACME_EMAIL`, `ACME_DNS_PROVIDER` | As in A5 or B2 |
 | `ACME_CA_SERVER` | The staging URL, as in A5 or B2, for this first run |
 | `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. The template's `replace-me` placeholder passes the check but no password works with it |
@@ -314,12 +321,12 @@ sed -i "s|^YGGDRASIL_STATUS_TOKEN=.*|YGGDRASIL_STATUS_TOKEN=$(openssl rand -hex 
 Check the non-secret lines, and let Compose check the file:
 
 ```bash
-grep -E '^(ENVIRONMENT|COMPOSE_PROFILES|DOMAIN|ACME_)' /etc/yggdrasil/platform.env
+grep -E '^(ENVIRONMENTS|COMPOSE_PROFILES|DOMAIN|ACME_)' /etc/yggdrasil/platform.env
 /opt/yggdrasil/scripts/platform.sh config > /dev/null && echo "platform.env OK"
 ```
 
 `platform.sh config` checks the variables Compose requires, and prints `platform.env OK`. It doesn't
-check that `ENVIRONMENT` exists in the catalog, nor the Jenkins variables: `platform.sh up` does,
+check that `ENVIRONMENTS` exist in the catalog, nor the Jenkins variables: `platform.sh up` does,
 and stops with `platform: <NAME> must be set ...` before starting anything.
 
 Then lock the files down:
@@ -408,14 +415,16 @@ Traefik renews the certificate by itself, 30 days before it expires.
   later: the App ID and key don't change. Check the result in the app's *Advanced → Recent
   Deliveries*: each delivery should have a green check.
 - **Applications**: each env file (`/etc/yggdrasil/<environment>/<application>.env`) sets its host
-  names under the environment's `DOMAIN`, matching the `host` in `catalog.yaml`. For example:
+  names under the host's `DOMAIN`, matching the `host` in `catalog.yaml` plus the environment's
+  `hostSuffix`. For example:
 
   | File | Lines |
   |---|---|
-  | `heimdall-api.env` | `PUBLIC_HOST=heimdall-api.example.dev` and `UI_HOST=heimdall.example.dev` (the API is also served under its UI's origin) |
-  | `heimdall-ui.env` | `UI_HOST=heimdall.example.dev` and `HEIMDALL_API_BASE_URL=https://heimdall.example.dev` |
+  | `production/heimdall-api.env` | `PUBLIC_HOST=heimdall-api.example.dev` and `UI_HOST=heimdall.example.dev` (the API is also served under its UI's origin) |
+  | `production/heimdall-ui.env` | `UI_HOST=heimdall.example.dev` and `HEIMDALL_API_BASE_URL=https://heimdall.example.dev` |
+  | `development/heimdall-api.env` | `PUBLIC_HOST=heimdall-api-dev.example.dev` and `UI_HOST=heimdall-dev.example.dev` |
 
-  Complete examples: [examples/docker-desktop-wsl-vps/env](examples/docker-desktop-wsl-vps/env).
+  Complete examples: [examples/docker-desktop-and-vps/env](examples/docker-desktop-and-vps/env).
 
 ## Changing the domain later
 
@@ -424,13 +433,13 @@ Traefik renews the certificate by itself, 30 days before it expires.
    - `platform.env`: `DOMAIN`, `ACME_DNS_PROVIDER`, `JENKINS_URL`, and any URLs in
      `YGGDRASIL_STATUS_CORS_ORIGINS` and `YGGDRASIL_CONSOLE_ENVIRONMENTS`.
    - `acme.env`: the new provider's credentials.
-   - Every application env file: `PUBLIC_HOST`, `UI_HOST`, and every URL built from the domain. In
-     the example applications: `HEIMDALL_API_BASE_URL`, `FORTUNA_API_BASE_URL`,
-     `HEIMDALL_EMAIL_VERIFICATION_URL`, `HEIMDALL_PASSWORD_RESET_URL` and
-     `HEIMDALL_CORS_ALLOWED_ORIGINS`.
+   - Every application env file, in every environment of the host: `PUBLIC_HOST`, `UI_HOST`, and
+     every URL built from the domain. In the example applications: `HEIMDALL_API_BASE_URL`, `FORTUNA_API_BASE_URL`,
+     `HEIMDALL_EMAIL_VERIFICATION_URL`, `HEIMDALL_PASSWORD_RESET_URL`,
+     `HEIMDALL_CORS_ALLOWED_ORIGINS` and `FORTUNA_HEIMDALL_BASE_URL`.
 3. `scripts/platform.sh up`, then redeploy each application so it picks up its new host names. Web
    UIs compile their URLs into the bundle, so they must be rebuilt, which a deploy does.
-4. Update the GitHub App's URLs, and each environment's URL in the Windows and Android consoles.
+4. Update the GitHub App's URLs, and each host's URL in the Windows and Android consoles.
 
 ## Troubleshooting
 
@@ -453,5 +462,5 @@ Traefik's errors: `docker logs yggdrasil-traefik-1 2>&1 | grep -iE 'acme|error' 
 | Timeout from the VPS itself, but it works from your computer | The provider doesn't route the host's requests to its own public IP. Test on the VPS with `curl --resolve <name>:443:127.0.0.1` |
 | Timeout on every host name, from everywhere | Ports 80/443 closed on the host or at the provider, or the record points at another address (check it isn't the example `203.0.113.10`) |
 | `ERR_TOO_MANY_REDIRECTS` | Cloudflare proxy with SSL/TLS mode *Flexible*: set **Full (strict)** |
-| A LAN environment doesn't resolve at home | The router's DNS rebinding protection drops answers with private addresses: allow the domain there, or use hosts-file entries |
+| A host on a LAN doesn't resolve at home | The router's DNS rebinding protection drops answers with private addresses: allow the domain there, or use hosts-file entries |
 | GitHub deliveries fail | `jenkins.<DOMAIN>` isn't reachable from the internet, or the Webhook URL lacks `/github-webhook/` |

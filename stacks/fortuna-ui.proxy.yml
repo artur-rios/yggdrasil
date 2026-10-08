@@ -1,20 +1,25 @@
-# Homologation and production: routed by Traefik at UI_HOST. /api/ on the same host goes to
-# fortuna-api instead (stacks/fortuna-api.proxy.yml): that router's rule is longer, so Traefik gives it
-# priority over this one.
+# fortuna-ui in proxy environments: routed by Traefik at UI_HOST. /api/ on the same host goes to
+# fortuna-api instead (stacks/fortuna-api.proxy.yml): that router's rule is longer, so Traefik
+# gives it priority over this one.
+#
+# Named after the environment, from YGG_ENVIRONMENT (exported by scripts/deploy.sh), so that
+# several environments can share one host: the alias fortuna-ui.<environment> and the router and
+# service fortuna-ui-<environment>. The labels are a list because Compose substitutes variables in
+# values only.
 
 services:
   ui:
     networks:
       edge:
-        # How the status API reaches its health check (catalog.yaml).
-        aliases: [fortuna-ui]
+        # How the status API reaches its health check (catalog.yaml, qualified with the environment).
+        aliases: ["fortuna-ui.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
     labels:
-      traefik.enable: "true"
-      traefik.docker.network: edge
-      traefik.http.routers.fortuna-ui.rule: Host(`${UI_HOST:?set UI_HOST in the env file}`)
-      traefik.http.routers.fortuna-ui.entrypoints: websecure
-      traefik.http.routers.fortuna-ui.middlewares: secure-headers@file
-      traefik.http.services.fortuna-ui.loadbalancer.server.port: "8080"
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.fortuna-ui-${YGG_ENVIRONMENT}.rule=Host(`${UI_HOST:?set UI_HOST in the env file}`)
+      - traefik.http.routers.fortuna-ui-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.fortuna-ui-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.fortuna-ui-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
 
 networks:
   edge:

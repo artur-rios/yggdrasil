@@ -1,22 +1,27 @@
 # The shared platform of one host: the reverse proxy, the observability stack and the Jenkins
-# pieces that host runs. The applications are not here -- each is its own Compose project (see
-# stacks/ and scripts/deploy.sh) and joins the two external networks this stack routes and scrapes:
+# pieces that host runs, serving every environment the host runs (ENVIRONMENTS in its platform.env).
+# The applications are not here -- each is its own Compose project per environment,
+# <application>-<environment> (see stacks/ and scripts/deploy.sh), and joins the two external
+# networks this stack routes and scrapes as <application>.<environment>:
 #
 #   edge       Traefik <-> the applications (and application <-> application, one API calling
-#              another by its alias); the status API probes health endpoints here
+#              another of its own environment by its alias); the status API probes health
+#              endpoints here
 #   telemetry  Prometheus <-> everything it scrapes
 #
 # Both are created by scripts/platform.sh, not by this file, so an application stack can be
 # deployed, removed or redeployed without this project owning its network.
 #
-# One file for every environment host. What differs is the env file (env/platform.env.example) and
-# which profiles COMPOSE_PROFILES turns on:
+# One file for every host, whether it runs one environment or several (development, homologation
+# and production on one VPS, say): one platform per host, never one per environment. What differs is
+# the env file (env/platform.env.example) and which profiles COMPOSE_PROFILES turns on:
 #
-#   jenkins,agent   the one host that runs the Jenkins controller, plus its own environment's agent
+#   jenkins,agent   the one host that runs the Jenkins controller, plus the host's own agent
 #   agent           every other host Jenkins deploys to: only an agent, dialling out to the controller
 #   (none)          a host with the platform but nothing deployed by Jenkins
 #
-# Development (Docker Desktop) does not run this stack; see the README.
+# A ports environment (local, on a developer's Docker Desktop) does not run this stack; see the
+# README.
 #
 #     scripts/platform.sh up
 
@@ -99,8 +104,10 @@ services:
       # No tls.options here: the options named `default` in traefik/dynamic apply to every router by
       # themselves, and have no provider namespace -- `default@file` is an unknown name, and Traefik
       # then builds no HTTPS router at all.
-      # One wildcard certificate for the whole environment instead of one per host name. It is what
-      # makes DNS-01 worth it -- and a host behind NAT can never answer an HTTP-01 challenge anyway.
+      # One wildcard certificate for the whole host instead of one per host name: it covers every
+      # environment of the host too, as their host names differ by hostSuffix (heimdall-dev.DOMAIN),
+      # not by a sub-domain. It is what makes DNS-01 worth it -- and a host behind NAT can never
+      # answer an HTTP-01 challenge anyway.
       - --entrypoints.websecure.http.tls.domains[0].main=${DOMAIN:?set DOMAIN in the env file}
       - --entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN}
 
@@ -177,14 +184,17 @@ services:
       - docker
 
   status:
-    # Probes every catalog application and serves the console (/api/ under yggdrasil.DOMAIN) and
-    # Prometheus' target discovery (port 8081, internal). Contract: docs/status-api.md.
+    # Probes every catalog application of every environment of the host and serves the console
+    # (/api/ under yggdrasil.DOMAIN) and Prometheus' target discovery (port 8081, internal).
+    # Contract: docs/status-api.md.
     build: ../status
     image: yggdrasil/status:local
     restart: unless-stopped
     logging: *logging
     environment:
-      YGGDRASIL_ENVIRONMENT: ${ENVIRONMENT}
+      # The environments this host runs, comma-separated. A platform.env from before 0.5 has only
+      # ENVIRONMENT, which counts as a list of one; ENVIRONMENTS wins when both are set.
+      YGGDRASIL_ENVIRONMENTS: ${ENVIRONMENTS:-${ENVIRONMENT:-}}
       YGGDRASIL_DOMAIN: ${DOMAIN}
       YGGDRASIL_STATUS_TOKEN: ${YGGDRASIL_STATUS_TOKEN:?set YGGDRASIL_STATUS_TOKEN in the env file -- openssl rand -hex 32}
       YGGDRASIL_STATUS_CORS_ORIGINS: ${YGGDRASIL_STATUS_CORS_ORIGINS:-}
@@ -253,8 +263,9 @@ services:
       - telemetry
 
   alloy:
-    # Ships every container's stdout to Loki. The APIs also keep their rolling JSON files in their
-    # own volumes; those are the durable copy, this is the searchable one.
+    # Ships every container's stdout to Loki, labelled with the environment its yggdrasil.environment
+    # label names (deploy.sh sets it; platform containers have none). The APIs also keep their rolling
+    # JSON files in their own volumes; those are the durable copy, this is the searchable one.
     image: grafana/alloy:v1.10.0
     restart: unless-stopped
     logging: *logging
@@ -263,8 +274,6 @@ services:
       - --server.http.listen-addr=0.0.0.0:12345
       - --storage.path=/var/lib/alloy/data
       - /etc/alloy/config.alloy
-    environment:
-      ENVIRONMENT: ${ENVIRONMENT:?set ENVIRONMENT in the env file}
     volumes:
       - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
       - alloy:/var/lib/alloy/data
@@ -334,7 +343,8 @@ services:
     volumes:
       - ./jenkins/controller/casc.yaml:/etc/jenkins/casc.yaml:ro
       # The Job DSL in casc.yaml creates one deploy job per catalog application, agents.groovy one
-      # agent per environment, and the pipeline reads each application's environments from it.
+      # agent per host (environments sharing a host share its `agent`), and the pipeline reads each
+      # application's environments from it.
       - ../catalog.yaml:/etc/jenkins/catalog.yaml:ro
       - ./jenkins/controller/init.groovy.d/agents.groovy:/var/jenkins_home/init.groovy.d/agents.groovy:ro
       # The GitHub App private key, converted to PKCS#8 (see the README). Read by casc.yaml.
@@ -374,7 +384,8 @@ services:
       - ${DOCKER_GID}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Per-environment application env files. Secrets, so on the host only, never in git.
+      # The application env files of every environment of the host (<environment>/<application>.env).
+      # Secrets, so on the host only, never in git.
       - ${YGG_SECRETS_DIR:-/etc/yggdrasil}:/etc/yggdrasil:ro
       - agent:/home/jenkins/agent
     networks:

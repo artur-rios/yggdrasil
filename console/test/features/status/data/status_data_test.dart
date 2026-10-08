@@ -38,7 +38,7 @@ void main() {
       expect(seen.method, 'GET');
       expect(seen.url.toString(), 'https://yggdrasil.example.com/api/status');
       expect(seen.headers['Authorization'], 'Bearer secret');
-      expect(status.environment, 'production');
+      expect(status.host, 'example.com');
     });
 
     test('sends no Authorization header without a token', () async {
@@ -54,6 +54,17 @@ void main() {
       await source.fetch(production, null);
 
       expect(seen.headers.containsKey('Authorization'), isFalse);
+    });
+
+    test('reads a v1 body as a one-environment host', () async {
+      final source = HttpStatusSource(
+        MockClient((_) async => http.Response(v1ExampleJson(), 200)),
+      );
+
+      final status = await source.fetch(production, 't');
+
+      expect(status.contractVersion, 1);
+      expect(status.environments.single.id, 'production');
     });
 
     test('reads the body as UTF-8 whatever the content type says', () async {
@@ -73,7 +84,7 @@ void main() {
 
       final status = await source.fetch(production, 't');
 
-      expect(status.systems.single.description, 'Identität');
+      expect(status.systems.first.description, 'Identität');
     });
 
     test('401 is an unauthorized failure', () {
@@ -182,15 +193,16 @@ void main() {
       final source = DemoStatusSource(() async => demoJson(), now: () => now);
 
       final status = await source.fetch(Environment.demo(), null);
-      final heimdallApi = status.systems.first.applications.first;
+      final heimdallApi = status.systems.first.environments.last.applications
+          .firstWhere((application) => application.id == 'heimdall-api');
 
       expect(status.generatedAt, now);
-      // 20 h 24 min 9 s before generatedAt in the fixture.
+      // Production's: 20 h 24 min 9 s before generatedAt in the fixture.
       expect(
         heimdallApi.deployment!.deployedAt,
         now.subtract(const Duration(hours: 20, minutes: 24, seconds: 9)),
       );
-      expect(status.systems, hasLength(4));
+      expect(status.systems, hasLength(3));
     });
   });
 
@@ -219,7 +231,7 @@ void main() {
       expect(report.failure, isNull);
       expect(report.isStale, isFalse);
       expect(report.snapshot!.receivedAt, received);
-      expect(report.snapshot!.status.environment, 'production');
+      expect(report.snapshot!.status.host, 'example.com');
       expect(repository.lastFor(production), same(report.snapshot));
     });
 
@@ -305,8 +317,59 @@ void main() {
     );
   });
 
-  test('the demo environment follows the contract rules', () {
-    expect(demoStatus().status, Status.degraded);
+  group('the fixtures follow the contract\'s rollup rule', () {
+    // docs/status-api.md: the one rule used at every level.
+    Status rollup(Iterable<Status> members) {
+      final deployed = members.where((s) => s != Status.notDeployed).toList();
+
+      if (deployed.isEmpty) {
+        return Status.notDeployed;
+      }
+
+      final running = deployed.where((s) => s != Status.stopped).toList();
+
+      if (running.isEmpty) {
+        return Status.stopped;
+      }
+
+      if (running.every((s) => s == Status.down)) {
+        return Status.down;
+      }
+
+      if (running.any((s) => s == Status.down || s == Status.degraded)) {
+        return Status.degraded;
+      }
+
+      return running.contains(Status.unknown) ? Status.unknown : Status.up;
+    }
+
+    for (final (name, load) in <(String, HostStatus Function())>[
+      ('demo', demoStatus),
+      ('contract example', () => parseStatusBody(contractExampleJson())),
+      ('v1 example', v1Status),
+    ]) {
+      test(name, () {
+        final host = load();
+
+        for (final system in host.systems) {
+          for (final environment in system.environments) {
+            expect(
+              environment.status,
+              rollup(environment.applications.map((a) => a.status)),
+              reason: '${system.id} in ${environment.environment}',
+            );
+          }
+
+          expect(
+            system.status,
+            rollup(system.environments.map((e) => e.status)),
+            reason: system.id,
+          );
+        }
+
+        expect(host.status, rollup(host.environments.map((e) => e.status)));
+      });
+    }
   });
 
   group('Retry-After', () {

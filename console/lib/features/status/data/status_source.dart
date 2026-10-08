@@ -47,7 +47,7 @@ class StatusException implements Exception {
   /// One line for the user.
   String get message => switch (kind) {
     StatusFailureKind.unauthorized =>
-      'The status API needs a valid token for this environment.',
+      'The status API needs a valid token for this host.',
     StatusFailureKind.network => 'The status API could not be reached.',
     StatusFailureKind.server =>
       'The status API answered with HTTP ${statusCode ?? '?'}.',
@@ -61,10 +61,11 @@ class StatusException implements Exception {
   String toString() => 'StatusException($kind, $statusCode, $detail)';
 }
 
-/// Where an environment's status comes from.
+/// Where a host's status comes from. ([Environment] is the saved
+/// connection: a host's status API URL and token.)
 abstract interface class StatusSource {
   /// Throws [StatusException] on failure.
-  Future<EnvironmentStatus> fetch(Environment environment, String? token);
+  Future<HostStatus> fetch(Environment environment, String? token);
 }
 
 /// `GET <baseUrl>/api/status` with the bearer token.
@@ -75,10 +76,7 @@ class HttpStatusSource implements StatusSource {
   final Duration timeout;
 
   @override
-  Future<EnvironmentStatus> fetch(
-    Environment environment,
-    String? token,
-  ) async {
+  Future<HostStatus> fetch(Environment environment, String? token) async {
     final uri = Uri.parse('${environment.baseUrl}/api/status');
     final http.Response response;
 
@@ -145,7 +143,7 @@ Duration parseRetryAfter(String value) {
 
 /// Parses a `GET /api/status` body, throwing
 /// [StatusFailureKind.invalidResponse] for anything that is not the contract.
-EnvironmentStatus parseStatusBody(String body) {
+HostStatus parseStatusBody(String body) {
   try {
     final decoded = jsonDecode(body);
 
@@ -153,7 +151,7 @@ EnvironmentStatus parseStatusBody(String body) {
       throw const FormatException('Expected a JSON object');
     }
 
-    return EnvironmentStatus.fromJson(decoded);
+    return HostStatus.fromJson(decoded);
   } on FormatException catch (error) {
     throw StatusException(
       StatusFailureKind.invalidResponse,
@@ -172,15 +170,12 @@ class DemoStatusSource implements StatusSource {
   final DateTime Function() _now;
 
   @override
-  Future<EnvironmentStatus> fetch(
-    Environment environment,
-    String? token,
-  ) async {
+  Future<HostStatus> fetch(Environment environment, String? token) async {
     final json = jsonDecode(await _loadFixture()) as Map<String, dynamic>;
     final generatedAt = DateTime.parse(json['generatedAt']! as String);
     final shift = _now().toUtc().difference(generatedAt);
 
-    return EnvironmentStatus.fromJson(
+    return HostStatus.fromJson(
       _shiftDates(json, shift) as Map<String, dynamic>,
     );
   }
@@ -208,7 +203,7 @@ class DemoStatusSource implements StatusSource {
   }
 }
 
-/// Sends the demo environment to [demo] and every other one to [http].
+/// Sends the demo host to [demo] and every other one to [http].
 class RoutingStatusSource implements StatusSource {
   const RoutingStatusSource({required this.http, required this.demo});
 
@@ -216,7 +211,7 @@ class RoutingStatusSource implements StatusSource {
   final StatusSource demo;
 
   @override
-  Future<EnvironmentStatus> fetch(Environment environment, String? token) =>
+  Future<HostStatus> fetch(Environment environment, String? token) =>
       environment.isDemo
       ? demo.fetch(environment, token)
       : http.fetch(environment, token);
