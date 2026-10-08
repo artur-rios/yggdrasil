@@ -215,13 +215,13 @@ else
     echo "deploy: rolling back to $previous_tag" >&2
     # Back to what the previous deployment said about itself, not the failed one's labels.
     write_labels "${previous_labels[@]}"
-    if IMAGE_TAG="$previous_tag" API_IMAGE_TAG="$previous_tag" \
-      compose up --detach --no-build --wait --wait-timeout "${DEPLOY_ROLLBACK_WAIT_TIMEOUT:-300}"; then
-      stop_if_on_demand
-    else
-      echo "deploy: ROLLBACK FAILED -- $stack is down in $environment" >&2
-    fi
+    IMAGE_TAG="$previous_tag" API_IMAGE_TAG="$previous_tag" \
+      compose up --detach --no-build --wait --wait-timeout "${DEPLOY_ROLLBACK_WAIT_TIMEOUT:-300}" \
+      || echo "deploy: ROLLBACK FAILED -- $stack is down in $environment" >&2
   fi
+  # Rolled back, failed to, or had nothing to roll back to: an on-demand environment that was off is
+  # switched off again either way, rather than left crash-looping where nobody looks.
+  stop_if_on_demand
   exit 1
 fi
 

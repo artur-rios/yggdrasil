@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/deploy.sh`: a deploy that fails in an `onDemand` environment that wasn't running is stopped again, also
+  when there was nothing to roll back to. A first deploy that never became healthy was left restarting.
+
 ## [0.5.0] - 2026-10-08
 
 ### Added
