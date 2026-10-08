@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- `vars.py --help` (and `scripts/ygg.sh vars` with no command) explains every command, the scopes, examples, exit
+  codes and environment variables; `vars <command> --help` explains each command and option.
+- [docs/variables.md](docs/variables.md): exit status and environment variables, a recipes section (see what an
+  application gets, add a hidden secret, rotate a signing secret, share a value, references, undo a change), the
+  `render` commands, and the exact messages for a missing, damaged or foreign key. [docs/cli.md](docs/cli.md) gains
+  a command summary of `ygg.sh vars`.
+
 ## [0.6.1] - 2026-10-08
 
 ### Fixed
