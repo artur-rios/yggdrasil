@@ -95,6 +95,10 @@ if [[ -f "$secrets/vars.db" ]]; then
   env_file="$render_dir/$stack-$environment.env"
   (umask 077 && python3 "$root/scripts/vars.py" render "$stack" "$environment" >"$env_file") \
     || die "could not render the variables of $stack in $environment"
+  # As without a store, where a missing env file stops the deploy: an application with nothing set
+  # here was never configured on this machine.
+  [[ -s "$env_file" ]] \
+    || die "$stack has no variables in $environment in the variables store: set them with scripts/ygg.sh config $stack $environment (or scripts/ygg.sh vars set $stack@$environment KEY=value)"
 else
   env_file="$secrets/$environment/$stack.env"
   [[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"

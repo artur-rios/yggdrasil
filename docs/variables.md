@@ -299,7 +299,9 @@ an env file, to use files again: delete `vars.db` and the scripts read the files
   renders the application's resolved variables as `KEY='value'` lines into a private directory
   (`/run/yggdrasil` when writable, else `${TMPDIR:-/tmp}/yggdrasil-$UID`; base directory `0700`, the file `0600`).
   `APP_ENV_FILE` and Compose's `--env-file` point at it, and the directory is removed when the script
-  exits, whether the deploy succeeded or not. Without `vars.db` it reads
+  exits, whether the deploy succeeded or not. An application with no variables at all in that
+  environment is not deployed, as a missing env file was not: `deploy.sh` stops and names
+  `scripts/ygg.sh config <application> <environment>`. Without `vars.db` it reads
   `<secrets>/<environment>/<application>.env` with a one-line notice pointing here.
 - **The deploy lock** is a file per application and environment,
   `<secrets>/locks/<application>-<environment>.lock`, created `0664` when missing and opened

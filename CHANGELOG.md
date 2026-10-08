@@ -26,7 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `scripts/deploy.sh`, `scripts/platform.sh` and `scripts/ygg.sh` read the variables store when `vars.db` exists in the
   secrets directory, and the env files as before when it doesn't (with a notice). The store is checked before every deploy
-  (that application's values) and platform start (the platform's values); `ygg.sh` checks only that it is usable.
+  (that application's values) and platform start (the platform's values); `ygg.sh` checks only that it is usable. As a missing env file
+  did, an application with no variables in the store for that environment stops its deploy.
 - The deploy lock moved from the application's env file to `<secrets>/locks/<application>-<environment>.lock`. `platform.sh up`
   creates the directory (group `docker`, mode `2770`).
 - The Jenkins agent image installs `python3-cryptography`, and `platform/compose.yml` mounts `<secrets>/locks` read-write

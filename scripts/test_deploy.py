@@ -333,6 +333,24 @@ class DeployTests(unittest.TestCase):
         self.assertTrue(all(not pathlib.Path(p).exists() for p in env_files), env_files)
         self.assertNotIn("move to the variables store", result.stderr)
 
+    def test_given_a_store_when_the_deploy_fails_then_the_rendered_file_is_removed_too(self):
+        self.use_store({"HEIMDALL_API_BASE_URL": "https://heimdall.example.com"})
+        self.given("up_results", "1")
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        env_files = {line.split("--env-file ")[1].split(" ")[0] for line in self.read("calls").splitlines()
+                     if "--env-file" in line}
+        self.assertTrue(env_files)
+        self.assertTrue(all(not pathlib.Path(p).exists() for p in env_files), env_files)
+
+    def test_given_a_store_without_variables_for_the_application_when_deployed_then_it_stops_before_docker(self):
+        self.use_store({})
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{STACK} has no variables in {ENVIRONMENT}", result.stderr)
+        self.assertIn(f"scripts/ygg.sh config {STACK} {ENVIRONMENT}", result.stderr)
+        self.assertNotIn("compose", self.read("calls"))
+
     def test_given_a_store_with_a_broken_reference_when_deployed_then_it_stops_before_docker(self):
         self.use_store({"X": "${ref:heimdall-api:NOPE}"})
         result = self.deploy()
