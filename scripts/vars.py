@@ -806,77 +806,177 @@ def cmd_check(args):
     print("vars.db: ok")
 
 
+HELP_EPILOG = """\
+Scopes (where a variable lives):
+  platform                      the platform's settings (platform.env)
+  platform:acme                 the DNS provider's credentials (acme.env), only for Traefik
+  @<environment>                every application in one environment      @development
+  <application>                 one application in every environment      heimdall-api
+  <application>@<environment>   one application in one environment        heimdall-api@production
+
+An application's variables in an environment resolve from <application>@<environment>, then
+<application>, then @<environment>: the most specific wins. A value that is exactly
+${ref:<application>:<KEY>} takes that application's KEY in the same environment (one level).
+
+Examples:
+  vars.py set @development DB_HOST=host.docker.internal
+  vars.py set heimdall-api@production DB_PASSWORD=-        # typed hidden, not in shell history
+  vars.py list heimdall-api@production --resolved          # what the application gets, and from where
+  vars.py history heimdall-api@production --limit 10
+  vars.py rollback 42
+  vars.py check
+
+Exit status:
+  0 success; 1 a refused or failed operation (the reason is printed as `vars: ...`); 2 a usage error.
+
+Environment:
+  YGG_SECRETS_DIR   directory of vars.db and vars.key (default /etc/yggdrasil)
+  EDITOR            the editor of `edit` (default nano)
+  SUDO_USER, USER   the user recorded in the history
+
+Run `vars.py <command> --help` for one command. Reference: docs/variables.md.
+scripts/ygg.sh vars <command> runs the same commands."""
+
+SCOPE_HELP = "platform, platform:acme, @<environment>, <application> or <application>@<environment>"
+
+
 def parser():
-    p = argparse.ArgumentParser(prog="vars.py", description="The yggdrasil variables store (docs/variables.md).")
-    sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("init").set_defaults(run=cmd_init)
-    s = sub.add_parser("set")
-    s.add_argument("scope")
-    s.add_argument("assignments", nargs="+", metavar="KEY=value")
+    raw = argparse.RawDescriptionHelpFormatter
+    p = argparse.ArgumentParser(
+        prog="vars.py", formatter_class=raw, epilog=HELP_EPILOG,
+        description="The yggdrasil variables store: every application's and the platform's env variables and\n"
+                    "secrets, encrypted in one SQLite database per machine ($YGG_SECRETS_DIR/vars.db).")
+    sub = p.add_subparsers(dest="command", required=True, metavar="<command>", title="commands")
+
+    def command(name, summary, description):
+        return sub.add_parser(name, help=summary, description=description, formatter_class=raw)
+
+    s = command("init", "create the store and its key",
+                "Creates vars.db and vars.key in $YGG_SECRETS_DIR (refuses if either exists). Prints the key once\n"
+                "and waits until you type `saved`: store it in a password manager first, nothing can be read\n"
+                "without it. Any other answer, end of input or Ctrl-C removes both files again.")
+    s.set_defaults(run=cmd_init)
+
+    s = command("set", "create or update variables",
+                "Creates or updates one or more variables of a scope. KEY=- asks for the value with echo off\n"
+                "(or reads one line from standard input), so a secret stays out of your shell history.\n\n"
+                "  vars.py set heimdall-api@production LOG_LEVEL=Warning\n"
+                "  vars.py set heimdall-api@production DB_PASSWORD=-")
+    s.add_argument("scope", help=SCOPE_HELP)
+    s.add_argument("assignments", nargs="+", metavar="KEY=value",
+                   help="one or more assignments; KEY=- reads the value hidden")
     flag = s.add_mutually_exclusive_group()
-    flag.add_argument("--secret", dest="secret", action="store_true", default=None)
-    flag.add_argument("--no-secret", dest="secret", action="store_false")
+    flag.add_argument("--secret", dest="secret", action="store_true", default=None,
+                      help="mask the value on display (the default for names like *_PASSWORD, *_SECRET, *_TOKEN)")
+    flag.add_argument("--no-secret", dest="secret", action="store_false",
+                      help="show the value on display even if its name looks secret")
     s.set_defaults(run=cmd_set)
-    s = sub.add_parser("get")
-    s.add_argument("scope")
-    s.add_argument("key")
-    s.add_argument("--reveal", action="store_true")
+
+    s = command("get", "print one stored value",
+                "Prints one value as stored in that scope (not resolved through the layers; a reference prints\n"
+                "as written). Secrets are masked unless --reveal. Exit 1 when the scope has no such key.")
+    s.add_argument("scope", help=SCOPE_HELP)
+    s.add_argument("key", help="the variable's name")
+    s.add_argument("--reveal", action="store_true", help="print a secret in clear")
     s.set_defaults(run=cmd_get)
-    s = sub.add_parser("list")
-    s.add_argument("scope")
-    s.add_argument("--reveal", action="store_true")
-    s.add_argument("--keys", action="store_true")
-    s.add_argument("--resolved", action="store_true")
+
+    s = command("list", "list a scope's variables",
+                "Lists a scope's variables as KEY=value, secrets masked unless --reveal. With --resolved, on an\n"
+                "<application>@<environment> scope: the effective set that application gets in that environment,\n"
+                "each with the layer or reference it came from.\n\n"
+                "  vars.py list heimdall-api@production --resolved")
+    s.add_argument("scope", help=SCOPE_HELP)
+    s.add_argument("--reveal", action="store_true", help="print secrets in clear")
+    s.add_argument("--keys", action="store_true", help="print names only")
+    s.add_argument("--resolved", action="store_true",
+                   help="the resolved set of an <application>@<environment>, with origins")
     s.set_defaults(run=cmd_list)
-    s = sub.add_parser("unset")
-    s.add_argument("scope")
-    s.add_argument("keys", nargs="+", metavar="KEY")
+
+    s = command("unset", "delete variables",
+                "Deletes one or more variables of a scope (recorded in the history, so `rollback` can bring them\n"
+                "back). Exit 1 when one is absent.")
+    s.add_argument("scope", help=SCOPE_HELP)
+    s.add_argument("keys", nargs="+", metavar="KEY", help="the names to delete")
     s.set_defaults(run=cmd_unset)
-    s = sub.add_parser("history")
-    s.add_argument("scope", nargs="?")
-    s.add_argument("key", nargs="?")
-    s.add_argument("--limit", type=int, default=50)
-    s.add_argument("--reveal", action="store_true")
+
+    s = command("history", "show recorded changes",
+                "Shows changes newest first: id, time (UTC), user, command, scope, key, old -> new. Secret values\n"
+                "are masked unless --reveal. Use an id with `rollback`.")
+    s.add_argument("scope", nargs="?", help="only this scope (" + SCOPE_HELP + ")")
+    s.add_argument("key", nargs="?", help="only this variable of the scope")
+    s.add_argument("--limit", type=int, default=50, help="how many changes to show (default 50)")
+    s.add_argument("--reveal", action="store_true", help="print secret values in clear")
     s.set_defaults(run=cmd_history)
-    s = sub.add_parser("rollback")
-    s.add_argument("id", type=int)
-    s.add_argument("--force", action="store_true")
+
+    s = command("rollback", "undo one recorded change",
+                "Restores the variable to its state before change <id> (re-creates, restores or deletes it); the\n"
+                "rollback is recorded as a new change. Refuses when the variable changed again after <id>.")
+    s.add_argument("id", type=int, help="the change's id, from `history`")
+    s.add_argument("--force", action="store_true", help="roll back even if the variable changed again since")
     s.set_defaults(run=cmd_rollback)
-    s = sub.add_parser("edit")
-    s.add_argument("scope")
-    s.add_argument("--reveal", action="store_true")
+
+    s = command("edit", "edit a scope in $EDITOR",
+                "Opens the scope as KEY='value' lines in $EDITOR (default nano). A masked secret left as it is\n"
+                "keeps its value; a deleted line removes the variable. The whole text is checked before anything\n"
+                "is written: a refused edit changes nothing and keeps your text in a 0600 file it names.")
+    s.add_argument("scope", help=SCOPE_HELP)
+    s.add_argument("--reveal", action="store_true", help="show secrets in clear in the editor")
     s.set_defaults(run=cmd_edit)
-    s = sub.add_parser("render")
-    s.add_argument("application")
-    s.add_argument("environment")
+
+    s = command("render", "print an application's env file (deploy.sh uses it)",
+                "Prints the resolved variables of an application in an environment as an env file\n"
+                "(KEY='value', sorted, revealed). scripts/deploy.sh writes it to a private temporary file.")
+    s.add_argument("application", help="an application id of catalog.yaml")
+    s.add_argument("environment", help="an environment id of catalog.yaml")
     s.set_defaults(run=cmd_render)
-    s = sub.add_parser("render-platform")
-    s.add_argument("--acme", action="store_true")
+
+    s = command("render-platform", "print platform.env or acme.env (platform.sh uses it)",
+                "Prints the platform scope as an env file (KEY='value', sorted, revealed), or with --acme the\n"
+                "platform:acme scope. scripts/platform.sh writes them to private temporary files.")
+    s.add_argument("--acme", action="store_true", help="the DNS provider's credentials (platform:acme)")
     s.set_defaults(run=cmd_render_platform)
-    s = sub.add_parser("export")
-    s.add_argument("scope")
-    s.add_argument("--resolved", action="store_true")
+
+    s = command("export", "print a scope as an env file",
+                "Prints a scope as env-file text, always revealed (it is meant for files): to back a scope up\n"
+                "as text, or to go back to env files. --resolved prints what an application gets.")
+    s.add_argument("scope", help=SCOPE_HELP)
+    s.add_argument("--resolved", action="store_true", help="the resolved set of an <application>@<environment>")
     s.set_defaults(run=cmd_export)
-    s = sub.add_parser("import")
-    s.add_argument("scope", nargs="?")
-    s.add_argument("file", nargs="?")
-    s.add_argument("--replace", action="store_true")
-    s.add_argument("--all", action="store_true")
-    s.add_argument("--dir")
-    s.add_argument("--move-up", choices=("ask", "yes", "no"), default="ask")
+
+    s = command("import", "read env files into the store",
+                "Reads env-file text into a scope, each value as Docker Compose read it: single-quoted values\n"
+                "literally, $$ as $ in unquoted and double-quoted ones, where any other $ is refused (naming the\n"
+                "line). Keys already set are kept unless --replace. With --all, migrates every env file of the\n"
+                "machine (platform.env, acme.env, <environment>/<application>.env), offers to move shared values\n"
+                "up a layer, and renames each imported file to *.env.imported. One refused line imports nothing.\n\n"
+                "  vars.py import heimdall-api@development heimdall-api.env\n"
+                "  vars.py import --all")
+    s.add_argument("scope", nargs="?", help="the scope to fill (not with --all)")
+    s.add_argument("file", nargs="?", help="the env file to read (not with --all)")
+    s.add_argument("--replace", action="store_true", help="overwrite keys that are already set")
+    s.add_argument("--all", action="store_true", help="import every env file of the secrets directory")
+    s.add_argument("--dir", help="with --all: another secrets directory to read")
+    s.add_argument("--move-up", choices=("ask", "yes", "no"), default="ask",
+                   help="with --all: move values shared by every imported scope up a layer (default ask)")
     s.set_defaults(run=cmd_import)
-    s = sub.add_parser("backup")
-    s.add_argument("dir")
+
+    s = command("backup", "copy the store and its key",
+                "Writes a consistent copy of the database and its key into <dir> as vars-<UTC time>.db and\n"
+                "vars-<UTC time>.key, both 0600. The copy is as sensitive as the store: protect it the same way.")
+    s.add_argument("dir", help="the directory to write into (created if missing)")
     s.set_defaults(run=cmd_backup)
-    s = sub.add_parser("check")
-    s.add_argument("application", nargs="?")
-    s.add_argument("environment", nargs="?")
+
+    s = command("check", "check the store",
+                "Checks the database's integrity, that every value decrypts with the key and that every reference\n"
+                "resolves for what this machine runs (other catalog pairs are warnings). With <application>\n"
+                "<environment>: only what that deploy needs (deploy.sh). Exit 1 on any error.")
+    s.add_argument("application", nargs="?", help="with <environment>: check only this deploy")
+    s.add_argument("environment", nargs="?", help="the environment of <application>")
     only = s.add_mutually_exclusive_group()
     only.add_argument("--platform", action="store_true", help="only the platform's values (platform.sh)")
-    only.add_argument("--usable", action="store_true", help="only that the store opens and is intact")
+    only.add_argument("--usable", action="store_true", help="only that the store opens with its key and is intact")
     s.set_defaults(run=cmd_check)
     return p
-
 
 def main(argv):
     args = parser().parse_args(argv)

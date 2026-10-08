@@ -5,27 +5,31 @@
 #     scripts/ygg.sh check              which tools and host pieces are there, which are missing
 #     scripts/ygg.sh install            installs what is missing (Ubuntu; asks before each part)
 #     scripts/ygg.sh add                sets up a new API, web front end or worker: catalog entry,
-#                                       stack files, env file, checkout, first deploy
+#                                       stack files, variables, checkout, first deploy
 #     scripts/ygg.sh status             what runs on this host, per environment and application
 #     scripts/ygg.sh config [<app>] [<environment>]
-#                                       shows and changes an application's env file in one of the
-#                                       host's environments, and redeploys
+#                                       shows and changes an application's variables in one of the
+#                                       host's environments (in the variables store, or its env
+#                                       file on a machine without one), and redeploys
 #     scripts/ygg.sh env status         the host's environments: on demand or not, running or stopped
 #     scripts/ygg.sh env start <environment>
 #     scripts/ygg.sh env stop <environment> [--force]
 #                                       starts or stops every application of an environment of this
 #                                       host; stop refuses an environment that is not onDemand
 #                                       (catalog.yaml) unless --force
-#     scripts/ygg.sh vars <command>     the variables store (scripts/vars.py): list, set, edit,
-#                                       history, rollback, import, check, backup
+#     scripts/ygg.sh vars <command>     the variables store (scripts/vars.py): init, set, get, list,
+#                                       unset, edit, history, rollback, import, export, backup,
+#                                       check; `scripts/ygg.sh vars` alone, or
+#                                       `scripts/ygg.sh vars <command> --help`, explains them
 #
 # It drives the same pieces docs/setup.md does by hand -- scripts/catalog.py, scripts/deploy.sh,
-# scripts/platform.sh, the stacks/ files and the env files under $YGG_SECRETS_DIR (default
-# /etc/yggdrasil) -- so anything it does can also be done, or undone, by hand. Checkouts of the
-# applications it deploys go under $YGG_APPS_DIR (default ~/yggdrasil-apps). The host's environments
-# are ENVIRONMENTS in platform.env (ENVIRONMENT in one from before 0.5); $YGG_ENVIRONMENT names the
-# one environment of a machine without platform.env (a laptop), and overrides platform.env.
-# Reference: docs/cli.md.
+# scripts/platform.sh, scripts/vars.py, the stacks/ files and $YGG_SECRETS_DIR (default
+# /etc/yggdrasil: the variables store vars.db, or the env files of a machine without one) -- so
+# anything it does can also be done, or undone, by hand. Checkouts of the applications it deploys go
+# under $YGG_APPS_DIR (default ~/yggdrasil-apps). The host's environments are ENVIRONMENTS in the
+# store's platform scope, or in platform.env (ENVIRONMENT in one from before 0.5); $YGG_ENVIRONMENT
+# names the one environment of a machine without either (a laptop), and overrides them.
+# Reference: docs/cli.md; the variables store: docs/variables.md.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -1370,7 +1374,7 @@ case ${1:-} in
   status) show_status ;;
   config) configure_app "${2:-}" "${3:-}" ;;
   env) shift; environment_command "$@" ;;
-  vars) shift; vars_py "$@" ;;
+  vars) shift; if (($#)); then vars_py "$@"; else vars_py --help; fi ;;
   -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command '$1': scripts/ygg.sh [check | install | add | status | config [<app>] [<environment>] | env status | env start <environment> | env stop <environment> [--force] | vars <vars.py command>]" ;;
 esac

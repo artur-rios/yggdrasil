@@ -803,3 +803,27 @@ class BackupUmaskTests(StoreTestCase):
         finally:
             os.umask(old)
         self.assertEqual((database.stat().st_mode & 0o777, key.stat().st_mode & 0o777), (0o600, 0o600))
+
+
+class HelpTests(unittest.TestCase):
+    """The CLI documents itself: `vars.py --help` and `vars.py <command> --help`."""
+
+    def test_given_the_parser_then_every_command_argument_and_option_has_help(self):
+        import argparse
+        top = v.parser()
+        commands = next(a for a in top._actions if isinstance(a, argparse._SubParsersAction))
+        summaries = {choice.dest: choice.help for choice in commands._choices_actions}
+        self.assertEqual(set(summaries), set(commands.choices))
+        for name, sub in commands.choices.items():
+            self.assertTrue(summaries[name], f"{name}: no summary in vars.py --help")
+            self.assertTrue(sub.description, f"{name}: no description")
+            for action in sub._actions:
+                if isinstance(action, argparse._HelpAction):
+                    continue
+                self.assertTrue(action.help, f"{name} {action.option_strings or action.dest}: no help")
+
+    def test_given_top_level_help_then_scopes_examples_exit_codes_and_environment_are_explained(self):
+        text = v.parser().format_help()
+        for part in ("@<environment>", "<application>@<environment>", "platform:acme", "${ref:",
+                     "Examples:", "Exit status:", "YGG_SECRETS_DIR", "EDITOR", "docs/variables.md"):
+            self.assertIn(part, text)
