@@ -1,26 +1,37 @@
 #!/usr/bin/env bash
 # Starts, updates or stops this host's platform stack (platform/compose.yml).
 #
-#     scripts/platform.sh up [--last-good] | down | ps | logs [service] | config
+#     scripts/platform.sh up | down | ps | config [--last-good]
+#     scripts/platform.sh logs [--last-good] [service]
 #
 # One platform stack per host, whatever number of environments the host runs (ENVIRONMENTS). Reads
-# the settings from the variables store (rendered, with a last-good copy kept; up --last-good starts
-# from that copy), or from <secrets>/platform.env and acme.env on a host without a store, secrets
-# being $YGG_SECRETS_DIR (default /etc/yggdrasil). Template: env/platform.env.example.
+# the settings from the variables store (rendered, with a last-good copy kept; --last-good, right
+# after the command, reads that copy instead), or from <secrets>/platform.env and acme.env on a host
+# without a store, secrets being $YGG_SECRETS_DIR (default /etc/yggdrasil). Template:
+# env/platform.env.example.
 set -euo pipefail
 
 die() { echo "platform: $*" >&2; exit 1; }
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 secrets=${YGG_SECRETS_DIR:-/etc/yggdrasil}
+usage="usage: platform.sh up | down | ps | config [--last-good], or platform.sh logs [--last-good] [service]"
+command=${1:-}
+(($#)) && shift
 last_good=""
-[[ "${1:-}" == up && "${2:-}" == --last-good ]] && last_good=1
+if [[ "${1:-}" == --last-good ]]; then
+  last_good=1
+  shift
+fi
+[[ "$command" =~ ^(up|down|ps|logs|config)$ ]] || die "$usage"
+[[ "$command" == logs || $# -eq 0 ]] || die "$usage"
 cleanup_paths=()
 trap 'rm -rf ${cleanup_paths[@]+"${cleanup_paths[@]}"}' EXIT
 
 # The platform's settings: rendered from the variables store when this host has one
 # (docs/variables.md), else platform.env and acme.env. --last-good starts from the copy the last
-# successful `up` saved, without opening the store: for when the store or its key is unusable.
+# successful `up` saved, without opening the store: for when the store or its key is unusable, with
+# any command (down, ps, logs and config need the settings too, to read the project).
 render_dir=""
 if [[ -n "$last_good" ]]; then
   env_file="$secrets/last-good/platform.env"
@@ -30,7 +41,7 @@ if [[ -n "$last_good" ]]; then
 elif [[ -f "$secrets/vars.db" ]]; then
   # Only the platform's own values: an application's broken reference is its deploy's problem.
   python3 "$root/scripts/vars.py" check --platform >&2 \
-    || die "the variables store failed its check; fix it (scripts/ygg.sh vars check) or run 'platform.sh up --last-good'"
+    || die "the variables store failed its check; fix it (scripts/ygg.sh vars check) or run 'platform.sh $command --last-good'"
   run_base=/run/yggdrasil
   mkdir -p "$run_base" 2>/dev/null && [[ -w "$run_base" ]] || run_base="${TMPDIR:-/tmp}/yggdrasil-$(id -u)"
   mkdir -p "$run_base" && chmod 700 "$run_base"
@@ -40,7 +51,7 @@ elif [[ -f "$secrets/vars.db" ]]; then
   acme_file="$render_dir/acme.env"
   (umask 077 && python3 "$root/scripts/vars.py" render-platform >"$env_file" \
     && python3 "$root/scripts/vars.py" render-platform --acme >"$acme_file") \
-    || die "could not render the platform's variables; 'platform.sh up --last-good' starts from the last copy that worked"
+    || die "could not render the platform's variables; 'platform.sh $command --last-good' reads the last copy that worked"
 else
   env_file="$secrets/platform.env"
   acme_file="$secrets/acme.env"
@@ -91,7 +102,7 @@ check_environments() {
   done
 }
 
-case "${1:-}" in
+case "$command" in
   up)
     check_environments
     check_profile_variables
@@ -110,7 +121,6 @@ case "${1:-}" in
     ;;
   down) compose down ;;
   ps) compose ps ;;
-  logs) shift; compose logs --follow --tail 200 "$@" ;;
+  logs) compose logs --follow --tail 200 "$@" ;;
   config) compose config ;;
-  *) die "usage: platform.sh up [--last-good] | down | ps | logs [service] | config" ;;
 esac

@@ -19,7 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `vars backup` and `vars check` (strict for what the machine runs; `--platform` and `--usable` for the scripts
   that need less). It is opt-in.
 - `scripts/platform.sh up --last-good`: starts the platform from the copy of its settings saved by the last successful
-  `up` from the store, without opening the store (for a lost or wrong key).
+  `up` from the store, without opening the store (for a lost or wrong key). `down`, `ps`, `logs` and `config` take
+  `--last-good` too.
 - `ygg.sh` menu entry **Variables and secrets**.
 
 ### Changed

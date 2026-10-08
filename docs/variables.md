@@ -267,6 +267,10 @@ without opening the store:
 scripts/platform.sh up --last-good
 ```
 
+Every `platform.sh` command takes `--last-good` right after it, to read the platform without the
+store: `platform.sh down --last-good`, `ps --last-good`, `logs --last-good <service>`,
+`config --last-good`.
+
 `ygg.sh` stops with a clear message, carrying the check's errors, when the store can't be used
 (`vars check --usable`: a lost or wrong key, a damaged file), and points to this.
 
@@ -283,12 +287,6 @@ manager is the only fix. If it is gone and no backup has it, every secret must b
 move `vars.db` and `vars.key` aside, `vars init`, and set the variables from their sources (the
 `last-good` files hold the platform's values in clear, and a running container shows its own
 environment with `docker inspect`).
-
-Known limitation: with a lost key, `platform.sh down`, `ps`, `logs` and `config` also need the
-store. Start with `platform.sh up --last-good`, and use Compose directly for the rest, e.g.
-`docker compose -p yggdrasil ps`, `docker compose -p yggdrasil logs <service>`,
-`docker compose -p yggdrasil down`. Compose may also need the platform's settings to read the project:
-if it complains about missing variables, add `--env-file <secrets>/last-good/platform.env`.
 
 **Leave the store.** `scripts/ygg.sh vars export <scope> [--resolved] > file` writes any scope as
 an env file, to use files again: delete `vars.db` and the scripts read the files as before.

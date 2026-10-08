@@ -69,6 +69,25 @@ class PlatformTests(unittest.TestCase):
         self.assertIn("last-good", result.stdout + result.stderr)
         self.assertIn(f"--env-file {self.secrets}/last-good/platform.env", self.docker_calls())
 
+    def test_given_last_good_without_the_key_when_down_ps_logs_or_config_then_compose_reads_the_copy(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        self.assertEqual(self.run_platform("up").returncode, 0)
+        (self.secrets / "vars.key").unlink()
+        for arguments in (["down"], ["ps"], ["logs", "traefik"], ["config"]):
+            self.log.unlink(missing_ok=True)
+            result = self.run_platform(arguments[0], "--last-good", *arguments[1:])
+            self.assertEqual(result.returncode, 0, f"{arguments}: {result.stderr}")
+            calls = self.docker_calls()
+            self.assertIn(f"--env-file {self.secrets}/last-good/platform.env", calls, arguments)
+            self.assertIn(" ".join(arguments), calls.replace("logs --follow --tail 200", "logs"), arguments)
+
+    def test_given_a_store_without_its_key_when_down_then_it_stops_suggesting_last_good(self):
+        self.use_store({"ENVIRONMENTS": "production"}, {})
+        (self.secrets / "vars.key").unlink()
+        result = self.run_platform("down")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("platform.sh down --last-good", result.stderr)
+
     def test_given_a_store_without_its_key_when_up_then_it_stops_suggesting_last_good(self):
         self.use_store({"ENVIRONMENTS": "production"}, {})
         (self.secrets / "vars.key").unlink()
