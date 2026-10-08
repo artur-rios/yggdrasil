@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- `vars import` names the line and the key of every value it refuses (a single quote, surrounding whitespace, a bad
+  name, a reference outside an application scope), not only of a `$` it would change.
+- `vars edit` keeps the text of a refused edit in a uniquely named file: two refused edits of one scope in the same
+  second no longer lose the second one's text.
+- `deploy.sh` says `(previous: <image>, running)` again, not `running` followed by the container ids.
+
 ## [0.6.0] - 2026-10-08
 
 ### Added
