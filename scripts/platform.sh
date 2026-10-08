@@ -28,7 +28,8 @@ if [[ -n "$last_good" ]]; then
   [[ -f "$env_file" ]] || die "no last-good copy in $secrets/last-good (one is saved by every successful 'platform.sh up' from the store)"
   echo "platform: starting from the last-good copy in $secrets/last-good, not the variables store" >&2
 elif [[ -f "$secrets/vars.db" ]]; then
-  python3 "$root/scripts/vars.py" check >&2 \
+  # Only the platform's own values: an application's broken reference is its deploy's problem.
+  python3 "$root/scripts/vars.py" check --platform >&2 \
     || die "the variables store failed its check; fix it (scripts/ygg.sh vars check) or run 'platform.sh up --last-good'"
   run_base=/run/yggdrasil
   mkdir -p "$run_base" 2>/dev/null && [[ -w "$run_base" ]] || run_base="${TMPDIR:-/tmp}/yggdrasil-$(id -u)"

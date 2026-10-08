@@ -572,6 +572,75 @@ class BackupCheckTests(StoreTestCase):
         self.assertEqual(result.stdout, "example.com\n")
 
 
+class CheckScopeTests(StoreTestCase):
+    """A full check is strict for what this machine runs, a warning for the catalog's other pairs."""
+
+    def setUp(self):
+        super().setUp()
+        self.cli("set", "platform", "ENVIRONMENTS=development")
+        self.cli("set", "heimdall-api@development", "HEIMDALL_AUTH_TOKEN_SECRET=" + "s" * 40)
+        # The application layer applies in every environment, local included, where nothing is set.
+        self.cli("set", "fortuna-api", "FORTUNA_AUTH_TOKEN_SECRET=${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}")
+
+    def test_given_an_app_layer_reference_unresolved_in_an_unused_environment_when_checked_then_a_warning(self):
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("warning: fortuna-api@local FORTUNA_AUTH_TOKEN_SECRET -> heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET",
+                      result.stdout)
+
+    def test_given_a_host_environment_where_the_reference_fails_when_checked_then_an_error(self):
+        self.cli("set", "platform", "ENVIRONMENTS=development,production")
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error: fortuna-api@production", result.stdout)
+
+    def test_given_a_configured_pair_outside_the_host_environments_when_checked_then_an_error(self):
+        self.cli("set", "heimdall-api@homologation", "X=${ref:fortuna-api:NOPE}")
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error: heimdall-api@homologation X -> fortuna-api:NOPE", result.stdout)
+
+    def test_given_a_deploy_check_of_an_unconfigured_pair_then_it_stays_strict(self):
+        result = self.cli("check", "fortuna-api", "local")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET", result.stdout)
+
+    def test_given_a_broken_application_value_when_checking_the_platform_then_it_passes(self):
+        self.cli("set", "heimdall-api@homologation", "X=${ref:fortuna-api:NOPE}")
+        self.cli("set", "platform:acme", "CF_DNS_API_TOKEN=abc")
+        result = self.cli("check", "--platform")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_given_an_undecryptable_platform_value_when_checking_the_platform_then_it_fails(self):
+        self.cli("set", "platform:acme", "CF_DNS_API_TOKEN=abc")
+        self.garble("CF_DNS_API_TOKEN")
+        result = self.cli("check", "--platform")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("CF_DNS_API_TOKEN", result.stdout)
+
+    def test_given_an_undecryptable_application_value_when_checking_usable_then_it_passes(self):
+        self.garble("HEIMDALL_AUTH_TOKEN_SECRET")
+        self.assertEqual(self.cli("check", "--usable").returncode, 0)
+        self.assertEqual(self.cli("check").returncode, 1)
+
+    def test_given_a_wrong_key_when_checking_usable_then_it_fails_naming_the_key(self):
+        (self.dir / "vars.key").write_text(v.Fernet.generate_key().decode() + "\n")
+        result = self.cli("check", "--usable")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("vars.key", result.stderr)
+
+    def test_given_platform_or_usable_with_an_application_when_checked_then_a_usage_error(self):
+        for flag in ("--platform", "--usable"):
+            self.assertNotEqual(self.cli("check", flag, "fortuna-api", "local").returncode, 0, flag)
+        self.assertNotEqual(self.cli("check", "--platform", "--usable").returncode, 0)
+
+    def garble(self, key):
+        conn = sqlite3.connect(self.dir / "vars.db")
+        conn.execute("UPDATE variables SET value=? WHERE key=?", (b"garbage", key))
+        conn.commit()
+        conn.close()
+
+
 class BackupUmaskTests(StoreTestCase):
     def test_given_a_backup_when_done_then_the_umask_is_restored_and_files_are_private(self):
         old = os.umask(0o022)

@@ -76,6 +76,15 @@ class PlatformTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--last-good", result.stderr)
 
+    def test_given_a_broken_application_reference_when_up_then_the_platform_still_starts(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            store.set("app:fortuna-api", "X", "${ref:heimdall-api:NOPE}", None, "set")
+        result = self.run_platform("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up --detach", self.docker_calls())
+
     def test_given_no_store_when_up_then_platform_env_with_a_notice(self):
         result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n")
         self.assertEqual(result.returncode, 0, result.stderr)

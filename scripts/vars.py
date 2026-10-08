@@ -16,7 +16,7 @@ SQLite database per machine, encrypted, layered and recorded.
     python3 scripts/vars.py render <application> <environment>
     python3 scripts/vars.py render-platform [--acme]
     python3 scripts/vars.py backup <dir>
-    python3 scripts/vars.py check [<application> <environment>]
+    python3 scripts/vars.py check [<application> <environment> | --platform | --usable]
 
 Scopes: platform, platform:acme, @<environment>, <application>, <application>@<environment>. An
 application's variables in an environment resolve from <application>@<environment>, then
@@ -657,16 +657,38 @@ def backup(directory, target):
     return database, key
 
 
-def check(store, cat, application=None, environment=None):
+def _host_environments(store):
+    """The environments this machine runs: ENVIRONMENTS in the platform scope (ENVIRONMENT before 0.5)."""
+    found = store.get("platform", "ENVIRONMENTS") or store.get("platform", "ENVIRONMENT")
+    return {e for e in re.split(r"[\s,]+", found[0]) if e} if found else set()
+
+
+def _deploys_to(cat, application):
+    try:
+        return {env["id"] for env in catalog_module.resolve(cat, application)}
+    except (catalog_module.CatalogError, KeyError, TypeError):
+        return set()
+
+
+def check(store, cat, application=None, environment=None, platform=False, usable=False):
+    """Errors and warnings. `usable`: the store opens and is intact. `platform`: also every platform value
+    decrypts. Otherwise every value decrypts and references resolve: for one deploy with an application and
+    an environment, strictly; without, strictly for what this machine runs -- an application in an
+    environment with a scope of its own here, or in one of the platform's ENVIRONMENTS that it deploys to --
+    and as warnings for the catalog's other pairs, which this machine never renders."""
     errors, warnings = [], []
     integrity = store.conn.execute("PRAGMA integrity_check").fetchone()[0]
     if integrity != "ok":
         return [f"integrity check: {integrity}"], warnings
-    environments, applications = _ids(cat)
+    if usable:
+        return errors, warnings
     scopes = [row[0] for row in store.conn.execute("SELECT DISTINCT scope FROM variables ORDER BY scope")]
-    if application is not None:
+    if platform:
+        scopes = [s for s in scopes if s in ("platform", "platform:acme")]
+    elif application is not None:
         wanted = {f"env:{environment}", f"app:{application}", f"app:{application}@{environment}"}
         scopes = [s for s in scopes if s in wanted]
+    environments, applications = _ids(cat) if cat is not None else (set(), set())
     for scope in scopes:
         for key, blob in store.conn.execute("SELECT key, value FROM variables WHERE scope=?", (scope,)):
             try:
@@ -677,14 +699,21 @@ def check(store, cat, application=None, environment=None):
         if match and ((match[1] and match[1] not in applications) or (match[2] and match[2] not in environments)
                       or (match[3] and match[3] not in environments)):
             warnings.append(f"{show_scope(scope)}: not in catalog.yaml any more")
-    pairs = [(application, environment)] if application else [
-        (a, e) for a in sorted(applications) for e in sorted(environments)]
-    if not errors:
-        for app, env in pairs:
-            try:
-                store.resolve(app, env)
-            except VarsError as error:
-                errors.append(str(error))
+    if platform or errors:
+        return errors, warnings
+    if application is not None:
+        strict, lenient = {(application, environment)}, set()
+    else:
+        host = _host_environments(store)
+        strict = {(m[1], m[2]) for m in (re.fullmatch(rf"app:({ID})@({ID})", s) for s in scopes)
+                  if m and m[1] in applications and m[2] in environments}
+        strict |= {(a, e) for a in applications for e in _deploys_to(cat, a) & host}
+        lenient = {(a, e) for a in applications for e in environments} - strict
+    for app, env in sorted(strict | lenient):
+        try:
+            store.resolve(app, env)
+        except VarsError as error:
+            (errors if (app, env) in strict else warnings).append(str(error))
     return errors, warnings
 
 
@@ -708,10 +737,11 @@ def cmd_backup(args):
 
 
 def cmd_check(args):
-    if bool(args.application) != bool(args.environment):
-        raise VarsError("check takes no argument, or <application> <environment>")
+    if bool(args.application) != bool(args.environment) or (args.application and (args.platform or args.usable)):
+        raise VarsError("check takes no argument, --platform, --usable, or <application> <environment>")
     with Store.open(readonly=True) as store:
-        errors, warnings = check(store, load_catalog(), args.application, args.environment)
+        cat = None if args.platform or args.usable else load_catalog()
+        errors, warnings = check(store, cat, args.application, args.environment, args.platform, args.usable)
     for line in warnings:
         print(f"warning: {line}")
     for line in errors:
@@ -786,6 +816,9 @@ def parser():
     s = sub.add_parser("check")
     s.add_argument("application", nargs="?")
     s.add_argument("environment", nargs="?")
+    only = s.add_mutually_exclusive_group()
+    only.add_argument("--platform", action="store_true", help="only the platform's values (platform.sh)")
+    only.add_argument("--usable", action="store_true", help="only that the store opens and is intact")
     s.set_defaults(run=cmd_check)
     return p
 

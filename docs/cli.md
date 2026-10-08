@@ -212,8 +212,9 @@ scripts/ygg.sh vars history --limit 20
 
 The menu's **Variables and secrets** offers list, set (a hidden value with `KEY=-`), edit in
 `$EDITOR`, history, roll a change back, check and back up. On a host without a store it offers to
-create one and import the env files. When the store fails its check (a lost or wrong key, say),
-`ygg.sh` stops with the reason, and `scripts/platform.sh up --last-good` still starts the platform
+create one and import the env files. When the store can't be used (a lost or wrong key, a damaged
+file: `vars check --usable`), `ygg.sh` stops with the check's errors, and
+`scripts/platform.sh up --last-good` still starts the platform
 ([recovery](variables.md#backup-and-recovery)).
 
 ## Change the configuration

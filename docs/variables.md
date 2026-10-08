@@ -105,8 +105,8 @@ Rules:
   reference is an error (`reference to a reference`). So there are no chains and no loops.
 - **Applications only.** In `platform` or `platform:acme` a reference is refused.
 - **The whole value.** `prefix-${ref:...}` is a literal string, not a reference.
-- **The target must exist** in that environment. If not, `vars check`, `deploy.sh` and `platform.sh`
-  fail and name it:
+- **The target must exist** in that environment. If not, `vars check` and the deploy of that
+  application fail and name it (an environment this machine does not run is only a warning):
 
   ```text
   error: fortuna-api@production A -> heimdall-api:NOPE: heimdall-api has no NOPE in production
@@ -132,7 +132,7 @@ command.
 | `vars import --all [--dir <secrets dir>] [--move-up ask\|yes\|no]` | Imports every env file of the machine: see [Moving to the store](#moving-to-the-store) |
 | `vars export <scope> [--resolved]` | Env-file text on stdout, **always revealed**: it is meant for files |
 | `vars backup <dir>` | Writes `vars-<UTC timestamp>.db` and `.key` into `<dir>`, both `0600`: see [Backup](#backup-and-recovery) |
-| `vars check [<application> <environment>]` | Integrity, schema version, that every value decrypts, that every reference resolves; applications and environments no longer in the catalog are warnings. With arguments, only what that deploy needs. Exit 1 on any error |
+| `vars check [<application> <environment> \| --platform \| --usable]` | Integrity, schema version, that every value decrypts, that every reference resolves; applications and environments no longer in the catalog are warnings. References are errors for what this machine runs (an `<application>@<environment>` scope of its own, or an environment of the platform's `ENVIRONMENTS` the application deploys to) and warnings for the catalog's other pairs. With arguments, only what that deploy needs, strictly (`deploy.sh`). `--platform`: only the `platform` and `platform:acme` values (`platform.sh`). `--usable`: only that the store opens with its key and is intact (`ygg.sh`). Exit 1 on any error |
 
 The interactive menu has the same under **Variables and secrets** (list, set, edit, history, roll
 back, check, back up), and offers to create the store if the machine has none. `scripts/ygg.sh
@@ -260,7 +260,8 @@ without opening the store:
 scripts/platform.sh up --last-good
 ```
 
-`ygg.sh` stops with a clear message when the store fails its check, and points to this.
+`ygg.sh` stops with a clear message, carrying the check's errors, when the store can't be used
+(`vars check --usable`: a lost or wrong key, a damaged file), and points to this.
 
 **Restore a backup.** Stop writing, copy both files back, and check:
 
@@ -297,9 +298,10 @@ an env file, to use files again: delete `vars.db` and the scripts read the files
   `<secrets>/locks/<application>-<environment>.lock`, created `0664` when missing and opened
   read-only. `platform.sh up` creates the `locks` directory (mode `2770`, group `docker`) and the
   Jenkins agent mounts it read-write, so a hand deploy and the agent's wait for each other.
-- **`platform.sh up`**, when `vars.db` exists: checks, renders `platform.env` and `acme.env` the same
-  way and hands them to Compose (Traefik's `env_file` follows `YGG_ACME_ENV_FILE`), then saves them
-  in `<secrets>/last-good/`.
+- **`platform.sh up`**, when `vars.db` exists: checks the platform's values (`vars check --platform`:
+  an application's broken reference does not stop the platform), renders `platform.env` and
+  `acme.env` the same way and hands them to Compose (Traefik's `env_file` follows
+  `YGG_ACME_ENV_FILE`), then saves them in `<secrets>/last-good/`.
 - **The Jenkins agent** mounts the secrets directory read-only: it opens the database read-only,
   reads the key, renders and deploys. It never writes the store. Upgrade the platform once
   (`platform.sh up`) so the agent has the `locks` mount and `python3-cryptography`.

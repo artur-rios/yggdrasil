@@ -144,14 +144,15 @@ env_value() {
 has_store() { [[ -f "$secrets/vars.db" ]]; }
 vars_py() { python3 "$root/scripts/vars.py" "$@"; }
 
-# need_store: stops when the store can't be used (lost or wrong key, unreadable file), once per
-# process, so that "unset" is never confused with "can't read".
+# need_store: stops when the store can't be used (lost or wrong key, unreadable or damaged file),
+# once per process, so that "unset" is never confused with "can't read". Only that it is usable: a
+# broken reference stops the deploy that needs it (vars check names them all).
 store_checked=""
 need_store() {
   has_store || return 0
   [[ -z "$store_checked" ]] || return 0
   local output
-  output=$(vars_py check 2>&1 >/dev/null) \
+  output=$(vars_py check --usable 2>&1) \
     || die "the variables store can't be used: $output (scripts/ygg.sh vars check; platform.sh up --last-good starts the platform without it)"
   store_checked=1
 }

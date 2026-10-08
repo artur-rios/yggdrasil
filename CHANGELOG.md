@@ -15,7 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `<application>@<environment>`), one application can take another's value with `${ref:<application>:<KEY>}`, every value is
   encrypted, secrets are masked, and every change is recorded in a history that `vars rollback` can undo. Also
   `vars import` (including `--all`, with move-up offers for shared values), `vars export`, `vars edit`,
-  `vars backup` and `vars check`. It is opt-in.
+  `vars backup` and `vars check` (strict for what the machine runs; `--platform` and `--usable` for the scripts
+  that need less). It is opt-in.
 - `scripts/platform.sh up --last-good`: starts the platform from the copy of its settings saved by the last successful
   `up` from the store, without opening the store (for a lost or wrong key).
 - `ygg.sh` menu entry **Variables and secrets**.
@@ -24,7 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `scripts/deploy.sh`, `scripts/platform.sh` and `scripts/ygg.sh` read the variables store when `vars.db` exists in the
   secrets directory, and the env files as before when it doesn't (with a notice). The store is checked before every deploy
-  and platform start.
+  (that application's values) and platform start (the platform's values); `ygg.sh` checks only that it is usable.
 - The deploy lock moved from the application's env file to `<secrets>/locks/<application>-<environment>.lock`. `platform.sh up`
   creates the directory (group `docker`, mode `2770`).
 - The Jenkins agent image installs `python3-cryptography`, and `platform/compose.yml` mounts `<secrets>/locks` read-write

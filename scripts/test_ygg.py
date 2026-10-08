@@ -175,6 +175,35 @@ class VariablesStoreTests(EnvironmentCommandTests):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("vars.key", result.stderr)
 
+    def test_given_a_reference_unresolved_in_an_environment_this_host_does_not_run_then_ygg_works(self):
+        self.use_store()
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            for environment in ("homologation", "production"):
+                store.set(f"app:heimdall-api@{environment}", "HEIMDALL_AUTH_TOKEN_SECRET", "s" * 40, None, "set")
+            store.set("app:fortuna-api", "FORTUNA_AUTH_TOKEN_SECRET",
+                      "${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}", None, "set")
+        result = self.ygg("env", "status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_given_a_damaged_store_when_env_status_then_the_message_carries_the_check_errors(self):
+        self.use_store()
+        import sqlite3
+        database = self.secrets / "vars.db"
+        conn = sqlite3.connect(database)
+        root = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='sqlite_autoindex_variables_1'").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        conn.close()
+        # One cell fewer in the index's page: the store opens, its integrity check fails.
+        data = bytearray(database.read_bytes())
+        header = page_size * (root - 1)
+        count = int.from_bytes(data[header + 3:header + 5], "big")
+        data[header + 3:header + 5] = (count - 1).to_bytes(2, "big")
+        database.write_bytes(bytes(data))
+        result = self.ygg("env", "status")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("integrity check", result.stderr)
+
     def test_given_vars_when_run_then_it_passes_through_to_vars_py(self):
         self.use_store()
         self.assertEqual(self.ygg("vars", "set", "platform", "DOMAIN=example.com").returncode, 0)
