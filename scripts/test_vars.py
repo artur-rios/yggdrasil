@@ -369,3 +369,28 @@ class EditTests(StoreTestCase):
         self.cli("edit", "heimdall-api@development")
         self.assertEqual(self.cli("get", "heimdall-api@development", "A").stdout, "x #y\n")
         self.assertEqual(self.cli("get", "heimdall-api@development", "B").stdout, '"q"\n')
+
+    def test_given_a_bad_value_in_the_middle_when_applied_then_nothing_changes_and_nothing_is_recorded(self):
+        with self.store() as s:
+            s.set("platform", "A", "1", None, "set")
+            s.set("platform", "C", "3", None, "set")
+            before = s.history(None, None, 100)
+            previous = {"A": ("1", False), "C": ("3", False)}
+            with self.assertRaises(v.VarsError) as caught:
+                s.apply("platform", "A=10\nB=it's\nC=30\n", previous, "edit")
+            self.assertIn("B", str(caught.exception))
+            with self.assertRaises(v.VarsError):
+                s.apply("platform", "A=10\nB=${ref:heimdall-api:X}\n", previous, "edit")
+            self.assertEqual(s.items("platform"), [("A", "1", False), ("C", "3", False)])
+            self.assertEqual(s.history(None, None, 100), before)
+
+    def test_given_an_invalid_edit_when_saved_then_the_scope_is_unchanged_and_the_text_is_kept(self):
+        self.cli("set", "platform", "A=1")
+        self.editor("s/^A=.*/A=10\\nB=it\\x27s/")
+        result = self.cli("edit", "platform")
+        self.assertEqual(result.returncode, 1)
+        saved = pathlib.Path(result.stderr.split("your text is saved in ")[1].strip())
+        self.addCleanup(saved.unlink)
+        self.assertIn("B=it's", saved.read_text())
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.cli("get", "platform", "A").stdout, "1\n")

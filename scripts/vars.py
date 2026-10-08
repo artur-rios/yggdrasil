@@ -91,6 +91,13 @@ def validate_value(value):
         raise VarsError("values cannot start or end with whitespace")
 
 
+def validate_entry(scope, key, value):
+    validate_key(key)
+    validate_value(value)
+    if REFERENCE.match(value) and not scope.startswith("app:"):
+        raise VarsError("references (${ref:<application>:<KEY>}) only work in application scopes")
+
+
 def _restrict(path):
     os.chmod(path, 0o640)
     try:
@@ -243,6 +250,11 @@ class Store:
 
     def apply(self, scope, text, previous, command):
         wanted = parse_env_text(text)
+        for key, value in wanted.items():
+            try:
+                validate_entry(scope, key, value)
+            except VarsError as error:
+                raise VarsError(f"{key}: {error}") from None
         changed = []
         for key, value in wanted.items():
             old = previous.get(key)
@@ -266,10 +278,7 @@ class Store:
         return [(key, self.decrypt(value, scope, key), bool(secret)) for key, value, secret in rows]
 
     def set(self, scope, key, value, secret, command):
-        validate_key(key)
-        validate_value(value)
-        if REFERENCE.match(value) and not scope.startswith("app:"):
-            raise VarsError("references (${ref:<application>:<KEY>}) only work in application scopes")
+        validate_entry(scope, key, value)
         old = self.get(scope, key)
         if secret is None:
             secret = old[1] if old else is_secret_name(key)
@@ -471,7 +480,17 @@ def cmd_edit(args):
             editor = os.environ.get("EDITOR") or "nano"
             if subprocess.call([*editor.split(), path]) != 0:
                 raise VarsError(f"{editor} failed; nothing changed")
-            changed = store.apply(scope, pathlib.Path(path).read_text(), previous, "edit")
+            edited = pathlib.Path(path).read_text()
+            try:
+                changed = store.apply(scope, edited, previous, "edit")
+            except VarsError as error:
+                stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                safe = re.sub(r"[^A-Za-z0-9_.-]", "_", args.scope)
+                saved = pathlib.Path(path).with_name(f"vars-edit-{safe}-{stamp}.env")
+                fd = os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as file:
+                    file.write(edited)
+                raise VarsError(f"{error}; nothing changed, your text is saved in {saved}") from None
         finally:
             os.unlink(path)
     print(f"{len(changed)} change(s): {', '.join(changed)}" if changed else "No change.")
