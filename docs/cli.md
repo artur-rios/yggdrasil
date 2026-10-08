@@ -205,10 +205,31 @@ scripts/ygg.sh env status
 host: every command of [variables.md](variables.md#commands) works as `scripts/ygg.sh vars <command>`.
 
 ```bash
+scripts/ygg.sh vars                                            # every command, scopes, examples
+scripts/ygg.sh vars set --help                                 # one command and its options
 scripts/ygg.sh vars set heimdall-api@development LOG_LEVEL=Debug
+scripts/ygg.sh vars set heimdall-api@development DB_PASSWORD=-  # asked hidden
 scripts/ygg.sh vars list heimdall-api@development --resolved
 scripts/ygg.sh vars history --limit 20
 ```
+
+| Command | Does |
+|---|---|
+| `vars init` | Creates the store and its key (once per machine; you store the key) |
+| `vars set <scope> KEY=value ...` | Creates or updates variables; `KEY=-` asks hidden |
+| `vars get <scope> KEY [--reveal]` | One stored value |
+| `vars list <scope> [--resolved] [--reveal] [--keys]` | A scope's variables; `--resolved`: what an application gets, and from where |
+| `vars unset <scope> KEY ...` | Deletes variables |
+| `vars edit <scope> [--reveal]` | Edits a scope in `$EDITOR`, checked whole before anything is written |
+| `vars history [<scope>] [KEY] [--limit N]` / `vars rollback <id>` | Every change, and undoing one |
+| `vars import <scope> <file>` / `vars import --all` | Reads env files into the store; `--all` migrates a machine |
+| `vars export <scope> [--resolved]` | A scope as an env file |
+| `vars backup <dir>` / `vars check` | Copies the store and its key; checks it |
+
+Scopes are `platform`, `platform:acme`, `@<environment>`, `<application>` and
+`<application>@<environment>`. The full reference, exit codes and step-by-step recipes (rotating a
+signing secret, sharing a value, references, undoing a change) are in
+[variables.md](variables.md#commands) and [its recipes](variables.md#recipes).
 
 The menu's **Variables and secrets** offers list, set (a hidden value with `KEY=-`), edit in
 `$EDITOR`, history, roll a change back, check and back up. On a host without a store it offers to
