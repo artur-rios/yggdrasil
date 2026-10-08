@@ -7,6 +7,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **The variables store** ([docs/variables.md](docs/variables.md)): an encrypted SQLite database per machine
+  (`vars.db` and `vars.key` in the secrets directory) for the platform's settings and every application's variables, managed by
+  `scripts/vars.py` and `scripts/ygg.sh vars`. Values are defined in layers (`@<environment>`, `<application>`,
+  `<application>@<environment>`), one application can take another's value with `${ref:<application>:<KEY>}`, every value is
+  encrypted, secrets are masked, and every change is recorded in a history that `vars rollback` can undo. Also
+  `vars import` (including `--all`, with move-up offers for shared values), `vars export`, `vars edit`,
+  `vars backup` and `vars check`. It is opt-in.
+- `scripts/platform.sh up --last-good`: starts the platform from the copy of its settings saved by the last successful
+  `up` from the store, without opening the store (for a lost or wrong key).
+- `ygg.sh` menu entry **Variables and secrets**.
+
+### Changed
+
+- `scripts/deploy.sh`, `scripts/platform.sh` and `scripts/ygg.sh` read the variables store when `vars.db` exists in the
+  secrets directory, and the env files as before when it doesn't (with a notice). The store is checked before every deploy
+  and platform start.
+- The deploy lock moved from the application's env file to `<secrets>/locks/<application>-<environment>.lock`. `platform.sh up`
+  creates the directory (group `docker`, mode `2770`).
+- The Jenkins agent image installs `python3-cryptography`, and `platform/compose.yml` mounts `<secrets>/locks` read-write
+  next to the read-only secrets directory.
+
+### Upgrading from 0.5 to 0.6
+
+Optional: nothing changes until you run `scripts/ygg.sh vars init`; env files keep working.
+
+1. On every host, `git pull`, then `scripts/platform.sh up` once. The Jenkins agent gets its new package and the `locks`
+   mount, after which deploys work with either source, files or the store. The scripts need `python3-cryptography` on the host
+   only to use the store (`apt install python3-cryptography`).
+2. To move a host to the store, as in [docs/variables.md](docs/variables.md#moving-to-the-store): copy `/etc/yggdrasil`,
+   `scripts/ygg.sh vars init` (store the key it prints), `scripts/ygg.sh vars import --all` (answer the move-up offers),
+   `scripts/ygg.sh vars check`, `scripts/platform.sh up`, redeploy one application, and delete the `*.env.imported` files
+   once everything runs.
+3. Schedule `scripts/ygg.sh vars backup <dir>`
+   ([backup and recovery](docs/variables.md#backup-and-recovery)).
+
 ## [0.5.1] - 2026-10-08
 
 ### Fixed

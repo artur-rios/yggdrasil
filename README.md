@@ -50,6 +50,7 @@ an agent that dials out to the one controller.
 | **System** | What users think of as one product: a group of applications that work together. The console shows a system's status and, expanded, each of its applications. |
 | **Environment** | A stage applications run in, such as local, development, homologation or production. Options: exposure (`proxy` through Traefik or host `ports`), `trigger` (`manual`, `branch` or `release`), which Jenkins `agent` deploys it, whether it needs `approval`, `hostSuffix` (its host names, `heimdall-dev.<domain>`), `onDemand` (runs only while used), timeouts and rollback depth. Each application deploys to all environments or to its own list, and can override any option per environment. |
 | **Host** | A machine with a Docker engine (a VPS, a VM) running one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins agent and one domain for all of them. Each application runs once per environment, as its own Compose project. A workstation's `ports` environment needs no platform. |
+| **Variables store** | An encrypted SQLite database per machine that holds the platform's and every application's environment variables and secrets, in layers (a value shared by several applications or environments is defined once), with history and rollback. Opt-in: without it the scripts read env files. Reference: [docs/variables.md](docs/variables.md). |
 | **Catalog** | [`catalog.yaml`](catalog.yaml): the environments, systems and applications. Jenkins jobs and agents, GitHub rulesets, deploys, the status API, Prometheus and the console all read it. Reference: [docs/catalog.md](docs/catalog.md). |
 
 ### Branches and releases
@@ -188,6 +189,7 @@ default setup worked through on real hardware:
 | `catalog.yaml` | Environments, systems and applications: what everything else reads |
 | `stacks/` | Per-application Compose files and overlays: `<app>.proxy.yml`, `<app>.ports.yml`, optional `<app>.<environment>.yml` |
 | `scripts/ygg.sh` | The host helper: a menu to install the tools, set up an application, see what runs, change an application's configuration and start or stop an on-demand environment ([docs/cli.md](docs/cli.md)) |
+| `scripts/vars.py` | The variables store: layers, references, encryption, history, import and backup, behind `scripts/ygg.sh vars` ([docs/variables.md](docs/variables.md)) |
 | `scripts/deploy.sh` | Build, label, deploy, health-wait and roll back one application in one environment, as the Compose project `<application>-<environment>`. Jenkins runs it; so can you |
 | `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
 | `scripts/platform.sh` | Brings a host's platform up or down: one per host, for all its environments |
@@ -197,9 +199,9 @@ default setup worked through on real hardware:
 | `github/rulesets.py` | Rulesets, required checks and settings of every catalog repository |
 | `status/` | The status API (.NET 10) |
 | `console/` | The console (Flutter): web, Android, Windows |
-| `env/` | Templates for each host's `platform.env` and `acme.env` |
+| `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads) |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, host helper, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
+| `docs/` | Catalog reference, setup guide, host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
 
 ## Day to day
 
@@ -211,7 +213,9 @@ default setup worked through on real hardware:
 | See which environments are on | `scripts/ygg.sh env status`, or the console |
 | Add an application, environment or system | `scripts/ygg.sh add` for an application ([docs/cli.md](docs/cli.md#set-up-an-application)); [docs/setup.md#adding-things](docs/setup.md#adding-things) for all three |
 | See what runs on a host | `scripts/ygg.sh status`: every environment of the host |
-| Change an application's env file and redeploy it | `scripts/ygg.sh config <application> <environment>` |
+| Change an application's variables and redeploy it | `scripts/ygg.sh config <application> <environment>` |
+| Set or read a variable | `scripts/ygg.sh vars set heimdall-api@development KEY=value` (`KEY=-` types it hidden); `vars list heimdall-api@development --resolved` ([docs/variables.md](docs/variables.md)) |
+| See who changed a variable, or undo it | `scripts/ygg.sh vars history`, then `vars rollback <id>` |
 | Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
 | Change GitHub rules | `python3 github/rulesets.py --dry-run`, then without |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |
@@ -221,7 +225,8 @@ default setup worked through on real hardware:
 Upgrading an existing installation from one release to the next is described in
 [CHANGELOG.md](./CHANGELOG.md), under each release that asks something of the operator: from 0.4
 to 0.5 (several environments per host), see
-[Upgrading from 0.4 to 0.5](./CHANGELOG.md#upgrading-from-04-to-05).
+[Upgrading from 0.4 to 0.5](./CHANGELOG.md#upgrading-from-04-to-05); from 0.5 to 0.6 (the variables store, optional), see
+[Upgrading from 0.5 to 0.6](./CHANGELOG.md#upgrading-from-05-to-06).
 
 ## Changelog
 

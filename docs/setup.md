@@ -593,7 +593,19 @@ read-only requests that client makes, and the proxies run in that group. With a 
 can't reach the socket: the console shows every application `unknown` or `down`, Traefik serves no
 routes, and the proxies' logs say `permission denied`.
 
-Leave the agent section for 9.5. Then check the file:
+Leave the agent section for 9.5.
+
+**With the variables store** ([variables.md](variables.md)), fill in both files as above, then
+move them into the encrypted store, which becomes their only source (skip this to keep the files):
+
+```bash
+/opt/yggdrasil/scripts/ygg.sh vars init          # prints the key: store it in your password manager, then type saved
+/opt/yggdrasil/scripts/ygg.sh vars import --all  # platform.env, acme.env and any application env files; renames them *.env.imported
+```
+
+Change a value later with `scripts/ygg.sh vars set platform KEY=value` (or `vars edit platform`),
+and delete the `*.env.imported` files once `platform.sh up` has worked. The check below works
+either way. Check the settings:
 
 ```bash
 /opt/yggdrasil/scripts/platform.sh config > /dev/null && echo "platform.env OK"
@@ -671,7 +683,9 @@ no agent for them: leave `COMPOSE_PROFILES=jenkins`.
 
 For each other host, prepared as in step 8, once the controller is up (step 9). The default layout
 has none: its one VPS is the controller host, so skip to the `ports` environments below. Another
-host's env files are simpler, because the controller is elsewhere:
+host's env files are simpler, because the controller is elsewhere. Each host has its own variables
+store, if you use one: after filling in the files, `scripts/ygg.sh vars init` and
+`scripts/ygg.sh vars import --all` there, as in [9.2](#92-the-env-files-first-pass).
 
 - `acme.env`: the DNS credential, as in 9.2.
 - `platform.env`:
@@ -707,7 +721,7 @@ application's own `docker-compose.yml` publishes it when it has one (often every
 repositories cloned next to it:
 
 ```bash
-export YGG_SECRETS_DIR=~/yggdrasil-env      # holds <environment>/<application>.env
+export YGG_SECRETS_DIR=~/yggdrasil-env      # holds <environment>/<application>.env, or vars.db and vars.key
 scripts/deploy.sh local shop-api ../shop-api dev
 ```
 
@@ -721,11 +735,28 @@ Docker publishes ports around `ufw`/`firewalld`. In these stacks only Traefik pu
 
 ## 11. Application env files
 
-On each host, one file per application and environment the host runs (twelve on the default VPS:
-four applications in three environments): its configuration and secrets, plus what its stack files
-need. Each environment has its own secrets, database and host names.
+On each host, one set of variables per application and environment the host runs (twelve on the
+default VPS: four applications in three environments): its configuration and secrets, plus what its
+stack files need. Each environment has its own secrets, database and host names. They live in
+**env files**, or in the host's [variables store](variables.md), where a value shared by several
+applications or environments is defined once.
 
-`scripts/ygg.sh config <application> <environment>` creates a missing one from the stack files and
+**In the variables store** (after `vars init`, [9.2](#92-the-env-files-first-pass)):
+
+```bash
+cd /opt/yggdrasil
+scripts/ygg.sh vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
+scripts/ygg.sh vars set heimdall-api@development DB_PASSWORD=-       # typed hidden
+scripts/ygg.sh vars set @development DB_HOST=postgres.example.com    # shared by every application of development
+scripts/ygg.sh vars edit heimdall-api@development                    # or all of it in $EDITOR
+```
+
+`<application>@<environment>` is one application in one environment, `@<environment>` all of an
+environment, `<application>` one application everywhere ([scopes](variables.md#scopes-and-layers)).
+`scripts/ygg.sh config <application> <environment>` and `add` use the store too. The rest of this
+step describes what goes in; the files below are for a host without a store.
+
+`scripts/ygg.sh config <application> <environment>` creates a missing file from the stack files and
 opens it ([cli.md](cli.md#change-the-configuration)). By hand:
 
 ```bash
@@ -754,7 +785,7 @@ What goes in it:
   at `<id>.<environment>` (`http://shop-api.development:8080`), or at its public host name
   when it needs HTTPS. The plain `<id>` alias no longer exists.
 
-`deploy.sh` passes this file to Compose (`--env-file`): it fills in the `${VAR}` references of the
+`deploy.sh` passes this file (or, with the store, the same variables rendered from it) to Compose (`--env-file`): it fills in the `${VAR}` references of the
 Compose files. A variable reaches the application's container only where its `docker-compose.yml`
 or `stacks/<id>.yml` names it, in `environment:` (`DB_PASSWORD: ${DB_PASSWORD:?}`) or with
 `env_file:`.
@@ -845,6 +876,10 @@ scripts/platform.sh up
 docker restart yggdrasil-status-1                        # every host: re-reads the catalog
 docker restart yggdrasil-jenkins-1                       # the controller host only
 ```
+
+Variables are not part of this: `deploy.sh` and `platform.sh` read them from the variables store
+or the env files each time they run, so a changed variable needs no restart, only the next deploy of
+the application (or `platform.sh up` for the platform's own).
 
 `platform.sh up` alone isn't enough: the catalog is mounted into the running containers as a single
 file, and they keep seeing the old one until they restart. Jenkins creates new jobs and agents only
