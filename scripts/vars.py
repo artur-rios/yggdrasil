@@ -217,6 +217,8 @@ class Store:
     def set(self, scope, key, value, secret, command):
         validate_key(key)
         validate_value(value)
+        if REFERENCE.match(value) and not scope.startswith("app:"):
+            raise VarsError("references (${ref:<application>:<KEY>}) only work in application scopes")
         old = self.get(scope, key)
         if secret is None:
             secret = old[1] if old else is_secret_name(key)
@@ -235,6 +237,31 @@ class Store:
         with self.conn:
             self.conn.execute("DELETE FROM variables WHERE scope=? AND key=?", (scope, key))
             self._record(command, scope, key, old[0], None, old[1])
+
+    def layered(self, application, environment):
+        """The three layers merged, references not followed: key -> (value, origin, secret)."""
+        merged = {}
+        for scope, origin in ((f"env:{environment}", "env"), (f"app:{application}", "app"),
+                              (f"app:{application}@{environment}", "app@env")):
+            for key, value, secret in self.items(scope):
+                merged[key] = (value, origin, secret)
+        return merged
+
+    def resolve(self, application, environment):
+        resolved = {}
+        for key, (value, origin, secret) in self.layered(application, environment).items():
+            match = REFERENCE.match(value)
+            if match:
+                target_app, target_key = match[1], match[2]
+                target = self.layered(target_app, environment).get(target_key)
+                where = f"{application}@{environment} {key} -> {target_app}:{target_key}"
+                if target is None:
+                    raise VarsError(f"{where}: {target_app} has no {target_key} in {environment}")
+                if REFERENCE.match(target[0]):
+                    raise VarsError(f"{where}: reference to a reference")
+                value, origin, secret = target[0], f"ref → {target_app}:{target_key}", secret or target[2]
+            resolved[key] = (value, origin, secret)
+        return resolved
 
 
 def _ids(cat):
@@ -322,6 +349,10 @@ def cmd_get(args):
 def cmd_list(args):
     scope = parse_scope(args.scope, None)
     with Store.open(readonly=True) as store:
+        if args.resolved:
+            for key, (value, origin, secret) in sorted(_resolved_scope(store, scope).items()):
+                print(key if args.keys else f"{key}={_shown(value, secret, args.reveal)}  ({origin})")
+            return
         for key, value, secret in store.items(scope):
             print(key if args.keys else f"{key}={_shown(value, secret, args.reveal)}")
 
@@ -331,6 +362,40 @@ def cmd_unset(args):
     with Store.open() as store:
         for key in args.keys:
             store.unset(scope, key, "unset")
+
+
+def render_lines(variables):
+    return "".join(f"{key}='{variables[key]}'\n" for key in sorted(variables))
+
+
+def _resolved_scope(store, scope):
+    match = re.fullmatch(rf"app:({ID})@({ID})", scope)
+    if not match:
+        raise VarsError("--resolved needs an <application>@<environment> scope")
+    return store.resolve(match[1], match[2])
+
+
+def cmd_render(args):
+    parse_scope(f"{args.application}@{args.environment}", load_catalog())
+    with Store.open(readonly=True) as store:
+        resolved = store.resolve(args.application, args.environment)
+    sys.stdout.write(render_lines({key: value for key, (value, _, _) in resolved.items()}))
+
+
+def cmd_render_platform(args):
+    with Store.open(readonly=True) as store:
+        items = store.items("platform:acme" if args.acme else "platform")
+    sys.stdout.write(render_lines({key: value for key, value, _ in items}))
+
+
+def cmd_export(args):
+    scope = parse_scope(args.scope, None)
+    with Store.open(readonly=True) as store:
+        if args.resolved:
+            values = {key: value for key, (value, _, _) in _resolved_scope(store, scope).items()}
+        else:
+            values = {key: value for key, value, _ in store.items(scope)}
+    sys.stdout.write(render_lines(values))
 
 
 def parser():
@@ -353,11 +418,23 @@ def parser():
     s.add_argument("scope")
     s.add_argument("--reveal", action="store_true")
     s.add_argument("--keys", action="store_true")
+    s.add_argument("--resolved", action="store_true")
     s.set_defaults(run=cmd_list)
     s = sub.add_parser("unset")
     s.add_argument("scope")
     s.add_argument("keys", nargs="+", metavar="KEY")
     s.set_defaults(run=cmd_unset)
+    s = sub.add_parser("render")
+    s.add_argument("application")
+    s.add_argument("environment")
+    s.set_defaults(run=cmd_render)
+    s = sub.add_parser("render-platform")
+    s.add_argument("--acme", action="store_true")
+    s.set_defaults(run=cmd_render_platform)
+    s = sub.add_parser("export")
+    s.add_argument("scope")
+    s.add_argument("--resolved", action="store_true")
+    s.set_defaults(run=cmd_export)
     return p
 
 

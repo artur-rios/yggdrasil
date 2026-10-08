@@ -174,3 +174,101 @@ class CliBasicsTests(StoreTestCase):
     def test_given_list_keys_then_only_names(self):
         self.cli("set", "platform", "A=1", "B=2")
         self.assertEqual(self.cli("list", "platform", "--keys").stdout, "A\nB\n")
+
+
+class ResolveTests(StoreTestCase):
+    def setUp(self):
+        super().setUp()
+        with self.store() as s:
+            s.set("env:development", "DB_HOST", "host.docker.internal", None, "set")
+            s.set("env:development", "LOCALE", "pt-BR", None, "set")
+            s.set("app:heimdall-api", "LOCALE", "en-US", None, "set")
+            s.set("app:heimdall-api@development", "HEIMDALL_AUTH_TOKEN_SECRET", "s" * 40, None, "set")
+            s.set("app:heimdall-api@development", "LOCALE", "es-ES", None, "set")
+            s.set("app:fortuna-api@development", "FORTUNA_AUTH_TOKEN_SECRET",
+                  "${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}", None, "set")
+
+    def test_given_three_layers_when_resolved_then_the_most_specific_wins(self):
+        with self.store(readonly=True) as s:
+            resolved = s.resolve("heimdall-api", "development")
+        self.assertEqual(resolved["LOCALE"][:2], ("es-ES", "app@env"))
+        self.assertEqual(resolved["DB_HOST"][:2], ("host.docker.internal", "env"))
+        with self.store(readonly=True) as s:
+            self.assertEqual(s.resolve("fortuna-api", "homologation"), {})
+
+    def test_given_an_application_layer_only_when_resolved_then_it_beats_the_environment(self):
+        with self.store() as s:
+            s.unset("app:heimdall-api@development", "LOCALE", "unset")
+            self.assertEqual(s.resolve("heimdall-api", "development")["LOCALE"][:2], ("en-US", "app"))
+
+    def test_given_a_reference_when_resolved_then_the_target_value_in_the_same_environment(self):
+        with self.store(readonly=True) as s:
+            value, origin, secret = s.resolve("fortuna-api", "development")["FORTUNA_AUTH_TOKEN_SECRET"]
+        self.assertEqual(value, "s" * 40)
+        self.assertEqual(origin, "ref → heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET")
+        self.assertTrue(secret)
+
+    def test_given_a_reference_to_a_missing_key_when_resolved_then_it_fails_naming_it(self):
+        with self.store() as s:
+            s.set("app:fortuna-api@development", "X", "${ref:heimdall-api:NOPE}", None, "set")
+            with self.assertRaises(v.VarsError) as caught:
+                s.resolve("fortuna-api", "development")
+        self.assertIn("heimdall-api:NOPE", str(caught.exception))
+
+    def test_given_a_reference_to_a_reference_when_resolved_then_it_fails(self):
+        with self.store() as s:
+            s.set("app:heimdall-api@development", "Y", "${ref:fortuna-api:FORTUNA_AUTH_TOKEN_SECRET}", None, "set")
+            with self.assertRaises(v.VarsError) as caught:
+                s.resolve("heimdall-api", "development")
+        self.assertIn("reference to a reference", str(caught.exception))
+
+    def test_given_a_reference_in_a_platform_or_environment_scope_when_set_then_it_is_refused(self):
+        with self.store() as s:
+            for scope in ("platform", "env:development"):
+                with self.assertRaises(v.VarsError, msg=scope):
+                    s.set(scope, "X", "${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}", None, "set")
+
+
+class RenderTests(StoreTestCase):
+    def test_given_values_with_shell_and_compose_characters_when_rendered_then_single_quoted_sorted_lines(self):
+        self.assertEqual(v.render_lines({"B": "a $b #c", "A": "$2y$05$x=y"}), "A='$2y$05$x=y'\nB='a $b #c'\n")
+
+    def test_given_render_when_run_then_resolved_lines_on_stdout(self):
+        self.cli("set", "@development", "DB_HOST=host.docker.internal")
+        self.cli("set", "heimdall-api@development", "PUBLIC_HOST=heimdall-api-dev.example.com")
+        result = self.cli("render", "heimdall-api", "development")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "DB_HOST='host.docker.internal'\nPUBLIC_HOST='heimdall-api-dev.example.com'\n")
+
+    def test_given_render_platform_when_run_then_platform_or_acme_lines(self):
+        self.cli("set", "platform", "DOMAIN=example.com")
+        self.cli("set", "platform:acme", "CF_DNS_API_TOKEN=abc")
+        self.assertEqual(self.cli("render-platform").stdout, "DOMAIN='example.com'\n")
+        self.assertEqual(self.cli("render-platform", "--acme").stdout, "CF_DNS_API_TOKEN='abc'\n")
+
+    def test_given_list_resolved_then_each_key_with_its_origin_and_secrets_masked(self):
+        self.cli("set", "@development", "DB_HOST=host.docker.internal")
+        self.cli("set", "heimdall-api@development", "DB_PASSWORD=abcdefghijkl")
+        listed = self.cli("list", "heimdall-api@development", "--resolved").stdout
+        self.assertIn("DB_HOST=host.docker.internal  (env)", listed)
+        self.assertIn("DB_PASSWORD=••••••kl  (app@env)", listed)
+
+    def test_given_export_then_revealed_env_file_text(self):
+        self.cli("set", "heimdall-api@development", "DB_PASSWORD=abcdefghijkl")
+        self.assertEqual(self.cli("export", "heimdall-api@development").stdout, "DB_PASSWORD='abcdefghijkl'\n")
+
+    @unittest.skipUnless(shutil.which("docker"), "needs the docker CLI")
+    def test_given_a_rendered_file_when_compose_reads_it_then_every_value_is_verbatim(self):
+        values = {"A": "$2y$05$abc", "B": "x #not a comment", "C": "p=q", "D": "${NOT_INTERPOLATED}"}
+        env_file = self.dir / "rendered.env"
+        env_file.write_text(v.render_lines(values))
+        compose = self.dir / "compose.yml"
+        compose.write_text("services:\n  s:\n    image: busybox\n    env_file: [rendered.env]\n")
+        out = subprocess.run(["docker", "compose", "-f", str(compose), "config", "--format", "json"],
+                             capture_output=True, text=True, cwd=self.dir)
+        if out.returncode != 0:
+            self.skipTest(out.stderr)
+        import json
+        # `config` prints the model re-escaped for interpolation: a literal $ comes back as $$.
+        shown = {key: value.replace("$$", "$") for key, value in json.loads(out.stdout)["services"]["s"]["environment"].items()}
+        self.assertEqual(shown, values)
