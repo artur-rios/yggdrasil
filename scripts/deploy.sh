@@ -107,7 +107,10 @@ fi
 # mounts read-write, so the agent and a deploy by hand on the host exclude each other. Released when
 # this script exits.
 lock_file="$secrets/locks/$stack-$environment.lock"
-if command -v flock >/dev/null 2>&1 && { mkdir -p "$secrets/locks" 2>/dev/null; touch "$lock_file" 2>/dev/null; }; then
+# An existing lock file is only opened for reading, so it may belong to the other user.
+if command -v flock >/dev/null 2>&1 \
+  && { mkdir -p "$secrets/locks" 2>/dev/null; [[ -e "$lock_file" ]] || (umask 002 && : >>"$lock_file") 2>/dev/null; } \
+  && [[ -r "$lock_file" ]]; then
   exec {lock}<"$lock_file"
   locked=0
   flock --nonblock --conflict-exit-code 75 "$lock" || locked=$?

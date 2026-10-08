@@ -299,6 +299,18 @@ class DeployTests(unittest.TestCase):
         # 75: another process could not take the lock while compose up ran.
         self.assertEqual(self.read("up1.lock").strip(), "75")
 
+    @unittest.skipUnless(shutil.which("flock"), "needs flock (util-linux)")
+    def test_given_an_existing_lock_file_when_deployed_then_it_is_locked_without_being_written(self):
+        lock = pathlib.Path(self.env["YGG_SECRETS_DIR"]) / "locks" / f"{STACK}-{ENVIRONMENT}.lock"
+        lock.parent.mkdir()
+        lock.touch(mode=0o444)
+        os.utime(lock, (1_000_000_000, 1_000_000_000))
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("cannot", result.stderr)
+        self.assertEqual(lock.stat().st_mtime, 1_000_000_000)
+        self.assertEqual(self.read("up1.lock").strip(), "75")
+
     def use_store(self, values):
         """Moves this test's env files into a variables store holding `values` for every environment."""
         sys.path.insert(0, str(ROOT / "scripts"))
