@@ -93,12 +93,14 @@ Your installation lives in your own copy of this repository: your catalog, your 
 **`main`** branch is what counts: every host runs a checkout of it, and every deploy clones it
 ([details](#where-jenkins-and-the-hosts-read-the-catalog)).
 
-1. On GitHub, **Fork** this repository into your owner (step 0). For a private copy, use
-   *Import repository* or create an empty private repository and push a clone to it: forks of
+1. On GitHub, **Fork** this repository into your owner (step 0), and untick *Copy the `develop`
+   branch only*: this repository's default branch is `develop`, its work in progress, while
+   releases are merged into `main`, the branch your installation runs. For a private copy, use
+   *Import repository* or create an empty private repository and push `main` to it: forks of
    public repositories can't be private.
-2. Clone it:
+2. Clone its `main` branch:
    ```bash
-   git clone https://github.com/<owner>/<repository>.git
+   git clone -b main https://github.com/<owner>/<repository>.git
    cd <repository>
    ```
 
@@ -182,7 +184,10 @@ For every application in the catalog:
    `develop`:
    - `Jenkinsfile`: replace `<application-id>` with the catalog id.
    - `.github/workflows/branch-policy.yml`: as is.
-   - `CONTRIBUTING.md`: replace `<owner>` and `<application-id>`.
+   - `CONTRIBUTING.md`: replace `<owner>` and `<repository>` (your fork of yggdrasil) and
+     `<application-id>`. It has changes recorded in a `CHANGELOG.md`: if the repository has none,
+     start one with a `## [Unreleased]` heading
+     ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 4. **CI** that runs the jobs listed in the catalog's `checks` on pull requests into `develop` and
    `main`.
 5. Commit and push to `develop`. Until the rules are applied (step 12) a direct push works; after,
@@ -512,6 +517,7 @@ rm <app>.private-key.pem
 | `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. See below |
 | `GRAFANA_ADMIN_PASSWORD` | A password for Grafana's `admin` user |
 | `YGGDRASIL_STATUS_TOKEN` | A random token, at least 32 characters. The console needs it: keep a copy in your password manager |
+| `DOCKER_GID` | The id of the host's `docker` group: the output of `getent group docker \| cut -d: -f3` |
 | `JENKINS_URL` | `https://jenkins.<DOMAIN>/` |
 | `JENKINS_ADMIN_PASSWORD` | A password for the Jenkins `admin` user |
 | `GITHUB_APP_ID` | The App ID from [step 7.3](#73-note-the-app-id) |
@@ -536,6 +542,12 @@ grep -E '^(GRAFANA_ADMIN_PASSWORD|YGGDRASIL_STATUS_TOKEN|JENKINS_ADMIN_PASSWORD)
 - `sed -i "s|^NAME=.*|NAME=value|" "$f"`: replaces the whole `NAME=` line of the file. `|` separates
   the parts because the hash contains `/`.
 - The last line prints the generated passwords and token: save them in your password manager.
+
+`DOCKER_GID` is the group that owns the Docker socket. Traefik, Alloy and the status API don't
+hold the socket: each one reads Docker through a socket proxy of its own, which allows only the
+read-only requests that client makes, and the proxies run in that group. With a wrong value they
+can't reach the socket: the console shows every application `unknown` or `down`, Traefik serves no
+routes, and the proxies' logs say `permission denied`.
 
 Leave the agent section for 9.5. Then check the file:
 
@@ -596,14 +608,9 @@ hexadecimal string after `-secret` in the connection command. Then, in `platform
 | `JENKINS_AGENT_NAME` | The agent's name: the environment's `agent` in the catalog, or its id |
 | `JENKINS_AGENT_SECRET` | The secret |
 | `JENKINS_AGENT_URL` | `http://jenkins:8080/`: on this host, the agent reaches the controller over the Docker network |
-| `DOCKER_GID` | The id of the host's `docker` group: the output of the command below |
 
-```bash
-getent group docker | cut -d: -f3
-```
-
-The agent runs Docker through the host's socket, which belongs to that group. With a wrong value,
-deploys fail with `permission denied ... docker.sock`. Then:
+The agent runs Docker through the host's socket itself, in the `DOCKER_GID` group from 9.2. With a
+wrong value, deploys fail with `permission denied ... docker.sock`. Then:
 
 ```bash
 /opt/yggdrasil/scripts/platform.sh up
@@ -632,7 +639,7 @@ simpler, because the controller is elsewhere:
   | `JENKINS_URL` | The **controller's** URL: `https://jenkins.<controller's DOMAIN>/` |
   | `JENKINS_AGENT_NAME`, `JENKINS_AGENT_SECRET` | From **Manage Jenkins → Nodes → \<this environment's agent\>** on the controller |
   | `JENKINS_AGENT_URL` | **Empty**: the agent then dials `JENKINS_URL` |
-  | `DOCKER_GID` | This host's `getent group docker \| cut -d: -f3`, as in 9.5 |
+  | `DOCKER_GID` | This host's `getent group docker \| cut -d: -f3`, as in 9.2 |
   | `JENKINS_ADMIN_PASSWORD`, `GITHUB_APP_*` | Not needed: leave them empty |
 
 Then, as on the controller host:
@@ -648,7 +655,8 @@ The agent dials the controller out over a WebSocket on 443, so this host needs n
 Jenkins. Its node turns connected in Jenkins.
 
 **`ports` environments** (a developer laptop) need no platform, agent or DNS: `deploy.sh` publishes
-each application on `127.0.0.1`. Set one up any time, from your fork's checkout, with the application
+each application on the host: on `127.0.0.1` through `stacks/<app>.ports.yml`, or as the
+application's own `docker-compose.yml` publishes it when it has one (often every interface). Set one up any time, from your fork's checkout, with the application
 repositories cloned next to it:
 
 ```bash
@@ -730,12 +738,12 @@ change only through pull requests.
 | Jobs | Jenkins → each application's job → *Scan Repository Log* | Ends with `Finished: SUCCESS`. Before the first release it lists no branch, or only matching `release/*` ones: `main` gets a `Jenkinsfile` when the first release merges |
 | Agent can read the env files | `docker exec yggdrasil-agent-1 ls /etc/yggdrasil/<environment>` on each host | Lists the application env files, no `Permission denied` |
 | Console | `https://yggdrasil.<DOMAIN>` | The platform system is `up`. Applications are `not deployed` until the first release |
-| Status API | `curl -H "Authorization: Bearer <YGGDRASIL_STATUS_TOKEN>" https://yggdrasil.<DOMAIN>/api/status` | JSON with every system of the catalog |
+| Status API | `curl -H "Authorization: Bearer <YGGDRASIL_STATUS_TOKEN>" https://yggdrasil.<DOMAIN>/api/status` | JSON with every system that has an application in this environment |
 | Grafana | `https://grafana.<DOMAIN>`, `admin` / `GRAFANA_ADMIN_PASSWORD` | Prometheus and Loki data sources work |
 
 **Windows and Android consoles**: download them from the releases of
 [artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil/releases) (your fork has none until you
-tag it `vX.Y.Z`). Then add each environment in the console's **Environments** screen with its URL
+create a GitHub release `vX.Y.Z`, which `release.yml` attaches them to). Then add each environment in the console's **Environments** screen with its URL
 (`https://yggdrasil.<DOMAIN>`) and its `YGGDRASIL_STATUS_TOKEN`.
 
 ## 14. The first release
@@ -828,9 +836,10 @@ A service's log: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, e.g. `yggd
 |---|---|
 | `required variable ... is missing a value` | A variable of `platform.env` is empty: see [9.2](#92-the-env-files-first-pass) |
 | `platform: ENVIRONMENT='...' is not an environment in catalog.yaml` | A typo in `ENVIRONMENT`, or the host's checkout is behind: `git pull` in `/opt/yggdrasil` |
-| `platform: JENKINS_AGENT_NAME must be set ...` (or `JENKINS_AGENT_SECRET`, `DOCKER_GID`) | `COMPOSE_PROFILES` includes `agent` before the agent exists: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) and [10](#10-bring-up-the-other-environment-hosts) |
+| `platform: JENKINS_AGENT_NAME must be set ...` (or `JENKINS_AGENT_SECRET`) | `COMPOSE_PROFILES` includes `agent` before the agent exists: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) and [10](#10-bring-up-the-other-environment-hosts) |
 | `permission denied ... docker.sock` when you run `docker` | Your user isn't in the `docker` group, or you haven't reconnected since adding it ([8.1](#8-prepare-every-host)) |
-| `permission denied ... docker.sock` in a Jenkins build | `DOCKER_GID` isn't the host's `docker` group id ([9.5](#95-the-env-files-second-pass-this-hosts-agent)) |
+| `permission denied ... docker.sock` in a Jenkins build, or in the log of a `yggdrasil-*docker-proxy-1` | `DOCKER_GID` isn't the host's `docker` group id ([9.2](#92-the-env-files-first-pass)) |
+| `blocked request` in the log of a `yggdrasil-*docker-proxy-1`; with it the status API logs `docker proxy answered 403`, Traefik loses its routes or Alloy stops shipping logs | That client asked Docker for something its proxy's allowlist in `platform/compose.yml` doesn't allow, typically after an upgrade of Traefik or Alloy. The log line names the request: check it against the client before adding it ([status-api.md, Docker access](status-api.md#docker-access)) |
 | `/etc/yggdrasil/github-app.pem` is a directory | `platform.sh up` ran with the `jenkins` profile before the key existed, and Docker created a directory in its place. `sudo rm -r` it, then do [9.1](#91-the-github-app-key) |
 | Jenkins starts, but with no jobs or credentials errors | `GITHUB_APP_ID` wrong, the key not converted to PKCS#8, or not readable by uid 1000 ([9.1](#91-the-github-app-key)). The Jenkins log says which |
 | A job's scan finds no branches | Expected before the first release (no `Jenkinsfile` on `main` yet). Otherwise, the GitHub App isn't installed on that repository |

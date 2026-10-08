@@ -115,7 +115,9 @@ flowchart TB
     traefik --> console[Console web]
     traefik -- "/api/" --> status[Status API]
     status -- probes health --> apps
-    status -- read-only --> proxy[Docker socket proxy]
+    status -- container list only --> proxy[Docker socket proxies<br/>read-only, one per client]
+    traefik -- containers, events --> proxy
+    alloy -- containers, logs --> proxy
     prom[Prometheus] -- targets --> status
     prom -- scrapes /metrics --> apps
     alloy[Alloy] -- container logs --> loki[Loki]
@@ -125,6 +127,8 @@ flowchart TB
 ```
 
 Two Docker networks connect them: `edge` (Traefik, applications, status API) and `telemetry` (Prometheus and everything it scrapes). No container publishes a port except Traefik (80, 443). Metrics are served on a private port that is neither published nor routed.
+
+Only the Jenkins agent holds the Docker socket, since it deploys. Traefik, Alloy and the status API each read Docker through a socket proxy of their own, on a private network, that allows only the read-only requests that client makes. The status API, the one behind a token on the internet, gets the container list and nothing else: not the container inspect, which carries every application's secrets.
 
 ## The console
 
@@ -136,7 +140,7 @@ The same Flutter app on three platforms:
 | **Windows** | `yggdrasil-console-<version>-setup.exe` from the GitHub releases. Per-user install by default, no administrator rights | Add each one (URL and token) in the **Environments** screen, then switch from the overview |
 | **Android** | `yggdrasil-console-<version>.apk` from the GitHub releases | Same as Windows (HTTPS only) |
 
-- Every **system** is a card with the worst status of its applications: `up`, `degraded`, `down`, `not deployed` or `unknown`. Problems sort first.
+- Every **system** is a card with the status of its applications taken together: `down` when every deployed one is down, `degraded` when any is down or degraded, else `unknown` or `up`; `not deployed` ones don't count ([the rules](docs/status-api.md#status-values)). Problems sort first.
 - **Expanding** a system lists its applications, each with:
   - status and kind
   - version, commit and deploy time
@@ -181,7 +185,7 @@ the tools, sets up applications, shows what runs and changes their configuration
 | `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
 | `scripts/platform.sh` | Brings a host's platform up or down |
 | `scripts/github.sh` | The GitHub side of a release: wait for checks, set status, merge, release, delete branch |
-| `platform/` | One host's platform: Traefik, status API, console, Docker socket proxy, Prometheus, Loki, Alloy, Grafana, and the Jenkins controller and agent |
+| `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, and the Jenkins controller and agent |
 | `jenkins/library/` | The shared pipeline every application's `Jenkinsfile` calls |
 | `github/rulesets.py` | Rulesets, required checks and settings of every catalog repository |
 | `status/` | The status API (.NET 10) |
@@ -202,3 +206,17 @@ the tools, sets up applications, shows what runs and changes their configuration
 | Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
 | Change GitHub rules | `python3 github/rulesets.py --dry-run`, then without |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |
+
+## Changelog
+
+Notable changes in each release are recorded in [CHANGELOG.md](./CHANGELOG.md). Releases follow
+[Semantic Versioning](https://semver.org/).
+
+## Contributing
+
+Building and testing the status API, the console and the platform scripts, the branching model and the release
+process of this repository are described in [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Legal
+
+Proprietary. See [LICENSE](LICENSE). Copyright (c) 2026 Artur Rios. All rights reserved.
