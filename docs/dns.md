@@ -252,7 +252,7 @@ in too: see [the checklist](#2-fill-in-every-required-variable).
   but works. That's one more reason for the staging CA on the first run.
 - **Availability** is whatever the free service gives. When DuckDNS is down, new visitors can't
   resolve your names, and renewals retry until it's back.
-- **The token** can change every subdomain of your account: keep `acme.env` at `chmod 600`.
+- **The token** can change every subdomain of your account: keep `acme.env` at `chmod 640`, readable by its owner and the `docker` group only.
 - **Some networks and filters** distrust dynamic-DNS domains.
 
 Moving to your own domain later only means changing `DOMAIN`, the DNS provider and the application
@@ -291,7 +291,7 @@ Otherwise `platform.sh` stops with `required variable ... is missing a value`.
 | `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. The template's `replace-me` placeholder passes the check but no password works with it |
 | `GRAFANA_ADMIN_PASSWORD` | Any password |
 | `YGGDRASIL_STATUS_TOKEN` | A random token of at least 32 characters. Keep a copy: the console asks for it |
-| `COMPOSE_PROFILES` | **Empty** to test DNS alone, on any host. On the controller host, `jenkins` once [setup.md step 9.2](setup.md#92-the-env-files-first-pass) is done: the GitHub App key must exist first. The template's `agent` needs an agent secret that only exists later |
+| `COMPOSE_PROFILES` | **Empty** to test DNS alone, on any host. On the controller host, `jenkins` once [setup.md step 9.2](setup.md#92-the-env-files-first-pass) is done: the GitHub App key must exist first. Not `agent` yet: it needs an agent secret that only exists later |
 
 The secrets can be generated straight into the file:
 
@@ -335,7 +335,8 @@ chmod 640 /etc/yggdrasil/*.env
 ```
 
 The first run builds images and pulls the others: several minutes. It returns once every service is
-healthy, and ends with a table of the services, each `running (healthy)`. Give Traefik a minute
+running (and healthy, for those with a health check), and ends with a table of the services: each `Up`,
+`traefik`, `status` and `console` also `(healthy)`. Give Traefik a minute
 more to answer the DNS-01 challenge, then read its log:
 
 ```bash
@@ -438,7 +439,7 @@ Traefik's errors: `docker logs yggdrasil-traefik-1 2>&1 | grep -iE 'acme|error' 
 | Symptom | Likely cause |
 |---|---|
 | `required variable ... is missing a value` | A variable of `platform.env` is empty: see [the checklist](#2-fill-in-every-required-variable). If it isn't, the file has Windows line endings (fix: `sed -i 's/\r$//' /etc/yggdrasil/platform.env`), or you ran `docker compose` instead of `platform.sh` |
-| `platform: JENKINS_AGENT_NAME must be set ...` (or another `JENKINS_*`) | `COMPOSE_PROFILES` still has the template's `agent`. Empty it, or set `jenkins` on the controller host, until the agent exists ([setup.md 9.5](setup.md#95-the-env-files-second-pass-this-hosts-agent)) |
+| `platform: JENKINS_AGENT_NAME must be set ...` (or another `JENKINS_*`) | `COMPOSE_PROFILES` has `agent` before this host's agent exists. Empty it, or set `jenkins` on the controller host, until the agent exists ([setup.md 9.5](setup.md#95-the-env-files-second-pass-this-hosts-agent)) |
 | `client version 1.24 is too old` in Traefik's log, and no certificate | A Traefik older than v3.6.1 on Docker Engine 29 or later: it sees no containers, so no routes and no certificate. `git pull` in `/opt/yggdrasil`, then `scripts/platform.sh up` |
 | `unknown TLS options: default@file` in Traefik's log; `schannel: failed to receive handshake` or `unexpected eof` from `curl` | A checkout before v0.3.2 refers to the TLS options by an unknown name, so Traefik builds no HTTPS route. `git pull` in `/opt/yggdrasil`, then `scripts/platform.sh up` |
 | `invalidContact` / `contact email has forbidden domain` | `ACME_EMAIL` is still an example address: use your own |
