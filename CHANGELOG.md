@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-08
+
 ### Fixed
 
 - `scripts/deploy.sh`: a deploy that fails in an `onDemand` environment that wasn't running is stopped again, also
@@ -300,7 +302,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/artur-rios/yggdrasil/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/artur-rios/yggdrasil/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/artur-rios/yggdrasil/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/artur-rios/yggdrasil/compare/v0.3.2...v0.3.3
