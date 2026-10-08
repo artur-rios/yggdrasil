@@ -308,6 +308,22 @@ class Store:
             set_keys.append(key)
         return set_keys, kept
 
+    def move_up(self, key, value, secret, from_scopes, to_scope, command):
+        """Set key at to_scope and unset it from from_scopes in one transaction, recording each change."""
+        validate_entry(to_scope, key, value)
+        old = self.get(to_scope, key)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO variables VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET "
+                "value=excluded.value, secret=excluded.secret, updated_at=excluded.updated_at, "
+                "updated_by=excluded.updated_by",
+                (to_scope, key, self.encrypt(value), int(secret), now(), actor()))
+            self._record(command, to_scope, key, old[0] if old else None, value, secret)
+            for scope in from_scopes:
+                before = self.get(scope, key)
+                self.conn.execute("DELETE FROM variables WHERE scope=? AND key=?", (scope, key))
+                self._record(command, scope, key, before[0], None, before[1])
+
     def layered(self, application, environment):
         """The three layers merged, references not followed: key -> (value, origin, secret)."""
         merged = {}
@@ -546,7 +562,7 @@ def _ask(question):
 
 def import_all(store, directory, cat, move_up):
     environments, applications = _ids(cat)
-    report, imported = [], []
+    report, imported, candidates = [], [], set()
     sources = [(directory / "platform.env", "platform"), (directory / "acme.env", "platform:acme")]
     for environment in sorted(environments):
         folder = directory / environment
@@ -562,49 +578,59 @@ def import_all(store, directory, cat, move_up):
         report.append(f"{file} -> {show_scope(scope)}: {len(set_keys)} set"
                       + (f", kept existing {', '.join(kept)}" if kept else ""))
         imported.append(file)
+        if scope.startswith("app:"):
+            candidates.add(scope)
     if not imported:
         return report + ["nothing to import"]
     if move_up != "no":
-        report += _move_up(store, cat, move_up)
+        report += _move_up(store, cat, move_up, candidates)
     for file in imported:
         file.rename(file.with_name(file.name + ".imported"))
     return report
 
 
-def _move_up(store, cat, mode):
+def _move_up(store, cat, mode, candidates):
     environments, applications = _ids(cat)
     report = []
 
     def offer(description):
         return mode == "yes" or _ask(f"Move {description}?")
 
+    def entries(scopes):
+        return [{k: (val, secret) for k, val, secret in store.items(s)} for s in scopes]
+
+    # Only the scopes imported in this run are candidates, and only those configured on this machine: an
+    # application or environment with no scope here is not deployed from this machine, so it does not count.
     # The environment layer first: a value every application of an environment shares (DB_HOST) belongs
     # there, not copied into each application's layer by step 2.
     # 1. Same value in every application of an environment -> env:<environment>.
     for environment in sorted(environments):
-        scopes = [f"app:{a}@{environment}" for a in sorted(applications) if store.items(f"app:{a}@{environment}")]
+        apps = [a for a in sorted(applications) if f"app:{a}@{environment}" in candidates]
+        scopes = [f"app:{a}@{environment}" for a in apps if store.items(f"app:{a}@{environment}")]
         if len(scopes) < 2:
             continue
-        values = [{k: val for k, val, _ in store.items(s)} for s in scopes]
+        values = entries(scopes)
         for key in sorted(set.intersection(*(set(x) for x in values))):
-            if len({x[key] for x in values}) == 1 and store.get(f"env:{environment}", key) is None \
+            # An app-layer value would still win over the environment's, so moving would change what resolves.
+            if any(store.get(f"app:{a}", key) is not None for a in apps):
+                continue
+            if len({x[key][0] for x in values}) == 1 and store.get(f"env:{environment}", key) is None \
                     and offer(f"{key} (same in {len(scopes)} applications of {environment}) to @{environment}"):
-                store.set(f"env:{environment}", key, values[0][key], None, "import move-up")
-                for scope in scopes:
-                    store.unset(scope, key, "import move-up")
+                store.move_up(key, values[0][key][0], any(x[key][1] for x in values), scopes,
+                              f"env:{environment}", "import move-up")
                 report.append(f"moved {key} to @{environment}")
     # 2. Same value in every environment of an application -> app:<application>.
     for application in sorted(applications):
-        scopes = [f"app:{application}@{e}" for e in sorted(environments) if store.items(f"app:{application}@{e}")]
+        scopes = [f"app:{application}@{e}" for e in sorted(environments)
+                  if f"app:{application}@{e}" in candidates and store.items(f"app:{application}@{e}")]
         if len(scopes) < 2:
             continue
-        values = [{k: val for k, val, _ in store.items(s)} for s in scopes]
+        values = entries(scopes)
         for key in sorted(set.intersection(*(set(x) for x in values))):
-            if len({x[key] for x in values}) == 1 and store.get(f"app:{application}", key) is None \
+            if len({x[key][0] for x in values}) == 1 and store.get(f"app:{application}", key) is None \
                     and offer(f"{key} of {application} (same in {len(scopes)} environments) to {application}"):
-                store.set(f"app:{application}", key, values[0][key], None, "import move-up")
-                for scope in scopes:
-                    store.unset(scope, key, "import move-up")
+                store.move_up(key, values[0][key][0], any(x[key][1] for x in values), scopes,
+                              f"app:{application}", "import move-up")
                 report.append(f"moved {key} to {application}")
     return report
 
@@ -614,15 +640,20 @@ def backup(directory, target):
     target.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     database, key = target / f"vars-{stamp}.db", target / f"vars-{stamp}.key"
-    source = sqlite3.connect(f"file:{pathlib.Path(directory) / 'vars.db'}?mode=ro", uri=True)
-    copy = sqlite3.connect(database)
-    with copy:
-        source.backup(copy)
-    copy.close()
-    source.close()
-    key.write_bytes((pathlib.Path(directory) / "vars.key").read_bytes())
-    for path in (database, key):
-        os.chmod(path, 0o600)
+    previous = os.umask(0o077)
+    try:
+        source = sqlite3.connect(f"file:{pathlib.Path(directory) / 'vars.db'}?mode=ro", uri=True)
+        copy = sqlite3.connect(database)
+        with copy:
+            source.backup(copy)
+        copy.close()
+        source.close()
+        descriptor = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write((pathlib.Path(directory) / "vars.key").read_bytes())
+        os.chmod(database, 0o600)
+    finally:
+        os.umask(previous)
     return database, key
 
 

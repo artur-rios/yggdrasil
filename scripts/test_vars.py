@@ -458,6 +458,45 @@ class ImportTests(StoreTestCase):
         self.assertIn("unknown-app", " ".join(report))
 
 
+class MoveUpScopeTests(StoreTestCase):
+    tree = ImportTests.tree
+
+    def test_given_a_value_set_earlier_when_imported_all_then_untouched_scopes_are_not_moved(self):
+        self.tree()
+        with self.store() as s:
+            for env in ("local", "production"):
+                s.set(f"app:heimdall-api@{env}", "KEEP", "same", None, "set")
+            v.import_all(s, self.dir, v.load_catalog(), "yes")
+            self.assertEqual(s.get("app:heimdall-api@local", "KEEP")[0], "same")
+            self.assertIsNone(s.get("app:heimdall-api", "KEEP"))
+
+    def test_given_a_secret_flag_when_moved_up_then_the_flag_survives(self):
+        self.tree()
+        with self.store() as s:
+            v.import_all(s, self.dir, v.load_catalog(), "no")
+            s.set("app:heimdall-api@development", "LOCALE", "pt-BR", True, "set")
+            (self.dir / "development" / "heimdall-api.env").write_text("LOCALE=pt-BR\n")
+            (self.dir / "homologation" / "heimdall-api.env").write_text("LOCALE=pt-BR\n")
+            v.import_all(s, self.dir, v.load_catalog(), "yes")
+            self.assertEqual(s.get("app:heimdall-api", "LOCALE"), ("pt-BR", True))
+
+    def test_given_an_app_layer_value_when_moving_to_the_environment_then_the_key_is_skipped(self):
+        self.tree()
+        with self.store() as s:
+            s.set("app:heimdall-api", "DB_HOST", "other", None, "set")
+            v.import_all(s, self.dir, v.load_catalog(), "yes")
+            self.assertEqual(s.resolve("heimdall-api", "development")["DB_HOST"][0], "host.docker.internal")
+            self.assertIsNone(s.get("env:development", "DB_HOST"))
+
+    def test_given_a_move_when_it_fails_midway_then_nothing_is_half_moved(self):
+        with self.store() as s:
+            s.set("app:heimdall-api@development", "A", "1", None, "set")
+            s.set("app:fortuna-api@development", "A", "1", None, "set")
+            with self.assertRaises(v.VarsError):
+                s.move_up("A", "has a\nnewline", False, ["app:heimdall-api@development"], "env:development", "x")
+            self.assertEqual(s.get("app:heimdall-api@development", "A")[0], "1")
+
+
 class BackupCheckTests(StoreTestCase):
     def test_given_a_backup_when_restored_then_values_read_with_its_key(self):
         self.cli("set", "platform", "DOMAIN=example.com")
@@ -467,6 +506,7 @@ class BackupCheckTests(StoreTestCase):
         database = next(target.glob("vars-*.db"))
         key = next(target.glob("vars-*.key"))
         self.assertEqual(database.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(key.stat().st_mode & 0o777, 0o600)
         restored = self.dir / "restored"
         restored.mkdir()
         shutil.copy(database, restored / "vars.db")
@@ -530,3 +570,14 @@ class BackupCheckTests(StoreTestCase):
             writer.rollback()
             writer.close()
         self.assertEqual(result.stdout, "example.com\n")
+
+
+class BackupUmaskTests(StoreTestCase):
+    def test_given_a_backup_when_done_then_the_umask_is_restored_and_files_are_private(self):
+        old = os.umask(0o022)
+        try:
+            database, key = v.backup(self.dir, self.dir / "b")
+            self.assertEqual(os.umask(0o022), 0o022)
+        finally:
+            os.umask(old)
+        self.assertEqual((database.stat().st_mode & 0o777, key.stat().st_mode & 0o777), (0o600, 0o600))
