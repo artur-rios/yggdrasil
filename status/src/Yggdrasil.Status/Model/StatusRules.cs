@@ -35,9 +35,10 @@ public static class StatusRules
 
                 var probeOk = probe is { Healthy: true } && probe.LatencyMs <= SlowProbe.TotalMilliseconds;
                 var healthOk = container.Health is null or "healthy";
-                // restartCount counts Docker restarting this same container (restart: unless-stopped);
-                // a redeploy creates a new container at 0, so a fresh deploy is not a "restart".
-                var restartedRecently = container.RestartCount > 0 &&
+                // A restart is this same container started again (restart: unless-stopped after a crash,
+                // or the engine restarting); a redeploy creates a new container, so a fresh deploy is
+                // not one.
+                var restartedRecently = container.Restarted &&
                                         container.StartedAt is { } startedAt &&
                                         now - startedAt < RecentRestart;
 

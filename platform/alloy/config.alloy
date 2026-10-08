@@ -4,8 +4,10 @@
 // project (stack) and service, the container, and the log level. Everything else stays in the JSON
 // line and is queried with `| json`.
 
+// Docker through alloy-docker-proxy (platform/compose.yml), which allows only the read-only requests
+// these two components make, never the socket itself.
 discovery.docker "containers" {
-  host = "unix:///var/run/docker.sock"
+  host = "tcp://alloy-docker-proxy:2375"
 }
 
 discovery.relabel "containers" {
@@ -29,7 +31,7 @@ discovery.relabel "containers" {
 }
 
 loki.source.docker "containers" {
-  host          = "unix:///var/run/docker.sock"
+  host          = "tcp://alloy-docker-proxy:2375"
   targets       = discovery.docker.containers.targets
   relabel_rules = discovery.relabel.containers.rules
   forward_to    = [loki.process.containers.receiver]

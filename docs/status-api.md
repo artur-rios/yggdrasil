@@ -18,7 +18,7 @@ Every `/api/*` endpoint requires `Authorization: Bearer <token>`, where the toke
 Generate the token with `openssl rand -hex 32`. The scheme `Bearer` is case-insensitive, and whitespace around the token is ignored.
 
 CORS: the origins in `YGGDRASIL_STATUS_CORS_ORIGINS`, in the host's `platform.env`, may call `/api/*` from a browser. This lets the console served by one environment show another environment. Same-origin use needs no entry.
-- Comma-separated, may be empty. Each origin is exactly `https://host` or `https://host:port`: no path or query (a trailing `/` is tolerated). An invalid entry stops the service at start-up.
+- Comma-separated, may be empty. Each origin is exactly `https://host` or `https://host:port` (`http://` is accepted too): no path or query (a trailing `/` is tolerated). An invalid entry stops the service at start-up.
 - Allowed: `GET` with the `Authorization` header. Preflight answers are cached for 1 hour.
 
 ## `GET /api/status`
@@ -55,7 +55,7 @@ The whole environment in one response. The console polls it every 30 s (fixed) w
             "state": "running",
             "health": "healthy",
             "startedAt": "2026-09-17T21:40:05Z",
-            "restartCount": 0
+            "restartCount": null
           },
           "probe": {
             "healthy": true,
@@ -98,13 +98,17 @@ When the Docker proxy is unreachable, applications whose probe fails are `down` 
 - **`environment`**: the environment's `id` in the catalog, i.e. `YGGDRASIL_ENVIRONMENT`. **`environmentName`** is its `name`, for display.
 - **`url`**: `https://<host>.<DOMAIN>` when the catalog gives a `host`; otherwise `null`.
 - **`repository`**: `https://github.com/<owner>/<repository>` for applications with a repository; `null` for platform components.
-- **`deployment`**: read from the container labels `scripts/deploy.sh` sets: `yggdrasil.version`, `yggdrasil.commit` and `yggdrasil.deployed_at`. `image` comes from the container. The object is `null` when there is no container. Each field is `null` when its label is missing, as for platform components.
-- **`container`**: from the Docker API through the read-only socket proxy. `health` is `healthy`, `unhealthy`, `starting` or `null` (no health check). `null` when there is no container.
+- **`deployment`**: read from the container labels `scripts/deploy.sh` sets: `yggdrasil.version`, `yggdrasil.commit` and `yggdrasil.deployed_at`. `image` is the image Docker lists for the container: its name, or its id (`sha256:...`) once that name points to another image (a rebuilt `:local` image, a re-pulled tag). The object is `null` when there is no container. Each field is `null` when its label is missing, as for platform components.
+- **`container`**: from Docker's container list (`GET /containers/json`), the only request the status API's socket proxy lets through: not the container inspect, which would also hand the status API every container's environment, i.e. every application's secrets (see [Docker access](#docker-access)). `null` when there is no container.
+  - `health` is `healthy`, `unhealthy`, `starting` or `null` (no health check).
+  - `startedAt` is when the container last started, `null` when it isn't up (`exited`, `created`, `restarting`, `dead`). For a container that has not restarted, it is the container's creation time, to the second: Compose starts a container right after creating it, or once its `depends_on` are healthy. For a container that has restarted, the list only says "Up 5 minutes", so `startedAt` is as precise as that text: to the second under a minute, the minute under an hour, then the hour, the day, the week and the month.
+  - `restartCount` is always `null`: only the inspect has the count. The field stays so that consoles reading it keep working.
+  - **Restarted**: started again more than 5 minutes after it was created. That is Docker's restart policy after a crash, a `docker restart`, or the Docker engine or the host restarting. A redeploy is a new container, so it is not a restart, and neither is a start delayed by `depends_on`.
 - **`probe`**: the last health probe, a `GET` to the catalog's `health` URL with a 5 s timeout and no redirects followed (so a 3xx is unhealthy). `null` for `not_deployed` applications, which are not probed.
   - `statusCode` is the HTTP answer.
   - `error` is `null` whenever an answer came back, even a failing one. Otherwise it is one of `timeout`, `connection refused`, `connection failed`, `connection reset`, `connection closed`, `name not resolved`, `host unreachable`, `tls error`, `invalid response` or `request failed` (anything else).
   - `latencyMs` is set on failures too: the time until the probe gave up.
-- **Restarted recently**: `restartCount > 0` and `startedAt` less than 10 minutes ago. A fresh deploy is a new container with 0 restarts, so it doesn't count.
+- **Restarted recently**: restarted (see `container`) and `startedAt` less than 10 minutes ago. A fresh deploy is a new container, so it doesn't count.
 - **`deployedAt`**: normalised to UTC (`...Z`) when the label parses as a date, otherwise passed through as written.
 
 ## `GET /api/systems/{id}`
@@ -139,6 +143,12 @@ Containers are found by the Compose labels on them:
 - `com.docker.compose.service` is `container.service`, when the catalog sets one.
 
 When several containers match, the running one wins, then the newest.
+
+## Docker access
+
+The status API answers the internet, so it never holds the Docker socket. It reads Docker through `docker-proxy` in `platform/compose.yml` ([wollomatic/socket-proxy](https://github.com/wollomatic/socket-proxy), pinned by digest), on an internal network shared with nothing else. The proxy lets through exactly one request, `GET /containers/json` (with or without an API version prefix), and only from the `status` container. Everything else gets `403`: the container inspect and its environment, logs, archives, events, exec, and any request that writes. A `docker proxy answered 403` in the status API's log means that allowlist no longer matches what the API asks for.
+
+Traefik and Alloy go through proxies of their own, with the allowlists their Docker clients need; see the comments in `platform/compose.yml`. `scripts/test_socket_proxies.py` checks the three allowlists, and with `YGG_DOCKER_TESTS=1` runs them, with Traefik and Alloy, against a fake Docker API.
 
 ## Configuration
 
