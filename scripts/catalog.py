@@ -4,6 +4,7 @@
     python3 scripts/catalog.py validate
     python3 scripts/catalog.py environments [<app>]        ids, in promotion order
     python3 scripts/catalog.py get <app> <environment> <option>
+    python3 scripts/catalog.py environment <environment> [<option>]  JSON: its options, defaults applied
     python3 scripts/catalog.py plan <app>                  JSON: the app's environments, options resolved
     python3 scripts/catalog.py applications [--deployable] ids
     python3 scripts/catalog.py systems                    id<TAB>name, one per line
@@ -33,6 +34,14 @@ import yaml
 CATALOG = pathlib.Path(__file__).resolve().parent.parent / "catalog.yaml"
 
 ID = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# The status API's own rules for these fields (status/src/Yggdrasil.Status/Catalog/CatalogLoader.cs):
+# it refuses the whole catalog at start-up when one is broken, so validate refuses it first.
+HOST_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+# One DNS label: what <host><hostSuffix> must stay, so the wildcard certificate *.DOMAIN covers it.
+HOST_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+HOST_SUFFIX = re.compile(r"^([a-z0-9-]*[a-z0-9])?$")
+HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
+REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+$")
 KINDS = {"api", "web", "worker", "platform"}
 MODES = {"proxy", "ports"}
 TRIGGERS = {"manual", "branch", "release"}
@@ -48,6 +57,8 @@ DEFAULTS = {
     "waitTimeout": 300,
     "keepImages": 3,
     "checksTimeout": 3600,
+    "hostSuffix": "",
+    "onDemand": False,
 }
 
 
@@ -92,12 +103,34 @@ def validate(catalog):
             errors.append(f"{where}.name: required")
         errors += _options_errors(where, env)
 
+    systems = catalog.get("systems")
+    if not isinstance(systems, list) or not systems:
+        errors.append("systems: required, a non-empty list")
+        systems = systems if isinstance(systems, list) else []
+    environments_by_id = {env["id"]: env for env in environments if isinstance(env, dict) and env.get("id") in env_ids}
+    system_ids = []
     app_ids = []
-    for system in catalog.get("systems") or []:
+    for i, system in enumerate(systems):
+        if not isinstance(system, dict):
+            errors.append(f"systems[{i}]: must be a mapping")
+            continue
         sid = system.get("id", "?")
         if not isinstance(system.get("id"), str) or not ID.match(system["id"]):
             errors.append(f"system '{sid}': id must be lowercase letters, digits and dashes")
-        for app in system.get("applications") or []:
+        elif sid in system_ids:
+            errors.append(f"system '{sid}': duplicate id")
+        else:
+            system_ids.append(sid)
+        if not _text(system.get("name")):
+            errors.append(f"system '{sid}'.name: required")
+        applications = system.get("applications")
+        if not isinstance(applications, list) or not applications:
+            errors.append(f"system '{sid}'.applications: required, a non-empty list")
+            applications = applications if isinstance(applications, list) else []
+        for app in applications:
+            if not isinstance(app, dict):
+                errors.append(f"system '{sid}': application {app!r} must be a mapping")
+                continue
             aid = app.get("id")
             where = f"application '{aid}'"
             if not isinstance(aid, str) or not ID.match(aid):
@@ -106,10 +139,14 @@ def validate(catalog):
             if aid in app_ids:
                 errors.append(f"{where}: duplicate id")
             app_ids.append(aid)
+            if not _text(app.get("name")):
+                errors.append(f"{where}.name: required")
             if app.get("kind") not in KINDS:
                 errors.append(f"{where}.kind: one of {sorted(KINDS)}")
             if not str(app.get("health", "")).startswith(("http://", "https://")):
                 errors.append(f"{where}.health: an absolute http(s) URL")
+            errors += _application_field_errors(where, app)
+            errors += _host_suffix_errors(where, app, environments_by_id)
             overrides = app.get("environments")
             if overrides is None:
                 continue
@@ -123,6 +160,84 @@ def validate(catalog):
                     errors.append(f"{where}.environments.{env_id}: options must be a mapping (or {{}})")
                 else:
                     errors += _options_errors(f"{where}.environments.{env_id}", options or {}, override=True)
+                    # An override may switch an environment to trigger branch and rely on the
+                    # environment's branches -- but something has to name them.
+                    resolved = {**environments_by_id[env_id], **(options or {})}
+                    if resolved.get("trigger") == "branch" and not resolved.get("branches"):
+                        errors.append(f"{where}.environments.{env_id}.branches: required when trigger is branch "
+                                      "(neither the application nor the environment sets them)")
+    errors += _project_errors(systems, env_ids)
+    return errors
+
+
+def _project_errors(systems, env_ids):
+    """deploy.sh names each Compose project <application>-<environment>: two pairs must not give the
+    same name (application a-b in environment c, application a in environment b-c), or one deploy
+    would replace the other's containers."""
+    errors = []
+    projects = {}
+    for system in systems:
+        for app in (system.get("applications") or []) if isinstance(system, dict) else []:
+            if not isinstance(app, dict) or app.get("kind") == "platform" or not isinstance(app.get("id"), str):
+                continue
+            overrides = app.get("environments")
+            for env_id in (overrides if isinstance(overrides, dict) else env_ids):
+                project = f"{app['id']}-{env_id}"
+                other = projects.setdefault(project, (app["id"], env_id))
+                if other != (app["id"], env_id):
+                    errors.append(f"application '{app['id']}' in '{env_id}': Compose project '{project}' is also "
+                                  f"'{other[0]}' in '{other[1]}'; rename one of them")
+    return errors
+
+
+def _text(value):
+    """The value stripped when it is a non-blank string, else None."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _application_field_errors(where, app):
+    errors = []
+    for key, pattern, what in (
+        ("metrics", HOST_PORT, "host:port, e.g. shop-api:9464"),
+        ("host", HOST_NAME, "a host name label, e.g. shop-api"),
+        ("repository", REPOSITORY, "a GitHub repository name"),
+    ):
+        if app.get(key) is not None and not (_text(app[key]) and pattern.match(_text(app[key]))):
+            errors.append(f"{where}.{key}: {what}")
+    if app.get("metricsPath") is not None:
+        if not (_text(app["metricsPath"]) or "").startswith("/"):
+            errors.append(f"{where}.metricsPath: a path starting with /")
+        if app.get("metrics") is None:
+            errors.append(f"{where}.metricsPath: set without metrics")
+    checks = app.get("checks")
+    if checks is not None and (not isinstance(checks, list) or not all(_text(check) for check in checks)):
+        errors.append(f"{where}.checks: a list of GitHub check names, none empty")
+    container = app.get("container")
+    if container is not None and (not isinstance(container, dict)
+                                  or any(container.get(k) is not None and not _text(container[k]) for k in ("project", "service"))):
+        errors.append(f"{where}.container: a mapping of project and/or service names")
+    return errors
+
+
+def _host_suffix_errors(where, app, environments_by_id):
+    """<host><hostSuffix> must stay one DNS label of at most 63 characters in every environment the
+    application deploys to, so that the wildcard certificate and DNS record *.DOMAIN cover it."""
+    host = _text(app.get("host"))
+    overrides = app.get("environments")
+    if not host or (overrides is not None and not isinstance(overrides, dict)):
+        return []
+    errors = []
+    for env_id, env in environments_by_id.items():
+        if overrides is not None and env_id not in overrides:
+            continue
+        override = overrides.get(env_id) if overrides is not None else None
+        suffix = (override if isinstance(override, dict) and "hostSuffix" in override else env).get("hostSuffix", "")
+        if not suffix or not isinstance(suffix, str) or not HOST_SUFFIX.match(suffix):
+            continue  # nothing appended, or reported as an invalid hostSuffix already
+        name = host + suffix
+        if len(name) > 63 or not HOST_LABEL.match(name):
+            errors.append(f"{where}.host: '{host}' with the hostSuffix '{suffix}' of '{env_id}' must be one DNS label "
+                          "of at most 63 characters (lowercase letters, digits and dashes, no dots)")
     return errors
 
 
@@ -144,10 +259,16 @@ def _options_errors(where, options, override=False):
     if not override and options.get("trigger") == "branch" and not options.get("branches"):
         errors.append(f"{where}.branches: required when trigger is branch")
     for key in ("waitTimeout", "keepImages", "checksTimeout"):
-        if key in options and (not isinstance(options[key], int) or options[key] < 1):
+        # bool is an int in Python: `true` would otherwise pass as 1.
+        value = options.get(key)
+        if key in options and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
             errors.append(f"{where}.{key}: a positive whole number")
-    if "approval" in options and not isinstance(options["approval"], bool):
-        errors.append(f"{where}.approval: true or false")
+    for key in ("approval", "onDemand"):
+        if key in options and not isinstance(options[key], bool):
+            errors.append(f"{where}.{key}: true or false")
+    if "hostSuffix" in options and not (isinstance(options["hostSuffix"], str) and HOST_SUFFIX.match(options["hostSuffix"])):
+        errors.append(f"{where}.hostSuffix: lowercase letters, digits and dashes, not ending with a dash "
+                      "(e.g. -dev), or empty")
     return errors
 
 
@@ -194,6 +315,23 @@ def resolve(catalog, app_id):
         resolved["agent"] = resolved["agent"] or env["id"]
         plan.append(resolved)
     return plan
+
+
+def environment_options(catalog, env_id):
+    """An environment's own options, defaults applied: what it is before any application overrides it."""
+    for env in catalog["environments"]:
+        if env["id"] == env_id:
+            resolved = {"id": env["id"], "name": env["name"]}
+            for key, default in DEFAULTS.items():
+                resolved[key] = env.get(key, default)
+            resolved["branches"] = _branch_list(resolved["branches"]) or []
+            resolved["agent"] = resolved["agent"] or env["id"]
+            return resolved
+    raise CatalogError(f"'{env_id}' is not an environment in catalog.yaml")
+
+
+def _print_value(value):
+    print(" ".join(value) if isinstance(value, list) else str(value).lower() if isinstance(value, bool) else value)
 
 
 def matches_branch(environment, branch):
@@ -319,10 +457,17 @@ def main(argv):
                 if env["id"] == env_id:
                     if option not in env:
                         raise CatalogError(f"unknown option '{option}'")
-                    value = env[option]
-                    print(" ".join(value) if isinstance(value, list) else str(value).lower() if isinstance(value, bool) else value)
+                    _print_value(env[option])
                     return 0
             raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
+        elif command == "environment" and len(args) in (1, 2):
+            env = environment_options(catalog, args[0])
+            if len(args) == 1:
+                print(json.dumps(env, indent=2))
+            elif args[1] not in env:
+                raise CatalogError(f"unknown option '{args[1]}'")
+            else:
+                _print_value(env[args[1]])
         elif command == "plan" and len(args) == 1:
             print(json.dumps(resolve(catalog, args[0]), indent=2))
         elif command == "owner":

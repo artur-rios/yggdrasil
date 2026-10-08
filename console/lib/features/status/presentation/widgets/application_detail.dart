@@ -12,6 +12,7 @@ Future<void> showApplicationDetail(
   BuildContext context, {
   required SystemStatus system,
   required ApplicationStatus application,
+  String? environmentName,
 }) {
   final width = MediaQuery.sizeOf(context).width;
 
@@ -29,6 +30,7 @@ Future<void> showApplicationDetail(
         builder: (context, controller) => ApplicationDetail(
           system: system,
           application: application,
+          environmentName: environmentName,
           scrollController: controller,
         ),
       ),
@@ -47,6 +49,7 @@ Future<void> showApplicationDetail(
         child: ApplicationDetail(
           system: system,
           application: application,
+          environmentName: environmentName,
           onClose: () => Navigator.of(context).pop(),
         ),
       ),
@@ -59,12 +62,16 @@ class ApplicationDetail extends StatelessWidget {
     super.key,
     required this.system,
     required this.application,
+    this.environmentName,
     this.scrollController,
     this.onClose,
   });
 
   final SystemStatus system;
   final ApplicationStatus application;
+
+  /// The environment the application is in, when known.
+  final String? environmentName;
   final ScrollController? scrollController;
   final VoidCallback? onClose;
 
@@ -102,7 +109,13 @@ class ApplicationDetail extends StatelessWidget {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: <Widget>[
             StatusChip(application.status),
-            Text('${system.name} · ${application.id}'),
+            Text(
+              <String>[
+                system.name,
+                ?environmentName,
+                application.id,
+              ].join(' · '),
+            ),
           ],
         ),
         if (application.url != null || application.repository != null) ...[
@@ -129,6 +142,7 @@ class ApplicationDetail extends StatelessWidget {
           title: 'Application',
           rows: <(String, String?)>[
             ('Id', application.id),
+            if (environmentName != null) ('Environment', environmentName),
             ('Kind', kindLabel(application.kind, application.kindWire)),
             (
               'Status',
@@ -168,9 +182,13 @@ class ApplicationDetail extends StatelessWidget {
         _Section(
           title: 'Probe',
           emptyText: probe == null
-              ? (application.status == Status.notDeployed
-                    ? 'Not probed: not deployed on this host.'
-                    : 'No probe result.')
+              ? switch (application.status) {
+                  Status.notDeployed =>
+                    'Not probed: not deployed on this host.',
+                  Status.stopped =>
+                    'Not probed: stopped (an on-demand environment).',
+                  _ => 'No probe result.',
+                }
               : null,
           rows: <(String, String?)>[
             if (probe != null) ...[

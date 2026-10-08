@@ -46,10 +46,13 @@ builder.Services.ConfigureHttpJsonOptions(options => Json.Configure(options.Seri
 // stops the process, and it lets tests substitute either before anything reads them.
 builder.Services.AddSingleton(provider => StatusOptions.Load(provider.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton(provider => CatalogLoader.LoadFile(provider.GetRequiredService<StatusOptions>().CatalogPath));
-// What everything else reads: the catalog narrowed to YGGDRASIL_ENVIRONMENT, which must be one of its
-// environments. Checked here rather than in StatusOptions, which is read before there is a catalog.
-builder.Services.AddSingleton(provider => EnvironmentCatalog.For(
-    provider.GetRequiredService<Catalog>(), provider.GetRequiredService<StatusOptions>().Environment));
+// What everything else reads: the catalog narrowed to YGGDRASIL_ENVIRONMENTS, each of which must be one
+// of its environments. Checked here rather than in StatusOptions, which is read before there is a catalog.
+builder.Services.AddSingleton(provider =>
+{
+    var options = provider.GetRequiredService<StatusOptions>();
+    return HostCatalog.For(provider.GetRequiredService<Catalog>(), options.Environments, options.EnvironmentsSetting);
+});
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<StatusSnapshotStore>();
 builder.Services.AddSingleton<SnapshotBuilder>();
@@ -92,11 +95,11 @@ var app = builder.Build();
 try
 {
     var options = app.Services.GetRequiredService<StatusOptions>();
-    var catalog = app.Services.GetRequiredService<EnvironmentCatalog>();
+    var catalog = app.Services.GetRequiredService<HostCatalog>();
     app.Logger.LogInformation(
-        "Status API for {Environment}: {Applications} applications in {Systems} systems from {CatalogPath}, refreshing every {Interval} s, internal port {InternalPort}",
-        options.Environment, catalog.Applications.Count(), catalog.Systems.Count, options.CatalogPath,
-        options.RefreshInterval.TotalSeconds, options.InternalPort);
+        "Status API for {Host} ({Environments}): {Targets} applications to probe in {Systems} systems from {CatalogPath}, refreshing every {Interval} s, internal port {InternalPort}",
+        options.Domain, string.Join(", ", catalog.Environments.Select(e => e.Id)), catalog.Targets.Count(), catalog.Systems.Count,
+        options.CatalogPath, options.RefreshInterval.TotalSeconds, options.InternalPort);
 }
 catch (Exception e) when (e is StartupException or CatalogException)
 {

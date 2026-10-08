@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- The console polls each environment's status API. -->
+    <!-- The console polls each host's status API. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- HTTPS only: the status API is always behind Traefik's TLS. -->

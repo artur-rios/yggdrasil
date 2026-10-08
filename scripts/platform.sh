@@ -3,7 +3,8 @@
 #
 #     scripts/platform.sh up | down | ps | logs [service] | config
 #
-# Reads <secrets>/platform.env, secrets being $YGG_SECRETS_DIR (default /etc/yggdrasil). Template:
+# One platform stack per host, whatever number of environments the host runs (ENVIRONMENTS). Reads
+# <secrets>/platform.env, secrets being $YGG_SECRETS_DIR (default /etc/yggdrasil). Template:
 # env/platform.env.example.
 set -euo pipefail
 
@@ -28,7 +29,8 @@ check_profile_variables() {
   profiles=$(set -a; . "$env_file"; echo ",${COMPOSE_PROFILES:-},")
   local required=()
   [[ "$profiles" == *,jenkins,* ]] && required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD GITHUB_APP_ID GITHUB_APP_KEY_FILE)
-  [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET DOCKER_GID)
+  # DOCKER_GID too, but on every host: compose.yml requires it for the socket proxies.
+  [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET)
   local name value
   for name in "${required[@]}"; do
     # shellcheck source=/dev/null
@@ -37,19 +39,27 @@ check_profile_variables() {
   done
 }
 
-# ENVIRONMENT names this host's environment: it must be one in catalog.yaml.
-check_environment() {
-  local environment known
+# ENVIRONMENTS names the environments this host runs, comma-separated: each must be one in
+# catalog.yaml. A platform.env from before 0.5 has only ENVIRONMENT, which counts as a list of one;
+# ENVIRONMENTS wins when both are set.
+check_environments() {
+  local environments known environment
   # shellcheck source=/dev/null
-  environment=$(set -a; . "$env_file"; echo "${ENVIRONMENT:-}")
+  environments=$(set -a; . "$env_file"; echo "${ENVIRONMENTS:-${ENVIRONMENT:-}}")
+  [[ -n "${environments//[ ,]/}" ]] \
+    || die "ENVIRONMENTS must be set in $env_file: the environments this host runs, e.g. development,homologation,production"
   known=$(python3 "$root/scripts/catalog.py" environments) || exit 1
-  grep -qx "$environment" <<<"$known" \
-    || die "ENVIRONMENT='$environment' in $env_file is not an environment in catalog.yaml ($(paste -sd, - <<<"$known"))"
+  IFS=', ' read -r -a environments <<<"$environments"
+  for environment in "${environments[@]}"; do
+    [[ -n "$environment" ]] || continue
+    grep -Fqx "$environment" <<<"$known" \
+      || die "'$environment' (ENVIRONMENTS in $env_file) is not an environment in catalog.yaml ($(paste -sd, - <<<"$known"))"
+  done
 }
 
 case "${1:-}" in
   up)
-    check_environment
+    check_environments
     check_profile_variables
     for network in edge telemetry; do
       docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null

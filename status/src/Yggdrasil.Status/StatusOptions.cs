@@ -13,8 +13,18 @@ public sealed record StatusOptions
     // `-base64 24` produce, so it costs nothing to meet.
     public const int MinimumTokenLength = 32;
 
+    public const string EnvironmentsVariable = "YGGDRASIL_ENVIRONMENTS";
+
+    // Before a host could run several environments; still read, as a list of one, so that a host
+    // upgraded without editing its platform.env keeps working.
+    public const string LegacyEnvironmentVariable = "YGGDRASIL_ENVIRONMENT";
+
     public required string Token { get; init; }
-    public required string Environment { get; init; }
+    /// <summary>The ids of the environments this host runs, as configured (the catalog decides the order).</summary>
+    public required IReadOnlyList<string> Environments { get; init; }
+
+    /// <summary>The variable <see cref="Environments"/> came from, to name it in errors.</summary>
+    public string EnvironmentsSetting { get; init; } = EnvironmentsVariable;
     public required string Domain { get; init; }
     public required string CatalogPath { get; init; }
     public required Uri DockerUrl { get; init; }
@@ -38,10 +48,24 @@ public sealed record StatusOptions
             errors.Add($"YGGDRASIL_STATUS_TOKEN must be at least {MinimumTokenLength} characters (it has {token.Length})");
         }
 
-        var environment = Get("YGGDRASIL_ENVIRONMENT");
-        if (environment.Length == 0)
+        // YGGDRASIL_ENVIRONMENTS wins when both are set. Whether each id is in the catalog is checked
+        // once there is a catalog (HostCatalog.For).
+        var environmentsSetting = EnvironmentsVariable;
+        var environmentsText = Get(EnvironmentsVariable);
+        if (environmentsText.Length == 0 && Get(LegacyEnvironmentVariable).Length > 0)
         {
-            errors.Add("YGGDRASIL_ENVIRONMENT is not set (the id of one of the environments in catalog.yaml)");
+            environmentsSetting = LegacyEnvironmentVariable;
+            environmentsText = Get(LegacyEnvironmentVariable);
+        }
+
+        var environments = environmentsText
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (environments.Count == 0)
+        {
+            errors.Add($"{EnvironmentsVariable} is not set (the comma-separated ids of the environments in catalog.yaml " +
+                       "this host runs, e.g. development,homologation,production)");
         }
 
         // Only ever used to build https://<host>.<domain>, so a scheme or a trailing dot is a mistake.
@@ -107,7 +131,8 @@ public sealed record StatusOptions
         return new StatusOptions
         {
             Token = token,
-            Environment = environment,
+            Environments = environments,
+            EnvironmentsSetting = environmentsSetting,
             Domain = domain,
             CatalogPath = catalogPath,
             DockerUrl = dockerUrl!,

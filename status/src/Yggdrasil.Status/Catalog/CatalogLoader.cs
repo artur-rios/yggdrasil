@@ -117,7 +117,7 @@ public static partial class CatalogLoader
     private static (List<EnvironmentDefinition> Environments, HashSet<string> Declared) ValidateEnvironments(
         List<RawEnvironment>? raw, List<string> errors)
     {
-        // At least one: the service reports on exactly one environment, named by YGGDRASIL_ENVIRONMENT.
+        // At least one: the service reports on the environments YGGDRASIL_ENVIRONMENTS names.
         if (raw is null || raw.Count == 0)
         {
             errors.Add("environments: at least one environment is required");
@@ -142,18 +142,19 @@ public static partial class CatalogLoader
                 errors.Add($"{where}: name is required");
             }
 
-            CheckOptions(rawEnvironment, where, errors, isOverride: false);
-            environments.Add(new EnvironmentDefinition(id, rawEnvironment.Name?.Trim() ?? ""));
+            var (hostSuffix, onDemand) = CheckOptions(rawEnvironment, where, errors, isOverride: false);
+            environments.Add(new EnvironmentDefinition(id, rawEnvironment.Name?.Trim() ?? "", hostSuffix ?? "", onDemand ?? false));
         }
 
         return (environments, declared);
     }
 
-    // The deployment options this service doesn't use but still validates, on an environment or on an
-    // application's override of one. Only those with a closed set of values; the rest (agent,
-    // approval, the timeouts) are left to the tools that read them. The rules are scripts/catalog.py's:
-    // a catalog Jenkins and deploy.sh accept must not stop this service.
-    private static void CheckOptions(RawOptions options, string where, List<string> errors, bool isOverride)
+    // The deployment options with a closed set of values, on an environment or on an application's
+    // override of one: the two this service uses (hostSuffix and onDemand, returned as written, null
+    // when not set) and those it only validates; the rest (agent, approval, the timeouts) are left to
+    // the tools that read them. The rules are scripts/catalog.py's: a catalog Jenkins and deploy.sh
+    // accept must not stop this service.
+    private static (string? HostSuffix, bool? OnDemand) CheckOptions(RawOptions options, string where, List<string> errors, bool isOverride)
     {
         var mode = NullIfBlank(options.Mode);
         if (mode is not null and not ("proxy" or "ports"))
@@ -178,6 +179,42 @@ public static partial class CatalogLoader
         {
             errors.Add($"{where}: branches is required when trigger is branch (e.g. release/*)");
         }
+
+        // Empty is a value, not "unset": an override of "" takes an environment's suffix away.
+        var hostSuffix = options.HostSuffix?.Trim();
+        if (hostSuffix is not null && !HostSuffix().IsMatch(hostSuffix))
+        {
+            errors.Add($"{where}: hostSuffix '{hostSuffix}' may only hold lowercase letters, digits and dashes, " +
+                       "and must not end with a dash (e.g. -dev)");
+        }
+
+        bool? onDemand = null;
+        if (options.OnDemand is not null)
+        {
+            if (TryParseBool(options.OnDemand, out var value))
+            {
+                onDemand = value;
+            }
+            else
+            {
+                errors.Add($"{where}: onDemand must be true or false");
+            }
+        }
+
+        return (hostSuffix, onDemand);
+    }
+
+    // YAML 1.1's booleans, which PyYAML (catalog.py) and SnakeYAML (Jenkins) read as such: YamlDotNet
+    // hands an `object` scalar over as its text.
+    private static bool TryParseBool(object value, out bool result)
+    {
+        (bool ok, result) = value switch
+        {
+            "true" or "True" or "TRUE" or "yes" or "Yes" or "YES" or "on" or "On" or "ON" => (true, true),
+            "false" or "False" or "FALSE" or "no" or "No" or "NO" or "off" or "Off" or "OFF" => (true, false),
+            _ => (false, false),
+        };
+        return ok;
     }
 
     // A value deserialized as `object` is a string for a scalar and a list for a sequence; anything
@@ -284,8 +321,9 @@ public static partial class CatalogLoader
             errors.Add($"{where}: checks has an empty entry");
         }
 
-        // Omitted: every environment. Listed: those, in catalog order whatever order they are written in.
-        var deploysTo = environments.Select(environment => environment.Id).ToList();
+        // Omitted: every environment. Listed: those, in catalog order whatever order they are written in,
+        // each with the options it overrides there.
+        var overrides = new Dictionary<string, (string? HostSuffix, bool? OnDemand)>(StringComparer.Ordinal);
         if (raw.Environments is not null)
         {
             if (raw.Environments.Count == 0)
@@ -300,13 +338,39 @@ public static partial class CatalogLoader
                     errors.Add($"{where}: environments: '{key}' is not an environment " +
                                $"({string.Join(", ", environments.Select(e => e.Id))})");
                 }
-                else if (options is not null)
+                else
                 {
-                    CheckOptions(options, $"{where}.environments.{key}", errors, isOverride: true);
+                    overrides[key] = options is null ? (null, null) : CheckOptions(options, $"{where}.environments.{key}", errors, isOverride: true);
                 }
             }
+        }
 
-            deploysTo = deploysTo.Where(raw.Environments.ContainsKey).ToList();
+        // Resolved as scripts/catalog.py resolves every option: the default (already in the
+        // environment's definition), then the environment's value, then the override.
+        var deployments = environments
+            .Where(environment => raw.Environments is null || overrides.ContainsKey(environment.Id))
+            .Select(environment =>
+            {
+                var (hostSuffix, onDemand) = overrides.GetValueOrDefault(environment.Id);
+                return new ApplicationEnvironment(environment.Id, hostSuffix ?? environment.HostSuffix, onDemand ?? environment.OnDemand);
+            })
+            .ToList();
+
+        // Where a suffix is appended, <host><hostSuffix> must be one label under DOMAIN, covered by the
+        // one *.DOMAIN certificate and DNS record: no dots, and at most DNS's 63 characters. As
+        // scripts/catalog.py checks it, in every environment the application deploys to.
+        if (host is not null)
+        {
+            // An invalid suffix is reported as such already.
+            foreach (var deployment in deployments.Where(deployment => deployment.HostSuffix.Length > 0 && HostSuffix().IsMatch(deployment.HostSuffix)))
+            {
+                var name = host + deployment.HostSuffix;
+                if (name.Length > MaxLabelLength || !Id().IsMatch(name))
+                {
+                    errors.Add($"{where}: host '{host}' with the hostSuffix '{deployment.HostSuffix}' of {deployment.Environment} " +
+                               $"must be one DNS label of at most {MaxLabelLength} characters (lowercase letters, digits and dashes, no dots)");
+                }
+            }
         }
 
         if (errors.Count > errorCount)
@@ -316,7 +380,7 @@ public static partial class CatalogLoader
 
         return new ApplicationDefinition(
             id, raw.Name!.Trim(), kind, repository, health!, metrics, metricsPath, host, checks,
-            new ContainerSelector(project, service), deploysTo);
+            new ContainerSelector(project, service), deployments);
     }
 
     private static void CheckId(string id, string where, List<string> errors)
@@ -347,8 +411,14 @@ public static partial class CatalogLoader
 
     private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private const int MaxLabelLength = 63;
+
     [GeneratedRegex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")]
     private static partial Regex Id();
+
+    // Usually starts with a dash (-dev), so not an id; empty is allowed, and is the default.
+    [GeneratedRegex("^([a-z0-9-]*[a-z0-9])?$")]
+    private static partial Regex HostSuffix();
 
     [GeneratedRegex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")]
     private static partial Regex HostName();
@@ -402,6 +472,12 @@ public static partial class CatalogLoader
 
         // A glob or a list of globs.
         public object? Branches { get; set; }
+
+        public string? HostSuffix { get; set; }
+
+        // An object rather than a bool, so that a wrong value is one more error in the list rather
+        // than a YAML exception that hides every other.
+        public object? OnDemand { get; set; }
     }
 
     private sealed class RawEnvironment : RawOptions

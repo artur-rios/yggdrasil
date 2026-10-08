@@ -8,7 +8,8 @@
 // then the environment's value, then the application's override. docs/catalog.md has the options.
 //
 //   branch pushed            -> every environment with trigger: branch whose `branches` glob matches
-//   "Build with Parameters"  -> DEPLOY_TO: one environment with trigger: manual (on a discovered branch)
+//   "Build with Parameters"  -> DEPLOY_TO: one environment with trigger: manual or branch (on a
+//                               discovered branch), whatever the branch would trigger
 //   PR release/x.y.z -> main -> wait for every GitHub Actions check on the pull request's head, then
 //                               deploy that commit to each trigger: release environment in catalog
 //                               order, setting deploy/<environment> (required on main) after each;
@@ -16,8 +17,12 @@
 //   any other pull request   -> nothing
 //
 // An environment with approval: true waits for someone to click "Deploy" first, without holding an
-// agent. Each environment deploys on its own agent (`agent`, default its id), so a stage runs on
-// the host it deploys to.
+// agent. Each environment deploys on its agent (`agent`, default its id), so a stage runs on the
+// host it deploys to; environments sharing a host share its agent.
+//
+// onDemand environments: a deploy a push triggers leaves a switched-off environment switched off
+// (deploy.sh starts it, waits for health, and stops it again). A DEPLOY_TO build is someone asking
+// to use the environment, so it runs deploy.sh with DEPLOY_START=1 and leaves it running.
 //
 // The work itself is scripts/deploy.sh and scripts/github.sh from this repository, checked out next
 // to the application, so a deploy by hand runs the same code.
@@ -34,13 +39,14 @@ def call(Map config) {
   String owner = catalog.owner
   String repository = catalog.repository ?: 'yggdrasil'
 
-  List manual = plan.findAll { it.trigger == 'manual' }.collect { it.id }
+  // Not release environments: those only ever run the head of a release pull request.
+  List byHand = plan.findAll { it.trigger in ['manual', 'branch'] }.collect { it.id }
   properties([
     disableConcurrentBuilds(),
     buildDiscarder(logRotator(numToKeepStr: '50')),
     parameters([
-      choice(name: 'DEPLOY_TO', choices: [''] + manual,
-             description: 'Deploy this branch to an environment with trigger: manual. Empty: only what the branch triggers.'),
+      choice(name: 'DEPLOY_TO', choices: [''] + byHand,
+             description: 'Deploy this branch to an environment with trigger: manual or branch, and leave it running if it is on demand. Empty: only what the branch triggers.'),
     ]),
   ])
 
@@ -57,7 +63,7 @@ def call(Map config) {
 
       String branch = env.BRANCH_NAME
       List targets = params.DEPLOY_TO
-        ? plan.findAll { it.id == params.DEPLOY_TO && it.trigger == 'manual' }
+        ? plan.findAll { it.id == params.DEPLOY_TO && it.trigger in ['manual', 'branch'] }
         : plan.findAll { it.trigger == 'branch' && matchesAny(it.branches, branch) }
       if (!targets) {
         echo "Nothing to deploy for ${branch}: no environment of ${app} is triggered by it (catalog.yaml)."
@@ -65,7 +71,7 @@ def call(Map config) {
       }
       String version = (branch ==~ RELEASE_BRANCH) ? (branch =~ RELEASE_BRANCH)[0][1] : branch.replaceAll(/[^A-Za-z0-9_.-]/, '-')
       for (Map environment : targets) {
-        deployTo(app, environment, version, null)
+        deployTo(app, environment, version, null, params.DEPLOY_TO as boolean)
       }
     }
   }
@@ -115,8 +121,9 @@ void release(String app, List environments) {
 }
 
 // One environment: wait for approval if it asks for it, then deploy on its agent. With a status
-// commit (release pull requests), deploy/<environment> reports the outcome on that commit.
-void deployTo(String app, Map environment, String version, String statusSha) {
+// commit (release pull requests), deploy/<environment> reports the outcome on that commit. start:
+// leave an onDemand environment running even if it was stopped (DEPLOY_START=1, see deploy.sh).
+void deployTo(String app, Map environment, String version, String statusSha, boolean start = false) {
   stage("Deploy to ${environment.name}") {
     if (environment.approval) {
       // Outside node(): waiting for a person must not hold an agent.
@@ -128,7 +135,9 @@ void deployTo(String app, Map environment, String version, String statusSha) {
         if (statusSha && sha != statusSha) {
           error "The pull request moved from ${statusSha.take(7)} to ${sha.take(7)} during the release; start it again."
         }
-        sh "bash yggdrasil/scripts/deploy.sh '${environment.id}' '${app}' app '${version}-${sha.take(7)}'"
+        withEnv(["DEPLOY_START=${start ? '1' : ''}"]) {
+          sh "bash yggdrasil/scripts/deploy.sh '${environment.id}' '${app}' app '${version}-${sha.take(7)}'"
+        }
         if (statusSha) {
           github("set-status ${app} ${sha} success deploy/${environment.id} 'Deployed to ${environment.name}' ${env.BUILD_URL}")
         }
@@ -175,7 +184,7 @@ Map loadCatalog() {
 @NonCPS
 List resolve(Map catalog, String app) {
   Map defaults = [mode: 'proxy', trigger: 'manual', branches: [], agent: null, approval: false,
-                  waitTimeout: 300, keepImages: 3, checksTimeout: 3600]
+                  waitTimeout: 300, keepImages: 3, checksTimeout: 3600, hostSuffix: '', onDemand: false]
   Map application = catalog.systems.collectMany { it.applications ?: [] }.find { it.id == app }
   if (application == null) {
     throw new IllegalArgumentException("'${app}' is not an application in ${CATALOG}")

@@ -3,17 +3,17 @@ using Yggdrasil.Status.Model;
 
 namespace Yggdrasil.Status.Tests;
 
-/// <summary>One test per row and clause of the status table in docs/status-api.md.</summary>
+/// <summary>One test per row and clause of the status table and the roll-up rule in docs/status-api.md.</summary>
 public class StatusRulesTests
 {
     private static readonly DateTimeOffset Now = TestData.Now;
 
-    private static DockerObservation Running(string? health = null, int restarts = 0, DateTimeOffset? startedAt = null) =>
-        new DockerObservation.Found(new ContainerDetails("c1", "running", health, startedAt ?? Now.AddDays(-1), restarts, "img:1",
+    private static DockerObservation Running(string? health = null, bool restarted = false, DateTimeOffset? startedAt = null) =>
+        new DockerObservation.Found(new ContainerDetails("c1", "running", health, startedAt ?? Now.AddDays(-1), restarted, "img:1",
             new Dictionary<string, string>()));
 
     private static DockerObservation InState(string state) =>
-        new DockerObservation.Found(new ContainerDetails("c1", state, null, Now.AddDays(-1), 0, "img:1", new Dictionary<string, string>()));
+        new DockerObservation.Found(new ContainerDetails("c1", state, null, null, false, "img:1", new Dictionary<string, string>()));
 
     [Fact]
     public void GivenARunningContainerWithoutHealthCheckAndA2xxProbe_ThenUp() =>
@@ -46,12 +46,17 @@ public class StatusRulesTests
     [Fact]
     public void GivenARestartInTheLastTenMinutes_ThenDegraded() =>
         Assert.Equal(StatusLevel.Degraded,
-            StatusRules.ForApplication(Running(restarts: 1, startedAt: Now.AddMinutes(-9)), TestData.Probe(), Now));
+            StatusRules.ForApplication(Running(restarted: true, startedAt: Now.AddMinutes(-9)), TestData.Probe(), Now));
+
+    [Fact]
+    public void GivenARecentStartInAnOnDemandEnvironment_ThenUp() =>
+        Assert.Equal(StatusLevel.Up,
+            StatusRules.ForApplication(Running(restarted: true, startedAt: Now.AddMinutes(-1)), TestData.Probe(), Now, onDemand: true));
 
     [Fact]
     public void GivenARestartMoreThanTenMinutesAgo_ThenUp() =>
         Assert.Equal(StatusLevel.Up,
-            StatusRules.ForApplication(Running(restarts: 3, startedAt: Now.AddMinutes(-11)), TestData.Probe(), Now));
+            StatusRules.ForApplication(Running(restarted: true, startedAt: Now.AddMinutes(-11)), TestData.Probe(), Now));
 
     [Fact]
     public void GivenAFreshDeployWithNoRestart_ThenUp() =>
@@ -67,6 +72,47 @@ public class StatusRulesTests
     public void GivenAContainerThatIsNotRunning_ThenDown(string state) =>
         Assert.Equal(StatusLevel.Down, StatusRules.ForApplication(InState(state), TestData.Probe(), Now));
 
+    [Theory]
+    [InlineData("exited")]
+    [InlineData("created")]
+    public void GivenAnOnDemandEnvironmentAndAContainerStoppedNormally_ThenStopped(string state)
+    {
+        Assert.True(StatusRules.IsStopped(InState(state), onDemand: true));
+        Assert.Equal(StatusLevel.Stopped, StatusRules.ForApplication(InState(state), null, Now, onDemand: true));
+    }
+
+    [Theory]
+    [InlineData("exited")]
+    [InlineData("created")]
+    public void GivenAnEnvironmentNotOnDemandAndAStoppedContainer_ThenDown(string state)
+    {
+        Assert.False(StatusRules.IsStopped(InState(state), onDemand: false));
+        Assert.Equal(StatusLevel.Down, StatusRules.ForApplication(InState(state), TestData.Probe(false, statusCode: null, error: "name not resolved"), Now));
+    }
+
+    [Theory]
+    [InlineData("restarting")]
+    [InlineData("paused")]
+    [InlineData("dead")]
+    public void GivenAnOnDemandEnvironmentAndAContainerNotStoppedNormally_ThenDown(string state) =>
+        Assert.Equal(StatusLevel.Down, StatusRules.ForApplication(InState(state), TestData.Probe(), Now, onDemand: true));
+
+    [Fact]
+    public void GivenAnOnDemandEnvironmentAndARunningContainer_ThenItsProbeDecidesAsAnywhere()
+    {
+        Assert.False(StatusRules.IsStopped(Running(), onDemand: true));
+        Assert.Equal(StatusLevel.Up, StatusRules.ForApplication(Running(), TestData.Probe(), Now, onDemand: true));
+        Assert.Equal(StatusLevel.Degraded, StatusRules.ForApplication(Running(), TestData.Probe(false, statusCode: 500), Now, onDemand: true));
+    }
+
+    [Fact]
+    public void GivenAnOnDemandEnvironmentAndNoContainerOrNoDocker_ThenNotStopped()
+    {
+        Assert.Equal(StatusLevel.NotDeployed, StatusRules.ForApplication(new DockerObservation.NotFound(), null, Now, onDemand: true));
+        Assert.Equal(StatusLevel.Down,
+            StatusRules.ForApplication(new DockerObservation.Unreachable("x"), TestData.Probe(false, statusCode: null, error: "connection refused"), Now, onDemand: true));
+    }
+
     [Fact]
     public void GivenDockerUnreachableAndAFailingProbe_ThenDown() =>
         Assert.Equal(StatusLevel.Down,
@@ -81,7 +127,7 @@ public class StatusRulesTests
     public void GivenNoContainer_ThenNotDeployed() =>
         Assert.Equal(StatusLevel.NotDeployed, StatusRules.ForApplication(new DockerObservation.NotFound(), null, Now));
 
-    // Aggregation: systems and the environment.
+    // The roll-up, the same at every level: applications, environments, systems, the host.
 
     [Theory]
     [InlineData(new[] { StatusLevel.Up, StatusLevel.Up }, StatusLevel.Up)]
@@ -96,6 +142,23 @@ public class StatusRulesTests
     [InlineData(new[] { StatusLevel.Down, StatusLevel.Unknown }, StatusLevel.Degraded)]
     [InlineData(new[] { StatusLevel.Unknown, StatusLevel.Up }, StatusLevel.Unknown)]
     [InlineData(new[] { StatusLevel.Unknown, StatusLevel.NotDeployed }, StatusLevel.Unknown)]
-    public void GivenApplicationStatuses_WhenAggregated_ThenTheWorstWinsAndNotDeployedIsNeutral(StatusLevel[] applications, StatusLevel expected) =>
-        Assert.Equal(expected, StatusRules.Aggregate(applications));
+    // Stopped: neutral too, unless every deployed member is stopped.
+    [InlineData(new[] { StatusLevel.Stopped }, StatusLevel.Stopped)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Stopped }, StatusLevel.Stopped)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.NotDeployed }, StatusLevel.Stopped)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Up }, StatusLevel.Up)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Stopped, StatusLevel.Up }, StatusLevel.Up)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Down }, StatusLevel.Down)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Down, StatusLevel.NotDeployed }, StatusLevel.Down)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Down, StatusLevel.Up }, StatusLevel.Degraded)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Degraded }, StatusLevel.Degraded)]
+    [InlineData(new[] { StatusLevel.Stopped, StatusLevel.Unknown }, StatusLevel.Unknown)]
+    public void GivenMemberStatuses_WhenAggregated_ThenTheWorstWinsAndNotDeployedAndStoppedAreNeutral(StatusLevel[] members, StatusLevel expected) =>
+        Assert.Equal(expected, StatusRules.Aggregate(members));
+
+    [Fact]
+    public void GivenStoppedOnDemandEnvironmentsBesideARunningOne_WhenAggregatedAsAHost_ThenTheHostIsUp() =>
+        // development and homologation stopped, production up, traefik up and jenkins not on this host.
+        Assert.Equal(StatusLevel.Up, StatusRules.Aggregate(
+            [StatusLevel.Stopped, StatusLevel.Stopped, StatusLevel.Up, StatusLevel.Up, StatusLevel.NotDeployed]));
 }

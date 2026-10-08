@@ -1,40 +1,622 @@
 {
-  "environment": "production",
-  "generatedAt": "2026-09-18T18:04:11Z",
-  "status": "degraded",
+  "host": "example.com",
+  "generatedAt": "2026-10-08T18:04:11Z",
+  "status": "up",
+  "environments": [
+    {
+      "id": "development",
+      "name": "Development",
+      "onDemand": true,
+      "status": "stopped"
+    },
+    {
+      "id": "homologation",
+      "name": "Homologation",
+      "onDemand": true,
+      "status": "stopped"
+    },
+    {
+      "id": "production",
+      "name": "Production",
+      "onDemand": false,
+      "status": "up"
+    }
+  ],
   "systems": [
     {
       "id": "heimdall",
       "name": "Heimdall",
       "description": "Identity and access management",
       "status": "up",
-      "applications": [
+      "environments": [
         {
-          "id": "heimdall-api",
-          "name": "Heimdall API",
-          "kind": "api",
+          "environment": "development",
+          "status": "stopped",
+          "applications": [
+            {
+              "id": "heimdall-api",
+              "name": "Heimdall API",
+              "kind": "api",
+              "status": "stopped",
+              "url": "https://heimdall-api-dev.example.com",
+              "repository": "https://github.com/artur-rios/heimdall-api",
+              "deployment": {
+                "version": "1.5.0",
+                "commit": "9c41e7b",
+                "deployedAt": "2026-10-07T16:22:10Z",
+                "image": "heimdall-api:development-1.5.0-9c41e7b"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-10-07T16:22:14Z",
+                "restartCount": null
+              },
+              "probe": null
+            },
+            {
+              "id": "heimdall-ui",
+              "name": "Heimdall web",
+              "kind": "web",
+              "status": "stopped",
+              "url": "https://heimdall-dev.example.com",
+              "repository": "https://github.com/artur-rios/heimdall-ui",
+              "deployment": {
+                "version": "1.4.0",
+                "commit": "e02c5d8",
+                "deployedAt": "2026-10-06T11:05:47Z",
+                "image": "heimdall-ui:development-1.4.0-e02c5d8"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-10-06T11:05:51Z",
+                "restartCount": null
+              },
+              "probe": null
+            }
+          ]
+        },
+        {
+          "environment": "homologation",
+          "status": "stopped",
+          "applications": [
+            {
+              "id": "heimdall-api",
+              "name": "Heimdall API",
+              "kind": "api",
+              "status": "stopped",
+              "url": "https://heimdall-api-hml.example.com",
+              "repository": "https://github.com/artur-rios/heimdall-api",
+              "deployment": {
+                "version": "1.5.0",
+                "commit": "51d0a2f",
+                "deployedAt": "2026-10-04T14:30:52Z",
+                "image": "heimdall-api:homologation-1.5.0-51d0a2f"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-10-04T14:30:56Z",
+                "restartCount": null
+              },
+              "probe": null
+            },
+            {
+              "id": "heimdall-ui",
+              "name": "Heimdall web",
+              "kind": "web",
+              "status": "stopped",
+              "url": "https://heimdall-hml.example.com",
+              "repository": "https://github.com/artur-rios/heimdall-ui",
+              "deployment": {
+                "version": "1.3.2",
+                "commit": "b81d07e",
+                "deployedAt": "2026-09-30T10:12:08Z",
+                "image": "heimdall-ui:homologation-1.3.2-b81d07e"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-09-30T10:12:12Z",
+                "restartCount": null
+              },
+              "probe": null
+            }
+          ]
+        },
+        {
+          "environment": "production",
           "status": "up",
-          "url": "https://heimdall-api.example.com",
-          "repository": "https://github.com/artur-rios/heimdall-api",
-          "deployment": {
-            "version": "1.4.0",
-            "commit": "3f2a9c1",
-            "deployedAt": "2026-09-17T21:40:02Z",
-            "image": "heimdall-api:1.4.0-3f2a9c1"
-          },
-          "container": {
-            "state": "running",
-            "health": "healthy",
-            "startedAt": "2026-09-17T21:40:05Z",
-            "restartCount": 0
-          },
-          "probe": {
-            "healthy": true,
-            "statusCode": 200,
-            "latencyMs": 12,
-            "checkedAt": "2026-09-18T18:04:09Z",
-            "error": null
-          }
+          "applications": [
+            {
+              "id": "heimdall-api",
+              "name": "Heimdall API",
+              "kind": "api",
+              "status": "up",
+              "url": "https://heimdall-api.example.com",
+              "repository": "https://github.com/artur-rios/heimdall-api",
+              "deployment": {
+                "version": "1.4.0",
+                "commit": "3f2a9c1",
+                "deployedAt": "2026-10-07T21:40:02Z",
+                "image": "heimdall-api:production-1.4.0-3f2a9c1"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-10-07T21:40:05Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 12,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            },
+            {
+              "id": "heimdall-ui",
+              "name": "Heimdall web",
+              "kind": "web",
+              "status": "up",
+              "url": "https://heimdall.example.com",
+              "repository": "https://github.com/artur-rios/heimdall-ui",
+              "deployment": {
+                "version": "1.3.2",
+                "commit": "b81d07e",
+                "deployedAt": "2026-10-02T14:02:40Z",
+                "image": "heimdall-ui:production-1.3.2-b81d07e"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-10-02T14:02:44Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 3,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fortuna",
+      "name": "Fortuna",
+      "description": "Personal finance",
+      "status": "up",
+      "environments": [
+        {
+          "environment": "development",
+          "status": "stopped",
+          "applications": [
+            {
+              "id": "fortuna-api",
+              "name": "Fortuna API",
+              "kind": "api",
+              "status": "stopped",
+              "url": "https://fortuna-api-dev.example.com",
+              "repository": "https://github.com/artur-rios/fortuna-api",
+              "deployment": {
+                "version": "1.0.0",
+                "commit": "7ab3f60",
+                "deployedAt": "2026-10-08T09:41:03Z",
+                "image": "fortuna-api:development-1.0.0-7ab3f60"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-10-08T09:41:07Z",
+                "restartCount": null
+              },
+              "probe": null
+            },
+            {
+              "id": "fortuna-ui",
+              "name": "Fortuna web",
+              "kind": "web",
+              "status": "stopped",
+              "url": "https://fortuna-dev.example.com",
+              "repository": "https://github.com/artur-rios/fortuna-ui",
+              "deployment": {
+                "version": "1.0.0",
+                "commit": "2f9e4c1",
+                "deployedAt": "2026-10-05T20:13:29Z",
+                "image": "fortuna-ui:development-1.0.0-2f9e4c1"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-10-05T20:13:33Z",
+                "restartCount": null
+              },
+              "probe": null
+            }
+          ]
+        },
+        {
+          "environment": "homologation",
+          "status": "stopped",
+          "applications": [
+            {
+              "id": "fortuna-api",
+              "name": "Fortuna API",
+              "kind": "api",
+              "status": "stopped",
+              "url": "https://fortuna-api-hml.example.com",
+              "repository": "https://github.com/artur-rios/fortuna-api",
+              "deployment": {
+                "version": "1.0.0",
+                "commit": "0d6e19b",
+                "deployedAt": "2026-10-02T17:48:36Z",
+                "image": "fortuna-api:homologation-1.0.0-0d6e19b"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-10-02T17:48:40Z",
+                "restartCount": null
+              },
+              "probe": null
+            },
+            {
+              "id": "fortuna-ui",
+              "name": "Fortuna web",
+              "kind": "web",
+              "status": "stopped",
+              "url": "https://fortuna-hml.example.com",
+              "repository": "https://github.com/artur-rios/fortuna-ui",
+              "deployment": {
+                "version": "0.9.0",
+                "commit": "5e0a1f3",
+                "deployedAt": "2026-09-28T19:02:44Z",
+                "image": "fortuna-ui:homologation-0.9.0-5e0a1f3"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": "2026-09-28T19:02:48Z",
+                "restartCount": null
+              },
+              "probe": null
+            }
+          ]
+        },
+        {
+          "environment": "production",
+          "status": "up",
+          "applications": [
+            {
+              "id": "fortuna-api",
+              "name": "Fortuna API",
+              "kind": "api",
+              "status": "up",
+              "url": "https://fortuna-api.example.com",
+              "repository": "https://github.com/artur-rios/fortuna-api",
+              "deployment": {
+                "version": "0.9.1",
+                "commit": "c47e2d9",
+                "deployedAt": "2026-10-08T09:15:31Z",
+                "image": "fortuna-api:production-0.9.1-c47e2d9"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-10-08T09:15:36Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 18,
+                "checkedAt": "2026-10-08T18:04:10Z",
+                "error": null
+              }
+            },
+            {
+              "id": "fortuna-ui",
+              "name": "Fortuna web",
+              "kind": "web",
+              "status": "up",
+              "url": "https://fortuna.example.com",
+              "repository": "https://github.com/artur-rios/fortuna-ui",
+              "deployment": {
+                "version": "0.9.0",
+                "commit": "5e0a1f3",
+                "deployedAt": "2026-10-05T19:48:12Z",
+                "image": "fortuna-ui:production-0.9.0-5e0a1f3"
+              },
+              "container": {
+                "state": "running",
+                "health": null,
+                "startedAt": "2026-10-05T19:48:15Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 4,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "yggdrasil",
+      "name": "Yggdrasil",
+      "description": "Deployment platform",
+      "status": "up",
+      "environments": [
+        {
+          "environment": "development",
+          "status": "up",
+          "applications": [
+            {
+              "id": "traefik",
+              "name": "Traefik",
+              "kind": "platform",
+              "status": "up",
+              "url": null,
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "traefik:v3.5"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:12Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 1,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            },
+            {
+              "id": "status",
+              "name": "Status API",
+              "kind": "platform",
+              "status": "up",
+              "url": null,
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "yggdrasil-status:latest"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:15Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 2,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            },
+            {
+              "id": "console",
+              "name": "Console",
+              "kind": "platform",
+              "status": "up",
+              "url": "https://yggdrasil.example.com",
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "yggdrasil-console:latest"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:15Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 2,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            }
+          ]
+        },
+        {
+          "environment": "homologation",
+          "status": "up",
+          "applications": [
+            {
+              "id": "traefik",
+              "name": "Traefik",
+              "kind": "platform",
+              "status": "up",
+              "url": null,
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "traefik:v3.5"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:12Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 1,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            },
+            {
+              "id": "status",
+              "name": "Status API",
+              "kind": "platform",
+              "status": "up",
+              "url": null,
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "yggdrasil-status:latest"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:15Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 2,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            },
+            {
+              "id": "console",
+              "name": "Console",
+              "kind": "platform",
+              "status": "up",
+              "url": "https://yggdrasil.example.com",
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "yggdrasil-console:latest"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:15Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 2,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            }
+          ]
+        },
+        {
+          "environment": "production",
+          "status": "up",
+          "applications": [
+            {
+              "id": "traefik",
+              "name": "Traefik",
+              "kind": "platform",
+              "status": "up",
+              "url": null,
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "traefik:v3.5"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:12Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 1,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            },
+            {
+              "id": "status",
+              "name": "Status API",
+              "kind": "platform",
+              "status": "up",
+              "url": null,
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "yggdrasil-status:latest"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:15Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 2,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            },
+            {
+              "id": "console",
+              "name": "Console",
+              "kind": "platform",
+              "status": "up",
+              "url": "https://yggdrasil.example.com",
+              "repository": null,
+              "deployment": {
+                "version": null,
+                "commit": null,
+                "deployedAt": null,
+                "image": "yggdrasil-console:latest"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-09-21T08:00:15Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 2,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              }
+            }
+          ]
         }
       ]
     }

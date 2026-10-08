@@ -16,7 +16,7 @@ import 'status_controller.dart';
 import 'widgets/status_visuals.dart';
 import 'widgets/system_card.dart';
 
-/// The environment switcher, its status and every system in it.
+/// The host switcher, the host's status and every system on it.
 ///
 /// Polls every `AppConfig.refreshInterval` while the app is visible; the timer
 /// stops when the app is backgrounded or the browser tab hidden, and while the
@@ -146,7 +146,7 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // A 401 takes the user straight to entering that environment's token.
+    // A 401 takes the user straight to entering that host's token.
     ref.listen<StatusViewState>(statusControllerProvider, (previous, next) {
       final environment = next.environment;
 
@@ -190,7 +190,7 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
             ),
           IconButton(
             key: const ValueKey<String>('settings'),
-            tooltip: 'Environments',
+            tooltip: 'Hosts',
             onPressed: _openSettings,
             icon: const Icon(Icons.settings),
           ),
@@ -218,7 +218,7 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
         AsyncError<EnvironmentsState>(:final error) => Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Text('Could not load the environments: $error'),
+            child: Text('Could not load the hosts: $error'),
           ),
         ),
         _ => const Center(child: CircularProgressIndicator()),
@@ -290,10 +290,7 @@ class _OverviewBody extends ConsumerWidget {
                       if (snapshot != null)
                         _Stale(
                           stale: status.isStale,
-                          child: _StatusBanner(
-                            environmentName: environment?.name,
-                            status: snapshot.status,
-                          ),
+                          child: _StatusBanner(status: snapshot.status),
                         ),
                     ],
                   ),
@@ -338,6 +335,7 @@ class _OverviewBody extends ConsumerWidget {
                     child: _Stale(
                       stale: status.isStale,
                       child: _SystemGrid(
+                        host: snapshot.status,
                         systems: visibleSystems(
                           snapshot.status.systems,
                           problemsOnly: problemsOnly,
@@ -355,7 +353,7 @@ class _OverviewBody extends ConsumerWidget {
                         },
                         emptyText: problemsOnly
                             ? 'No problems: every system is up.'
-                            : 'This environment has no systems.',
+                            : 'This host has no systems.',
                       ),
                     ),
                   ),
@@ -459,10 +457,7 @@ class _EnvironmentSwitcher extends ConsumerWidget {
           key: const ValueKey<String>('environment-switcher'),
           initialValue: selectedId,
           isExpanded: true,
-          decoration: const InputDecoration(
-            labelText: 'Environment',
-            isDense: true,
-          ),
+          decoration: const InputDecoration(labelText: 'Host', isDense: true),
           items: <DropdownMenuItem<String>>[
             for (final environment in list)
               DropdownMenuItem<String>(
@@ -481,11 +476,11 @@ class _EnvironmentSwitcher extends ConsumerWidget {
   }
 }
 
+/// The host: its overall status, a summary, and each environment's status.
 class _StatusBanner extends StatelessWidget {
-  const _StatusBanner({required this.environmentName, required this.status});
+  const _StatusBanner({required this.status});
 
-  final String? environmentName;
-  final EnvironmentStatus status;
+  final HostStatus status;
 
   @override
   Widget build(BuildContext context) {
@@ -495,7 +490,7 @@ class _StatusBanner extends StatelessWidget {
 
     return Semantics(
       container: true,
-      label: '${status.environment} is ${visual.label}',
+      label: '${status.host} is ${visual.label}',
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: visual.container,
@@ -512,10 +507,12 @@ class _StatusBanner extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      status.environment,
+                      status.host,
+                      key: const ValueKey<String>('host-name'),
                       style: theme.textTheme.labelLarge?.copyWith(
                         color: visual.foreground,
                       ),
+                      overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       visual.label,
@@ -526,11 +523,28 @@ class _StatusBanner extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      environmentSummary(status),
+                      hostSummary(status),
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: visual.foreground,
                       ),
                     ),
+                    if (status.environments.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        key: const ValueKey<String>('host-environments'),
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: <Widget>[
+                          for (final environment in status.environments)
+                            EnvironmentStatusChip(
+                              name: environment.name,
+                              status: environment.status,
+                              onDemand: environment.onDemand,
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                    ],
                     if (generatedAt != null)
                       NowBuilder(
                         builder: (context, now) => RelativeTime(
@@ -600,7 +614,7 @@ class _FailureBanner extends StatelessWidget {
   });
 
   final StatusException failure;
-  final EnvironmentStatus? snapshot;
+  final HostStatus? snapshot;
   final Future<void> Function() onRetry;
   final VoidCallback onEnterToken;
 
@@ -697,6 +711,7 @@ class _FailureBanner extends StatelessWidget {
 /// systems stay at the top whatever the width.
 class _SystemGrid extends StatelessWidget {
   const _SystemGrid({
+    required this.host,
     required this.systems,
     required this.columns,
     required this.spacing,
@@ -705,6 +720,7 @@ class _SystemGrid extends StatelessWidget {
     required this.emptyText,
   });
 
+  final HostStatus host;
   final List<SystemStatus> systems;
   final int columns;
   final double spacing;
@@ -726,6 +742,7 @@ class _SystemGrid extends StatelessWidget {
       builder: (context, now) {
         Widget card(SystemStatus system) => SystemCard(
           key: ValueKey<String>('card-${system.id}'),
+          host: host,
           system: system,
           expanded: expanded.contains(system.id),
           onToggle: () => onToggle(system.id),
@@ -794,7 +811,7 @@ class _NoEnvironments extends ConsumerWidget {
                 color: theme.colorScheme.primary,
               ),
               const SizedBox(height: 16),
-              Text('No environments yet', style: theme.textTheme.titleLarge),
+              Text('No hosts yet', style: theme.textTheme.titleLarge),
               const SizedBox(height: 8),
               const Text(
                 'Add the base URL of a yggdrasil host and its status token, '
@@ -811,7 +828,7 @@ class _NoEnvironments extends ConsumerWidget {
                     onPressed: () =>
                         SettingsScreen.addEnvironment(context, ref),
                     icon: const Icon(Icons.add),
-                    label: const Text('Add environment'),
+                    label: const Text('Add host'),
                   ),
                   OutlinedButton.icon(
                     key: const ValueKey<String>('open-demo'),
@@ -826,7 +843,7 @@ class _NoEnvironments extends ConsumerWidget {
               const SizedBox(height: 8),
               TextButton(
                 onPressed: onOpenSettings,
-                child: const Text('Manage environments'),
+                child: const Text('Manage hosts'),
               ),
             ],
           ),

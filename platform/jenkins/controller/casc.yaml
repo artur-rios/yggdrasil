@@ -5,7 +5,7 @@
 jenkins:
   systemMessage: "yggdrasil deploy manager. Configured as code: edit platform/jenkins/controller/casc.yaml and catalog.yaml, not this UI."
   # The controller never builds anything; every stage runs on the agent of the environment it
-  # deploys to.
+  # deploys to (one agent per host: environments that share a host share its agent).
   numExecutors: 0
   mode: EXCLUSIVE
   securityRealm:
@@ -17,8 +17,8 @@ jenkins:
   authorizationStrategy:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: false
-  # Agents are not listed here: init.groovy.d/agents.groovy creates one per environment agent in
-  # catalog.yaml on every start.
+  # Agents are not listed here: init.groovy.d/agents.groovy creates one per distinct `agent` of the
+  # environments in catalog.yaml (one per host) on every start.
 
 security:
   globalJobDslSecurityConfiguration:

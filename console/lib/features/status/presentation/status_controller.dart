@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 
 import '../../environments/domain/environment.dart';
 import '../../environments/presentation/environments_controller.dart';
@@ -14,7 +15,7 @@ final Provider<StatusRepository> statusRepositoryProvider =
       ),
     );
 
-/// What the overview shows for the selected environment.
+/// What the overview shows for the selected host (a saved [Environment]).
 class StatusViewState {
   const StatusViewState({
     this.environment,
@@ -49,7 +50,7 @@ statusControllerProvider = NotifierProvider<StatusController, StatusViewState>(
   StatusController.new,
 );
 
-/// Loads the selected environment's status on demand.
+/// Loads the selected host's status on demand.
 ///
 /// The polling itself belongs to the overview screen, which knows whether it
 /// is visible; this only fetches when asked, and never twice at once.
@@ -60,7 +61,7 @@ class StatusController extends Notifier<StatusViewState> {
   StatusViewState build() {
     final environment = ref.watch(
       environmentsControllerProvider.select(
-        (environments) => environments.valueOrNull?.selected,
+        (environments) => environments.value?.selected,
       ),
     );
 
@@ -81,7 +82,7 @@ class StatusController extends Notifier<StatusViewState> {
 
     return StatusViewState(
       environment: environment,
-      snapshot: ref.read(statusRepositoryProvider).lastFor(environment.id),
+      snapshot: ref.read(statusRepositoryProvider).lastFor(environment),
     );
   }
 
@@ -105,9 +106,10 @@ class StatusController extends Notifier<StatusViewState> {
         .read(statusRepositoryProvider)
         .refresh(environment, token);
 
-    // The user may have switched environments meanwhile; the repository kept
-    // the result, but it is not what the screen shows any more.
-    if (state.environment?.id != environment.id) {
+    // The user may have switched environments, or pointed this one at another
+    // URL, meanwhile: the answer is not about what the screen shows any more.
+    if (state.environment?.id != environment.id ||
+        state.environment?.baseUrl != environment.baseUrl) {
       return;
     }
 
@@ -122,7 +124,7 @@ class StatusController extends Notifier<StatusViewState> {
     if (report.failure == null && snapshot != null) {
       await environments.adoptResponseName(
         environment.id,
-        snapshot.status.environment,
+        snapshot.status.host,
       );
     }
   }

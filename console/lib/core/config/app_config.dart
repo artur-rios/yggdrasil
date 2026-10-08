@@ -12,16 +12,17 @@ class AppConfig {
     this.refreshInterval = const Duration(seconds: 30),
   });
 
-  /// Reads `YGGDRASIL_ENVIRONMENTS`, a JSON list of `{name, url}`:
+  /// Reads `YGGDRASIL_ENVIRONMENTS`, a JSON list of hosts, `{name, url}` (the
+  /// name predates the UI calling the saved connections hosts):
   ///
-  ///     --dart-define=YGGDRASIL_ENVIRONMENTS=[{"name":"production","url":"https://yggdrasil.example.com"}]
+  ///     --dart-define=YGGDRASIL_ENVIRONMENTS=[{"name":"vps","url":"https://yggdrasil.example.com"}]
   factory AppConfig.fromEnvironment() => AppConfig(
     environments: parseEnvironments(
       const String.fromEnvironment('YGGDRASIL_ENVIRONMENTS'),
     ),
   );
 
-  /// The environments offered when the user has not saved a list of their own.
+  /// The hosts offered when the user has not saved a list of their own.
   final List<Environment> environments;
 
   /// How often the overview polls while it is visible; the contract's default.

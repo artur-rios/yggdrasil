@@ -1,9 +1,12 @@
 # Setting up yggdrasil
 
 This guide takes you from nothing to a first release deployed by yggdrasil. Follow the steps in
-order: each one only needs what the previous ones produced. For a complete installation on real
-hardware (Docker Desktop, WSL and a VPS), see
-[examples/docker-desktop-wsl-vps](examples/docker-desktop-wsl-vps/README.md).
+order: each one only needs what the previous ones produced. The path it follows is this
+repository's default setup: development, homologation and production on **one VPS**, which also
+runs the Jenkins controller, plus a `local` environment on your workstation. Other layouts (one
+host per environment, or anything in between) change only a few answers of step 0. The default
+installation, complete with every file, is in
+[examples/docker-desktop-and-vps](examples/docker-desktop-and-vps/README.md).
 
 ```mermaid
 flowchart TB
@@ -47,22 +50,37 @@ Decide these before touching anything, and write the answers down: every later s
 | Decision | Example | Notes |
 |---|---|---|
 | **GitHub owner** | `acme` | The user or organisation that owns the application repositories. Your fork of yggdrasil goes there too. |
-| **Environments**, in promotion order | `development`, `staging`, `production` | For each: its `trigger` (`manual`, `branch` or `release`) and `mode` (`proxy`, or `ports` for a laptop). See [catalog.md](catalog.md#environments). |
-| **One host per environment** | staging: a VM; production: a VPS | One Docker engine per environment: two environments on one engine would replace each other's containers. A VM or a WSL distribution counts as a host. A `ports` environment (a laptop) needs no host setup. |
-| **The controller host** | production's VPS | The one host that also runs the Jenkins controller. It must be reachable from the internet on 443, for GitHub's webhooks. |
-| **Domain per `proxy` environment** | `example.dev`, `staging.example.dev` | Every public name is one label under it. Your own domain on Cloudflare, or a free DuckDNS subdomain: [dns.md](dns.md). |
+| **Environments**, in promotion order | `local`, `development`, `homologation`, `production` | For each: its `trigger` (`manual`, `branch` or `release`), its `mode` (`proxy`, or `ports` for a workstation), and whether it runs only while used (`onDemand`). See [catalog.md](catalog.md#environments). |
+| **Hosts**, and the environments each runs | one VPS: `development`, `homologation`, `production`; `local` on your workstation | A host is anything with its own Docker engine: a VPS, a VM. It runs one environment or several: environments sharing a host share its platform stack, its Jenkins agent and its domain. A `ports` environment (a workstation) needs no host setup. See [Planning the hosts](#planning-the-hosts). |
+| **The controller host** | the VPS | The one host that also runs the Jenkins controller. It must be reachable from the internet on 443, for GitHub's webhooks. |
+| **Domain per host** | `example.com` | Every public name is one label under it: `heimdall.example.com`, and in an environment with a `hostSuffix`, `heimdall-dev.example.com`. Your own domain on Cloudflare, or a free DuckDNS subdomain: [dns.md](dns.md). |
 | **Systems and applications** | `shop` = `shop-api` + `shop-web` | Each application is one repository with a Dockerfile and a `/health`-style endpoint. |
 
 A minimal installation is **one** environment (`production`, `trigger: release`) on **one** host
-that also runs the controller. Start there if you are trying yggdrasil out; adding environments
-later is a catalog entry and a host ([Adding things](#adding-things)).
+that also runs the controller. Start there if you are trying yggdrasil out: adding an environment
+to that host later is a catalog entry and one line of its `platform.env`
+([Adding things](#an-environment)).
+
+### Planning the hosts
+
+| Layout | Catalog | Each host |
+|---|---|---|
+| **Several environments on one host** (the default) | The environments of the host set the same `agent` (`vps`) and each a distinct `hostSuffix` (`-dev`, `-hml`; production can keep none). `onDemand: true` on those used only now and then | One platform stack; `ENVIRONMENTS` in its `platform.env` lists them all; one `DOMAIN`, one `*.DOMAIN` DNS record and certificate for all of them |
+| **One environment per host** | `hostSuffix` empty; `agent` left out (it defaults to the environment's id) | One platform stack each, with `ENVIRONMENTS` naming its one environment, and its own `DOMAIN` (`example.com`, `staging.example.com`), each with its own `*.DOMAIN` record |
+| **Mixed** | Production on a host of its own; development and homologation sharing another, with their own `agent` and suffixes | As above, per host |
+
+Every application runs in each environment as its own Compose project, `<application>-<environment>`,
+so environments on one Docker engine never touch each other
+([catalog.md](catalog.md#several-environments-on-one-host)). Two `ports` environments on one
+workstation would publish the same ports, though: keep one per machine.
 
 ### What each host needs
 
-- Linux with **Docker Engine** and the **Compose plugin** (v2.24 or later, for `!reset` in the overlays): a VPS, a VM, a WSL
-  distribution with its own engine.
-- Roughly **2 GB of RAM** for the platform of an environment host, **4 GB** for the one that also
-  runs the Jenkins controller, plus what your applications need.
+- Linux with **Docker Engine** and the **Compose plugin** (v2.24 or later, for `!reset` in the
+  overlays): a VPS or a VM.
+- Roughly **2 GB of RAM** for the platform, **4 GB** on the host that also runs the Jenkins
+  controller, plus what your applications need in every environment that runs at the same time. A
+  stopped on-demand environment uses no memory.
 - `git`, `bash`, `openssl`, and `python3` with PyYAML.
 - Inbound **443** (and 80, for the HTTP→HTTPS redirect) from wherever the applications are used.
   Nothing else inbound.
@@ -93,41 +111,62 @@ Your installation lives in your own copy of this repository: your catalog, your 
 **`main`** branch is what counts: every host runs a checkout of it, and every deploy clones it
 ([details](#where-jenkins-and-the-hosts-read-the-catalog)).
 
-1. On GitHub, **Fork** this repository into your owner (step 0). For a private copy, use
-   *Import repository* or create an empty private repository and push a clone to it: forks of
+1. On GitHub, **Fork** this repository into your owner (step 0), and untick *Copy the `develop`
+   branch only*: this repository's default branch is `develop`, its work in progress, while
+   releases are merged into `main`, the branch your installation runs. For a private copy, use
+   *Import repository* or create an empty private repository and push `main` to it: forks of
    public repositories can't be private.
-2. Clone it:
+2. Clone its `main` branch:
    ```bash
-   git clone https://github.com/<owner>/<repository>.git
+   git clone -b main https://github.com/<owner>/<repository>.git
    cd <repository>
    ```
 
 ## 3. Write the catalog
 
 [`catalog.yaml`](../catalog.yaml) describes the installation. The one in the repository is a
-working example ([examples/docker-desktop-wsl-vps](examples/docker-desktop-wsl-vps/README.md)):
+working example ([examples/docker-desktop-and-vps](examples/docker-desktop-and-vps/README.md)):
 replace it with yours. Full reference: [catalog.md](catalog.md).
 
 1. **Top level**: `owner` is your GitHub owner. `repository` is your fork's name (omit it if it's
    `yggdrasil`).
-2. **`environments`**: the ones from step 0, in promotion order. For example:
+2. **`environments`**: the ones from step 0, in promotion order. The shipped ones are the default
+   layout, a workstation and one VPS:
    ```yaml
    environments:
-     - id: staging
-       name: Staging
+     - id: local
+       name: Local
+       mode: ports
+       trigger: manual
+     - id: development
+       name: Development
+       trigger: branch
+       branches: develop
+       agent: vps
+       hostSuffix: -dev
+       onDemand: true
+     - id: homologation
+       name: Homologation
        trigger: branch
        branches: release/*
+       agent: vps
+       hostSuffix: -hml
+       onDemand: true
      - id: production
        name: Production
        trigger: release
-       approval: true
+       agent: vps
    ```
+   For one host per environment, drop `agent` and `hostSuffix` ([Planning the hosts](#planning-the-hosts)).
+   Add `approval: true` to an environment that should wait for someone to click **Deploy**.
 3. **`systems`**: replace `heimdall` and `fortuna` with your systems and applications. For each
    application:
    - `id`: the repository name (or set `repository`).
    - `kind`: `api`, `web` or `worker`.
    - `health`: the URL the status API probes over the Docker network, `http://<id>:<port>/<path>`.
-   - `host`: its public host name under `DOMAIN`, if it has one.
+     Write the plain id: in each environment the status API probes `<id>.<environment>`.
+   - `host`: its public host name under `DOMAIN`, if it has one. Each environment adds its
+     `hostSuffix`.
    - `metrics`: `<id>:<port>`, if it exposes Prometheus metrics.
    - `checks`: the names of the GitHub Actions jobs that run on **every** pull request of that
      repository. Look them up in a recent pull request's *Checks* tab, which shows
@@ -148,11 +187,17 @@ ones in `stacks/` are working examples: copy the closest one and rename what it 
 
 | The application's repository | Files to add in `stacks/` |
 |---|---|
-| **Has its own `docker-compose.yml`** | `<id>.proxy.yml`: Traefik labels, the `edge` and `telemetry` networks with the alias `<id>`, and `ports: !reset []`. Example: [heimdall-api.proxy.yml](../stacks/heimdall-api.proxy.yml). |
+| **Has its own `docker-compose.yml`** | `<id>.proxy.yml`: Traefik labels, the `edge` and `telemetry` networks with the alias `<id>.${YGG_ENVIRONMENT}`, and `ports: !reset []`. Example: [heimdall-api.proxy.yml](../stacks/heimdall-api.proxy.yml). |
 | **Has only a Dockerfile** | `<id>.yml`: the service, built from `${APP_DIR}` and tagged `<id>:${IMAGE_TAG}`. Plus `<id>.proxy.yml`, and `<id>.ports.yml` if a `ports` environment deploys it. Examples: [heimdall-ui.yml](../stacks/heimdall-ui.yml) and its overlays. |
 
 Rules to keep:
-- The router names and the network alias are the application's `id`.
+- Name everything the environments of one host share after the environment too, from
+  `${YGG_ENVIRONMENT}`, which `deploy.sh` exports: the network alias `<id>.${YGG_ENVIRONMENT}`,
+  and the Traefik routers and services `<id>-${YGG_ENVIRONMENT}`. Write the labels as a list
+  (`- traefik.http.routers.<id>-${YGG_ENVIRONMENT}.rule=...`): Compose substitutes variables in
+  values, not in mapping keys.
+- Tag the images the stack builds `<id>:${IMAGE_TAG}`: `deploy.sh` sets it to
+  `<environment>-<version>`, and rolls back and prunes only those.
 - In `proxy` mode, nothing publishes a host port: only Traefik does.
 - Host names come from the env file (`PUBLIC_HOST`, `UI_HOST`), not hard-coded.
 - Use named volumes, not relative bind mounts (`./data:/data`). Under Jenkins, Compose runs inside
@@ -182,7 +227,10 @@ For every application in the catalog:
    `develop`:
    - `Jenkinsfile`: replace `<application-id>` with the catalog id.
    - `.github/workflows/branch-policy.yml`: as is.
-   - `CONTRIBUTING.md`: replace `<owner>` and `<application-id>`.
+   - `CONTRIBUTING.md`: replace `<owner>` and `<repository>` (your fork of yggdrasil) and
+     `<application-id>`. It has changes recorded in a `CHANGELOG.md`: if the repository has none,
+     start one with a `## [Unreleased]` heading
+     ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 4. **CI** that runs the jobs listed in the catalog's `checks` on pull requests into `develop` and
    `main`.
 5. Commit and push to `develop`. Until the rules are applied (step 12) a direct push works; after,
@@ -193,8 +241,9 @@ For every application in the catalog:
 Follow [dns.md](dns.md) up to and including **A4** (Cloudflare) or **B1** (DuckDNS). By the end
 you have:
 
-- a `*.<DOMAIN>` record (or DuckDNS subdomain) per `proxy` environment, pointing at its host's
-  public IP;
+- a `*.<DOMAIN>` record (or DuckDNS subdomain) per host, pointing at its public IP. One covers
+  every environment of the host: `heimdall-dev.<DOMAIN>`, `heimdall-hml.<DOMAIN>` and
+  `heimdall.<DOMAIN>` are all one label under it;
 - your DNS provider's API credential, which goes into each host's `acme.env` at step 9.2 or 10.
 
 Check each one resolves, from any machine:
@@ -205,8 +254,8 @@ nslookup yggdrasil.<DOMAIN> 1.1.1.1
 
 It must print the host's IP. Test a name **under** the domain: the bare `<DOMAIN>` has no record.
 
-The controller's address will be `https://jenkins.<DOMAIN>`, with the `DOMAIN` of the environment
-whose host runs it. Note it down: steps 7 and 9 need it.
+The controller's address will be `https://jenkins.<DOMAIN>`, with the `DOMAIN` of the host that
+runs it. Note it down: steps 7 and 9 need it.
 
 ## 7. Create the GitHub App
 
@@ -243,7 +292,7 @@ The form is one long page. Go through it top to bottom:
 |---|---|---|
 | GitHub App name | Anything unique on GitHub, e.g. `acme-yggdrasil` | Shown as the author of Jenkins' merges, tags and statuses |
 | Description | Optional, e.g. `Deploys with yggdrasil` | |
-| Homepage URL | `https://jenkins.<DOMAIN>` | Required by the form, only informational. `<DOMAIN>` is the domain of the controller's environment, from step 6 |
+| Homepage URL | `https://jenkins.<DOMAIN>` | Required by the form, only informational. `<DOMAIN>` is the controller host's domain, from step 6 |
 
 **Identifying and authorizing users**, and **Post installation**: leave every field empty and every
 box unchecked. Jenkins acts as the app, never on behalf of a user.
@@ -326,7 +375,7 @@ isn't installed on gets no Jenkins job branches and never deploys.
 
 ## 8. Prepare every host
 
-On **each** host that runs a `proxy` environment, the controller host included. The commands are for
+On **each** host that runs `proxy` environments, the controller host included: in the default layout, the VPS. The commands are for
 Ubuntu or Debian, over SSH.
 
 On Ubuntu, once 4.1 and 4.2 have cloned your fork, `scripts/ygg.sh install` in it does 1 to 3 and
@@ -370,7 +419,7 @@ the rest of 4, asking before each one, and `scripts/ygg.sh check` covers 5
    | Directory | Holds | In git? |
    |---|---|---|
    | `/opt/yggdrasil` | A checkout of your fork: the catalog, the stack files, the scripts, the platform | Yes |
-   | `/etc/yggdrasil` | This host's secrets: `platform.env`, `acme.env`, the GitHub App key, the application env files | **Never** |
+   | `/etc/yggdrasil` | This host's secrets: `platform.env`, `acme.env`, the GitHub App key, the application env files of each of its environments | **Never** |
 
    Run these as your own user, one at a time:
 
@@ -435,7 +484,7 @@ the rest of 4, asking before each one, and `scripts/ygg.sh check` covers 5
       cp /opt/yggdrasil/env/platform.env.example /etc/yggdrasil/platform.env
       cp /opt/yggdrasil/env/acme.env.example /etc/yggdrasil/acme.env
       ```
-      - `platform.env`: the platform's settings for this host (its environment, domain, passwords,
+      - `platform.env`: the platform's settings for this host (its environments, domain, passwords,
         Jenkins). You fill it in at step 9.2 or 10.
       - `acme.env`: the DNS provider's credential, which Traefik uses to get certificates. You fill
         it in at step 9.2 or 10 too.
@@ -503,15 +552,16 @@ rm <app>.private-key.pem
 
 | Variable | Value |
 |---|---|
-| `ENVIRONMENT` | The id of the environment this host runs, exactly as in `catalog.yaml`, e.g. `production` |
+| `ENVIRONMENTS` | The ids of the environments this host runs, comma-separated, no spaces, exactly as in `catalog.yaml`: `development,homologation,production` on the default VPS. One platform serves them all |
 | `COMPOSE_PROFILES` | `jenkins` (**not** `jenkins,agent` yet) |
-| `DOMAIN` | This environment's domain, e.g. `example.dev` |
+| `DOMAIN` | This host's domain, e.g. `example.com`. Every environment of the host is under it, told apart by `hostSuffix` |
 | `ACME_EMAIL` | Your e-mail address: the Let's Encrypt account's contact. Not an `@example.com` one |
 | `ACME_DNS_PROVIDER` | `cloudflare`, `duckdns`, ... |
 | `ACME_CA_SERVER` | **Uncomment** it (remove the `#`): the staging CA, for this first run |
 | `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. See below |
 | `GRAFANA_ADMIN_PASSWORD` | A password for Grafana's `admin` user |
 | `YGGDRASIL_STATUS_TOKEN` | A random token, at least 32 characters. The console needs it: keep a copy in your password manager |
+| `DOCKER_GID` | The id of the host's `docker` group: the output of `getent group docker \| cut -d: -f3` |
 | `JENKINS_URL` | `https://jenkins.<DOMAIN>/` |
 | `JENKINS_ADMIN_PASSWORD` | A password for the Jenkins `admin` user |
 | `GITHUB_APP_ID` | The App ID from [step 7.3](#73-note-the-app-id) |
@@ -537,6 +587,12 @@ grep -E '^(GRAFANA_ADMIN_PASSWORD|YGGDRASIL_STATUS_TOKEN|JENKINS_ADMIN_PASSWORD)
   the parts because the hash contains `/`.
 - The last line prints the generated passwords and token: save them in your password manager.
 
+`DOCKER_GID` is the group that owns the Docker socket. Traefik, Alloy and the status API don't
+hold the socket: each one reads Docker through a socket proxy of its own, which allows only the
+read-only requests that client makes, and the proxies run in that group. With a wrong value they
+can't reach the socket: the console shows every application `unknown` or `down`, Traefik serves no
+routes, and the proxies' logs say `permission denied`.
+
 Leave the agent section for 9.5. Then check the file:
 
 ```bash
@@ -544,7 +600,7 @@ Leave the agent section for 9.5. Then check the file:
 ```
 
 It prints `platform.env OK`, or names the missing variable. `platform.sh up` checks the rest
-(`ENVIRONMENT` against the catalog, the Jenkins variables) before starting anything.
+(each of `ENVIRONMENTS` against the catalog, the Jenkins variables) before starting anything.
 
 ### 9.3 Start it and check the certificate
 
@@ -576,7 +632,8 @@ from step 3:
    created, from the catalog:
    - one job per application, with no branches yet: the first scans find no `Jenkinsfile` on
      `main`;
-   - one agent per environment it deploys to (**Manage Jenkins → Nodes**), all offline for now.
+   - one agent per host it deploys to, named after the environments' `agent` (`vps` for the
+     default VPS: **Manage Jenkins → Nodes**), all offline for now.
 2. Back in the GitHub App's **General** page ([step 7.3](#73-note-the-app-id)), tick
    **Webhook → Active**, check the Webhook URL is `https://jenkins.<DOMAIN>/github-webhook/` and
    the events **Push**, **Pull request** and **Repository** are checked, and click **Save changes**.
@@ -587,23 +644,18 @@ from step 3:
 
 ### 9.5 The env files, second pass: this host's agent
 
-Under **Manage Jenkins → Nodes → \<this environment's agent\>**, copy the secret: the long
+Under **Manage Jenkins → Nodes → \<this host's agent\>** (`vps`), copy the secret: the long
 hexadecimal string after `-secret` in the connection command. Then, in `platform.env`:
 
 | Variable | Value |
 |---|---|
 | `COMPOSE_PROFILES` | `jenkins,agent` |
-| `JENKINS_AGENT_NAME` | The agent's name: the environment's `agent` in the catalog, or its id |
+| `JENKINS_AGENT_NAME` | The agent's name: the `agent` this host's environments set in the catalog (`vps`), or the environment's id when it sets none |
 | `JENKINS_AGENT_SECRET` | The secret |
 | `JENKINS_AGENT_URL` | `http://jenkins:8080/`: on this host, the agent reaches the controller over the Docker network |
-| `DOCKER_GID` | The id of the host's `docker` group: the output of the command below |
 
-```bash
-getent group docker | cut -d: -f3
-```
-
-The agent runs Docker through the host's socket, which belongs to that group. With a wrong value,
-deploys fail with `permission denied ... docker.sock`. Then:
+The agent runs Docker through the host's socket itself, in the `DOCKER_GID` group from 9.2. With a
+wrong value, deploys fail with `permission denied ... docker.sock`. Then:
 
 ```bash
 /opt/yggdrasil/scripts/platform.sh up
@@ -611,28 +663,30 @@ deploys fail with `permission denied ... docker.sock`. Then:
 
 The node now shows as connected in Jenkins.
 
-If this host's environment is `trigger: manual` with no `agent`, Jenkins has no agent for it: leave
-`COMPOSE_PROFILES=jenkins`.
+One agent deploys to every environment of the host, with two executors; deploys of one application
+never overlap. If this host's environments are all `trigger: manual` with no `agent`, Jenkins has
+no agent for them: leave `COMPOSE_PROFILES=jenkins`.
 
 ## 10. Bring up the other environment hosts
 
-For each other host, prepared as in step 8, once the controller is up (step 9). Its env files are
-simpler, because the controller is elsewhere:
+For each other host, prepared as in step 8, once the controller is up (step 9). The default layout
+has none: its one VPS is the controller host, so skip to the `ports` environments below. Another
+host's env files are simpler, because the controller is elsewhere:
 
 - `acme.env`: the DNS credential, as in 9.2.
 - `platform.env`:
 
   | Variable | Value |
   |---|---|
-  | `ENVIRONMENT` | This host's environment id, e.g. `staging` |
+  | `ENVIRONMENTS` | This host's environment ids, comma-separated, e.g. `staging` |
   | `COMPOSE_PROFILES` | `agent` |
-  | `DOMAIN` | **This** environment's domain, e.g. `staging.example.dev` |
+  | `DOMAIN` | **This** host's domain, e.g. `staging.example.com` |
   | `ACME_*`, `TRAEFIK_DASHBOARD_USERS`, `GRAFANA_ADMIN_PASSWORD` | As in 9.2, `ACME_CA_SERVER` uncommented for the first run |
-  | `YGGDRASIL_STATUS_TOKEN` | A new `openssl rand -hex 32`: one token per environment |
+  | `YGGDRASIL_STATUS_TOKEN` | A new `openssl rand -hex 32`: one token per host, covering all its environments |
   | `JENKINS_URL` | The **controller's** URL: `https://jenkins.<controller's DOMAIN>/` |
-  | `JENKINS_AGENT_NAME`, `JENKINS_AGENT_SECRET` | From **Manage Jenkins → Nodes → \<this environment's agent\>** on the controller |
+  | `JENKINS_AGENT_NAME`, `JENKINS_AGENT_SECRET` | From **Manage Jenkins → Nodes → \<this host's agent\>** on the controller |
   | `JENKINS_AGENT_URL` | **Empty**: the agent then dials `JENKINS_URL` |
-  | `DOCKER_GID` | This host's `getent group docker \| cut -d: -f3`, as in 9.5 |
+  | `DOCKER_GID` | This host's `getent group docker \| cut -d: -f3`, as in 9.2 |
   | `JENKINS_ADMIN_PASSWORD`, `GITHUB_APP_*` | Not needed: leave them empty |
 
 Then, as on the controller host:
@@ -647,16 +701,17 @@ Then, as on the controller host:
 The agent dials the controller out over a WebSocket on 443, so this host needs no inbound port for
 Jenkins. Its node turns connected in Jenkins.
 
-**`ports` environments** (a developer laptop) need no platform, agent or DNS: `deploy.sh` publishes
-each application on `127.0.0.1`. Set one up any time, from your fork's checkout, with the application
+**`ports` environments** (`local`, on a developer's workstation) need no platform, agent or DNS: `deploy.sh` publishes
+each application on the host: on `127.0.0.1` through `stacks/<app>.ports.yml`, or as the
+application's own `docker-compose.yml` publishes it when it has one (often every interface). Set one up any time, from your fork's checkout, with the application
 repositories cloned next to it:
 
 ```bash
 export YGG_SECRETS_DIR=~/yggdrasil-env      # holds <environment>/<application>.env
-scripts/deploy.sh development shop-api ../shop-api dev
+scripts/deploy.sh local shop-api ../shop-api dev
 ```
 
-- `development`: the environment id. `shop-api`: the application id.
+- `local`: the environment id. `shop-api`: the application id.
 - `../shop-api`: a checkout of the application's repository.
 - `dev`: the version to label the image with.
 
@@ -666,8 +721,12 @@ Docker publishes ports around `ufw`/`firewalld`. In these stacks only Traefik pu
 
 ## 11. Application env files
 
-On each host, one file per application deployed to that host's environment: its configuration and
-secrets, plus what its stack files need.
+On each host, one file per application and environment the host runs (twelve on the default VPS:
+four applications in three environments): its configuration and secrets, plus what its stack files
+need. Each environment has its own secrets, database and host names.
+
+`scripts/ygg.sh config <application> <environment>` creates a missing one from the stack files and
+opens it ([cli.md](cli.md#change-the-configuration)). By hand:
 
 ```bash
 install -d -m 2750 /etc/yggdrasil/<environment>
@@ -675,8 +734,8 @@ nano /etc/yggdrasil/<environment>/<application>.env
 chmod 640 /etc/yggdrasil/<environment>/<application>.env
 ```
 
-- `<environment>`: this host's environment id, e.g. `production`. `<application>`: the application's
-  id, e.g. `shop-api`.
+- `<environment>`: one of this host's environment ids, e.g. `development`. `<application>`: the
+  application's id, e.g. `shop-api`.
 - `install -d -m 2750`: creates the environment's directory, readable by the `docker` group like its
   parent, so the Jenkins agent can read the files in it.
 - `chmod 640`: you read and write the file, the agent reads it through the group.
@@ -685,10 +744,15 @@ What goes in it:
 
 - Start from the application repository's own env template, if it has one.
 - Add what the stack files read. The overlays in this repository use:
-  - `PUBLIC_HOST`: the application's host name, `<host>.<DOMAIN>`, matching its catalog `host`;
+  - `PUBLIC_HOST`: the application's host name, `<host><hostSuffix>.<DOMAIN>`, matching its
+    catalog `host` and the environment's `hostSuffix` (`shop-api-dev.example.com` in development,
+    `shop-api.example.com` in production);
   - `UI_HOST`: for a web UI, or an API served under its UI's origin.
 - A web UI's build arguments (an API base URL, say) are compiled into its bundle: public, and
-  different per environment.
+  different per environment. `deploy.sh` builds the image once per environment for that reason.
+- An application calling another reaches the one **of its own environment**: on the `edge` network
+  at `<id>.<environment>` (`http://shop-api.development:8080`), or at its public host name
+  when it needs HTTPS. The plain `<id>` alias no longer exists.
 
 `deploy.sh` passes this file to Compose (`--env-file`): it fills in the `${VAR}` references of the
 Compose files. A variable reaches the application's container only where its `docker-compose.yml`
@@ -696,8 +760,8 @@ or `stacks/<id>.yml` names it, in `environment:` (`DB_PASSWORD: ${DB_PASSWORD:?}
 `env_file:`.
 
 `python3 /opt/yggdrasil/scripts/catalog.py environments <application-id>` lists the environments an
-application deploys to. [examples/docker-desktop-wsl-vps/env](examples/docker-desktop-wsl-vps/env)
-has complete examples.
+application deploys to. [examples/docker-desktop-and-vps/env](examples/docker-desktop-and-vps/env)
+has examples for four applications in the four default environments.
 
 ## 12. Apply the GitHub rules
 
@@ -724,19 +788,20 @@ change only through pull requests.
 | Check | Where | Expected |
 |---|---|---|
 | Platform containers | `/opt/yggdrasil/scripts/platform.sh ps` on each host | Every service `Up`; `traefik`, `status` and `console` also `(healthy)`. `jenkins` only on the controller host, `agent` where the profile is on |
-| Certificates | `https://yggdrasil.<DOMAIN>` for each environment | No browser warning |
+| Certificates | `https://yggdrasil.<DOMAIN>` for each host | No browser warning |
 | Webhooks | GitHub App → Advanced → Recent Deliveries | Green checks |
 | Agents | Jenkins → Manage Jenkins → Nodes | Every agent connected |
 | Jobs | Jenkins → each application's job → *Scan Repository Log* | Ends with `Finished: SUCCESS`. Before the first release it lists no branch, or only matching `release/*` ones: `main` gets a `Jenkinsfile` when the first release merges |
-| Agent can read the env files | `docker exec yggdrasil-agent-1 ls /etc/yggdrasil/<environment>` on each host | Lists the application env files, no `Permission denied` |
-| Console | `https://yggdrasil.<DOMAIN>` | The platform system is `up`. Applications are `not deployed` until the first release |
-| Status API | `curl -H "Authorization: Bearer <YGGDRASIL_STATUS_TOKEN>" https://yggdrasil.<DOMAIN>/api/status` | JSON with every system of the catalog |
+| Agent can read the env files | `docker exec yggdrasil-agent-1 ls /etc/yggdrasil/<environment>` on each host, for each of its environments | Lists the application env files, no `Permission denied` |
+| Console | `https://yggdrasil.<DOMAIN>` | The host, with a chip per environment it runs. The platform system is `up`. Applications are `not deployed` until the first release |
+| Status API | `curl -H "Authorization: Bearer <YGGDRASIL_STATUS_TOKEN>" https://yggdrasil.<DOMAIN>/api/status` | JSON with every environment of the host, and every system that has an application in one of them |
 | Grafana | `https://grafana.<DOMAIN>`, `admin` / `GRAFANA_ADMIN_PASSWORD` | Prometheus and Loki data sources work |
 
 **Windows and Android consoles**: download them from the releases of
 [artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil/releases) (your fork has none until you
-tag it `vX.Y.Z`). Then add each environment in the console's **Environments** screen with its URL
-(`https://yggdrasil.<DOMAIN>`) and its `YGGDRASIL_STATUS_TOKEN`.
+create a GitHub release `vX.Y.Z`, which `release.yml` attaches them to). Then add each host in
+the console's **Hosts** screen with its URL (`https://yggdrasil.<DOMAIN>`) and its
+`YGGDRASIL_STATUS_TOKEN`: one entry shows every environment of the host.
 
 ## 14. The first release
 
@@ -747,8 +812,11 @@ git switch develop && git pull
 git switch -c release/0.1.0 && git push -u origin release/0.1.0
 ```
 
-1. Environments whose `branches` match `release/*` deploy it. Follow it in Jenkins, in the
-   application's job, on the `release/0.1.0` branch.
+1. Environments whose `branches` match `release/*` deploy it (homologation, in the default
+   catalog). Follow it in Jenkins, in the application's job, on the `release/0.1.0` branch. An
+   on-demand environment that is stopped is stopped again once the new version is healthy: run
+   `scripts/ygg.sh env start homologation` on its host to try it
+   ([On-demand environments](#on-demand-environments)).
 2. Open the pull request `release/0.1.0 → main`. Once its checks pass, Jenkins deploys it to each
    release environment in order, asking for approval where the catalog says so (**Deploy** in the
    build's page).
@@ -782,6 +850,26 @@ docker restart yggdrasil-jenkins-1                       # the controller host o
 file, and they keep seeing the old one until they restart. Jenkins creates new jobs and agents only
 when it starts; it never deletes agents (remove them in **Manage Jenkins → Nodes**).
 
+## On-demand environments
+
+An environment with `onDemand: true` (development and homologation in the default catalog) runs
+only while someone uses it. On its host:
+
+```bash
+scripts/ygg.sh env start development     # starts every application of development
+scripts/ygg.sh env stop development      # stops them again
+scripts/ygg.sh env status                # which environments of this host are on
+```
+
+| | While it is stopped | While it is on |
+|---|---|---|
+| A Jenkins deploy on a push (`trigger: branch`) | Builds the new version, starts it, waits for it to be healthy (rolling back a broken one as usual), then stops it again: the next `env start` runs it. The build log says `deploy: development is on demand and <application> was not running: stopped it again` | Deploys and leaves it running |
+| **Build with Parameters → `DEPLOY_TO`** (on `develop`, a `release/*` branch or `main`), or `DEPLOY_START=1 scripts/deploy.sh ...` | Deploys and leaves it running | The same |
+| The console and the status API | `stopped`: neutral, not a problem, not probed | Its applications' health, as anywhere |
+
+`env stop` refuses an environment that isn't on demand (production) unless you add `--force`.
+Details: [cli.md](cli.md#start-and-stop-environments).
+
 ## Adding things
 
 ### An application
@@ -800,8 +888,26 @@ when it starts; it never deletes agents (remove them in **Manage Jenkins → Nod
 
 ### An environment
 
+**On a host that already runs others** (a `staging` next to development, homologation and
+production on the VPS, say): no new platform, agent or DNS record.
+
+1. **Catalog:** add it to `environments`, in promotion order, with the host's `agent` (`vps`), a
+   `hostSuffix` of its own (`-stg`), `onDemand: true` if it should run only while used, and its
+   other options. Push to `main`.
+2. **Host:** pull, add it to `ENVIRONMENTS` in `platform.env`
+   (`development,homologation,staging,production`), then `scripts/platform.sh up` and restart the
+   status API (and, on the controller host, Jenkins), as in
+   [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog).
+   The DNS record and the certificate already cover `<host>-stg.<DOMAIN>`.
+3. **Env files:** for each application, as in [step 11](#11-application-env-files), with the
+   suffixed host names (`PUBLIC_HOST=shop-api-stg.example.com`).
+4. `python3 github/rulesets.py`, if it's a release environment: `main` now also requires its
+   `deploy/<id>`.
+
+**On a host of its own:**
+
 1. **Catalog:** add it to `environments`, in promotion order, with its options, and push to `main`.
-2. **DNS:** its `*.<DOMAIN>` record, as in [step 6](#6-domain-and-dns).
+2. **DNS:** the host's `*.<DOMAIN>` record, as in [step 6](#6-domain-and-dns).
 3. **Host:** prepare it as in [step 8](#8-prepare-every-host).
 4. **Apply:**
    - On the controller host, pull and restart Jenkins as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog). Jenkins creates the new agent.
@@ -816,8 +922,8 @@ A system is only a grouping: add it with its applications to `catalog.yaml`, the
 ## Observability
 
 - **Grafana** at `https://grafana.<DOMAIN>`, with Prometheus and Loki provisioned. Good starting dashboards to import: *ASP.NET Core* (19924), *Traefik* (17346), *Jenkins* (9964).
-- **Metrics**: every catalog application with `metrics` is scraped, labelled `system`, `app` and `kind`, through the status API's service discovery. Serve metrics on a port that is neither published nor routed.
-- **Logs**: Alloy ships every container's stdout to Loki, labelled `environment`, `stack`, `service`, `container` and `level` (read from JSON logs' `Level`/`level`). For example: `{stack="shop-api"} | json | Level="Error"`.
+- **Metrics**: every catalog application with `metrics` is scraped, once per environment of the host, labelled `system`, `app`, `kind` and `environment`, through the status API's service discovery. Platform components are scraped once, without `environment`. Serve metrics on a port that is neither published nor routed.
+- **Logs**: Alloy ships every container's stdout to Loki, labelled `environment` (from the container's `yggdrasil.environment` label; platform containers have none), `stack` (the Compose project, `<application>-<environment>`), `service`, `container` and `level` (read from JSON logs' `Level`/`level`). For example: `{environment="production", stack="shop-api-production"} | json | Level="Error"`.
 
 ## Troubleshooting
 
@@ -827,10 +933,11 @@ A service's log: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, e.g. `yggd
 | Symptom | Likely cause |
 |---|---|
 | `required variable ... is missing a value` | A variable of `platform.env` is empty: see [9.2](#92-the-env-files-first-pass) |
-| `platform: ENVIRONMENT='...' is not an environment in catalog.yaml` | A typo in `ENVIRONMENT`, or the host's checkout is behind: `git pull` in `/opt/yggdrasil` |
-| `platform: JENKINS_AGENT_NAME must be set ...` (or `JENKINS_AGENT_SECRET`, `DOCKER_GID`) | `COMPOSE_PROFILES` includes `agent` before the agent exists: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) and [10](#10-bring-up-the-other-environment-hosts) |
+| `platform: '...' (ENVIRONMENTS in ...) is not an environment in catalog.yaml` | A typo in `ENVIRONMENTS` (comma-separated, no spaces), or the host's checkout is behind: `git pull` in `/opt/yggdrasil` |
+| `platform: JENKINS_AGENT_NAME must be set ...` (or `JENKINS_AGENT_SECRET`) | `COMPOSE_PROFILES` includes `agent` before the agent exists: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) and [10](#10-bring-up-the-other-environment-hosts) |
 | `permission denied ... docker.sock` when you run `docker` | Your user isn't in the `docker` group, or you haven't reconnected since adding it ([8.1](#8-prepare-every-host)) |
-| `permission denied ... docker.sock` in a Jenkins build | `DOCKER_GID` isn't the host's `docker` group id ([9.5](#95-the-env-files-second-pass-this-hosts-agent)) |
+| `permission denied ... docker.sock` in a Jenkins build, or in the log of a `yggdrasil-*docker-proxy-1` | `DOCKER_GID` isn't the host's `docker` group id ([9.2](#92-the-env-files-first-pass)) |
+| `blocked request` in the log of a `yggdrasil-*docker-proxy-1`; with it the status API logs `docker proxy answered 403`, Traefik loses its routes or Alloy stops shipping logs | That client asked Docker for something its proxy's allowlist in `platform/compose.yml` doesn't allow, typically after an upgrade of Traefik or Alloy. The log line names the request: check it against the client before adding it ([status-api.md, Docker access](status-api.md#docker-access)) |
 | `/etc/yggdrasil/github-app.pem` is a directory | `platform.sh up` ran with the `jenkins` profile before the key existed, and Docker created a directory in its place. `sudo rm -r` it, then do [9.1](#91-the-github-app-key) |
 | Jenkins starts, but with no jobs or credentials errors | `GITHUB_APP_ID` wrong, the key not converted to PKCS#8, or not readable by uid 1000 ([9.1](#91-the-github-app-key)). The Jenkins log says which |
 | A job's scan finds no branches | Expected before the first release (no `Jenkinsfile` on `main` yet). Otherwise, the GitHub App isn't installed on that repository |
@@ -838,5 +945,8 @@ A service's log: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, e.g. `yggd
 | A new application or environment doesn't appear in Jenkins or the console | The containers still see the old catalog: restart them as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog) |
 | `deploy: missing or unreadable env file ...` | The application's env file isn't at `/etc/yggdrasil/<environment>/<application>.env`, or the agent can't read it: the directories must be group `docker` with mode `2750`, the file `640` ([8.4](#8-prepare-every-host), [11](#11-application-env-files)) |
 | A **Build with Parameters → `DEPLOY_TO`** build waits forever | The `manual` environment has no `agent` in the catalog, so Jenkins has no node for it. Set `agent`, or deploy it by hand with `scripts/deploy.sh` |
+| An application is `stopped` right after a Jenkins deploy | Expected in an on-demand environment that was stopped: the deploy checked the new version and stopped it again. `scripts/ygg.sh env start <environment>` ([On-demand environments](#on-demand-environments)) |
+| `YGG_ENVIRONMENT is set by scripts/deploy.sh` from `docker compose` | A stack's proxy overlay used without `deploy.sh`, which exports it. Deploy with `deploy.sh`, or export `YGG_ENVIRONMENT=<environment>` and `-p <application>-<environment>` |
+| After upgrading from 0.4, Traefik routes an application to the old container, or a deploy fails on a name already in use | The project from before 0.5 (`<application>`, without the environment) still runs: `docker compose -p <application> down` ([CHANGELOG, Upgrading from 0.4 to 0.5](../CHANGELOG.md#upgrading-from-04-to-05)) |
 | `deploy/<environment>` never appears on the pull request | The release environment's agent is offline, or a GitHub check never finishes (a path-filtered workflow in `checks`) |
 | Certificates, DNS, webhook deliveries | [dns.md troubleshooting](dns.md#troubleshooting) |

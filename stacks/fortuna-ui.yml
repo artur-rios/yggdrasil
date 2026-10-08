@@ -1,10 +1,11 @@
 # fortuna-ui: the Flutter web build served by nginx (the repository's Dockerfile). The repository has no
 # Compose file of its own, so this is the service definition; stacks/fortuna-ui.<mode>.yml adds either
-# Traefik (homologation, production) or a host port (development).
+# Traefik (proxy environments) or a host port (ports environments).
 #
 # The build args are compiled into the JavaScript bundle, so they differ per environment and are
-# public: never put a secret in them. That is also why the image is built on each environment's host
-# rather than once -- the same commit, a different bundle.
+# public: never put a secret in them. That is also why the image is built for each environment
+# rather than once -- the same commit, a different bundle, tagged <environment>-<version> by
+# scripts/deploy.sh so the environments of one host keep their own images.
 
 services:
   ui:
