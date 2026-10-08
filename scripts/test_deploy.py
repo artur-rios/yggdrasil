@@ -270,6 +270,13 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(self.read("up2.tag").strip(), "development-1.0.0-aaaaaaa", result.stderr)
         self.assertEqual(len(self.compose_calls("stop")), 1, self.read("calls"))
 
+    def test_given_an_on_demand_environment_first_deploy_that_fails_when_deployed_then_it_is_stopped(self):
+        self.given("up_results", "1")
+        result = self.deploy(environment=ON_DEMAND)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("rolling back", result.stderr)
+        self.assertEqual(len(self.compose_calls("stop")), 1, self.read("calls"))
+
     def test_given_images_of_several_environments_when_pruning_then_only_this_environments_old_ones_go(self):
         self.given("images", "\n".join([
             "2026-01-05\theimdall-ui:local-5.0.0-eeeeeee",
