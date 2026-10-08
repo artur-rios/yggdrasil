@@ -458,7 +458,6 @@ def parse_env_text(text):
             raise VarsError(f"line {number}: '{raw}' is not KEY=value")
         key, value = line.split("=", 1)
         key = key.strip()
-        validate_key(key)
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] == "'":
             value = value[1:-1]
@@ -466,6 +465,12 @@ def parse_env_text(text):
             value = _compose_dollars(re.sub(r'\\(["\\])', r"\1", value[1:-1]), number, key)
         else:
             value = _compose_dollars(re.split(r"\s+#", value, maxsplit=1)[0].strip(), number, key)
+        # Checked here, where the line is known, so a refused value names its line and key.
+        try:
+            validate_key(key)
+            validate_value(value)
+        except VarsError as error:
+            raise VarsError(f"line {number}: {key}: {error}") from None
         values[key] = value
     return values
 
@@ -548,8 +553,9 @@ def cmd_edit(args):
             except VarsError as error:
                 stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
                 safe = re.sub(r"[^A-Za-z0-9_.-]", "_", args.scope)
-                saved = pathlib.Path(path).with_name(f"vars-edit-{safe}-{stamp}.env")
-                fd = os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                # mkstemp: a unique 0600 file, so two rejected edits in the same second both keep their text.
+                fd, saved = tempfile.mkstemp(prefix=f"vars-edit-{safe}-{stamp}-", suffix=".env",
+                                             dir=pathlib.Path(path).parent)
                 with os.fdopen(fd, "w") as file:
                     file.write(edited)
                 raise VarsError(f"{error}; nothing changed, your text is saved in {saved}") from None
@@ -612,7 +618,10 @@ def import_all(store, directory, cat, move_up):
     for file, scope, text in sources:
         try:
             for key, value in parse_env_text(text).items():
-                validate_entry(scope, key, value)
+                try:
+                    validate_entry(scope, key, value)
+                except VarsError as error:
+                    raise VarsError(f"{key}: {error}") from None
         except VarsError as error:
             raise VarsError(f"{file}: {error}; nothing was imported") from None
     for file, scope, text in sources:

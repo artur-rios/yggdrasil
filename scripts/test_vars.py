@@ -364,6 +364,16 @@ class HistoryTests(StoreTestCase):
 
 
 class EnvTextTests(unittest.TestCase):
+    def test_given_a_value_the_store_refuses_when_parsed_then_the_error_names_its_line_and_key(self):
+        for text, key in (("A=1\nSCOPE_ID=<fortuna's scope id>\n", "SCOPE_ID"),
+                          ("A=1\nB=1\nPADDED=' x '\n", "PADDED"),
+                          ("BAD-KEY=1\n", "BAD-KEY")):
+            with self.assertRaises(v.VarsError, msg=text) as caught:
+                v.parse_env_text(text)
+            line = text.splitlines().index(next(l for l in text.splitlines() if l.startswith(key))) + 1
+            self.assertIn(f"line {line}", str(caught.exception), text)
+            self.assertIn(key, str(caught.exception), text)
+
     def test_given_env_file_text_when_parsed_then_compose_semantics(self):
         text = ("# comment\n\nexport A=plain\nB='lit $x #y'\nC=\"q \\\"x\\\" \\\\\"\n"
                 "D=value # trailing comment\nE=\n")
@@ -445,6 +455,25 @@ class EditTests(StoreTestCase):
         self.assertEqual(self.cli("get", "platform", "A").stdout, "1\n")
 
 
+    def test_given_two_rejected_edits_in_the_same_second_when_saved_then_both_texts_are_kept(self):
+        import datetime
+        tmp = self.dir / "tmp"
+        tmp.mkdir()
+        self.env["TMPDIR"] = str(tmp)
+        # The names a per-second stamp would use now and in the next seconds are taken already.
+        now = datetime.datetime.now()
+        for offset in range(6):
+            stamp = (now + datetime.timedelta(seconds=offset)).strftime("%Y%m%d%H%M%S")
+            (tmp / f"vars-edit-platform-{stamp}.env").write_text("an earlier rejected edit\n")
+        self.cli("set", "platform", "A=1")
+        self.editor("s/^A=.*/A=10\\nB=it\\x27s/")
+        result = self.cli("edit", "platform")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        saved = pathlib.Path(result.stderr.split("your text is saved in ")[1].strip())
+        self.assertIn("B=it's", saved.read_text())
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(len(list(tmp.glob("vars-edit-platform-*.env"))), 7)
+
 class ImportTests(StoreTestCase):
     def tree(self):
         (self.dir / "platform.env").write_text("ENVIRONMENTS=development,homologation\nDOMAIN=example.com\n")
@@ -454,6 +483,22 @@ class ImportTests(StoreTestCase):
             (self.dir / env / "heimdall-api.env").write_text(
                 f"DB_HOST=host.docker.internal\nLOCALE=pt-BR\nDB_NAME=heimdall_{env}\n")
             (self.dir / env / "fortuna-api.env").write_text(f"DB_HOST=host.docker.internal\nFORTUNA_X={env}\n")
+
+    def test_given_a_refused_value_when_imported_all_then_the_error_names_file_line_and_key(self):
+        self.tree()
+        (self.dir / "development" / "fortuna-api.env").write_text("DB_HOST=x\nFORTUNA_HEIMDALL_SCOPE_ID=<fortuna's id>\n")
+        with self.store() as s, self.assertRaises(v.VarsError) as caught:
+            v.import_all(s, self.dir, v.load_catalog(), "no")
+        message = str(caught.exception)
+        for part in ("development/fortuna-api.env", "line 2", "FORTUNA_HEIMDALL_SCOPE_ID", "nothing was imported"):
+            self.assertIn(part, message)
+
+    def test_given_a_reference_in_platform_env_when_imported_all_then_the_error_names_the_key(self):
+        self.tree()
+        (self.dir / "platform.env").write_text("DOMAIN=example.com\nSHARED='${ref:heimdall-api:X}'\n")
+        with self.store() as s, self.assertRaises(v.VarsError) as caught:
+            v.import_all(s, self.dir, v.load_catalog(), "no")
+        self.assertIn("platform.env: SHARED:", str(caught.exception))
 
     def test_given_a_file_when_imported_then_existing_keys_are_kept_unless_replace(self):
         with self.store() as s:

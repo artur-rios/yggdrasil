@@ -86,7 +86,7 @@ FAKE_DOCKER = textwrap.dedent(r"""
         if [[ "$2" == ls ]]; then
           while IFS=$'\t' read -r created image; do
             [[ "${image%%:*}" == "$3" ]] && printf '%s\t%s\n' "$created" "${image#*:}"
-          done <"$state/images" 2>/dev/null || true
+          done < <(cat "$state/images" 2>/dev/null)
         fi
         ;;
       network) ;;
@@ -181,6 +181,13 @@ class DeployTests(unittest.TestCase):
         self.assertIn('yggdrasil.version: "1.0.0"', labels)
         self.assertIn('yggdrasil.commit: "aaaaaaa"', labels)
         self.assertIn('yggdrasil.deployed_at: "2026-01-01T00:00:00Z"', labels)
+
+    def test_given_a_previous_deployment_when_deployed_then_the_log_says_running_or_stopped(self):
+        for state, word in (("running", "running"), ("exited", "stopped")):
+            self.given("ps", f"c1 heimdall-ui:local-1.0.0-aaaaaaa {state}")
+            result = self.deploy()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"(previous: heimdall-ui:local-1.0.0-aaaaaaa, {word})", result.stdout + result.stderr)
 
     def test_given_a_stack_that_also_runs_a_database_when_rolling_back_then_the_application_image_is_the_target(self):
         # docker ps lists the newest container first, and here that is the database's: its tag ("16")
