@@ -639,7 +639,9 @@ checkout_version() {
 # <environment>- prefix; empty when nothing is deployed. running_version <app> <environment>
 running_version() {
   local image
-  image=$(docker ps --all --filter "label=com.docker.compose.project=$1-$2" --format '{{.Image}}' | head -n1)
+  # The first line in bash, not `| head -n1`, which could SIGPIPE docker under pipefail.
+  image=$(docker ps --all --filter "label=com.docker.compose.project=$1-$2" --format '{{.Image}}')
+  image=${image%%$'\n'*}
   [[ "$image" == *:* ]] && image=${image##*:} && echo "${image#"$2"-}"
   return 0
 }

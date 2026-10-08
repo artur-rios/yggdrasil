@@ -157,7 +157,9 @@ while read -r image; do
 done < <(compose config --images | sort -u)
 
 # Whether anything of the stack runs now: an on-demand environment that is switched off stays off.
-was_running=$(docker ps --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' | head -n1)
+# The whole list, not `| head -n1`: head closing the pipe early would kill docker with SIGPIPE, and
+# pipefail would then stop this script.
+was_running=$(docker ps --filter "label=com.docker.compose.project=$project" --format '{{.ID}}')
 
 # The deployment to come back to: the newest container of the project, running or not (a stopped
 # on-demand environment rolls back too), whose image is one of those repositories with this
