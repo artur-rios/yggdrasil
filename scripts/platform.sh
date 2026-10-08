@@ -42,8 +42,16 @@ elif [[ -f "$secrets/vars.db" ]]; then
   # Only the platform's own values: an application's broken reference is its deploy's problem.
   python3 "$root/scripts/vars.py" check --platform >&2 \
     || die "the variables store failed its check; fix it (scripts/ygg.sh vars check) or run 'platform.sh $command --last-good'"
+  # /run/yggdrasil for root; else the user's own runtime directory (a tmpfs only they read), else
+  # a directory of theirs under $TMPDIR.
   run_base=/run/yggdrasil
-  mkdir -p "$run_base" 2>/dev/null && [[ -w "$run_base" ]] || run_base="${TMPDIR:-/tmp}/yggdrasil-$(id -u)"
+  if ! { mkdir -p "$run_base" 2>/dev/null && [[ -w "$run_base" ]]; }; then
+    if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -w "$XDG_RUNTIME_DIR" ]]; then
+      run_base="$XDG_RUNTIME_DIR/yggdrasil"
+    else
+      run_base="${TMPDIR:-/tmp}/yggdrasil-$(id -u)"
+    fi
+  fi
   mkdir -p "$run_base" && chmod 700 "$run_base"
   render_dir=$(mktemp -d "$run_base/platform.XXXXXX")
   cleanup_paths+=("$render_dir")

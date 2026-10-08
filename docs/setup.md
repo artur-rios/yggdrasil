@@ -400,9 +400,10 @@ the rest of 4, asking before each one, and `scripts/ygg.sh check` covers 5
 
 2. **The other tools**:
    ```bash
-   sudo apt update && sudo apt install -y git python3 python3-yaml openssl apache2-utils
+   sudo apt update && sudo apt install -y git python3 python3-yaml python3-cryptography openssl apache2-utils
    ```
    - `python3-yaml`: PyYAML, which `scripts/catalog.py` needs to read the catalog.
+   - `python3-cryptography`: for the [variables store](variables.md), when you use it.
    - `apache2-utils`: provides `htpasswd`, for the Traefik dashboard password.
 
 3. **The firewall**, on the host and in the provider's panel if it has its own firewall or security

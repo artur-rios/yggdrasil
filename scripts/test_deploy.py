@@ -351,6 +351,18 @@ class DeployTests(unittest.TestCase):
         self.assertIn(f"scripts/ygg.sh config {STACK} {ENVIRONMENT}", result.stderr)
         self.assertNotIn("compose", self.read("calls"))
 
+    @unittest.skipIf(os.geteuid() == 0 or os.access("/run/yggdrasil", os.W_OK), "this user writes /run/yggdrasil")
+    def test_given_a_runtime_directory_when_a_user_deploys_then_the_rendered_file_is_under_it(self):
+        self.use_store({"HEIMDALL_API_BASE_URL": "https://heimdall.example.com"})
+        runtime = self.temp / "runtime"
+        runtime.mkdir(mode=0o700)
+        result = self.deploy(XDG_RUNTIME_DIR=str(runtime))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env_files = {line.split("--env-file ")[1].split(" ")[0] for line in self.read("calls").splitlines()
+                     if "--env-file" in line}
+        self.assertTrue(env_files)
+        self.assertTrue(all(p.startswith(f"{runtime}/yggdrasil/deploy.") for p in env_files), env_files)
+
     def test_given_a_store_with_a_broken_reference_when_deployed_then_it_stops_before_docker(self):
         self.use_store({"X": "${ref:heimdall-api:NOPE}"})
         result = self.deploy()

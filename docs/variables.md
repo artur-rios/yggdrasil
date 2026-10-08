@@ -132,7 +132,7 @@ command.
 | `vars import --all [--dir <secrets dir>] [--move-up ask\|yes\|no]` | Imports every env file of the machine: see [Moving to the store](#moving-to-the-store) |
 | `vars export <scope> [--resolved]` | Env-file text on stdout, **always revealed**: it is meant for files |
 | `vars backup <dir>` | Writes `vars-<UTC timestamp>.db` and `.key` into `<dir>`, both `0600`: see [Backup](#backup-and-recovery) |
-| `vars check [<application> <environment> \| --platform \| --usable]` | Integrity, schema version, that every value decrypts, that every reference resolves; applications and environments no longer in the catalog are warnings. References are errors for what this machine runs (an `<application>@<environment>` scope of its own, or an environment of the platform's `ENVIRONMENTS` the application deploys to) and warnings for the catalog's other pairs. With arguments, only what that deploy needs, strictly (`deploy.sh`). `--platform`: only the `platform` and `platform:acme` values (`platform.sh`). `--usable`: only that the store opens with its key and is intact (`ygg.sh`). Exit 1 on any error |
+| `vars check [<application> <environment> \| --platform \| --usable]` | Integrity, schema version, that every value decrypts, that every reference resolves; applications and environments no longer in the catalog are warnings. References are errors for what this machine runs (an `<application>@<environment>` scope of its own, or an environment of the platform's `ENVIRONMENTS` the application deploys to) and warnings for the catalog's other pairs. With arguments, only what that deploy needs, strictly (`deploy.sh`). `--platform`: only the `platform` and `platform:acme` values (`platform.sh`). `--usable`: only that the store opens with its key and is intact (`ygg.sh`). It opens the store read-write when you can write the secrets directory, which rolls back a write that crashed half-way. Exit 1 on any error |
 
 The interactive menu has the same under **Variables and secrets** (list, set, edit, history, roll
 back, check, back up), and offers to create the store if the machine has none. `scripts/ygg.sh
@@ -259,6 +259,11 @@ off the machine only where both are protected, and the key's own copy in your pa
 **Check** at any time with `scripts/ygg.sh vars check`. A wrong or missing key is found when the
 store is opened: every command stops with `wrong or missing key (<dir>/vars.key)`.
 
+**A write that crashed** (power loss, `kill -9`) leaves a `vars.db-journal` next to the database.
+A read-only open can't roll it back, so the Jenkins agent and other readers fail with `attempt to
+write a readonly database` until a writer has: run `scripts/ygg.sh vars check` on the host as the
+owner of the secrets directory (or root), which opens the store read-write and rolls it back.
+
 **The store is unusable and the platform must start.** The last successful `platform.sh up` from
 the store saved its rendered files in `<secrets>/last-good/` (`root`, `0600`). Start from them,
 without opening the store:
@@ -295,7 +300,8 @@ an env file, to use files again: delete `vars.db` and the scripts read the files
 
 - **`deploy.sh`**, when `vars.db` exists: runs `vars check <application> <environment>`, then
   renders the application's resolved variables as `KEY='value'` lines into a private directory
-  (`/run/yggdrasil` when writable, else `${TMPDIR:-/tmp}/yggdrasil-$UID`; base directory `0700`, the file `0600`).
+  (`/run/yggdrasil` when writable, as for root; else `$XDG_RUNTIME_DIR/yggdrasil` when that is a
+  writable directory; else `${TMPDIR:-/tmp}/yggdrasil-$UID`; base directory `0700`, the file `0600`).
   `APP_ENV_FILE` and Compose's `--env-file` point at it, and the directory is removed when the script
   exits, whether the deploy succeeded or not. An application with no variables at all in that
   environment is not deployed, as a missing env file was not: `deploy.sh` stops and names

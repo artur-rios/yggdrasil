@@ -260,6 +260,13 @@ class VariablesStoreTests(EnvironmentCommandTests):
             self.assertEqual(store.get("app:heimdall-api@homologation", "MY_SETTING"), ("", True))
             self.assertEqual(store.get("app:heimdall-api@homologation", "LOG_LEVEL"), ("Debug", False))
 
+    def test_given_no_cryptography_package_when_checked_then_it_is_listed_to_install(self):
+        hidden = self.temp / "hidden"
+        (hidden / "cryptography").mkdir(parents=True)
+        (hidden / "cryptography" / "__init__.py").write_text("raise ImportError('hidden by the test')\n")
+        result = self.ygg("check", PYTHONPATH=str(hidden))
+        self.assertIn("package python3-cryptography", result.stdout)
+
     def test_given_vars_when_run_then_it_passes_through_to_vars_py(self):
         self.use_store()
         self.assertEqual(self.ygg("vars", "set", "platform", "DOMAIN=example.com").returncode, 0)

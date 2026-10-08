@@ -121,6 +121,7 @@ apt_get() { as_root env DEBIAN_FRONTEND=noninteractive apt-get -q "$@" </dev/nul
 has() { command -v "$1" >/dev/null 2>&1; }
 installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
 has_yaml() { has python3 && python3 -c 'import yaml' 2>/dev/null; }
+has_crypto() { has python3 && python3 -c 'import cryptography' 2>/dev/null; }
 docker_ok() { has docker && docker info >/dev/null 2>&1; }
 catalog() { python3 "$root/scripts/catalog.py" "$@"; }
 
@@ -314,6 +315,12 @@ check_report() {
   else
     row missing "PyYAML" "package python3-yaml"
     missing_packages+=(python3-yaml)
+  fi
+  if has_crypto; then
+    row ok "cryptography" "$(python3 -c 'import cryptography; print(cryptography.__version__)')"
+  else
+    row missing "cryptography" "package python3-cryptography (the variables store needs it)"
+    missing_packages+=(python3-cryptography)
   fi
 
   if has docker; then
@@ -1307,7 +1314,7 @@ variables_menu() {
     History) vars_py history --limit 30 ;;
     Roll*) ask_match pick "Change id (from History)" '^[0-9]+$' "a number"; vars_py rollback "$pick" ;;
     Check*) vars_py check ;;
-    Back\ up*) ask scope "Into which directory?" "/root/yggdrasil-backups"; vars_py backup "$scope" ;;
+    Back\ up*) ask scope "Into which directory?" "$HOME/yggdrasil-backups"; vars_py backup "$scope" ;;
     Back) return 0 ;;
   esac
   pause

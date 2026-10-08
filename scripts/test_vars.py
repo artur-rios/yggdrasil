@@ -710,6 +710,45 @@ class CheckScopeTests(StoreTestCase):
         conn.close()
 
 
+class PathTests(unittest.TestCase):
+    def test_given_uri_characters_in_the_path_when_read_only_and_backed_up_then_they_work(self):
+        parent = pathlib.Path(tempfile.mkdtemp(prefix="vars-path-"))
+        self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
+        directory = parent / "a?b#c%20d"
+        directory.mkdir()
+        v.init(directory, confirm=lambda prompt: "saved")
+        with v.Store.open(directory) as s:
+            s.set("platform", "DOMAIN", "example.com", None, "set")
+        with v.Store.open(directory, readonly=True) as s:
+            self.assertEqual(s.get("platform", "DOMAIN")[0], "example.com")
+        database, _ = v.backup(directory, parent / "backups")
+        self.assertEqual(sqlite3.connect(database).execute("SELECT COUNT(*) FROM variables").fetchone()[0], 1)
+
+
+class HotJournalTests(StoreTestCase):
+    def test_given_a_hot_journal_from_a_crashed_write_when_checked_then_it_is_rolled_back(self):
+        self.cli("set", "platform", "DOMAIN=example.com")
+        crashed = self.dir / "crashed"
+        crashed.mkdir()
+        writer = sqlite3.connect(self.dir / "vars.db", isolation_level=None)
+        writer.execute("PRAGMA cache_size=1")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.executemany("INSERT INTO history (at, actor, command, scope, key, secret) VALUES ('t', 'a', 'c', 's', ?, 0)",
+                           [(f"K{i}" * 200,) for i in range(200)])
+        # A copy taken mid-transaction is what a crash leaves: the database and its journal, no lock.
+        for name in ("vars.db", "vars.db-journal", "vars.key"):
+            shutil.copy(self.dir / name, crashed / name)
+        writer.execute("ROLLBACK")
+        writer.close()
+        env = dict(self.env, YGG_SECRETS_DIR=str(crashed))
+        result = subprocess.run([sys.executable, str(SCRIPT), "check"], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((crashed / "vars.db-journal").exists())
+        result = subprocess.run([sys.executable, str(SCRIPT), "get", "platform", "DOMAIN"], env=env,
+                                capture_output=True, text=True)
+        self.assertEqual(result.stdout, "example.com\n", result.stderr)
+
+
 class BackupUmaskTests(StoreTestCase):
     def test_given_a_backup_when_done_then_the_umask_is_restored_and_files_are_private(self):
         old = os.umask(0o022)

@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   did, an application with no variables in the store for that environment stops its deploy.
 - The deploy lock moved from the application's env file to `<secrets>/locks/<application>-<environment>.lock`. `platform.sh up`
   creates the directory (group `docker`, mode `2770`).
+- `scripts/ygg.sh check` and `install` list and install `python3-cryptography` with the other packages.
 - The Jenkins agent image installs `python3-cryptography`, and `platform/compose.yml` mounts `<secrets>/locks` read-write
   next to the read-only secrets directory.
 

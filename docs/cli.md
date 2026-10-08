@@ -65,12 +65,12 @@ Each menu entry is also a command, for scripts and for going straight to it:
 
 | Group | Checks |
 |---|---|
-| **Tools** | Ubuntu; `git`, `curl`, `openssl`, `python3`, `htpasswd` (apache2-utils) and PyYAML; Docker Engine; Compose 2.24 or later; Buildx; whether your user can reach the Docker daemon |
+| **Tools** | Ubuntu; `git`, `curl`, `openssl`, `python3`, `htpasswd` (apache2-utils), PyYAML and `cryptography` (for the variables store); Docker Engine; Compose 2.24 or later; Buildx; whether your user can reach the Docker daemon |
 | **This host** | The secrets directory and its group; `platform.env` and `acme.env`, or the variables store passing `vars check`; the catalog is valid; the host's environments (`ENVIRONMENTS`, or a warning for the `ENVIRONMENT` of a `platform.env` from before 0.5); the platform is running; ufw |
 
 `install` works on Ubuntu only. It needs root or `sudo`, and asks before each part:
 
-1. **Packages** from Ubuntu's repositories: `git curl openssl python3 python3-yaml apache2-utils ca-certificates`.
+1. **Packages** from Ubuntu's repositories: `git curl openssl python3 python3-yaml python3-cryptography apache2-utils ca-certificates`.
 2. **Docker** from Docker's own apt repository, as in
    [docs.docker.com](https://docs.docker.com/engine/install/ubuntu/): `docker-ce`, the Compose and
    Buildx plugins. Ubuntu's own `docker.io` and similar packages are removed first, if you agree:

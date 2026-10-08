@@ -60,6 +60,16 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual((last_good / "acme.env").read_text(), "CF_DNS_API_TOKEN='abc'\n")
         self.assertEqual((last_good / "platform.env").stat().st_mode & 0o777, 0o600)
 
+    @unittest.skipIf(os.geteuid() == 0 or os.access("/run/yggdrasil", os.W_OK), "this user writes /run/yggdrasil")
+    def test_given_a_runtime_directory_when_a_user_runs_up_then_the_rendered_files_are_under_it(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        runtime = self.temp / "runtime"
+        runtime.mkdir(mode=0o700)
+        self.env["XDG_RUNTIME_DIR"] = str(runtime)
+        result = self.run_platform("config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"--env-file {runtime}/yggdrasil/platform.", self.docker_calls())
+
     def test_given_last_good_when_up_then_the_store_is_not_opened(self):
         self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
         self.assertEqual(self.run_platform("up").returncode, 0)

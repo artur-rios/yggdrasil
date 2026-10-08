@@ -98,6 +98,12 @@ def validate_entry(scope, key, value):
         raise VarsError("references (${ref:<application>:<KEY>}) only work in application scopes")
 
 
+def _read_only_uri(database):
+    """An SQLite URI opening the file read-only: built by pathlib, so ?, # and % in the path (and a
+    Windows drive) are encoded rather than read as URI syntax."""
+    return pathlib.Path(database).resolve().as_uri() + "?mode=ro"
+
+
 def _restrict(path):
     os.chmod(path, 0o640)
     try:
@@ -190,7 +196,7 @@ class Store:
         except (OSError, ValueError) as error:
             raise VarsError(f"cannot read the key {key_file}: {error}") from None
         if readonly:
-            conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=10)
+            conn = sqlite3.connect(_read_only_uri(database), uri=True, timeout=10)
         else:
             conn = sqlite3.connect(database, timeout=10)
             conn.execute("PRAGMA journal_mode=DELETE")
@@ -678,7 +684,7 @@ def backup(directory, target):
     database, key = target / f"vars-{stamp}.db", target / f"vars-{stamp}.key"
     previous = os.umask(0o077)
     try:
-        source = sqlite3.connect(f"file:{pathlib.Path(directory) / 'vars.db'}?mode=ro", uri=True)
+        source = sqlite3.connect(_read_only_uri(pathlib.Path(directory) / "vars.db"), uri=True)
         copy = sqlite3.connect(database)
         with copy:
             source.backup(copy)
@@ -775,7 +781,11 @@ def cmd_backup(args):
 def cmd_check(args):
     if bool(args.application) != bool(args.environment) or (args.application and (args.platform or args.usable)):
         raise VarsError("check takes no argument, --platform, --usable, or <application> <environment>")
-    with Store.open(readonly=True) as store:
+    # Read-write where this user can write, so that a hot journal left by a crashed write is rolled back
+    # (a read-only open cannot); read-only elsewhere, as for the Jenkins agent's read-only mount.
+    directory = secrets_dir()
+    writable = os.access(directory, os.W_OK) and os.access(directory / "vars.db", os.W_OK)
+    with Store.open(readonly=not writable) as store:
         cat = None if args.platform or args.usable else load_catalog()
         errors, warnings = check(store, cat, args.application, args.environment, args.platform, args.usable)
     for line in warnings:
