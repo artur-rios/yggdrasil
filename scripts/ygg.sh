@@ -1204,10 +1204,15 @@ configure_app() {
       case $pick in
         Set*)
           ask_match name "Variable name" '^[A-Za-z_][A-Za-z0-9_]*$' "letters, digits and underscores"
-          if [[ "${name^^}" =~ $SECRET_NAME ]]; then
-            vars_py set "$id@$environment" "$name=-"
+          # A secret by its name or by its stored flag (a masked get differs from the value) is typed
+          # hidden and handed over on stdin; anything else has its own value as the default, never a mask.
+          value=$(vars_py get "$id@$environment" "$name" --reveal 2>/dev/null || true)
+          if [[ "${name^^}" =~ $SECRET_NAME || "$(vars_py get "$id@$environment" "$name" 2>/dev/null || true)" != "$value" ]]; then
+            read -r -s -p "Value (hidden): " value || exit 1
+            say ""
+            printf '%s\n' "$value" | vars_py set "$id@$environment" "$name=-"
           else
-            ask value "Value" "$(vars_py get "$id@$environment" "$name" 2>/dev/null || true)"
+            ask value "Value" "$value"
             vars_py set "$id@$environment" "$name=$value"
           fi
           changed=1

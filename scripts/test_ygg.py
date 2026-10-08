@@ -247,6 +247,19 @@ class VariablesStoreTests(EnvironmentCommandTests):
         self.assertIn("PUBLIC_HOST", result.stderr)
         self.assertEqual(list(self.tmp.iterdir()), [])
 
+    def test_given_a_secret_flagged_value_when_set_in_config_then_the_mask_is_never_its_default(self):
+        self.use_store()
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            store.set("app:heimdall-api@homologation", "MY_SETTING", "hidden-value-123", True, "set")
+            store.set("app:heimdall-api@homologation", "LOG_LEVEL", "Debug", None, "set")
+        # 1: Set, MY_SETTING, Enter (an empty hidden answer); 1: Set, LOG_LEVEL, Enter (its value); 7: Back.
+        result = self.config("1\nMY_SETTING\n\n1\nLOG_LEVEL\n\n7\n", "heimdall-api", "homologation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with v.Store.open(self.secrets) as store:
+            self.assertEqual(store.get("app:heimdall-api@homologation", "MY_SETTING"), ("", True))
+            self.assertEqual(store.get("app:heimdall-api@homologation", "LOG_LEVEL"), ("Debug", False))
+
     def test_given_vars_when_run_then_it_passes_through_to_vars_py(self):
         self.use_store()
         self.assertEqual(self.ygg("vars", "set", "platform", "DOMAIN=example.com").returncode, 0)

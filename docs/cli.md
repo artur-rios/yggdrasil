@@ -227,7 +227,8 @@ it deploys to more than one of the host's environments, for the environment;
 this host, or that the application doesn't deploy to, is refused. If the file doesn't exist yet, as
 on a new host, it creates it from the stack files as `add` does. Then:
 
-With the store, **Set** types a secret hidden, **Remove** unsets a variable, **Edit** is
+With the store, **Set** types a secret hidden (one by its name, or flagged secret in the store) and
+offers any other variable's current value as the default, **Remove** unsets a variable, **Edit** is
 `vars edit` (the scope as `KEY='value'` lines in `$EDITOR`, secrets masked and kept when left
 alone; a rejected edit writes nothing and keeps your text in a file whose path it prints), and
 **History** shows the last changes. Values are stored encrypted, so there is no file to chmod, and
