@@ -150,5 +150,28 @@ class EnvironmentCommandTests(unittest.TestCase):
         self.assertIn("usage: scripts/ygg.sh env", result.stderr)
 
 
+class VariablesStoreTests(EnvironmentCommandTests):
+    def use_store(self):
+        import sys
+        sys.path.insert(0, str(SCRIPT.parent))
+        import vars as v
+        (self.secrets / "platform.env").unlink()
+        v.init(self.secrets, confirm=lambda prompt: "saved")
+        with v.Store.open(self.secrets) as store:
+            store.set("platform", "ENVIRONMENTS", "homologation,production", None, "set")
+
+    def test_given_a_store_when_env_status_then_environments_come_from_it(self):
+        self.use_store()
+        result = self.ygg("env", "status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("homologation", result.stdout)
+        self.assertNotIn("development", result.stdout)
+
+    def test_given_vars_when_run_then_it_passes_through_to_vars_py(self):
+        self.use_store()
+        self.assertEqual(self.ygg("vars", "set", "platform", "DOMAIN=example.com").returncode, 0)
+        self.assertEqual(self.ygg("vars", "get", "platform", "DOMAIN").stdout, "example.com\n")
+
+
 if __name__ == "__main__":
     unittest.main()
