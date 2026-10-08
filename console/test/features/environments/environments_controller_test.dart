@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yggdrasil_console/core/config/app_config.dart';
 import 'package:yggdrasil_console/features/environments/data/environment_store.dart';

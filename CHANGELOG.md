@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The status API reads only Docker's container list. `container.startedAt` is the container's creation time when it
   has not restarted, and as precise as Docker's "Up 5 minutes" when it has; "restarted in the last 10 minutes" now
   counts any start more than 5 minutes after the container's creation, so a reboot of the host or of Docker counts too.
+- The console uses `flutter_riverpod` 3 (from 2.6.1). Its automatic retry of failing providers is turned off, so a
+  failure to load the saved environments still shows at once and the status polling keeps its own schedule.
 
 ### Deprecated
 

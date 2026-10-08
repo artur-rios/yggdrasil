@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 
 import '../../environments/domain/environment.dart';
 import '../../environments/presentation/environments_controller.dart';
@@ -60,7 +61,7 @@ class StatusController extends Notifier<StatusViewState> {
   StatusViewState build() {
     final environment = ref.watch(
       environmentsControllerProvider.select(
-        (environments) => environments.valueOrNull?.selected,
+        (environments) => environments.value?.selected,
       ),
     );
 

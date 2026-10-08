@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
@@ -20,6 +21,10 @@ void main() {
 
   runApp(
     ProviderScope(
+      // Riverpod 3 retries a provider whose build throws. The console shows
+      // such a failure (loading the saved environments) as is, and the
+      // status polling has its own schedule, so nothing is retried.
+      retry: (_, _) => null,
       overrides: <Override>[
         appConfigProvider.overrideWithValue(config),
         environmentStoreProvider.overrideWithValue(
