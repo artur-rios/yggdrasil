@@ -36,6 +36,89 @@ class PlatformTests(unittest.TestCase):
     def docker_calls(self):
         return self.log.read_text() if self.log.exists() else ""
 
+    def use_store(self, platform, acme):
+        import sys
+        sys.path.insert(0, str(SCRIPT.parent))
+        import vars as v
+        v.init(self.secrets, confirm=lambda prompt: "saved")
+        with v.Store.open(self.secrets) as store:
+            for key, value in platform.items():
+                store.set("platform", key, value, None, "set")
+            for key, value in acme.items():
+                store.set("platform:acme", key, value, None, "set")
+
+    def run_platform(self, *arguments):
+        return subprocess.run(["bash", str(SCRIPT), *arguments], env=self.env, capture_output=True, text=True)
+
+    def test_given_a_store_when_up_then_compose_reads_rendered_files_and_last_good_is_saved(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {"CF_DNS_API_TOKEN": "abc"})
+        result = self.run_platform("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(f"--env-file {self.secrets}/platform.env", self.docker_calls())
+        last_good = self.secrets / "last-good"
+        self.assertEqual((last_good / "platform.env").read_text(), "COMPOSE_PROFILES=''\nENVIRONMENTS='production'\n")
+        self.assertEqual((last_good / "acme.env").read_text(), "CF_DNS_API_TOKEN='abc'\n")
+        self.assertEqual((last_good / "platform.env").stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipIf(os.geteuid() == 0 or os.access("/run/yggdrasil", os.W_OK), "this user writes /run/yggdrasil")
+    def test_given_a_runtime_directory_when_a_user_runs_up_then_the_rendered_files_are_under_it(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        runtime = self.temp / "runtime"
+        runtime.mkdir(mode=0o700)
+        self.env["XDG_RUNTIME_DIR"] = str(runtime)
+        result = self.run_platform("config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"--env-file {runtime}/yggdrasil/platform.", self.docker_calls())
+
+    def test_given_last_good_when_up_then_the_store_is_not_opened(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        self.assertEqual(self.run_platform("up").returncode, 0)
+        (self.secrets / "vars.key").unlink()
+        result = self.run_platform("up", "--last-good")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("last-good", result.stdout + result.stderr)
+        self.assertIn(f"--env-file {self.secrets}/last-good/platform.env", self.docker_calls())
+
+    def test_given_last_good_without_the_key_when_down_ps_logs_or_config_then_compose_reads_the_copy(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        self.assertEqual(self.run_platform("up").returncode, 0)
+        (self.secrets / "vars.key").unlink()
+        for arguments in (["down"], ["ps"], ["logs", "traefik"], ["config"]):
+            self.log.unlink(missing_ok=True)
+            result = self.run_platform(arguments[0], "--last-good", *arguments[1:])
+            self.assertEqual(result.returncode, 0, f"{arguments}: {result.stderr}")
+            calls = self.docker_calls()
+            self.assertIn(f"--env-file {self.secrets}/last-good/platform.env", calls, arguments)
+            self.assertIn(" ".join(arguments), calls.replace("logs --follow --tail 200", "logs"), arguments)
+
+    def test_given_a_store_without_its_key_when_down_then_it_stops_suggesting_last_good(self):
+        self.use_store({"ENVIRONMENTS": "production"}, {})
+        (self.secrets / "vars.key").unlink()
+        result = self.run_platform("down")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("platform.sh down --last-good", result.stderr)
+
+    def test_given_a_store_without_its_key_when_up_then_it_stops_suggesting_last_good(self):
+        self.use_store({"ENVIRONMENTS": "production"}, {})
+        (self.secrets / "vars.key").unlink()
+        result = self.run_platform("up")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--last-good", result.stderr)
+
+    def test_given_a_broken_application_reference_when_up_then_the_platform_still_starts(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        import vars as v
+        with v.Store.open(self.secrets) as store:
+            store.set("app:fortuna-api", "X", "${ref:heimdall-api:NOPE}", None, "set")
+        result = self.run_platform("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up --detach", self.docker_calls())
+
+    def test_given_no_store_when_up_then_platform_env_with_a_notice(self):
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("move to the variables store", result.stderr)
+
     def test_given_an_environment_of_the_catalog_when_up_then_compose_brings_it_up(self):
         result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n")
         self.assertEqual(result.returncode, 0, result.stderr)

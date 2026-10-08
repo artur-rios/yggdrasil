@@ -131,8 +131,9 @@ services:
       - --api.dashboard=true
     # The DNS provider's credentials (CF_DNS_API_TOKEN for Cloudflare, AWS_* for Route 53, ...),
     # kept out of platform.env so no other container ever sees them. Template: env/acme.env.example.
+    # (Rendered by platform.sh from the variables store, or acme.env next to platform.env.)
     env_file:
-      - ${YGG_SECRETS_DIR:-/etc/yggdrasil}/acme.env
+      - ${YGG_ACME_ENV_FILE:-${YGG_SECRETS_DIR:-/etc/yggdrasil}/acme.env}
     ports:
       - "80:80"
       - "443:443"
@@ -387,6 +388,9 @@ services:
       # The application env files of every environment of the host (<environment>/<application>.env).
       # Secrets, so on the host only, never in git.
       - ${YGG_SECRETS_DIR:-/etc/yggdrasil}:/etc/yggdrasil:ro
+      # Deploy locks (scripts/deploy.sh), shared with deploys by hand on the host: read-write, unlike
+      # the rest of the secrets directory.
+      - ${YGG_SECRETS_DIR:-/etc/yggdrasil}/locks:/etc/yggdrasil/locks
       - agent:/home/jenkins/agent
     networks:
       - edge

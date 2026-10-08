@@ -9,6 +9,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -50,7 +51,7 @@ FAKE_DOCKER = textwrap.dedent(r"""
           echo "$IMAGE_TAG" >"$state/up$count.tag"
           if command -v flock >/dev/null; then
             status=0
-            flock --nonblock --conflict-exit-code 75 "$APP_ENV_FILE" true || status=$?
+            flock --nonblock --conflict-exit-code 75 "$YGG_SECRETS_DIR/locks/$PROJECT_UNDER_TEST.lock" true || status=$?
             echo "$status" >"$state/up$count.lock"
           fi
           exit "$(sed -n "${count}p" "$state/up_results" 2>/dev/null | grep . || echo 0)"
@@ -139,7 +140,7 @@ class DeployTests(unittest.TestCase):
     def deploy(self, version=None, environment=ENVIRONMENT, **env):
         version = version or f"2.0.0-{self.commit}"
         return subprocess.run(["bash", str(DEPLOY), environment, STACK, str(self.app), version],
-                              env=dict(self.env, **env), capture_output=True, text=True)
+                              env=dict(self.env, PROJECT_UNDER_TEST=f"{STACK}-{environment}", **env), capture_output=True, text=True)
 
     def compose_calls(self, command):
         return [line for line in self.read("calls").splitlines()
@@ -292,11 +293,88 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(removed, ["image rm heimdall-ui:local-2.0.0-bbbbbbb heimdall-ui:local-1.0.0-aaaaaaa"])
 
     @unittest.skipUnless(shutil.which("flock"), "needs flock (util-linux)")
-    def test_given_a_deploy_when_it_runs_then_it_holds_the_lock_on_the_env_file(self):
+    def test_given_a_deploy_when_it_runs_then_it_holds_the_project_lock(self):
         result = self.deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         # 75: another process could not take the lock while compose up ran.
         self.assertEqual(self.read("up1.lock").strip(), "75")
+
+    @unittest.skipUnless(shutil.which("flock"), "needs flock (util-linux)")
+    def test_given_an_existing_lock_file_when_deployed_then_it_is_locked_without_being_written(self):
+        lock = pathlib.Path(self.env["YGG_SECRETS_DIR"]) / "locks" / f"{STACK}-{ENVIRONMENT}.lock"
+        lock.parent.mkdir()
+        lock.touch(mode=0o444)
+        os.utime(lock, (1_000_000_000, 1_000_000_000))
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("cannot", result.stderr)
+        self.assertEqual(lock.stat().st_mtime, 1_000_000_000)
+        self.assertEqual(self.read("up1.lock").strip(), "75")
+
+    def use_store(self, values):
+        """Moves this test's env files into a variables store holding `values` for every environment."""
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import vars as v
+        secrets = pathlib.Path(self.env["YGG_SECRETS_DIR"])
+        v.init(secrets, confirm=lambda prompt: "saved")
+        with v.Store.open(secrets) as store:
+            for environment in (ENVIRONMENT, ON_DEMAND):
+                for key, value in values.items():
+                    store.set(f"app:{STACK}@{environment}", key, value, None, "set")
+                (secrets / environment / f"{STACK}.env").unlink()
+
+    def test_given_a_store_when_deployed_then_compose_reads_the_rendered_file_and_it_is_removed(self):
+        self.use_store({"HEIMDALL_API_BASE_URL": "https://heimdall.example.com"})
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env_files = [line.split("--env-file ")[1].split(" ")[0] for line in self.read("calls").splitlines()
+                     if "--env-file" in line]
+        self.assertTrue(env_files)
+        self.assertTrue(all(not pathlib.Path(p).exists() for p in env_files), env_files)
+        self.assertNotIn("move to the variables store", result.stderr)
+
+    def test_given_a_store_when_the_deploy_fails_then_the_rendered_file_is_removed_too(self):
+        self.use_store({"HEIMDALL_API_BASE_URL": "https://heimdall.example.com"})
+        self.given("up_results", "1")
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        env_files = {line.split("--env-file ")[1].split(" ")[0] for line in self.read("calls").splitlines()
+                     if "--env-file" in line}
+        self.assertTrue(env_files)
+        self.assertTrue(all(not pathlib.Path(p).exists() for p in env_files), env_files)
+
+    def test_given_a_store_without_variables_for_the_application_when_deployed_then_it_stops_before_docker(self):
+        self.use_store({})
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{STACK} has no variables in {ENVIRONMENT}", result.stderr)
+        self.assertIn(f"scripts/ygg.sh config {STACK} {ENVIRONMENT}", result.stderr)
+        self.assertNotIn("compose", self.read("calls"))
+
+    @unittest.skipIf(os.geteuid() == 0 or os.access("/run/yggdrasil", os.W_OK), "this user writes /run/yggdrasil")
+    def test_given_a_runtime_directory_when_a_user_deploys_then_the_rendered_file_is_under_it(self):
+        self.use_store({"HEIMDALL_API_BASE_URL": "https://heimdall.example.com"})
+        runtime = self.temp / "runtime"
+        runtime.mkdir(mode=0o700)
+        result = self.deploy(XDG_RUNTIME_DIR=str(runtime))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env_files = {line.split("--env-file ")[1].split(" ")[0] for line in self.read("calls").splitlines()
+                     if "--env-file" in line}
+        self.assertTrue(env_files)
+        self.assertTrue(all(p.startswith(f"{runtime}/yggdrasil/deploy.") for p in env_files), env_files)
+
+    def test_given_a_store_with_a_broken_reference_when_deployed_then_it_stops_before_docker(self):
+        self.use_store({"X": "${ref:heimdall-api:NOPE}"})
+        result = self.deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("heimdall-api:NOPE", result.stderr + result.stdout)
+        self.assertNotIn("compose", self.read("calls"))
+
+    def test_given_no_store_when_deployed_then_the_env_file_is_used_with_a_notice(self):
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("move to the variables store", result.stderr)
+        self.assertIn(f"--env-file {self.env_file}", self.read("calls"))
 
     def test_given_an_unreadable_env_file_when_deployed_then_it_stops_before_docker(self):
         if os.geteuid() == 0:

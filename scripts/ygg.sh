@@ -16,6 +16,8 @@
 #                                       starts or stops every application of an environment of this
 #                                       host; stop refuses an environment that is not onDemand
 #                                       (catalog.yaml) unless --force
+#     scripts/ygg.sh vars <command>     the variables store (scripts/vars.py): list, set, edit,
+#                                       history, rollback, import, check, backup
 #
 # It drives the same pieces docs/setup.md does by hand -- scripts/catalog.py, scripts/deploy.sh,
 # scripts/platform.sh, the stacks/ files and the env files under $YGG_SECRETS_DIR (default
@@ -119,6 +121,7 @@ apt_get() { as_root env DEBIAN_FRONTEND=noninteractive apt-get -q "$@" </dev/nul
 has() { command -v "$1" >/dev/null 2>&1; }
 installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
 has_yaml() { has python3 && python3 -c 'import yaml' 2>/dev/null; }
+has_crypto() { has python3 && python3 -c 'import cryptography' 2>/dev/null; }
 docker_ok() { has docker && docker info >/dev/null 2>&1; }
 catalog() { python3 "$root/scripts/catalog.py" "$@"; }
 
@@ -135,6 +138,47 @@ env_value() {
   value=$(sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n1)
   value=${value%\"} value=${value#\"} value=${value%\'} value=${value#\'}
   printf '%s' "$value"
+}
+
+# The variables store (docs/variables.md): when this machine has one, every platform and application
+# value comes from it instead of platform.env and <environment>/<app>.env.
+has_store() { [[ -f "$secrets/vars.db" ]]; }
+vars_py() { python3 "$root/scripts/vars.py" "$@"; }
+
+# need_store: stops when the store can't be used (lost or wrong key, unreadable or damaged file),
+# once per process, so that "unset" is never confused with "can't read". Only that it is usable: a
+# broken reference stops the deploy that needs it (vars check names them all).
+store_checked=""
+need_store() {
+  has_store || return 0
+  [[ -z "$store_checked" ]] || return 0
+  local output
+  output=$(vars_py check --usable 2>&1) \
+    || die "the variables store can't be used: $output (scripts/ygg.sh vars check; platform.sh up --last-good starts the platform without it)"
+  store_checked=1
+}
+
+# platform_value <NAME>: a platform setting, from the store or platform.env; empty when unset.
+platform_value() {
+  if has_store; then
+    need_store
+    vars_py get platform "$1" --reveal 2>/dev/null || true
+  else
+    env_value "$secrets/platform.env" "$1"
+  fi
+}
+
+# Where the platform settings live on this machine, for messages.
+platform_source() { if has_store; then echo "the variables store"; else echo "$secrets/platform.env"; fi; }
+
+# Whether an application has variables of its own in an environment on this machine.
+app_has_variables() {
+  if has_store; then
+    need_store
+    [[ -n "$(vars_py list "$1@$2" --resolved --keys)" ]]
+  else
+    [[ -f "$secrets/$2/$1.env" ]]
+  fi
 }
 
 # app_field <app> <field>: one field of the application's catalog entry, empty when unset.
@@ -160,16 +204,17 @@ host_envs=()
 host_environments() {
   ((${#host_envs[@]})) && return 0
   local configured source known listed environment
+  [[ -n "$host_env" ]] || need_store
   if [[ -n "$host_env" ]]; then
     configured=$host_env source="YGG_ENVIRONMENT"
   else
-    source="ENVIRONMENTS in $secrets/platform.env"
-    configured=$(env_value "$secrets/platform.env" ENVIRONMENTS)
-    [[ -n "$configured" ]] || configured=$(env_value "$secrets/platform.env" ENVIRONMENT)
+    source="ENVIRONMENTS in $(platform_source)"
+    configured=$(platform_value ENVIRONMENTS)
+    [[ -n "$configured" ]] || configured=$(platform_value ENVIRONMENT)
   fi
   mapfile -t known < <(catalog environments)
   if [[ -z "${configured//[ ,]/}" ]]; then
-    choose configured "Which environment does this host run? ($secrets/platform.env doesn't say; YGG_ENVIRONMENT=<id> skips this question)" "${known[@]}"
+    choose configured "Which environment does this host run? ($(platform_source) doesn't say; YGG_ENVIRONMENT=<id> skips this question)" "${known[@]}"
     source="your answer"
   fi
   IFS=', ' read -r -a listed <<<"$configured"
@@ -271,6 +316,12 @@ check_report() {
     row missing "PyYAML" "package python3-yaml"
     missing_packages+=(python3-yaml)
   fi
+  if has_crypto; then
+    row ok "cryptography" "$(python3 -c 'import cryptography; print(cryptography.__version__)')"
+  else
+    row missing "cryptography" "package python3-cryptography (the variables store needs it)"
+    missing_packages+=(python3-cryptography)
+  fi
 
   if has docker; then
     row ok "docker" "$(docker --version)"
@@ -324,14 +375,22 @@ check_report() {
       row warn "secrets directory" "$secrets belongs to group $group: the Jenkins agent reads it as docker"
     fi
     local file
-    for file in platform.env acme.env; do
-      if [[ -f "$secrets/$file" ]]; then
-        row ok "$file" "$secrets/$file"
+    if has_store; then
+      if vars_py check >/dev/null 2>&1; then
+        row ok "variables store" "$secrets/vars.db"
       else
-        row missing "$file" "not needed on a ports-only machine; install copies the template"
-        need_secrets=1
+        row warn "variables store" "fails its check: $0 vars check"
       fi
-    done
+    else
+      for file in platform.env acme.env; do
+        if [[ -f "$secrets/$file" ]]; then
+          row ok "$file" "$secrets/$file"
+        else
+          row missing "$file" "not needed on a ports-only machine; install copies the template"
+          need_secrets=1
+        fi
+      done
+    fi
   else
     row missing "secrets directory" "$secrets"
     need_secrets=1
@@ -344,15 +403,15 @@ check_report() {
       row missing "catalog" "invalid: python3 scripts/catalog.py validate"
     fi
     local environments
-    environments=$(env_value "$secrets/platform.env" ENVIRONMENTS)
+    environments=$(platform_value ENVIRONMENTS)
     if [[ -n "$host_env" ]]; then
       row ok "environments" "$host_env (YGG_ENVIRONMENT)"
     elif [[ -n "$environments" ]]; then
-      row ok "environments" "$environments (platform.env)"
-    elif environments=$(env_value "$secrets/platform.env" ENVIRONMENT) && [[ -n "$environments" ]]; then
-      row warn "environments" "$environments (platform.env's ENVIRONMENT, from before 0.5: rename it ENVIRONMENTS)"
+      row ok "environments" "$environments ($(has_store && echo "variables store" || echo platform.env))"
+    elif environments=$(platform_value ENVIRONMENT) && [[ -n "$environments" ]]; then
+      row warn "environments" "$environments ($(platform_source)'s ENVIRONMENT, from before 0.5: rename it ENVIRONMENTS)"
     else
-      row warn "environments" "platform.env sets no ENVIRONMENTS: the menu asks for it"
+      row warn "environments" "$(platform_source) sets no ENVIRONMENTS: the menu asks for it"
     fi
   fi
 
@@ -584,11 +643,15 @@ stack_files() {
   return 0
 }
 
-# create_env_file <app> <environment>: the application's env file on this host, with the variables
-# its stack files read. The ones deploy.sh sets itself are left out.
+# create_env_file <app> <environment>: the application's env file on this host, or its scope in the
+# variables store, with the variables its stack files read. The ones deploy.sh sets itself are left
+# out. The text is built in a private temporary file, removed whatever happens. Callers test its
+# status (errexit is off there), so every failure returns 1 itself.
 create_env_file() {
   local id=$1 environment=$2 dir="$secrets/$2" file="$secrets/$2/$1.env"
-  local mode host suffix domain="" name default files
+  local mode host suffix domain="" name default files resolved="" text
+  need_store
+  if has_store; then resolved=$'\n'$(vars_py list "$id@$environment" --resolved --keys)$'\n'; fi
   if [[ ! -w "$secrets" ]]; then
     warn "Can't write to $secrets: create it with '$0 install' (or set YGG_SECRETS_DIR), then run '$0 config $id'."
     return 1
@@ -598,31 +661,45 @@ create_env_file() {
   host=$(app_field "$id" host)
   mapfile -t files < <(stack_files "$id" "$environment")
   if [[ "$mode" == proxy && -n "$host" ]]; then
-    domain=$(env_value "$secrets/platform.env" DOMAIN)
-    [[ -n "$domain" && "$domain" != example.com ]] || ask domain "This host's DOMAIN (platform.env doesn't say)" "example.com"
+    domain=$(platform_value DOMAIN)
+    [[ -n "$domain" && "$domain" != example.com ]] || ask domain "This host's DOMAIN ($(platform_source) doesn't say)" "example.com"
   fi
-  [[ -d "$dir" ]] || install -d -m 2750 "$dir"
+  has_store || [[ -d "$dir" ]] || install -d -m 2750 "$dir" || return 1
+  text=$(mktemp) || return 1
   {
     say "# $id in $environment. Created by scripts/ygg.sh; change it with: scripts/ygg.sh config $id $environment"
     say "# It fills in the \${VAR}s of the Compose files, and reaches the container where they hand it"
     say "# over (env_file, or environment: entries). Never commit it."
-    if [[ -n "$domain" ]]; then
+    if [[ -n "$domain" && "$resolved" != *$'\n'PUBLIC_HOST$'\n'* ]]; then
       say ""
       say "# The host name Traefik routes to it: the catalog's host, with $environment's hostSuffix, under DOMAIN."
       say "PUBLIC_HOST=$host$suffix.$domain"
     fi
     if ((${#files[@]})); then
       while read -r name; do
-        [[ "$name" =~ $DEPLOY_VARIABLES || "$name" == PUBLIC_HOST ]] && continue
+        [[ "$name" =~ $DEPLOY_VARIABLES || "$name" == PUBLIC_HOST || "$resolved" == *$'\n'"$name"$'\n'* ]] && continue
         default=$(grep -ohE "[$][{]${name}:-[^}]*" "${files[@]}" | head -n1 | sed "s/^[$][{]${name}:-//")
         say ""
         say "# Read by $(grep -lE "[$][{]${name}[:}]" "${files[@]}" | sed "s|^$root/||" | paste -sd, -)"
         say "$name=$default"
       done < <(grep -ohE '[$][{][A-Za-z_][A-Za-z0-9_]*' "${files[@]}" | cut -c3- | sort -u)
     fi
-  } >"$file"
-  chmod 640 "$file"
-  say "Wrote $file"
+  } >"$text"
+  if has_store; then
+    if ! vars_py import "$id@$environment" "$text"; then
+      rm -f "$text"
+      warn "Nothing was stored for $id in $environment."
+      return 1
+    fi
+    say "Stored $id's variables in $environment (scripts/ygg.sh vars list $id@$environment)"
+  else
+    if ! install -m 640 "$text" "$file"; then
+      rm -f "$text"
+      return 1
+    fi
+    say "Wrote $file"
+  fi
+  rm -f "$text"
 }
 
 # ---- Deploy -------------------------------------------------------------------------------------
@@ -804,15 +881,17 @@ print(json.dumps({"system": system, "application": app}))
   pick_environment environment "Which of this host's environments do you set it up in now? (the others: scripts/ygg.sh config $id <environment>)" "" "$id"
   mode=$(catalog get "$id" "$environment" mode)
   say "Setting it up in $environment ($mode)."
-  if [[ -f "$secrets/$environment/$id.env" ]]; then
-    say "Its env file exists: $secrets/$environment/$id.env"
+  if app_has_variables "$id" "$environment"; then
+    if has_store; then say "Its variables are in the store: scripts/ygg.sh vars list $id@$environment"; else say "Its env file exists: $secrets/$environment/$id.env"; fi
   elif create_env_file "$id" "$environment"; then
-    if confirm "Edit it now?" y; then "${EDITOR:-nano}" "$secrets/$environment/$id.env"; fi
+    if confirm "Edit it now?" y; then
+      if has_store; then vars_py edit "$id@$environment"; else "${EDITOR:-nano}" "$secrets/$environment/$id.env"; fi
+    fi
   fi
 
   if [[ "$mode" == proxy ]] && ! docker network inspect edge >/dev/null 2>&1; then
     note "The platform isn't up on this host (no edge network): deploy after scripts/platform.sh up."
-  elif [[ -f "$secrets/$environment/$id.env" ]] && docker_ok && confirm "Clone the repository and deploy $id to $environment now?"; then
+  elif app_has_variables "$id" "$environment" && docker_ok && confirm "Clone the repository and deploy $id to $environment now?"; then
     if clone "$id" "$repository"; then deploy "$id" "$environment" || true; fi
   fi
 
@@ -1108,14 +1187,66 @@ configure_app() {
   catalog show "$id" >/dev/null || exit 1
   pick_environment environment "$id in which environment?" "$environment" "$id"
   file="$secrets/$environment/$id.env"
-  if [[ ! -f "$file" ]]; then
-    say "$id has no env file in $environment on this host yet ($file)."
+  need_store
+  if ! app_has_variables "$id" "$environment"; then
+    if has_store; then
+      say "$id has no variables in $environment in the variables store yet."
+    else
+      say "$id has no env file in $environment on this host yet ($file)."
+    fi
     confirm "Create it from its stack files?" y || return 0
     create_env_file "$id" "$environment" || return 1
   fi
-  [[ -r "$file" && -w "$file" ]] || die "$file is not readable and writable by $me"
+  has_store || [[ -r "$file" && -w "$file" ]] || die "$file is not readable and writable by $me"
 
   while true; do
+    if has_store; then
+      title "$id in $environment (variables store)"
+      vars_py list "$id@$environment" --resolved ${reveal:+--reveal}
+      say ""
+      choose pick "Then:" \
+        "Set a variable" "Remove a variable" "Edit in ${EDITOR:-nano}" \
+        "$([[ -n "$reveal" ]] && echo "Hide secret values" || echo "Show secret values")" \
+        "History" "Apply: redeploy $id${changed:+ (changed)}" "Back"
+      case $pick in
+        Set*)
+          ask_match name "Variable name" '^[A-Za-z_][A-Za-z0-9_]*$' "letters, digits and underscores"
+          # A secret by its name or by its stored flag (a masked get differs from the value) is typed
+          # hidden and handed over on stdin; anything else has its own value as the default, never a mask.
+          value=$(vars_py get "$id@$environment" "$name" --reveal 2>/dev/null || true)
+          if [[ "${name^^}" =~ $SECRET_NAME || "$(vars_py get "$id@$environment" "$name" 2>/dev/null || true)" != "$value" ]]; then
+            read -r -s -p "Value (hidden): " value || exit 1
+            say ""
+            printf '%s\n' "$value" | vars_py set "$id@$environment" "$name=-"
+          else
+            ask value "Value" "$value"
+            vars_py set "$id@$environment" "$name=$value"
+          fi
+          changed=1
+          ;;
+        Remove*)
+          local names
+          mapfile -t names < <(vars_py list "$id@$environment" --keys)
+          ((${#names[@]})) || continue
+          choose name "Which variable?" "${names[@]}"
+          vars_py unset "$id@$environment" "$name"
+          changed=1
+          ;;
+        Edit*) vars_py edit "$id@$environment" ${reveal:+--reveal}; changed=1 ;;
+        Show*) reveal=yes ;;
+        Hide*) reveal="" ;;
+        History) vars_py history "$id@$environment" --limit 20; pause ;;
+        Apply*)
+          if deploy "$id" "$environment"; then changed=""; fi
+          pause
+          ;;
+        Back)
+          [[ -n "$changed" ]] && warn "Changes reach $id on its next deploy (Apply, Jenkins, or scripts/deploy.sh)."
+          return 0
+          ;;
+      esac
+      continue
+    fi
     title "$id in $environment: $file"
     show_env "$file" "$reveal"
     say ""
@@ -1165,6 +1296,30 @@ configure_app() {
 
 # ---- Menu ---------------------------------------------------------------------------------------
 
+variables_menu() {
+  if ! has_store; then
+    say "This machine keeps its variables in env files under $secrets."
+    if confirm "Create the variables store and import them now?" n; then
+      vars_py init
+      vars_py import --all
+    fi
+    return 0
+  fi
+  local pick scope
+  choose pick "Variables and secrets:" "List a scope" "Set a variable" "Edit a scope in ${EDITOR:-nano}" "History" "Roll a change back" "Check the store" "Back up the store" "Back"
+  case $pick in
+    List*) ask scope "Scope (platform, @<environment>, <application>, <application>@<environment>)" "platform"; vars_py list "$scope" ;;
+    Set*) ask scope "Scope" "platform"; ask_match pick "KEY=value (KEY=- to type a hidden value)" '^[A-Za-z_][A-Za-z0-9_]*=' "KEY=value"; vars_py set "$scope" "$pick" ;;
+    Edit*) ask scope "Scope" "platform"; vars_py edit "$scope" ;;
+    History) vars_py history --limit 30 ;;
+    Roll*) ask_match pick "Change id (from History)" '^[0-9]+$' "a number"; vars_py rollback "$pick" ;;
+    Check*) vars_py check ;;
+    Back\ up*) ask scope "Into which directory?" "$HOME/yggdrasil-backups"; vars_py backup "$scope" ;;
+    Back) return 0 ;;
+  esac
+  pause
+}
+
 # Runs one action so that a failure (die, or a failing command under set -e) ends the action, not
 # the menu.
 run() {
@@ -1192,6 +1347,7 @@ menu() {
       "See what runs on this host" \
       "Change an application's configuration" \
       "Start or stop an environment (on demand)" \
+      "Variables and secrets" \
       "Quit"
     case $pick in
       Check*) run check_host; pause ;;
@@ -1200,6 +1356,7 @@ menu() {
       See*) run show_status ;;
       Change*) run configure_app ;;
       Start*) run environment_command; pause ;;
+      Variables*) run variables_menu ;;
       Quit) return ;;
     esac
   done
@@ -1213,6 +1370,7 @@ case ${1:-} in
   status) show_status ;;
   config) configure_app "${2:-}" "${3:-}" ;;
   env) shift; environment_command "$@" ;;
+  vars) shift; vars_py "$@" ;;
   -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command '$1': scripts/ygg.sh [check | install | add | status | config [<app>] [<environment>] | env status | env start <environment> | env stop <environment> [--force]]" ;;
+  *) die "unknown command '$1': scripts/ygg.sh [check | install | add | status | config [<app>] [<environment>] | env status | env start <environment> | env stop <environment> [--force] | vars <vars.py command>]" ;;
 esac

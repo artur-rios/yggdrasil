@@ -7,6 +7,7 @@ An interactive menu, on an Ubuntu host (a VPS, a VM, WSL or a laptop), for what
 - set up a new API, web front end or worker
 - see what runs on the host, in each of its environments
 - change an application's configuration and redeploy it
+- manage the host's variables and secrets in the [variables store](variables.md)
 - switch an on-demand environment on and off
 
 A host runs one environment or several: `ENVIRONMENTS` in its `platform.env` lists them
@@ -15,7 +16,7 @@ A host runs one environment or several: `ENVIRONMENTS` in its `platform.env` lis
 the host has several, it takes it as an argument or asks.
 
 It runs the same pieces as the guide: `scripts/catalog.py`, `scripts/deploy.sh`,
-`scripts/platform.sh`, the files in `stacks/` and the env files in `/etc/yggdrasil`. So whatever it
+`scripts/platform.sh`, `scripts/vars.py`, the files in `stacks/` and the env files, or the variables store, in `/etc/yggdrasil`. So whatever it
 does, you can check, change or undo by hand.
 
 ```bash
@@ -33,7 +34,8 @@ What do you want to do?
   4) See what runs on this host
   5) Change an application's configuration
   6) Start or stop an environment (on demand)
-  7) Quit
+  7) Variables and secrets
+  8) Quit
 >
 ```
 
@@ -45,14 +47,15 @@ Each menu entry is also a command, for scripts and for going straight to it:
 | `scripts/ygg.sh install` | Installs what `check` found missing, asking before each part |
 | `scripts/ygg.sh add` | Sets up a new application |
 | `scripts/ygg.sh status` | Shows the applications of each of this host's environments, their state and version |
-| `scripts/ygg.sh config [<app>] [<environment>]` | Shows and changes an application's env file in one of this host's environments, and redeploys it |
+| `scripts/ygg.sh config [<app>] [<environment>]` | Shows and changes an application's variables (its env file, or its `<app>@<environment>` scope in the variables store) in one of this host's environments, and redeploys it |
 | `scripts/ygg.sh env status` | One line per environment of this host: on demand or not, running or stopped |
 | `scripts/ygg.sh env start <environment>` | Starts every application of an environment of this host |
 | `scripts/ygg.sh env stop <environment> [--force]` | Stops them. Refuses an environment that isn't `onDemand` in the catalog, unless `--force` |
+| `scripts/ygg.sh vars <command>` | The variables store: `init`, `set`, `get`, `list`, `unset`, `edit`, `history`, `rollback`, `import`, `export`, `backup`, `check`. See [variables.md](variables.md#commands) |
 
 | Environment variable | Default | What |
 |---|---|---|
-| `YGG_SECRETS_DIR` | `/etc/yggdrasil` | Where the env files are, as for `deploy.sh` and `platform.sh` |
+| `YGG_SECRETS_DIR` | `/etc/yggdrasil` | Where the env files, or `vars.db` and `vars.key`, are, as for `deploy.sh` and `platform.sh` |
 | `YGG_APPS_DIR` | `~/yggdrasil-apps` | Where `add` clones the applications it deploys, and where redeploys build from |
 | `YGG_ENVIRONMENT` | `ENVIRONMENTS` in `platform.env` | One environment this host runs, overriding `platform.env`. Without either (nor the `ENVIRONMENT` of a `platform.env` from before 0.5), it asks. Set it on a laptop, which has no platform |
 
@@ -62,12 +65,12 @@ Each menu entry is also a command, for scripts and for going straight to it:
 
 | Group | Checks |
 |---|---|
-| **Tools** | Ubuntu; `git`, `curl`, `openssl`, `python3`, `htpasswd` (apache2-utils) and PyYAML; Docker Engine; Compose 2.24 or later; Buildx; whether your user can reach the Docker daemon |
-| **This host** | The secrets directory and its group; `platform.env` and `acme.env`; the catalog is valid; the host's environments (`ENVIRONMENTS`, or a warning for the `ENVIRONMENT` of a `platform.env` from before 0.5); the platform is running; ufw |
+| **Tools** | Ubuntu; `git`, `curl`, `openssl`, `python3`, `htpasswd` (apache2-utils), PyYAML and `cryptography` (for the variables store); Docker Engine; Compose 2.24 or later; Buildx; whether your user can reach the Docker daemon |
+| **This host** | The secrets directory and its group; `platform.env` and `acme.env`, or the variables store passing `vars check`; the catalog is valid; the host's environments (`ENVIRONMENTS`, or a warning for the `ENVIRONMENT` of a `platform.env` from before 0.5); the platform is running; ufw |
 
 `install` works on Ubuntu only. It needs root or `sudo`, and asks before each part:
 
-1. **Packages** from Ubuntu's repositories: `git curl openssl python3 python3-yaml apache2-utils ca-certificates`.
+1. **Packages** from Ubuntu's repositories: `git curl openssl python3 python3-yaml python3-cryptography apache2-utils ca-certificates`.
 2. **Docker** from Docker's own apt repository, as in
    [docs.docker.com](https://docs.docker.com/engine/install/ubuntu/): `docker-ce`, the Compose and
    Buildx plugins. Ubuntu's own `docker.io` and similar packages are removed first, if you agree:
@@ -196,14 +199,41 @@ scripts/ygg.sh env status
   on-demand environment stopped (after checking the new version is healthy), while a
   **Build with Parameters → `DEPLOY_TO`** deploy leaves it running.
 
+## Variables and secrets
+
+`vars` is the front end of [`scripts/vars.py`](variables.md), the encrypted variables store of the
+host: every command of [variables.md](variables.md#commands) works as `scripts/ygg.sh vars <command>`.
+
+```bash
+scripts/ygg.sh vars set heimdall-api@development LOG_LEVEL=Debug
+scripts/ygg.sh vars list heimdall-api@development --resolved
+scripts/ygg.sh vars history --limit 20
+```
+
+The menu's **Variables and secrets** offers list, set (a hidden value with `KEY=-`), edit in
+`$EDITOR`, history, roll a change back, check and back up. On a host without a store it offers to
+create one and import the env files. When the store can't be used (a lost or wrong key, a damaged
+file: `vars check --usable`), `ygg.sh` stops with the check's errors, and
+`scripts/platform.sh up --last-good` still starts the platform (every `platform.sh` command takes
+`--last-good`: [recovery](variables.md#backup-and-recovery)).
+
 ## Change the configuration
 
-`config` opens an application's env file in one of this host's environments,
+`config` opens an application's variables in one of this host's environments: with a
+[variables store](variables.md), the `<id>@<environment>` scope; without one, the env file
 `/etc/yggdrasil/<environment>/<id>.env`. Without arguments it asks for the application, then, when
 it deploys to more than one of the host's environments, for the environment;
 `scripts/ygg.sh config heimdall-api development` goes straight there. An environment that isn't on
 this host, or that the application doesn't deploy to, is refused. If the file doesn't exist yet, as
 on a new host, it creates it from the stack files as `add` does. Then:
+
+With the store, **Set** types a secret hidden (one by its name, or flagged secret in the store) and
+offers any other variable's current value as the default, **Remove** unsets a variable, **Edit** is
+`vars edit` (the scope as `KEY='value'` lines in `$EDITOR`, secrets masked and kept when left
+alone; a rejected edit writes nothing and keeps your text in a file whose path it prints), and
+**History** shows the last changes. Values are stored encrypted, so there is no file to chmod, and
+a value is checked on entry: no `'`, line break or leading or trailing space
+([variables.md](variables.md#values-the-store-refuses)). **Apply** redeploys as below. For a file:
 
 - **Set** or **remove** a variable. Values with spaces, `#`, `$`, `"` or `\` are written in single
   quotes, which Compose reads literally; a value with a single quote is refused (use **Edit**).
@@ -219,5 +249,5 @@ on a new host, it creates it from the stack files as `add` does. Then:
   version doesn't become healthy, `deploy.sh` rolls back as usual. In an on-demand environment
   where the application is stopped, it asks whether to leave it running afterwards.
 
-The file keeps its owner, group and mode (`640`, group `docker`), so the Jenkins agent can still
+A file keeps its owner, group and mode (`640`, group `docker`), so the Jenkins agent can still
 read it. Changes you don't apply reach the application on its next deploy, from Jenkins or by hand.
