@@ -33,6 +33,11 @@ import yaml
 CATALOG = pathlib.Path(__file__).resolve().parent.parent / "catalog.yaml"
 
 ID = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# The status API's own rules for these fields (status/src/Yggdrasil.Status/Catalog/CatalogLoader.cs):
+# it refuses the whole catalog at start-up when one is broken, so validate refuses it first.
+HOST_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
+REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+$")
 KINDS = {"api", "web", "worker", "platform"}
 MODES = {"proxy", "ports"}
 TRIGGERS = {"manual", "branch", "release"}
@@ -92,12 +97,34 @@ def validate(catalog):
             errors.append(f"{where}.name: required")
         errors += _options_errors(where, env)
 
+    systems = catalog.get("systems")
+    if not isinstance(systems, list) or not systems:
+        errors.append("systems: required, a non-empty list")
+        systems = systems if isinstance(systems, list) else []
+    environments_by_id = {env["id"]: env for env in environments if isinstance(env, dict) and env.get("id") in env_ids}
+    system_ids = []
     app_ids = []
-    for system in catalog.get("systems") or []:
+    for i, system in enumerate(systems):
+        if not isinstance(system, dict):
+            errors.append(f"systems[{i}]: must be a mapping")
+            continue
         sid = system.get("id", "?")
         if not isinstance(system.get("id"), str) or not ID.match(system["id"]):
             errors.append(f"system '{sid}': id must be lowercase letters, digits and dashes")
-        for app in system.get("applications") or []:
+        elif sid in system_ids:
+            errors.append(f"system '{sid}': duplicate id")
+        else:
+            system_ids.append(sid)
+        if not _text(system.get("name")):
+            errors.append(f"system '{sid}'.name: required")
+        applications = system.get("applications")
+        if not isinstance(applications, list) or not applications:
+            errors.append(f"system '{sid}'.applications: required, a non-empty list")
+            applications = applications if isinstance(applications, list) else []
+        for app in applications:
+            if not isinstance(app, dict):
+                errors.append(f"system '{sid}': application {app!r} must be a mapping")
+                continue
             aid = app.get("id")
             where = f"application '{aid}'"
             if not isinstance(aid, str) or not ID.match(aid):
@@ -106,10 +133,13 @@ def validate(catalog):
             if aid in app_ids:
                 errors.append(f"{where}: duplicate id")
             app_ids.append(aid)
+            if not _text(app.get("name")):
+                errors.append(f"{where}.name: required")
             if app.get("kind") not in KINDS:
                 errors.append(f"{where}.kind: one of {sorted(KINDS)}")
             if not str(app.get("health", "")).startswith(("http://", "https://")):
                 errors.append(f"{where}.health: an absolute http(s) URL")
+            errors += _application_field_errors(where, app)
             overrides = app.get("environments")
             if overrides is None:
                 continue
@@ -123,6 +153,41 @@ def validate(catalog):
                     errors.append(f"{where}.environments.{env_id}: options must be a mapping (or {{}})")
                 else:
                     errors += _options_errors(f"{where}.environments.{env_id}", options or {}, override=True)
+                    # An override may switch an environment to trigger branch and rely on the
+                    # environment's branches -- but something has to name them.
+                    resolved = {**environments_by_id[env_id], **(options or {})}
+                    if resolved.get("trigger") == "branch" and not resolved.get("branches"):
+                        errors.append(f"{where}.environments.{env_id}.branches: required when trigger is branch "
+                                      "(neither the application nor the environment sets them)")
+    return errors
+
+
+def _text(value):
+    """The value stripped when it is a non-blank string, else None."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _application_field_errors(where, app):
+    errors = []
+    for key, pattern, what in (
+        ("metrics", HOST_PORT, "host:port, e.g. shop-api:9464"),
+        ("host", HOST_NAME, "a host name label, e.g. shop-api"),
+        ("repository", REPOSITORY, "a GitHub repository name"),
+    ):
+        if app.get(key) is not None and not (_text(app[key]) and pattern.match(_text(app[key]))):
+            errors.append(f"{where}.{key}: {what}")
+    if app.get("metricsPath") is not None:
+        if not (_text(app["metricsPath"]) or "").startswith("/"):
+            errors.append(f"{where}.metricsPath: a path starting with /")
+        if app.get("metrics") is None:
+            errors.append(f"{where}.metricsPath: set without metrics")
+    checks = app.get("checks")
+    if checks is not None and (not isinstance(checks, list) or not all(_text(check) for check in checks)):
+        errors.append(f"{where}.checks: a list of GitHub check names, none empty")
+    container = app.get("container")
+    if container is not None and (not isinstance(container, dict)
+                                  or any(container.get(k) is not None and not _text(container[k]) for k in ("project", "service"))):
+        errors.append(f"{where}.container: a mapping of project and/or service names")
     return errors
 
 
@@ -144,7 +209,9 @@ def _options_errors(where, options, override=False):
     if not override and options.get("trigger") == "branch" and not options.get("branches"):
         errors.append(f"{where}.branches: required when trigger is branch")
     for key in ("waitTimeout", "keepImages", "checksTimeout"):
-        if key in options and (not isinstance(options[key], int) or options[key] < 1):
+        # bool is an int in Python: `true` would otherwise pass as 1.
+        value = options.get(key)
+        if key in options and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
             errors.append(f"{where}.{key}: a positive whole number")
     if "approval" in options and not isinstance(options["approval"], bool):
         errors.append(f"{where}.approval: true or false")

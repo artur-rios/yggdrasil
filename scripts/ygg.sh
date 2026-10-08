@@ -152,7 +152,7 @@ host_environment() {
     mapfile -t environments < <(catalog environments)
     choose host_env "Which environment does this host run? ($secrets/platform.env doesn't say)" "${environments[@]}"
   fi
-  catalog environments | grep -qx "$host_env" \
+  catalog environments | grep -Fqx "$host_env" \
     || die "ENVIRONMENT='$host_env' in $secrets/platform.env is not an environment in catalog.yaml"
 }
 
@@ -160,7 +160,7 @@ host_environment() {
 applications_in() {
   local app
   for app in $(catalog applications --deployable); do
-    catalog environments "$app" | grep -qx "$1" && echo "$app"
+    catalog environments "$app" | grep -Fqx "$1" && echo "$app"
   done
   return 0
 }
@@ -570,7 +570,7 @@ create_env_file() {
 # What a checkout would be labelled by default: <latest tag>-<commit>, as Jenkins labels releases.
 checkout_version() {
   local commit tag
-  commit=$(git -C "$1" rev-parse --short=7 HEAD)
+  commit=$(git -C "$1" rev-parse HEAD | cut -c1-7)
   tag=$(git -C "$1" describe --tags --abbrev=0 2>/dev/null || echo dev)
   echo "${tag#v}-$commit"
 }
@@ -595,7 +595,7 @@ deploy() {
   default=$(checkout_version "$dir")
   running=$(running_tag "$id")
   if [[ -n "$running" ]]; then
-    commit=$(git -C "$dir" rev-parse --short=7 HEAD)
+    commit=$(git -C "$dir" rev-parse HEAD | cut -c1-7)
     if [[ "$running" == *"-$commit" || "$running" == "$commit" ]]; then
       default=$running
     else
@@ -648,7 +648,7 @@ add_application() {
   if [[ "$pick" == "a new system" ]]; then
     while true; do
       ask_match system "New system id" "$ID_PATTERN" "lowercase letters, digits and dashes" "${id%-*}"
-      catalog systems | cut -f1 | grep -qx "$system" || break
+      catalog systems | cut -f1 | grep -Fqx "$system" || break
       warn "'$system' already exists: pick it from the list instead."
     done
     ask system_name "System display name" "$system"
@@ -829,8 +829,10 @@ show_status() {
 # ---- Configuration ------------------------------------------------------------------------------
 
 # Secrets are named by their last word: DB_PASSWORD, JENKINS_AGENT_SECRET, CF_DNS_API_TOKEN, API_KEY.
-# Only the last one, so HEIMDALL_PASSWORD_RESET_URL, a URL, is not one.
-SECRET_NAME='(^|_)(PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|KEY|CREDENTIALS?)$'
+# Only the last one, so HEIMDALL_PASSWORD_RESET_URL, a URL, is not one -- but the retired key kept
+# during a rotation (HEIMDALL_AUTH_TOKEN_SECRET_PREVIOUS) is, and so is a connection string, which
+# carries the database password (FORTUNA_DATA_CONNECTIONSTRING).
+SECRET_NAME='(^|_)(PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|KEY|CREDENTIALS?)(_PREVIOUS)?$|(^|_)CONNECTION_?STRING$'
 
 # show_env <file> <reveal: yes|"">: its variables, secrets masked unless revealed.
 show_env() {
@@ -887,7 +889,7 @@ configure_app() {
     ((${#apps[@]})) || die "no application of the catalog deploys to $host_env"
     choose id "Which application?" "${apps[@]}"
   fi
-  printf '%s\n' "${apps[@]}" | grep -qx "$id" || die "'$id' does not deploy to $host_env (catalog.yaml)"
+  printf '%s\n' "${apps[@]}" | grep -Fqx "$id" || die "'$id' does not deploy to $host_env (catalog.yaml)"
   file="$secrets/$host_env/$id.env"
   if [[ ! -f "$file" ]]; then
     say "$id has no env file on this host yet ($file)."

@@ -13,6 +13,8 @@ set -euo pipefail
 
 owner=${GITHUB_OWNER:?set GITHUB_OWNER to the GitHub owner of the repositories}
 api_url=${GITHUB_API_URL:-https://api.github.com}
+# Seconds between two looks at the checks (wait-checks).
+poll_seconds=${GITHUB_POLL_SECONDS:-20}
 
 die() { echo "github: $*" >&2; exit 1; }
 [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN is not set"
@@ -25,7 +27,14 @@ api() {
     --header "Accept: application/vnd.github+json"
     --header "X-GitHub-Api-Version: 2022-11-28")
   [[ -n "$body" ]] && args+=(--header "Content-Type: application/json" --data "$body")
-  curl "${args[@]}" "$api_url/$path"
+  local out
+  # On an error answer, --fail-with-body puts GitHub's explanation on stdout, where a caller's jq
+  # would swallow it ("merge-pr" would print null): it goes to stderr, into the build log, instead.
+  if ! out=$(curl "${args[@]}" "$api_url/$path"); then
+    echo "github: $method $path failed${out:+: $out}" >&2
+    return 1
+  fi
+  [[ -z "$out" ]] || printf '%s\n' "$out"
 }
 
 # Waits until every GitHub Actions check on <sha> has completed, then succeeds only if none failed.
@@ -36,12 +45,21 @@ api() {
 # no runs -- looking at runs alone could declare victory before a whole workflow started.
 wait_checks() {
   local repo=$1 sha=$2 timeout=${3:-3600}
-  local deadline=$((SECONDS + timeout))
+  local deadline=$((SECONDS + timeout)) unanswered=0
 
   while :; do
     local suites runs
-    suites=$(api GET "repos/$owner/$repo/commits/$sha/check-suites?per_page=100")
-    runs=$(api GET "repos/$owner/$repo/commits/$sha/check-runs?per_page=100&filter=latest")
+    if ! suites=$(api GET "repos/$owner/$repo/commits/$sha/check-suites?per_page=100") \
+      || ! runs=$(api GET "repos/$owner/$repo/commits/$sha/check-runs?per_page=100&filter=latest"); then
+      # One unanswered look (a GitHub 5xx, a network blip) must not fail a release that may have
+      # been waiting for most of an hour; several in a row are a real problem.
+      unanswered=$((unanswered + 1))
+      ((unanswered < 5)) || die "GitHub did not answer $unanswered times in a row about the checks on $sha"
+      ((SECONDS < deadline)) || die "timed out after ${timeout}s waiting for checks on $sha"
+      sleep "$poll_seconds"
+      continue
+    fi
+    unanswered=0
 
     local pending_suites pending_runs failed policy
     pending_suites=$(jq '[.check_suites[] | select(.app.slug == "github-actions" and .status != "completed")] | length' <<<"$suites")
@@ -66,7 +84,7 @@ wait_checks() {
 
     ((SECONDS < deadline)) || die "timed out after ${timeout}s waiting for checks on $sha"
     echo "github: waiting for checks on $sha ($pending_suites suite(s), $pending_runs run(s) pending)"
-    sleep 20
+    sleep "$poll_seconds"
   done
 }
 

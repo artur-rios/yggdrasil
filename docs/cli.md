@@ -139,9 +139,12 @@ its containers, or list the platform's services.
 `config` opens an application's env file on this host, `/etc/yggdrasil/<environment>/<id>.env`. If
 the file doesn't exist yet, as on a new host, it creates it from the stack files as `add` does. Then:
 
-- **Set** or **remove** a variable. Values with spaces, `#`, `$` or quotes are written in single
-  quotes, which Compose reads literally. Values of variables whose name ends in `PASSWORD`, `SECRET`,
-  `TOKEN`, `KEY` or `CREDENTIALS` (`DB_PASSWORD`, `API_KEY`; not `HEIMDALL_PASSWORD_RESET_URL`) are typed hidden and shown as `********`, unless you ask to see them.
+- **Set** or **remove** a variable. Values with spaces, `#`, `$`, `"` or `\` are written in single
+  quotes, which Compose reads literally; a value with a single quote is refused (use **Edit**).
+  Values of variables whose name ends in `PASSWORD`, `PASSWD`, `PASS`, `PWD`, `SECRET`, `TOKEN`,
+  `KEY` or `CREDENTIAL(S)`, optionally followed by `_PREVIOUS`, or in `CONNECTIONSTRING`
+  (`DB_PASSWORD`, `API_KEY`, `HEIMDALL_AUTH_TOKEN_SECRET_PREVIOUS`, `FORTUNA_DATA_CONNECTIONSTRING`;
+  not `HEIMDALL_PASSWORD_RESET_URL`) are typed hidden and shown as `********`, unless you ask to see them.
 - **Edit** the file in `$EDITOR` (default `nano`).
 - **Apply**: redeploys with `deploy.sh`. Containers read their env file only when they are created,
   and a web front end's build arguments are compiled into its image, so the image is rebuilt and
