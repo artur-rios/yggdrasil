@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yggdrasil_console/app/console_app.dart';
 import 'package:yggdrasil_console/core/config/app_config.dart';
@@ -69,6 +70,8 @@ Future<void> pumpConsole(
 
   await tester.pumpWidget(
     ProviderScope(
+      // As in main.dart.
+      retry: (_, _) => null,
       overrides: <Override>[
         appConfigProvider.overrideWithValue(const AppConfig()),
         environmentStoreProvider.overrideWithValue(

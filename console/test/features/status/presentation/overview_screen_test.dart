@@ -337,6 +337,27 @@ void main() {
     expect(source.calls, hasLength(4));
   });
 
+  testWidgets('an environment chosen in the settings loads on return', (
+    tester,
+  ) async {
+    // The overview is covered meanwhile, so its listeners are paused.
+    final source = FakeStatusSource();
+    await pumpConsole(tester, source: source);
+    expect(source.calls.single.$1, production);
+
+    await tester.tap(find.byKey(const ValueKey<String>('settings')));
+    await settle(tester);
+    await tester.tap(find.text('Offline demo'));
+    await settle(tester);
+
+    expect(source.calls.last.$1.id, Environment.demoId);
+    expect(
+      source.calls.skip(1).map((call) => call.$1.id),
+      everyElement(Environment.demoId),
+    );
+    expect(find.byType(SystemCard), findsNWidgets(4));
+  });
+
   testWidgets('with no environment, the demo can be opened', (tester) async {
     await pumpConsole(
       tester,
