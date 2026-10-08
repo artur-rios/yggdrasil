@@ -23,8 +23,29 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  # Only released code is built: the tag must point at a commit that reached main through a
+  # release/* pull request. The tag ruleset already limits who may create v* tags; this also
+  # catches a tag the owner put on the wrong commit, and a manual run for such a tag.
+  on-main:
+    name: Tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Verify tagged commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::${TAG} points at $(git rev-parse --short HEAD), which is not on main. Merge the release/* pull request into main and tag the merge commit."
+            exit 1
+          fi
+
   windows:
     name: Windows installer
+    needs: on-main
     runs-on: windows-latest
     defaults:
       run:
@@ -60,6 +81,7 @@ jobs:
 
   android:
     name: Android APK
+    needs: on-main
     runs-on: ubuntu-latest
     defaults:
       run:
