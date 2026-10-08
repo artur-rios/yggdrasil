@@ -27,7 +27,9 @@ One database per machine, nothing shared between machines:
 | `vars.db` | `/etc/yggdrasil/vars.db` | SQLite: the variables and their history |
 | `vars.key` | `/etc/yggdrasil/vars.key` | The key every value is encrypted with |
 
-Both are `root:docker`, mode `0640` (`YGG_SECRETS_DIR` moves them, as for the env files). It holds:
+Both are owned like the secrets directory (its owner, the operator of [setup.md](setup.md), group
+`docker`), mode `0640`: run `vars init` as that owner, without `sudo`. `YGG_SECRETS_DIR` moves them,
+as for the env files. It holds:
 
 - the **platform's** settings: `platform.env` and `acme.env`;
 - every **application's** variables in every environment of the machine;
@@ -240,10 +242,11 @@ is yours to protect.
 
 ## Backup and recovery
 
-**Back up** the database and its key together, to a directory only root reads:
+**Back up** the database and its key together, to a directory only you read (the menu offers
+`~/yggdrasil-backups`):
 
 ```bash
-scripts/ygg.sh vars backup /root/yggdrasil-backups
+scripts/ygg.sh vars backup ~/yggdrasil-backups
 ```
 
 It writes `vars-<UTC timestamp>.db` (a consistent copy, taken while the store is in use) and
@@ -265,7 +268,7 @@ write a readonly database` until a writer has: run `scripts/ygg.sh vars check` o
 owner of the secrets directory (or root), which opens the store read-write and rolls it back.
 
 **The store is unusable and the platform must start.** The last successful `platform.sh up` from
-the store saved its rendered files in `<secrets>/last-good/` (`root`, `0600`). Start from them,
+the store saved its rendered files in `<secrets>/last-good/` (mode `0600`, owned by whoever ran it). Start from them,
 without opening the store:
 
 ```bash
@@ -279,11 +282,13 @@ store: `platform.sh down --last-good`, `ps --last-good`, `logs --last-good <serv
 `ygg.sh` stops with a clear message, carrying the check's errors, when the store can't be used
 (`vars check --usable`: a lost or wrong key, a damaged file), and points to this.
 
-**Restore a backup.** Stop writing, copy both files back, and check:
+**Restore a backup.** Stop writing, copy both files back with the secrets directory's owner, group
+`docker` and mode `0640`, and check:
 
 ```bash
-install -m 640 -g docker /root/yggdrasil-backups/vars-<timestamp>.db  /etc/yggdrasil/vars.db
-install -m 640 -g docker /root/yggdrasil-backups/vars-<timestamp>.key /etc/yggdrasil/vars.key
+owner=$(stat -c %U /etc/yggdrasil)
+sudo install -m 640 -o "$owner" -g docker <backup dir>/vars-<timestamp>.db  /etc/yggdrasil/vars.db
+sudo install -m 640 -o "$owner" -g docker <backup dir>/vars-<timestamp>.key /etc/yggdrasil/vars.key
 scripts/ygg.sh vars check
 ```
 
