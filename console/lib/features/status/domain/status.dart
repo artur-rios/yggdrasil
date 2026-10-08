@@ -81,18 +81,27 @@ class EnvironmentStatus {
     required this.generatedAt,
     required this.status,
     required this.systems,
+    this.environmentName,
   });
 
   factory EnvironmentStatus.fromJson(Map<String, dynamic> json) =>
       EnvironmentStatus(
         environment: _requiredString(json, 'environment'),
+        environmentName: _string(json['environmentName']),
         generatedAt: _date(json['generatedAt']),
         status: Status.parse(json['status']),
         systems: _list(json, 'systems', SystemStatus.fromJson),
       );
 
-  /// The environment's name, e.g. `production`.
+  /// The environment's id in the catalog, e.g. `production`.
   final String environment;
+
+  /// The environment's display name, e.g. `Production`. `null` from a status
+  /// API that predates the field.
+  final String? environmentName;
+
+  /// What to call the environment: its display name, else its id.
+  String get displayName => environmentName ?? environment;
 
   /// When the status API finished the refresh these results come from. `null`
   /// only when the value was missing or unreadable.

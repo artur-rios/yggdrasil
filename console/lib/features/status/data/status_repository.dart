@@ -25,31 +25,41 @@ class StatusReport {
       failure != null && !failure!.isStarting && snapshot != null;
 }
 
-/// Fetches statuses and remembers the last good one per environment.
+/// Fetches statuses and remembers the last good one per environment and URL.
+///
+/// Keyed by the URL too: an answer still in flight when the environment's URL
+/// is edited came from the other host, and must never be shown, even as stale
+/// data, for the new one.
 class StatusRepository {
   StatusRepository(this._source, {DateTime Function()? now})
     : _now = now ?? DateTime.now;
 
   final StatusSource _source;
   final DateTime Function() _now;
-  final Map<String, StatusSnapshot> _last = <String, StatusSnapshot>{};
+  final Map<(String, String), StatusSnapshot> _last =
+      <(String, String), StatusSnapshot>{};
 
-  StatusSnapshot? lastFor(String environmentId) => _last[environmentId];
+  static (String, String) _key(Environment environment) =>
+      (environment.id, environment.baseUrl);
+
+  StatusSnapshot? lastFor(Environment environment) => _last[_key(environment)];
 
   Future<StatusReport> refresh(Environment environment, String? token) async {
+    final key = _key(environment);
+
     try {
       final status = await _source.fetch(environment, token);
       final snapshot = StatusSnapshot(status: status, receivedAt: _now());
 
-      _last[environment.id] = snapshot;
+      _last[key] = snapshot;
 
       return StatusReport(snapshot: snapshot);
     } on StatusException catch (failure) {
-      return StatusReport(snapshot: _last[environment.id], failure: failure);
+      return StatusReport(snapshot: _last[key], failure: failure);
     } on Object catch (error) {
       // Anything else is a response shape the parser did not expect.
       return StatusReport(
-        snapshot: _last[environment.id],
+        snapshot: _last[key],
         failure: StatusException(
           StatusFailureKind.invalidResponse,
           detail: '$error',
@@ -59,5 +69,6 @@ class StatusRepository {
   }
 
   /// Drops what is remembered for an environment, e.g. after its URL changed.
-  void forget(String environmentId) => _last.remove(environmentId);
+  void forget(String environmentId) =>
+      _last.removeWhere((key, _) => key.$1 == environmentId);
 }

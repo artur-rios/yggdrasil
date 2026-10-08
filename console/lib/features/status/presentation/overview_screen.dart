@@ -495,7 +495,7 @@ class _StatusBanner extends StatelessWidget {
 
     return Semantics(
       container: true,
-      label: '${status.environment} is ${visual.label}',
+      label: '${status.displayName} is ${visual.label}',
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: visual.container,
@@ -512,7 +512,7 @@ class _StatusBanner extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      status.environment,
+                      status.displayName,
                       style: theme.textTheme.labelLarge?.copyWith(
                         color: visual.foreground,
                       ),
