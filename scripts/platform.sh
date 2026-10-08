@@ -119,7 +119,9 @@ case "$command" in
     done
     # The agent's deploy locks (scripts/deploy.sh): group docker may create and hold them.
     install -d -m 2770 "$secrets/locks"
-    getent group docker >/dev/null && chgrp docker "$secrets/locks" 2>/dev/null || true
+    if getent group docker >/dev/null && ! chgrp docker "$secrets/locks" 2>/dev/null; then
+      echo "platform: could not give $secrets/locks to group docker; the Jenkins agent may deploy unlocked" >&2
+    fi
     compose up --detach --build --remove-orphans --wait
     compose ps
     if [[ -n "$render_dir" ]]; then
