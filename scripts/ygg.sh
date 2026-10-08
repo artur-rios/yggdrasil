@@ -636,11 +636,13 @@ stack_files() {
   return 0
 }
 
-# create_env_file <app> <environment>: the application's env file on this host, with the variables
-# its stack files read. The ones deploy.sh sets itself are left out.
+# create_env_file <app> <environment>: the application's env file on this host, or its scope in the
+# variables store, with the variables its stack files read. The ones deploy.sh sets itself are left
+# out. The text is built in a private temporary file, removed whatever happens. Callers test its
+# status (errexit is off there), so every failure returns 1 itself.
 create_env_file() {
   local id=$1 environment=$2 dir="$secrets/$2" file="$secrets/$2/$1.env"
-  local mode host suffix domain="" name default files resolved=""
+  local mode host suffix domain="" name default files resolved="" text
   need_store
   if has_store; then resolved=$'\n'$(vars_py list "$id@$environment" --resolved --keys)$'\n'; fi
   if [[ ! -w "$secrets" ]]; then
@@ -655,7 +657,8 @@ create_env_file() {
     domain=$(platform_value DOMAIN)
     [[ -n "$domain" && "$domain" != example.com ]] || ask domain "This host's DOMAIN ($(platform_source) doesn't say)" "example.com"
   fi
-  has_store || [[ -d "$dir" ]] || install -d -m 2750 "$dir"
+  has_store || [[ -d "$dir" ]] || install -d -m 2750 "$dir" || return 1
+  text=$(mktemp) || return 1
   {
     say "# $id in $environment. Created by scripts/ygg.sh; change it with: scripts/ygg.sh config $id $environment"
     say "# It fills in the \${VAR}s of the Compose files, and reaches the container where they hand it"
@@ -674,16 +677,22 @@ create_env_file() {
         say "$name=$default"
       done < <(grep -ohE '[$][{][A-Za-z_][A-Za-z0-9_]*' "${files[@]}" | cut -c3- | sort -u)
     fi
-  } >"$file.new"
+  } >"$text"
   if has_store; then
-    vars_py import "$id@$environment" "$file.new"
-    rm -f "$file.new"
+    if ! vars_py import "$id@$environment" "$text"; then
+      rm -f "$text"
+      warn "Nothing was stored for $id in $environment."
+      return 1
+    fi
     say "Stored $id's variables in $environment (scripts/ygg.sh vars list $id@$environment)"
   else
-    mv "$file.new" "$file"
-    chmod 640 "$file"
+    if ! install -m 640 "$text" "$file"; then
+      rm -f "$text"
+      return 1
+    fi
     say "Wrote $file"
   fi
+  rm -f "$text"
 }
 
 # ---- Deploy -------------------------------------------------------------------------------------
