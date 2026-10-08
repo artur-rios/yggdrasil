@@ -36,6 +36,51 @@ class PlatformTests(unittest.TestCase):
     def docker_calls(self):
         return self.log.read_text() if self.log.exists() else ""
 
+    def use_store(self, platform, acme):
+        import sys
+        sys.path.insert(0, str(SCRIPT.parent))
+        import vars as v
+        v.init(self.secrets, confirm=lambda prompt: "saved")
+        with v.Store.open(self.secrets) as store:
+            for key, value in platform.items():
+                store.set("platform", key, value, None, "set")
+            for key, value in acme.items():
+                store.set("platform:acme", key, value, None, "set")
+
+    def run_platform(self, *arguments):
+        return subprocess.run(["bash", str(SCRIPT), *arguments], env=self.env, capture_output=True, text=True)
+
+    def test_given_a_store_when_up_then_compose_reads_rendered_files_and_last_good_is_saved(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {"CF_DNS_API_TOKEN": "abc"})
+        result = self.run_platform("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(f"--env-file {self.secrets}/platform.env", self.docker_calls())
+        last_good = self.secrets / "last-good"
+        self.assertEqual((last_good / "platform.env").read_text(), "COMPOSE_PROFILES=''\nENVIRONMENTS='production'\n")
+        self.assertEqual((last_good / "acme.env").read_text(), "CF_DNS_API_TOKEN='abc'\n")
+        self.assertEqual((last_good / "platform.env").stat().st_mode & 0o777, 0o600)
+
+    def test_given_last_good_when_up_then_the_store_is_not_opened(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": ""}, {})
+        self.assertEqual(self.run_platform("up").returncode, 0)
+        (self.secrets / "vars.key").unlink()
+        result = self.run_platform("up", "--last-good")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("last-good", result.stdout + result.stderr)
+        self.assertIn(f"--env-file {self.secrets}/last-good/platform.env", self.docker_calls())
+
+    def test_given_a_store_without_its_key_when_up_then_it_stops_suggesting_last_good(self):
+        self.use_store({"ENVIRONMENTS": "production"}, {})
+        (self.secrets / "vars.key").unlink()
+        result = self.run_platform("up")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--last-good", result.stderr)
+
+    def test_given_no_store_when_up_then_platform_env_with_a_notice(self):
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("move to the variables store", result.stderr)
+
     def test_given_an_environment_of_the_catalog_when_up_then_compose_brings_it_up(self):
         result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n")
         self.assertEqual(result.returncode, 0, result.stderr)
