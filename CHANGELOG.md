@@ -14,7 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `scripts/vars.py` and `scripts/ygg.sh vars`. Values are defined in layers (`@<environment>`, `<application>`,
   `<application>@<environment>`), one application can take another's value with `${ref:<application>:<KEY>}`, every value is
   encrypted, secrets are masked, and every change is recorded in a history that `vars rollback` can undo. Also
-  `vars import` (including `--all`, with move-up offers for shared values), `vars export`, `vars edit`,
+  `vars import` (including `--all`, with move-up offers for shared values; values are stored as Compose read them, `$$` as
+  `$`, and a value Compose would have interpolated is refused), `vars export`, `vars edit`,
   `vars backup` and `vars check` (strict for what the machine runs; `--platform` and `--usable` for the scripts
   that need less). It is opt-in.
 - `scripts/platform.sh up --last-good`: starts the platform from the copy of its settings saved by the last successful

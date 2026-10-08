@@ -335,6 +335,20 @@ class EnvTextTests(unittest.TestCase):
         self.assertEqual(v.parse_env_text(text),
                          {"A": "plain", "B": "lit $x #y", "C": 'q "x" \\', "D": "value", "E": ""})
 
+    def test_given_dollar_dollar_unquoted_or_double_quoted_when_parsed_then_one_dollar_as_compose_reads_it(self):
+        self.assertEqual(v.parse_env_text('A=ab$$cd\nB="x$$y $$$$"\nC=\'ab$$cd\'\n'),
+                         {"A": "ab$cd", "B": "x$y $$", "C": "ab$$cd"})
+
+    def test_given_a_single_quoted_dollar_when_parsed_then_it_stays_literal(self):
+        self.assertEqual(v.parse_env_text("A='$X ${Y} $'\n"), {"A": "$X ${Y} $"})
+
+    def test_given_interpolation_unquoted_or_double_quoted_when_parsed_then_it_fails_naming_line_and_key(self):
+        for text in ("A=1\nB=ab$X\n", "A=1\nB=${X}\n", 'A=1\nB="${X:-d}"\n', "A=1\nB=a$$$X\n", "A=1\nB=a$\n"):
+            with self.assertRaises(v.VarsError, msg=text) as caught:
+                v.parse_env_text(text)
+            self.assertIn("line 2", str(caught.exception), text)
+            self.assertIn("B", str(caught.exception), text)
+
     def test_given_a_line_without_equals_when_parsed_then_it_fails_naming_the_line(self):
         with self.assertRaises(v.VarsError) as caught:
             v.parse_env_text("A=1\nnot a variable\n")
@@ -448,6 +462,26 @@ class ImportTests(StoreTestCase):
             report = v.import_all(s, self.dir, v.load_catalog(), "no")
             self.assertEqual(len(s.history(None, None, 10**6)), before)
         self.assertIn("nothing to import", " ".join(report))
+
+    def test_given_dollars_in_the_secrets_tree_when_imported_all_then_values_are_what_compose_read(self):
+        self.tree()
+        (self.dir / "platform.env").write_text("ENVIRONMENTS=development\nHASH=$$2y$$05$$abc\nQ='$$kept'\n")
+        with self.store() as s:
+            v.import_all(s, self.dir, v.load_catalog(), "no")
+            self.assertEqual(s.get("platform", "HASH")[0], "$2y$05$abc")
+            self.assertEqual(s.get("platform", "Q")[0], "$$kept")
+            rendered = v.render_lines({k: val for k, val, _ in s.items("platform")})
+        self.assertIn("HASH='$2y$05$abc'", rendered)
+
+    def test_given_interpolation_in_the_secrets_tree_when_imported_all_then_nothing_is_imported_or_renamed(self):
+        self.tree()
+        (self.dir / "development" / "heimdall-api.env").write_text("DB_PASSWORD=ab$OTHER\n")
+        with self.store() as s:
+            with self.assertRaises(v.VarsError) as caught:
+                v.import_all(s, self.dir, v.load_catalog(), "no")
+            self.assertEqual(s.history(None, None, 10), [])
+        self.assertIn("heimdall-api.env: line 1: DB_PASSWORD", str(caught.exception))
+        self.assertEqual(list(self.dir.rglob("*.imported")), [])
 
     def test_given_an_env_file_of_an_unknown_application_when_imported_all_then_it_is_left_alone(self):
         self.tree()

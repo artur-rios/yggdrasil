@@ -128,7 +128,7 @@ command.
 | `vars edit <scope> [--reveal]` | Opens the scope as `KEY='value'` lines in `$EDITOR` (default `nano`). Secrets are masked; a masked line left alone keeps its value, a deleted line removes the variable. The whole edit is validated before anything is written; a rejected edit writes nothing and keeps your text in a `0600` file whose path the error names. `ygg.sh config` uses it |
 | `vars history [<scope>] [KEY] [--limit N] [--reveal]` | Newest first: id, time, user, command, scope, key, old → new |
 | `vars rollback <id> [--force]` | Restores the state before change `<id>` (re-creates, restores or deletes the key), recorded as a new change. Refuses when the key changed again after `<id>`, unless `--force` |
-| `vars import <scope> <file> [--replace]` | Reads env-file text into a scope. Without `--replace`, keys already set are left alone and reported |
+| `vars import <scope> <file> [--replace]` | Reads env-file text into a scope, each value as Compose read it from the file: single-quoted literally, `$$` as `$` when unquoted or double-quoted, where any other `$` (Compose interpolation) is refused naming the line. Without `--replace`, keys already set are left alone and reported |
 | `vars import --all [--dir <secrets dir>] [--move-up ask\|yes\|no]` | Imports every env file of the machine: see [Moving to the store](#moving-to-the-store) |
 | `vars export <scope> [--resolved]` | Env-file text on stdout, **always revealed**: it is meant for files |
 | `vars backup <dir>` | Writes `vars-<UTC timestamp>.db` and `.key` into `<dir>`, both `0600`: see [Backup](#backup-and-recovery) |
@@ -177,6 +177,7 @@ and there is no `$$` escape. In return the store refuses, at `set`, `edit` and `
 | A value containing a line break | One variable is one line |
 | A value starting or ending with whitespace | Parsers disagree about trimming it |
 | A key not matching `[A-Za-z_][A-Za-z0-9_]*` | Not a valid variable name |
+| At `import` and `edit`, a `$` other than `$$` in an unquoted or double-quoted value | Compose would have interpolated it; single-quote the value, or write `$$` |
 
 Nothing is stored when one value in a command or edit is refused. For a password, use letters and
 digits (`openssl rand -hex 16`), or any characters but `'`.
@@ -193,7 +194,13 @@ Take a copy of `/etc/yggdrasil` first (`tar czf`), as for any upgrade.
    `<application>@<environment>`, then renames each imported file to `*.env.imported`. Running it
    again never overwrites a stored value, and only renames the files it imported. A file whose
    name is not an application of the catalog is left alone and reported. `--dir` reads another
-   secrets directory.
+   secrets directory. Every file is read and checked first, and one refused line (below) imports
+   nothing.
+
+   Values are stored as Compose read them: `PASSWORD=ab$$cd` (or `"ab$$cd"`) is stored as `ab$cd`,
+   and a single-quoted `'ab$$cd'` as it is. A `$` that Compose would have replaced with another
+   variable (`PASSWORD=ab$OTHER`, `${OTHER}`) is refused, naming the file, the line and the key:
+   write `$$` for a literal `$`, or the value Compose actually used, and import again.
 3. **Move shared values up.** After importing, it offers (`y/N` per key, or `--move-up yes|no` for
    all) to define a value once:
    - first in the **environment** layer: a key with the same value in every application imported

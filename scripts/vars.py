@@ -410,7 +410,20 @@ def _assignment(text):
     return key, value
 
 
+def _compose_dollars(value, number, key):
+    """An unquoted or double-quoted value as Compose read it from an env file: $$ is one $, and any other
+    $ is interpolation (or an error), which the store does not do -- refused rather than stored changed."""
+    def one(match):
+        if match[0] == "$$":
+            return "$"
+        raise VarsError(f"line {number}: {key}: '$' interpolates in an unquoted or double-quoted value: write $$ "
+                        "for a literal $, or single-quote the value")
+    return re.sub(r"\$\$|\$", one, value)
+
+
 def parse_env_text(text):
+    """Env-file text, as Compose reads it: single quotes literal; unquoted and double-quoted values with $$
+    for $ and no other $ (see _compose_dollars)."""
     values = {}
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -427,9 +440,9 @@ def parse_env_text(text):
         if len(value) >= 2 and value[0] == value[-1] == "'":
             value = value[1:-1]
         elif len(value) >= 2 and value[0] == value[-1] == '"':
-            value = re.sub(r'\\(["\\])', r"\1", value[1:-1])
+            value = _compose_dollars(re.sub(r'\\(["\\])', r"\1", value[1:-1]), number, key)
         else:
-            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+            value = _compose_dollars(re.split(r"\s+#", value, maxsplit=1)[0].strip(), number, key)
         values[key] = value
     return values
 
@@ -571,10 +584,16 @@ def import_all(store, directory, cat, move_up):
                 sources.append((file, f"app:{file.stem}@{environment}"))
             else:
                 report.append(f"left alone {file}: {file.stem} is not an application in catalog.yaml")
-    for file, scope in sources:
-        if not file.is_file():
-            continue
-        set_keys, kept = store.import_text(scope, file.read_text(), False, "import")
+    sources = [(file, scope, file.read_text()) for file, scope in sources if file.is_file()]
+    # Every file is read and checked before anything is stored: one bad line imports nothing.
+    for file, scope, text in sources:
+        try:
+            for key, value in parse_env_text(text).items():
+                validate_entry(scope, key, value)
+        except VarsError as error:
+            raise VarsError(f"{file}: {error}; nothing was imported") from None
+    for file, scope, text in sources:
+        set_keys, kept = store.import_text(scope, text, False, "import")
         report.append(f"{file} -> {show_scope(scope)}: {len(set_keys)} set"
                       + (f", kept existing {', '.join(kept)}" if kept else ""))
         imported.append(file)
