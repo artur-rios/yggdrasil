@@ -144,9 +144,22 @@ env_value() {
 has_store() { [[ -f "$secrets/vars.db" ]]; }
 vars_py() { python3 "$root/scripts/vars.py" "$@"; }
 
+# need_store: stops when the store can't be used (lost or wrong key, unreadable file), once per
+# process, so that "unset" is never confused with "can't read".
+store_checked=""
+need_store() {
+  has_store || return 0
+  [[ -z "$store_checked" ]] || return 0
+  local output
+  output=$(vars_py check 2>&1 >/dev/null) \
+    || die "the variables store can't be used: $output (scripts/ygg.sh vars check; platform.sh up --last-good starts the platform without it)"
+  store_checked=1
+}
+
 # platform_value <NAME>: a platform setting, from the store or platform.env; empty when unset.
 platform_value() {
   if has_store; then
+    need_store
     vars_py get platform "$1" --reveal 2>/dev/null || true
   else
     env_value "$secrets/platform.env" "$1"
@@ -159,7 +172,8 @@ platform_source() { if has_store; then echo "the variables store"; else echo "$s
 # Whether an application has variables of its own in an environment on this machine.
 app_has_variables() {
   if has_store; then
-    [[ -n "$(vars_py list "$1@$2" --keys 2>/dev/null)" ]]
+    need_store
+    [[ -n "$(vars_py list "$1@$2" --resolved --keys)" ]]
   else
     [[ -f "$secrets/$2/$1.env" ]]
   fi
@@ -188,6 +202,7 @@ host_envs=()
 host_environments() {
   ((${#host_envs[@]})) && return 0
   local configured source known listed environment
+  [[ -n "$host_env" ]] || need_store
   if [[ -n "$host_env" ]]; then
     configured=$host_env source="YGG_ENVIRONMENT"
   else
@@ -624,7 +639,9 @@ stack_files() {
 # its stack files read. The ones deploy.sh sets itself are left out.
 create_env_file() {
   local id=$1 environment=$2 dir="$secrets/$2" file="$secrets/$2/$1.env"
-  local mode host suffix domain="" name default files
+  local mode host suffix domain="" name default files resolved=""
+  need_store
+  if has_store; then resolved=$'\n'$(vars_py list "$id@$environment" --resolved --keys)$'\n'; fi
   if [[ ! -w "$secrets" ]]; then
     warn "Can't write to $secrets: create it with '$0 install' (or set YGG_SECRETS_DIR), then run '$0 config $id'."
     return 1
@@ -642,14 +659,14 @@ create_env_file() {
     say "# $id in $environment. Created by scripts/ygg.sh; change it with: scripts/ygg.sh config $id $environment"
     say "# It fills in the \${VAR}s of the Compose files, and reaches the container where they hand it"
     say "# over (env_file, or environment: entries). Never commit it."
-    if [[ -n "$domain" ]]; then
+    if [[ -n "$domain" && "$resolved" != *$'\n'PUBLIC_HOST$'\n'* ]]; then
       say ""
       say "# The host name Traefik routes to it: the catalog's host, with $environment's hostSuffix, under DOMAIN."
       say "PUBLIC_HOST=$host$suffix.$domain"
     fi
     if ((${#files[@]})); then
       while read -r name; do
-        [[ "$name" =~ $DEPLOY_VARIABLES || "$name" == PUBLIC_HOST ]] && continue
+        [[ "$name" =~ $DEPLOY_VARIABLES || "$name" == PUBLIC_HOST || "$resolved" == *$'\n'"$name"$'\n'* ]] && continue
         default=$(grep -ohE "[$][{]${name}:-[^}]*" "${files[@]}" | head -n1 | sed "s/^[$][{]${name}:-//")
         say ""
         say "# Read by $(grep -lE "[$][{]${name}[:}]" "${files[@]}" | sed "s|^$root/||" | paste -sd, -)"
@@ -1153,6 +1170,7 @@ configure_app() {
   catalog show "$id" >/dev/null || exit 1
   pick_environment environment "$id in which environment?" "$environment" "$id"
   file="$secrets/$environment/$id.env"
+  need_store
   if ! app_has_variables "$id" "$environment"; then
     if has_store; then
       say "$id has no variables in $environment in the variables store yet."

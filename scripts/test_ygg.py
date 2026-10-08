@@ -167,6 +167,14 @@ class VariablesStoreTests(EnvironmentCommandTests):
         self.assertIn("homologation", result.stdout)
         self.assertNotIn("development", result.stdout)
 
+    def test_given_a_wrong_key_when_env_status_then_it_stops_instead_of_asking(self):
+        self.use_store()
+        import cryptography.fernet as f
+        (self.secrets / "vars.key").write_bytes(f.Fernet.generate_key())
+        result = self.ygg("env", "status")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("vars.key", result.stderr)
+
     def test_given_vars_when_run_then_it_passes_through_to_vars_py(self):
         self.use_store()
         self.assertEqual(self.ygg("vars", "set", "platform", "DOMAIN=example.com").returncode, 0)
