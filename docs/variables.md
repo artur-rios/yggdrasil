@@ -120,7 +120,7 @@ command.
 
 | Command | Does |
 |---|---|
-| `vars init` | Creates `vars.db` and `vars.key` (refuses if either exists). Prints the key once and waits until you type `saved`: store it in a password manager first |
+| `vars init` | Creates `vars.db` and `vars.key` (refuses if either exists). Prints the key once and waits until you type `saved`: store it in a password manager first. Any other answer, end of input, Ctrl-C or a failure removes both files again |
 | `vars set <scope> KEY=value [KEY=value ...] [--secret\|--no-secret]` | Creates or updates variables. `KEY=-` asks for the value with echo off, so a secret stays out of your shell history |
 | `vars get <scope> KEY [--reveal]` | One stored value of that scope (not resolved). Exit 1 when absent |
 | `vars list <scope> [--resolved] [--reveal] [--keys]` | The scope's variables. `--resolved` (for `<application>@<environment>`) shows the effective set and where each value came from. `--keys` prints names only |

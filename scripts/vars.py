@@ -120,35 +120,52 @@ CREATE TABLE history (
 
 def init(directory, confirm):
     """Creates vars.db and vars.key. `confirm` gets the prompt and returns what the person typed;
-    anything but `saved` removes both files again."""
+    anything but `saved` -- or no answer, an interruption, a failure on the way -- removes both files
+    again: a half-made store would switch every script over to it."""
     directory = pathlib.Path(directory)
     database, key_file = directory / "vars.db", directory / "vars.key"
+    if not directory.is_dir():
+        raise VarsError(f"{directory} does not exist: create the secrets directory first (scripts/ygg.sh install)")
     if database.exists() or key_file.exists():
         raise VarsError(f"{database} or {key_file} already exists")
     _require_crypto()
     key = Fernet.generate_key()
-    old_umask = os.umask(0o027)
-    try:
-        key_file.write_bytes(key + b"\n")
-        _restrict(key_file)
-        conn = sqlite3.connect(database)
-        conn.executescript(SCHEMA)
-        conn.execute("PRAGMA journal_mode=DELETE")
-        conn.executemany("INSERT INTO meta VALUES (?, ?)",
-                         [("schema_version", str(SCHEMA_VERSION)), ("created_at", now()),
-                          ("key_check", Fernet(key).encrypt(b"yggdrasil").decode())])
-        conn.commit()
-        conn.close()
-        _restrict(database)
-    finally:
-        os.umask(old_umask)
     prompt = (f"The key of this store is:\n\n    {key.decode()}\n\n"
               "Without it no value can be read again. Store it somewhere else (a password manager),\n"
               "then type 'saved' to finish: ")
-    if confirm(prompt).strip() != "saved":
-        database.unlink()
-        key_file.unlink()
+    try:
+        old_umask = os.umask(0o027)
+        try:
+            key_file.write_bytes(key + b"\n")
+            _restrict(key_file)
+            conn = sqlite3.connect(database)
+            try:
+                conn.executescript(SCHEMA)
+                conn.execute("PRAGMA journal_mode=DELETE")
+                conn.executemany("INSERT INTO meta VALUES (?, ?)",
+                                 [("schema_version", str(SCHEMA_VERSION)), ("created_at", now()),
+                                  ("key_check", Fernet(key).encrypt(b"yggdrasil").decode())])
+                conn.commit()
+            finally:
+                conn.close()
+            _restrict(database)
+        finally:
+            os.umask(old_umask)
+        try:
+            answer = confirm(prompt)
+        except EOFError:
+            answer = ""
+    except BaseException:
+        _remove_store(database, key_file)
+        raise
+    if answer.strip() != "saved":
+        _remove_store(database, key_file)
         raise VarsError("the key was not confirmed as saved; nothing was created")
+
+
+def _remove_store(database, key_file):
+    for path in (database, database.with_name(database.name + "-journal"), key_file):
+        path.unlink(missing_ok=True)
 
 
 def _require_crypto():

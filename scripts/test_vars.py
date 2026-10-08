@@ -55,6 +55,41 @@ class InitTests(unittest.TestCase):
         self.assertFalse((self.dir / "vars.db").exists())
         self.assertFalse((self.dir / "vars.key").exists())
 
+    def assertNothingLeft(self):
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), [])
+
+    def test_given_end_of_input_at_the_confirmation_when_initialised_then_nothing_is_left_behind(self):
+        def eof(prompt):
+            raise EOFError
+        with self.assertRaises(v.VarsError):
+            v.init(self.dir, confirm=eof)
+        self.assertNothingLeft()
+
+    def test_given_ctrl_c_at_the_confirmation_when_initialised_then_nothing_is_left_behind(self):
+        def interrupt(prompt):
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            v.init(self.dir, confirm=interrupt)
+        self.assertNothingLeft()
+
+    def test_given_a_failure_while_creating_when_initialised_then_nothing_is_left_behind(self):
+        with unittest.mock.patch.object(v, "_restrict", side_effect=[None, OSError("disk full")]):
+            with self.assertRaises(OSError):
+                v.init(self.dir, confirm=lambda prompt: "saved")
+        self.assertNothingLeft()
+
+    def test_given_a_missing_directory_when_initialised_then_it_is_refused(self):
+        with self.assertRaises(v.VarsError) as caught:
+            v.init(self.dir / "nope", confirm=lambda prompt: "saved")
+        self.assertIn("nope", str(caught.exception))
+
+    def test_given_end_of_input_on_the_cli_when_initialised_then_exit_1_and_nothing_is_left(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), "init"], capture_output=True, text=True,
+                                input="", env=dict(os.environ, YGG_SECRETS_DIR=str(self.dir)))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNothingLeft()
+
     def test_given_an_existing_store_when_initialised_again_then_it_is_refused(self):
         v.init(self.dir, confirm=lambda prompt: "saved")
         with self.assertRaises(v.VarsError):
