@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 
 import vars as v
@@ -24,6 +25,10 @@ class StoreTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.env = dict(os.environ, YGG_SECRETS_DIR=str(self.dir), USER="tester")
         self.env.pop("SUDO_USER", None)
+        patcher = unittest.mock.patch.dict(os.environ, {"USER": "tester"})  # for in-process stores
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("SUDO_USER", None)
         v.init(self.dir, confirm=lambda prompt: "saved")
 
     def store(self, readonly=False):
@@ -272,3 +277,95 @@ class RenderTests(StoreTestCase):
         # `config` prints the model re-escaped for interpolation: a literal $ comes back as $$.
         shown = {key: value.replace("$$", "$") for key, value in json.loads(out.stdout)["services"]["s"]["environment"].items()}
         self.assertEqual(shown, values)
+
+
+class HistoryTests(StoreTestCase):
+    def test_given_changes_when_listed_then_newest_first_with_actor_and_values(self):
+        with self.store() as s:
+            s.set("platform", "DOMAIN", "a.example.com", None, "set")
+            s.set("platform", "DOMAIN", "b.example.com", None, "set")
+            s.unset("platform", "DOMAIN", "unset")
+            rows = s.history("platform", "DOMAIN", 10)
+        self.assertEqual([(r["old"], r["new"], r["command"]) for r in rows],
+                         [("b.example.com", None, "unset"), ("a.example.com", "b.example.com", "set"),
+                          (None, "a.example.com", "set")])
+        self.assertEqual(rows[0]["actor"], "tester")
+
+    def test_given_a_change_when_rolled_back_then_the_value_before_it_returns_and_it_is_recorded(self):
+        with self.store() as s:
+            s.set("platform", "DOMAIN", "a.example.com", None, "set")
+            s.set("platform", "DOMAIN", "b.example.com", None, "set")
+            change = s.history("platform", "DOMAIN", 1)[0]["id"]
+            s.rollback(change, force=False)
+            self.assertEqual(s.get("platform", "DOMAIN")[0], "a.example.com")
+            self.assertEqual(s.history("platform", "DOMAIN", 1)[0]["command"], f"rollback {change}")
+
+    def test_given_a_creation_when_rolled_back_then_the_key_is_deleted(self):
+        with self.store() as s:
+            s.set("platform", "DOMAIN", "a.example.com", None, "set")
+            s.rollback(s.history("platform", "DOMAIN", 1)[0]["id"], force=False)
+            self.assertIsNone(s.get("platform", "DOMAIN"))
+
+    def test_given_a_later_change_when_rolling_back_an_earlier_one_then_it_needs_force(self):
+        with self.store() as s:
+            s.set("platform", "DOMAIN", "a.example.com", None, "set")
+            first = s.history("platform", "DOMAIN", 1)[0]["id"]
+            s.set("platform", "DOMAIN", "b.example.com", None, "set")
+            with self.assertRaises(v.VarsError):
+                s.rollback(first, force=False)
+            s.rollback(first, force=True)
+            self.assertIsNone(s.get("platform", "DOMAIN"))
+
+    def test_given_history_on_the_cli_then_secret_values_are_masked_unless_revealed(self):
+        self.cli("set", "platform", "GRAFANA_ADMIN_PASSWORD=abcdefghijkl")
+        self.assertIn("••••••kl", self.cli("history").stdout)
+        self.assertNotIn("abcdefghijkl", self.cli("history").stdout)
+        self.assertIn("abcdefghijkl", self.cli("history", "--reveal").stdout)
+
+    def test_given_sudo_when_changing_then_the_sudo_user_is_the_actor(self):
+        self.env["SUDO_USER"] = "admin-person"
+        self.cli("set", "platform", "DOMAIN=example.com")
+        self.assertIn("admin-person", self.cli("history").stdout)
+
+
+class EnvTextTests(unittest.TestCase):
+    def test_given_env_file_text_when_parsed_then_compose_semantics(self):
+        text = ("# comment\n\nexport A=plain\nB='lit $x #y'\nC=\"q \\\"x\\\" \\\\\"\n"
+                "D=value # trailing comment\nE=\n")
+        self.assertEqual(v.parse_env_text(text),
+                         {"A": "plain", "B": "lit $x #y", "C": 'q "x" \\', "D": "value", "E": ""})
+
+    def test_given_a_line_without_equals_when_parsed_then_it_fails_naming_the_line(self):
+        with self.assertRaises(v.VarsError) as caught:
+            v.parse_env_text("A=1\nnot a variable\n")
+        self.assertIn("line 2", str(caught.exception))
+
+
+class EditTests(StoreTestCase):
+    def editor(self, sed_script):
+        script = self.dir / "editor.sh"
+        script.write_text(f"#!/bin/sh\nsed -i '{sed_script}' \"$1\"\n")
+        script.chmod(0o755)
+        self.env["EDITOR"] = str(script)
+
+    def test_given_masked_secrets_left_untouched_when_edited_then_they_keep_their_values(self):
+        self.cli("set", "heimdall-api@development", "DB_PASSWORD=abcdefghijkl", "DB_HOST=old")
+        self.editor("s/^DB_HOST=.*/DB_HOST=new/")
+        result = self.cli("edit", "heimdall-api@development")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.cli("get", "heimdall-api@development", "DB_PASSWORD", "--reveal").stdout, "abcdefghijkl\n")
+        self.assertEqual(self.cli("get", "heimdall-api@development", "DB_HOST").stdout, "new\n")
+
+    def test_given_a_line_deleted_when_edited_then_the_key_is_unset(self):
+        self.cli("set", "heimdall-api@development", "DB_PASSWORD=abcdefghijkl", "DB_HOST=old")
+        self.editor("/^DB_PASSWORD=/d")
+        self.cli("edit", "heimdall-api@development")
+        self.assertEqual(self.cli("get", "heimdall-api@development", "DB_PASSWORD").returncode, 1)
+        self.assertIn("edit", self.cli("history").stdout)
+
+    def test_given_values_with_hash_and_quote_like_text_when_edited_untouched_then_they_are_unchanged(self):
+        self.cli("set", "heimdall-api@development", "A=x #y", 'B="q"')
+        self.editor("s/^$//")
+        self.cli("edit", "heimdall-api@development")
+        self.assertEqual(self.cli("get", "heimdall-api@development", "A").stdout, "x #y\n")
+        self.assertEqual(self.cli("get", "heimdall-api@development", "B").stdout, '"q"\n')

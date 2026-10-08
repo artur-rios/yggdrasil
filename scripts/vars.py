@@ -204,7 +204,58 @@ class Store:
                             f"({self.directory / 'vars.key'})") from None
 
     def _record(self, command, scope, key, old, new, secret):
-        """History; replaced in Task 3."""
+        self.conn.execute(
+            "INSERT INTO history (at, actor, command, scope, key, old_value, new_value, secret) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (now(), actor(), command, scope, key, None if old is None else self.encrypt(old),
+             None if new is None else self.encrypt(new), int(secret)))
+
+    def history(self, scope=None, key=None, limit=50):
+        query, params = "SELECT * FROM history WHERE 1=1", []
+        if scope is not None:
+            query, params = query + " AND scope=?", params + [scope]
+        if key is not None:
+            query, params = query + " AND key=?", params + [key]
+        rows = self.conn.execute(query + " ORDER BY id DESC LIMIT ?", params + [limit]).fetchall()
+        result = []
+        for id_, at, who, command, scope_, key_, old, new, secret in rows:
+            result.append({"id": id_, "at": at, "actor": who, "command": command, "scope": scope_, "key": key_,
+                           "old": None if old is None else self.decrypt(old, scope_, key_),
+                           "new": None if new is None else self.decrypt(new, scope_, key_), "secret": bool(secret)})
+        return result
+
+    def rollback(self, change_id, force):
+        row = self.conn.execute("SELECT scope, key FROM history WHERE id=?", (change_id,)).fetchone()
+        if row is None:
+            raise VarsError(f"no change {change_id}")
+        scope, key = row
+        change = next(r for r in self.history(scope, key, 10**9) if r["id"] == change_id)
+        later = self.conn.execute("SELECT COUNT(*) FROM history WHERE scope=? AND key=? AND id>?",
+                                  (scope, key, change_id)).fetchone()[0]
+        if later and not force:
+            raise VarsError(f"{show_scope(scope)} {key} changed again after {change_id}: --force to roll back anyway")
+        command = f"rollback {change_id}"
+        if change["old"] is None:
+            if self.get(scope, key) is not None:
+                self.unset(scope, key, command)
+        else:
+            self.set(scope, key, change["old"], change["secret"], command)
+
+    def apply(self, scope, text, previous, command):
+        wanted = parse_env_text(text)
+        changed = []
+        for key, value in wanted.items():
+            old = previous.get(key)
+            if old is not None and old[1] and value == mask(old[0]):
+                continue
+            if old is None or old[0] != value:
+                self.set(scope, key, value, None, command)
+                changed.append(key)
+        for key in previous:
+            if key not in wanted:
+                self.unset(scope, key, command)
+                changed.append(key)
+        return changed
 
     def get(self, scope, key):
         row = self.conn.execute("SELECT value, secret FROM variables WHERE scope=? AND key=?", (scope, key)).fetchone()
@@ -324,6 +375,30 @@ def _assignment(text):
     return key, value
 
 
+def parse_env_text(text):
+    values = {}
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            raise VarsError(f"line {number}: '{raw}' is not KEY=value")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        validate_key(key)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+        elif len(value) >= 2 and value[0] == value[-1] == '"':
+            value = re.sub(r'\\(["\\])', r"\1", value[1:-1])
+        else:
+            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+        values[key] = value
+    return values
+
+
 def cmd_init(args):
     init(secrets_dir(), confirm=input)
     print(f"Created {secrets_dir() / 'vars.db'}")
@@ -362,6 +437,44 @@ def cmd_unset(args):
     with Store.open() as store:
         for key in args.keys:
             store.unset(scope, key, "unset")
+
+
+def cmd_history(args):
+    scope = parse_scope(args.scope, None) if args.scope else None
+    with Store.open(readonly=True) as store:
+        rows = store.history(scope, args.key, args.limit)
+    for r in rows:
+        old = "-" if r["old"] is None else _shown(r["old"], r["secret"], args.reveal)
+        new = "-" if r["new"] is None else _shown(r["new"], r["secret"], args.reveal)
+        print(f"{r['id']:>5}  {r['at']}  {r['actor']:<12} {r['command']:<14} {show_scope(r['scope'])} {r['key']}: {old} -> {new}")
+
+
+def cmd_rollback(args):
+    with Store.open() as store:
+        store.rollback(args.id, args.force)
+
+
+def cmd_edit(args):
+    import subprocess
+    import tempfile
+    scope = parse_scope(args.scope, load_catalog())
+    with Store.open() as store:
+        previous = {key: (value, secret) for key, value, secret in store.items(scope)}
+        # Single-quoted: values cannot contain a quote, so this round-trips any stored value exactly.
+        text = "".join(f"{key}='{_shown(value, secret, args.reveal)}'\n" for key, (value, secret) in previous.items())
+        handle, path = tempfile.mkstemp(prefix="vars-edit-", suffix=".env")
+        try:
+            os.chmod(path, 0o600)
+            with os.fdopen(handle, "w") as file:
+                file.write(f"# {args.scope}: one KEY=value per line. A secret left as {MASK}.. keeps its value;\n"
+                           "# a deleted line removes the variable.\n" + text)
+            editor = os.environ.get("EDITOR") or "nano"
+            if subprocess.call([*editor.split(), path]) != 0:
+                raise VarsError(f"{editor} failed; nothing changed")
+            changed = store.apply(scope, pathlib.Path(path).read_text(), previous, "edit")
+        finally:
+            os.unlink(path)
+    print(f"{len(changed)} change(s): {', '.join(changed)}" if changed else "No change.")
 
 
 def render_lines(variables):
@@ -424,6 +537,20 @@ def parser():
     s.add_argument("scope")
     s.add_argument("keys", nargs="+", metavar="KEY")
     s.set_defaults(run=cmd_unset)
+    s = sub.add_parser("history")
+    s.add_argument("scope", nargs="?")
+    s.add_argument("key", nargs="?")
+    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--reveal", action="store_true")
+    s.set_defaults(run=cmd_history)
+    s = sub.add_parser("rollback")
+    s.add_argument("id", type=int)
+    s.add_argument("--force", action="store_true")
+    s.set_defaults(run=cmd_rollback)
+    s = sub.add_parser("edit")
+    s.add_argument("scope")
+    s.add_argument("--reveal", action="store_true")
+    s.set_defaults(run=cmd_edit)
     s = sub.add_parser("render")
     s.add_argument("application")
     s.add_argument("environment")
