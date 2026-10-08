@@ -220,7 +220,9 @@ if [[ -n "$previous" ]]; then
   done
 fi
 
-echo "deploy: $stack $version to $environment as project $project (previous: ${previous:-none}${previous:+, ${was_running:+running}${was_running:-stopped}})"
+previous_state=stopped
+[[ -n "$was_running" ]] && previous_state=running
+echo "deploy: $stack $version to $environment as project $project (previous: ${previous:-none}${previous:+, $previous_state})"
 
 # After a deploy or a rollback: an on-demand environment that was off is switched off again.
 stop_if_on_demand() {

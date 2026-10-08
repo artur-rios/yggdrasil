@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-08
+
+### Fixed
+
+- `vars import` names the line and the key of every value it refuses (a single quote, surrounding whitespace, a bad
+  name, a reference outside an application scope), not only of a `$` it would change.
+- `vars edit` keeps the text of a refused edit in a uniquely named file: two refused edits of one scope in the same
+  second no longer lose the second one's text.
+- `deploy.sh` says `(previous: <image>, running)` again, not `running` followed by the container ids.
+
 ## [0.6.0] - 2026-10-08
 
 ### Added
@@ -346,7 +356,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/artur-rios/yggdrasil/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/artur-rios/yggdrasil/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/artur-rios/yggdrasil/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/artur-rios/yggdrasil/compare/v0.4.0...v0.5.0
