@@ -45,7 +45,6 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage:", result.stderr)
 
-    @unittest.skip("needs yggcli/tree.py, which Task 2 adds; Task 2 removes this skip")
     def test_given_env_help_then_the_env_parser_explains_it(self):
         result = self.run_ygg("env", "--help")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -111,6 +110,21 @@ class VersionTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
         (directory / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n## [9.8.7] - 2030-01-01\n")
         self.assertEqual(context.read_version(directory), ("9.8.7", "unknown"))
+
+
+class HelpCommandTests(unittest.TestCase):
+    def test_given_help_then_the_overview_groups_the_commands(self):
+        for arguments in (("help",), ("--help",), ("-h",)):
+            result = ygg(*arguments)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Variables and secrets", result.stdout)
+            self.assertIn("vars get", result.stdout)
+
+    def test_given_help_of_a_command_then_it_is_that_command_s_help(self):
+        result = ygg("help", "vars", "get")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: ygg vars get", result.stdout)
+        self.assertIn("--reveal", result.stdout)
 
 
 if __name__ == "__main__":
