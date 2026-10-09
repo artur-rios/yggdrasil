@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-09
+
 ### Added
 
 - **`ygg`, the host's command line app** ([docs/cli.md](docs/cli.md)). Every command of the host scripts
@@ -408,7 +410,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/artur-rios/yggdrasil/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/artur-rios/yggdrasil/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/artur-rios/yggdrasil/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/artur-rios/yggdrasil/compare/v0.5.0...v0.5.1
