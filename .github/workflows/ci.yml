@@ -94,7 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Check shell scripts
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh scripts/ygg
       - run: pip install --quiet pyyaml cryptography
       - name: Test the catalog tooling
         run: python3 -m unittest discover -s scripts -v
