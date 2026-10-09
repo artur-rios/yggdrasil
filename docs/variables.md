@@ -5,8 +5,8 @@ the command line, instead of hand-edited env files. A value shared by several ap
 environments is defined once, every change is recorded and can be rolled back, and no value sits in
 a file in clear.
 
-It is opt-in: until you run `scripts/ygg.sh vars init`, every script reads the env files as before.
-Reference for everything below is `scripts/vars.py`, which `scripts/ygg.sh vars <command>` runs.
+It is opt-in: until you run `ygg vars init`, every script reads the env files as before.
+Reference for everything below is `scripts/vars.py`, which `ygg vars <command>` runs.
 
 - [What it is](#what-it-is)
 - [Scopes and layers](#scopes-and-layers)
@@ -68,15 +68,15 @@ The platform scopes never mix into applications.
 For example, with these values:
 
 ```bash
-scripts/ygg.sh vars set @development DB_HOST=postgres.example.com
-scripts/ygg.sh vars set heimdall-api LOCALE=en-US
-scripts/ygg.sh vars set heimdall-api@development DB_NAME=heimdall_dev DB_PASSWORD=-
+ygg vars set @development DB_HOST=postgres.example.com
+ygg vars set heimdall-api LOCALE=en-US
+ygg vars set heimdall-api@development DB_NAME=heimdall_dev DB_PASSWORD=-
 ```
 
 `--resolved` shows what `heimdall-api` gets in development, and where each value comes from:
 
 ```console
-$ scripts/ygg.sh vars list heimdall-api@development --resolved
+$ ygg vars list heimdall-api@development --resolved
 DB_HOST=postgres.example.com  (env)
 DB_NAME=heimdall_dev  (app@env)
 DB_PASSWORD=••••••r2  (app@env)
@@ -93,11 +93,11 @@ A value that is exactly `${ref:<application>:<KEY>}` is replaced by that applica
 resolved in the **same environment**. This is how fortuna-api shares heimdall-api's token secret:
 
 ```bash
-scripts/ygg.sh vars set fortuna-api FORTUNA_AUTH_TOKEN_SECRET='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
+ygg vars set fortuna-api FORTUNA_AUTH_TOKEN_SECRET='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
 ```
 
 ```console
-$ scripts/ygg.sh vars list fortuna-api@development --resolved
+$ ygg vars list fortuna-api@development --resolved
 FORTUNA_AUTH_TOKEN_SECRET=••••••23  (ref → heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET)
 ```
 
@@ -116,9 +116,13 @@ Rules:
 
 ## Commands
 
-Run them as `scripts/ygg.sh vars <command>` (or `python3 scripts/vars.py <command>`). Every command
+Run them as `ygg vars <command>` (or `python3 scripts/vars.py <command>`). Every command
 that writes records a history entry with the user (`$SUDO_USER`, else `$USER`), the time and the
 command.
+
+The CLI explains itself: `ygg vars` (or `vars --help`) prints every command, the scopes,
+examples, exit codes and environment variables; `ygg vars <command> --help` explains one
+command and each of its options.
 
 | Command | Does |
 |---|---|
@@ -127,27 +131,141 @@ command.
 | `vars get <scope> KEY [--reveal]` | One stored value of that scope (not resolved). Exit 1 when absent |
 | `vars list <scope> [--resolved] [--reveal] [--keys]` | The scope's variables. `--resolved` (for `<application>@<environment>`) shows the effective set and where each value came from. `--keys` prints names only |
 | `vars unset <scope> KEY [KEY ...]` | Deletes variables. Exit 1 when one is absent |
-| `vars edit <scope> [--reveal]` | Opens the scope as `KEY='value'` lines in `$EDITOR` (default `nano`). Secrets are masked; a masked line left alone keeps its value, a deleted line removes the variable. The whole edit is validated before anything is written; a rejected edit writes nothing and keeps your text in a `0600` file whose path the error names. `ygg.sh config` uses it |
+| `vars edit <scope> [--reveal]` | Opens the scope as `KEY='value'` lines in `$EDITOR` (default `nano`). Secrets are masked; a masked line left alone keeps its value, a deleted line removes the variable. The whole edit is validated before anything is written; a rejected edit writes nothing and keeps your text in a `0600` file whose path the error names. `ygg config` uses it |
 | `vars history [<scope>] [KEY] [--limit N] [--reveal]` | Newest first: id, time, user, command, scope, key, old → new |
 | `vars rollback <id> [--force]` | Restores the state before change `<id>` (re-creates, restores or deletes the key), recorded as a new change. Refuses when the key changed again after `<id>`, unless `--force` |
 | `vars import <scope> <file> [--replace]` | Reads env-file text into a scope, each value as Compose read it from the file: single-quoted literally, `$$` as `$` when unquoted or double-quoted, where any other `$` (Compose interpolation) is refused naming the line. Without `--replace`, keys already set are left alone and reported |
 | `vars import --all [--dir <secrets dir>] [--move-up ask\|yes\|no]` | Imports every env file of the machine: see [Moving to the store](#moving-to-the-store) |
 | `vars export <scope> [--resolved]` | Env-file text on stdout, **always revealed**: it is meant for files |
 | `vars backup <dir>` | Writes `vars-<UTC timestamp>.db` and `.key` into `<dir>`, both `0600`: see [Backup](#backup-and-recovery) |
-| `vars check [<application> <environment> \| --platform \| --usable]` | Integrity, schema version, that every value decrypts, that every reference resolves; applications and environments no longer in the catalog are warnings. References are errors for what this machine runs (an `<application>@<environment>` scope of its own, or an environment of the platform's `ENVIRONMENTS` the application deploys to) and warnings for the catalog's other pairs. With arguments, only what that deploy needs, strictly (`deploy.sh`). `--platform`: only the `platform` and `platform:acme` values (`platform.sh`). `--usable`: only that the store opens with its key and is intact (`ygg.sh`). It opens the store read-write when you can write the secrets directory, which rolls back a write that crashed half-way. Exit 1 on any error |
+| `vars render <application> <environment>` | The resolved variables of an application in an environment as an env file (`KEY='value'`, sorted, revealed): what `deploy.sh` writes to a private temporary file before each deploy |
+| `vars render-platform [--acme]` | The `platform` scope (or `platform:acme`) as an env file, revealed: what `platform.sh` writes to private temporary files |
+| `vars check [<application> <environment> \| --platform \| --usable]` | Integrity, schema version, that every value decrypts, that every reference resolves; applications and environments no longer in the catalog are warnings. References are errors for what this machine runs (an `<application>@<environment>` scope of its own, or an environment of the platform's `ENVIRONMENTS` the application deploys to) and warnings for the catalog's other pairs. With arguments, only what that deploy needs, strictly (`deploy.sh`). `--platform`: only the `platform` and `platform:acme` values (`platform.sh`). `--usable`: only that the store opens with its key and is intact (`ygg`). It opens the store read-write when you can write the secrets directory, which rolls back a write that crashed half-way. Exit 1 on any error |
 
-The interactive menu has the same under **Variables and secrets** (list, set, edit, history, roll
-back, check, back up), and offers to create the store if the machine has none. `scripts/ygg.sh
-config <application> [<environment>]` works on the store when there is one
-([cli.md](cli.md#change-the-configuration)).
+In `ygg`'s menu, **Applications › `<application>` › `<environment>`** lists an application's
+variables with the scope each comes from; select one to show its value, change it (hidden for a
+secret, and where: this application and environment, every environment, or the shared scope), mark
+it secret, remove it, or roll back one of its changes. **Variables and secrets** opens any scope the
+same way and has every command below as a form ([cli.md](cli.md#variables-and-secrets-of-an-application)).
+`ygg config <application> [<environment>]` opens that screen directly, or works on the env file
+when the machine has no store.
 
 Examples:
 
 ```bash
-scripts/ygg.sh vars set heimdall-api@production HEIMDALL_JWT_ISSUER=https://heimdall.example.com
-scripts/ygg.sh vars set heimdall-api@production DB_PASSWORD=-       # typed hidden
-scripts/ygg.sh vars history heimdall-api@production --limit 10
-scripts/ygg.sh vars rollback 42
+ygg vars set heimdall-api@production HEIMDALL_CORS_ALLOWED_ORIGINS=https://fortuna.example.com
+ygg vars set heimdall-api@production DB_PASSWORD=-       # typed hidden
+ygg vars history heimdall-api@production --limit 10
+ygg vars rollback 42
+```
+
+### Exit status and environment
+
+| Exit status | Meaning |
+|---|---|
+| `0` | Done |
+| `1` | Refused or failed, with the reason on stderr as `vars: ...`: an unknown scope or key, a value the store refuses, a wrong or unreadable key, a check that found errors, a refused edit or import (nothing is written then) |
+| `2` | A usage error (an unknown command or option), with the usage on stderr |
+
+| Variable | Used for |
+|---|---|
+| `YGG_SECRETS_DIR` | The directory of `vars.db` and `vars.key` (default `/etc/yggdrasil`). On a Windows workstation, `$PWD/env` in your checkout |
+| `EDITOR` | The editor of `vars edit` and of `ygg config`'s edit step (default `nano`) |
+| `SUDO_USER`, `USER` | The user recorded in the history |
+
+## Recipes
+
+Day-to-day tasks, each with the exact commands. `<app>` and `<env>` stand for an application and an
+environment of `catalog.yaml`, e.g. `heimdall-api` and `production`.
+
+**See what an application gets in an environment, and where each value comes from**
+
+```bash
+ygg vars list <app>@<env> --resolved
+```
+
+Menu: Applications › `<app>` › `<env>`.
+
+Each line ends with its origin: `(app@env)`, `(app)`, `(env)` or `(ref → <app>:<KEY>)`.
+
+**Add or change a setting, then apply it**
+
+```bash
+ygg vars set <app>@<env> LOG_LEVEL=Warning
+ygg config <app> <env>          # then deploy it
+```
+
+Menu: the variable › Change value, or + Add a variable; then `d` to deploy.
+
+Containers read their variables when they are created: a change reaches the application at its next
+deploy (a redeploy from the menu, a Jenkins build, or `scripts/deploy.sh`).
+
+**Add a secret without it appearing anywhere**
+
+```bash
+ygg vars set <app>@<env> SOME_API_KEY=-
+```
+
+Menu: Applications › `<app>` › `<env>` › + Add a variable.
+
+It asks with echo off, so the value is in neither your shell history nor `ps`. It is masked in
+`list`, `get` and `history` unless `--reveal`.
+
+**Rotate a signing secret without signing everyone out** (heimdall-api, fortuna-api)
+
+```bash
+old=$(ygg vars get heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET --reveal)
+printf '%s\n' "$old" | ygg vars set heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET_PREVIOUS=-
+openssl rand -hex 48 | ygg vars set heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET=-
+unset old
+```
+
+Menu: the variable › Change value, and choose where.
+
+Redeploy, and once a token lifetime has passed, clear the previous key:
+`ygg vars set heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET_PREVIOUS=`. An application
+whose secret is a reference to heimdall's (`${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}`) follows
+the new value at its own next deploy.
+
+**Share one value between environments or applications**
+
+```bash
+ygg vars set @<env> DB_HOST=host.docker.internal     # every application in <env>
+ygg vars set <app> DB_PORT=5432                      # <app> in every environment
+ygg vars unset <app>@<env> DB_HOST                   # drop the now-redundant copy
+```
+
+Menu: the variable › Change value, and choose where.
+
+**Make one application follow another's value**
+
+```bash
+ygg vars set fortuna-api@<env> 'FORTUNA_AUTH_TOKEN_SECRET=${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
+```
+
+Menu: the variable › Change value, and choose where.
+
+Single-quote the assignment, so your shell leaves `${ref:...}` alone.
+
+**Edit many values at once**
+
+```bash
+ygg vars edit <app>@<env>
+```
+
+**Undo a change**
+
+```bash
+ygg vars history <app>@<env> --limit 10     # find its id
+ygg vars rollback <id>
+```
+
+Menu: the variable › History › the change › Roll back.
+
+**Write a scope back to a file** (to read it elsewhere, or to leave the store)
+
+```bash
+ygg vars export <app>@<env> > <app>.env && chmod 600 <app>.env
 ```
 
 ## Secrets and masking
@@ -160,7 +278,7 @@ The **secret flag** only governs display: `get`, `list`, `history` and `edit` sh
 `••••••` plus its last two characters (just `••••••` under 12 characters), unless you pass
 `--reveal`. It is on by default when the name ends in `PASSWORD`, `PASSWD`, `PASS`, `PWD`, `SECRET`,
 `TOKEN`, `KEY`, `CREDENTIAL` or `CREDENTIALS`, optionally followed by `_PREVIOUS`, or is
-`CONNECTION_STRING` / `CONNECTIONSTRING` (the same rule as `ygg.sh config`). `--secret` and
+`CONNECTION_STRING` / `CONNECTIONSTRING` (the same rule as `ygg config`). `--secret` and
 `--no-secret` override it, and the flag is kept when the value is updated or moved.
 
 What encryption protects: a copy of the database on its own (a backup, a stray file). It does not
@@ -189,9 +307,9 @@ digits (`openssl rand -hex 16`), or any characters but `'`.
 On the host, once, for the files of [setup.md](setup.md) steps 9 to 11 or an existing installation.
 Take a copy of `/etc/yggdrasil` first (`tar czf`), as for any upgrade.
 
-1. **Create the store.** `scripts/ygg.sh vars init` prints the key and waits for `saved`. Put it in
+1. **Create the store.** `ygg vars init` prints the key and waits for `saved`. Put it in
    your password manager first: without it nothing can be read again.
-2. **Import the files.** `scripts/ygg.sh vars import --all` reads `platform.env` into `platform`,
+2. **Import the files.** `ygg vars import --all` reads `platform.env` into `platform`,
    `acme.env` into `platform:acme` and every `<environment>/<application>.env` into
    `<application>@<environment>`, then renames each imported file to `*.env.imported`. Running it
    again never overwrites a stored value, and only renames the files it imported. A file whose
@@ -216,11 +334,11 @@ Take a copy of `/etc/yggdrasil` first (`tar czf`), as for any upgrade.
 4. **Use references** where applications share a secret, e.g. fortuna-api's
    `FORTUNA_AUTH_TOKEN_SECRET` as `${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}` in each
    environment ([References](#references)).
-5. **Check.** `scripts/ygg.sh vars check`. Compare what the platform will read with the file you
-   imported: `scripts/ygg.sh vars export platform | diff - /etc/yggdrasil/platform.env.imported`
+5. **Check.** `ygg vars check`. Compare what the platform will read with the file you
+   imported: `ygg vars export platform | diff - /etc/yggdrasil/platform.env.imported`
    (the quoting may differ; the values must not).
 6. **Restart the platform** to read it from the store: `scripts/platform.sh up`.
-7. **Redeploy one application** (`scripts/ygg.sh config <application> <environment>`, then
+7. **Redeploy one application** (`ygg config <application> <environment>`, then
    apply, or a Jenkins build) and check it is healthy. Others follow at their next deploy.
 8. **Delete the `*.env.imported` files** when you are satisfied. They hold the secrets in clear.
 
@@ -231,8 +349,8 @@ checkout:
 
 ```bash
 export YGG_SECRETS_DIR=$PWD/env
-scripts/ygg.sh vars init
-scripts/ygg.sh vars import --all
+ygg vars init
+ygg vars import --all
 ```
 
 NTFS does not enforce the `0640` mode, so the files protect nothing against other accounts of that
@@ -246,25 +364,31 @@ is yours to protect.
 `~/yggdrasil-backups`):
 
 ```bash
-scripts/ygg.sh vars backup ~/yggdrasil-backups
+ygg vars backup ~/yggdrasil-backups
 ```
 
 It writes `vars-<UTC timestamp>.db` (a consistent copy, taken while the store is in use) and
 `vars-<UTC timestamp>.key`, both `0600`. A weekly cron line, in `/etc/cron.d/yggdrasil-vars`:
 
 ```text
-0 3 * * 0 root /opt/yggdrasil/scripts/ygg.sh vars backup /root/yggdrasil-backups
+0 3 * * 0 root /opt/yggdrasil/scripts/ygg vars backup /root/yggdrasil-backups
 ```
 
 Nothing installs it for you. A backup next to the key is as sensitive as the store: keep copies
 off the machine only where both are protected, and the key's own copy in your password manager.
 
-**Check** at any time with `scripts/ygg.sh vars check`. A wrong or missing key is found when the
-store is opened: every command stops with `wrong or missing key (<dir>/vars.key)`.
+**Check** at any time with `ygg vars check`. A bad key is found when the store is opened,
+before anything is read or written, and every command stops with exit status 1:
+
+| Key file | Message |
+|---|---|
+| Missing or unreadable | `vars: cannot read the key <dir>/vars.key: ...` |
+| Not a key (damaged) | `vars: cannot read the key <dir>/vars.key: Fernet key must be 32 url-safe base64-encoded bytes.` |
+| A valid key of another store | `vars: the key does not match this store: wrong or missing key (<dir>/vars.key)` |
 
 **A write that crashed** (power loss, `kill -9`) leaves a `vars.db-journal` next to the database.
 A read-only open can't roll it back, so the Jenkins agent and other readers fail with `attempt to
-write a readonly database` until a writer has: run `scripts/ygg.sh vars check` on the host as the
+write a readonly database` until a writer has: run `ygg vars check` on the host as the
 owner of the secrets directory (or root), which opens the store read-write and rolls it back.
 
 **The store is unusable and the platform must start.** The last successful `platform.sh up` from
@@ -279,7 +403,7 @@ Every `platform.sh` command takes `--last-good` right after it, to read the plat
 store: `platform.sh down --last-good`, `ps --last-good`, `logs --last-good <service>`,
 `config --last-good`.
 
-`ygg.sh` stops with a clear message, carrying the check's errors, when the store can't be used
+`ygg` stops with a clear message, carrying the check's errors, when the store can't be used
 (`vars check --usable`: a lost or wrong key, a damaged file), and points to this.
 
 **Restore a backup.** Stop writing, copy both files back with the secrets directory's owner, group
@@ -289,7 +413,7 @@ store: `platform.sh down --last-good`, `ps --last-good`, `logs --last-good <serv
 owner=$(stat -c %U /etc/yggdrasil)
 sudo install -m 640 -o "$owner" -g docker <backup dir>/vars-<timestamp>.db  /etc/yggdrasil/vars.db
 sudo install -m 640 -o "$owner" -g docker <backup dir>/vars-<timestamp>.key /etc/yggdrasil/vars.key
-scripts/ygg.sh vars check
+ygg vars check
 ```
 
 **Lost key.** The values cannot be decrypted by anyone: restoring the key from your password
@@ -298,7 +422,7 @@ move `vars.db` and `vars.key` aside, `vars init`, and set the variables from the
 `last-good` files hold the platform's values in clear, and a running container shows its own
 environment with `docker inspect`).
 
-**Leave the store.** `scripts/ygg.sh vars export <scope> [--resolved] > file` writes any scope as
+**Leave the store.** `ygg vars export <scope> [--resolved] > file` writes any scope as
 an env file, to use files again: delete `vars.db` and the scripts read the files as before.
 
 ## How deploys use it
@@ -310,7 +434,7 @@ an env file, to use files again: delete `vars.db` and the scripts read the files
   `APP_ENV_FILE` and Compose's `--env-file` point at it, and the directory is removed when the script
   exits, whether the deploy succeeded or not. An application with no variables at all in that
   environment is not deployed, as a missing env file was not: `deploy.sh` stops and names
-  `scripts/ygg.sh config <application> <environment>`. Without `vars.db` it reads
+  `ygg config <application> <environment>`. Without `vars.db` it reads
   `<secrets>/<environment>/<application>.env` with a one-line notice pointing here.
 - **The deploy lock** is a file per application and environment,
   `<secrets>/locks/<application>-<environment>.lock`, created `0664` when missing and opened
@@ -324,4 +448,4 @@ an env file, to use files again: delete `vars.db` and the scripts read the files
   reads the key, renders and deploys. It never writes the store. Upgrade the platform once
   (`platform.sh up`) so the agent has the `locks` mount and `python3-cryptography`.
 - **Changes reach applications at their next deploy**: containers read their variables when
-  created. `ygg.sh config` offers to redeploy after an edit.
+  created. `ygg config` offers to redeploy after an edit.

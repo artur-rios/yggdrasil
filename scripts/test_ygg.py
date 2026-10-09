@@ -267,6 +267,12 @@ class VariablesStoreTests(EnvironmentCommandTests):
         result = self.ygg("check", PYTHONPATH=str(hidden))
         self.assertIn("package python3-cryptography", result.stdout)
 
+    def test_given_vars_without_a_command_then_it_prints_the_full_help(self):
+        result = self.ygg("vars")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for part in ("Scopes (where a variable lives):", "Examples:", "Exit status:"):
+            self.assertIn(part, result.stdout)
+
     def test_given_vars_when_run_then_it_passes_through_to_vars_py(self):
         self.use_store()
         self.assertEqual(self.ygg("vars", "set", "platform", "DOMAIN=example.com").returncode, 0)
