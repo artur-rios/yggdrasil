@@ -99,12 +99,19 @@ A command runs in the normal terminal, outside the full screen, so `$EDITOR`, hi
 output work. When it ends, the menu always waits for **Enter**, so you can read the output, then
 reloads what it shows.
 
-**No terminal.** In a pipe, a script, a terminal smaller than 60×12, or with `YGG_PLAIN` set to any
+**No terminal.** In a pipe, a script, a terminal smaller than 60×12 or one this machine has no
+terminfo entry for (a new terminal's own `TERM` over SSH, say), or with `YGG_PLAIN` set to any
 value, the menu is numbered lines: type a number, or a row's exact text; an empty line or `0` goes
-back; `q` quits. The prompts of `add`, `config` (without a store) and `status` use the same
-arrow-key picker in a terminal and plain questions otherwise. In them, Esc on a choice with a
-**Back** option goes back; on any other choice it stops the operation; on a yes/no question it
-answers no.
+back; `q` quits.
+
+**The questions of the host operations.** `add`, `install`, `deploy`, `status`, `env` and `config`
+(without a store) ask in the terminal, below what they printed, which stays in view: a list you
+move through with the arrow keys (typing filters it), a text field, or yes/no. A long question is
+wrapped, not cut. Once answered, the question leaves one line with its answer (`Then: start`). Esc
+on a choice with a **Back** option goes back; on any other choice or a text question it stops the
+operation; on a yes/no question it answers no. Ctrl-C stops the operation (exit 130). Without a
+terminal, with `TERM=dumb` or `YGG_PLAIN`, or when the arrow-key prompt can't run, they are plain
+numbered questions.
 
 ## Variables and secrets of an application
 
@@ -184,7 +191,8 @@ read it. Changes you don't apply reach the application on its next deploy, from 
 | `ygg catalog validate \| environments \| applications \| systems \| show \| plan \| environment \| get \| owner \| repository` | Catalog | Reads `catalog.yaml` (`scripts/catalog.py`) |
 | `ygg help [<command>]`, `ygg version`, `ygg completion bash` | Help and version | |
 
-Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command, a missing argument).
+Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command, a missing argument),
+130 stopped with Ctrl-C.
 `ygg env` and `ygg vars` pass their words to `host.sh` and `vars.py`, whose own exit codes apply
 (for `vars`, see [variables.md](variables.md#exit-status-and-environment)).
 

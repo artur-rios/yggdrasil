@@ -13,7 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (`host.sh`, `vars.py`, `platform.sh`, `deploy.sh`, `catalog.py`'s read commands) is a `ygg` command and is in
   an arrow-key menu: forms built from the commands' own options, pick lists of applications, environments,
   scopes and keys (or type a value), the command line shown as you fill a form, confirmation before deleting
-  or stopping, help on `?`. Without a terminal the menu is numbered lines.
+  or stopping, help on `?`. Without a terminal, or in one too small or that this machine has no terminfo for,
+  the menu is numbered lines.
 - **An application's variables and secrets in the menu**: Applications › `<app>` › `<environment>` lists them
   with the scope each comes from; select one to show its value (drawn, never printed), change it (hidden for a
   secret, in the scope you choose), mark it secret, remove it, or roll back one of its changes.
@@ -22,9 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `ygg deploy <environment> <app> [<app-dir>] [<version>] [--leave-running]`, `ygg platform ...`,
   `ygg catalog ...`, `ygg version`, `ygg help [<command>]`. Without a terminal, `ygg deploy` does not ask and
   does not leave a stopped on-demand application running unless `--leave-running` is given.
-- The bash prompts of `add`, `config` and `status` use the same arrow-key picker in a terminal. In them, Esc
-  goes back where there is a **Back** option, stops the operation on any other choice, and answers no to a
-  yes/no question. `YGG_PLAIN` (any value) forces plain numbered prompts.
+- The questions of the host operations (`add`, `install`, `deploy`, `status`, `env`, `config` without a store) are
+  arrow-key prompts in a terminal, drawn below what the operation printed, which stays in view; a long question is
+  wrapped, and each leaves one line with its answer. Esc goes back where there is a **Back** option, stops the
+  operation on any other choice or text question, and answers no to a yes/no question; Ctrl-C stops the operation
+  (exit 130). `YGG_PLAIN` (any value), `TERM=dumb` or a prompt that can't run fall back to plain numbered prompts.
 
 ### Changed
 

@@ -1,13 +1,16 @@
 """The terminal side of the menu: CursesUI draws a screen's View full screen and reads keys raw;
 LineUI prints it as numbered lines and reads answers line by line, for no terminal (a pipe, a test,
-YGG_PLAIN) or one too small for the full screen."""
+YGG_PLAIN) or one too small for the full screen, or that curses doesn't know. InlineUI draws one
+screen below what the terminal shows, for host.sh's prompts (`ygg.py prompt`)."""
 
 import curses
 import getpass
 import locale
 import os
+import select
 import shutil
 import sys
+import termios
 import textwrap
 
 
@@ -103,26 +106,32 @@ class CursesUI:
         os.environ.setdefault("ESCDELAY", "25")
         locale.setlocale(locale.LC_ALL, "")
         self.window = curses.initscr()
-        curses.noecho()
-        curses.raw()
-        self.window.keypad(True)
         try:
-            curses.curs_set(0)
-        except curses.error:
-            pass
-        if curses.has_colors():
+            curses.noecho()
+            curses.raw()
+            self.window.keypad(True)
             try:
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_YELLOW, -1)
+                curses.curs_set(0)
             except curses.error:
                 pass
+            if curses.has_colors():
+                try:
+                    curses.start_color()
+                    curses.use_default_colors()
+                    curses.init_pair(1, curses.COLOR_YELLOW, -1)
+                except curses.error:
+                    pass
+        except BaseException:
+            self.__exit__()  # the terminal goes back to normal before the error is reported
+            raise
         return self
 
     def __exit__(self, *exc):
-        curses.noraw()
-        curses.echo()
-        curses.endwin()
+        try:
+            curses.noraw()
+            curses.echo()
+        finally:
+            curses.endwin()
         return False
 
     def suspend(self, action):
@@ -160,12 +169,21 @@ class CursesUI:
         self.put(0, cols - len(right) - 2, right, curses.A_DIM)
         self.put(1, 0, "─" * cols)
         body_top, body_bottom = 2, rows - 4
+        if view.question:
+            # In the body, wrapped: the header has room for the start of a long question only.
+            lines = textwrap.wrap(view.question, cols - 3) or [""]
+            for line in lines[: max(1, body_bottom - body_top - 4)]:
+                self.put(body_top, 1, line, curses.A_BOLD)
+                body_top += 1
+            body_top += 1
         if view.text is not None:
             self.draw_text(view, body_top, body_bottom, cols)
         elif view.input is not None:
-            self.put(body_top, 1, f"{view.crumbs[-1]}:")
+            if not view.question:
+                self.put(body_top, 1, f"{view.crumbs[-1]}:")
+                body_top += 2
             shown = "•" * len(view.input) if view.hidden else view.input
-            self.put(body_top + 2, 3, shown + "▏")
+            self.put(body_top, 3, shown + "▏")
         else:
             self.draw_rows(view, body_top, body_bottom, cols)
         if view.message:
@@ -228,14 +246,197 @@ class CursesUI:
             return key
 
 
+class InlineUI:
+    """One screen drawn below what the terminal already shows, for host.sh's prompts: the question
+    wrapped to the terminal's width, then at most ROWS rows that scroll with the cursor, redrawn in
+    place. Nothing above it is touched (no alternate screen, no clearing), so what the operation
+    printed before the question stays in view. Keys are read raw from /dev/tty; finish() replaces
+    the drawing with one line, the question and its answer."""
+
+    ROWS = 10
+    MIN_ROWS, MIN_COLS = 6, 20
+    ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left"}
+    TILDE = {"5": "pgup", "6": "pgdn", "3": "backspace"}
+    CHARS = {"\r": "enter", "\n": "enter", "\x7f": "backspace", "\b": "backspace", "\x03": "ctrl-c",
+             "\x15": "ctrl-u"}
+    BOLD, DIM, REVERSE, YELLOW, RESET = "\x1b[1m", "\x1b[2m", "\x1b[7m", "\x1b[33m", "\x1b[0m"
+    interactive = True
+
+    def __init__(self, path="/dev/tty"):
+        self.path, self.fd, self.saved, self.height = path, None, None, 0
+
+    def __enter__(self):
+        self.fd = os.open(self.path, os.O_RDWR | os.O_NOCTTY)
+        try:
+            self.saved = termios.tcgetattr(self.fd)
+            mode = termios.tcgetattr(self.fd)
+            # Keys one by one, unechoed, Ctrl-C a key (not a signal), Enter as \r; output as usual.
+            mode[0] &= ~(termios.ICRNL | termios.INLCR | termios.IGNCR | termios.IXON)
+            mode[3] &= ~(termios.ICANON | termios.ECHO | termios.ISIG | termios.IEXTEN)
+            mode[6][termios.VMIN], mode[6][termios.VTIME] = 1, 0
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, mode)
+            self.write("\x1b[?25l")  # the drawn ▏ is the cursor
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if self.saved is not None:
+                self.erase()  # a drawing left by an error goes, so the numbered prompt starts clean
+                self.write("\x1b[?25h")
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        finally:
+            os.close(self.fd)
+        return False
+
+    def suspend(self, action):
+        return action()
+
+    def size(self):
+        try:
+            size = os.get_terminal_size(self.fd)
+            return size.lines, size.columns
+        except OSError:
+            return 24, 80
+
+    def write(self, text):
+        data = text.encode()
+        while data:
+            data = data[os.write(self.fd, data):]
+
+    def erase(self):
+        """Back to the first line of the drawing, and clears from there to the end of the screen."""
+        if self.height:
+            self.write("\r" + (f"\x1b[{self.height - 1}A" if self.height > 1 else "") + "\x1b[J")
+            self.height = 0
+
+    def draw(self, view):
+        lines = self.render(view)
+        self.erase()
+        self.write("\r\n".join(lines))
+        self.height = len(lines)
+
+    def finish(self, text):
+        """Replaces the drawing with `text`, wrapped, and goes to the next line."""
+        width = self.size()[1] - 1
+        self.erase()
+        self.write("\r\n".join(textwrap.wrap(text, width) or [""]) + "\r\n")
+
+    def render(self, view):
+        """The lines of a view, each narrower than the terminal, so that none wraps and erase()
+        knows how many lines to go back."""
+        rows, width = self.size()
+        width -= 1
+
+        def clip(text):
+            return text if len(text) <= width else text[: width - 1] + "…"
+
+        question = view.question or (view.crumbs[-1] if view.crumbs else "")
+        lines = [self.BOLD + line + self.RESET for line in textwrap.wrap(question, width) or [""]]
+        room = max(1, min(self.ROWS, rows - len(lines) - 3))
+        if view.text is not None:
+            text = []
+            for line in view.text.splitlines() or [""]:
+                text += textwrap.wrap(line, width - 2) or [""]
+            start = min(view.scroll, max(0, len(text) - room))
+            lines += ["  " + line for line in text[start:start + room]]
+        elif view.input is not None:
+            shown = "•" * len(view.input) if view.hidden else view.input
+            field = "  › " + shown + "▏"
+            lines.append(field if len(field) <= width else "  …" + field[len(field) - width + 3:])
+        else:
+            if view.filter:
+                lines.append(clip("  ▏" + view.filter))
+            if not view.rows:
+                lines.append(self.DIM + "  (nothing matches)" + self.RESET)
+            start = max(0, min(view.cursor - room + 1, len(view.rows) - room))
+            label_width = min(36, max((len(r.label) for r in view.rows), default=0) + 2)
+            for index, row in enumerate(view.rows[start:start + room], start):
+                selected = index == view.cursor
+                text = f"{'▸ ' if selected else '  '}{row.label:<{label_width}}{row.detail}"
+                if row.note:
+                    text += f"  {row.note}"
+                text = clip(text.rstrip())
+                lines.append(self.REVERSE + text + self.RESET if selected else text)
+        if view.message:
+            lines.append(self.YELLOW + clip(view.message) + self.RESET)
+        keys = (f"{view.cursor + 1}/{len(view.rows)} · " if len(view.rows) > room else "") + view.keys
+        lines.append(self.DIM + clip(keys) + self.RESET)
+        return lines
+
+    def read_byte(self, timeout=None):
+        """One byte from the terminal; None at its end, or when `timeout` (seconds) passes first."""
+        if timeout is not None and not select.select([self.fd], [], [], timeout)[0]:
+            return None
+        byte = os.read(self.fd, 1)
+        return byte or None
+
+    def read_key(self):
+        while True:
+            byte = self.read_byte()
+            if byte is None:
+                return "eof"
+            if byte == b"\x1b":
+                key = self.escape()
+            elif byte[0] >= 0x80:
+                more = 1 if byte[0] >> 5 == 0b110 else 2 if byte[0] >> 4 == 0b1110 else 3
+                rest = b"".join(self.read_byte(0.05) or b"" for _ in range(more))
+                key = (byte + rest).decode("utf-8", "replace")
+            else:
+                char = byte.decode()
+                key = self.CHARS.get(char, char if char.isprintable() else None)
+            if key is not None:
+                return key
+
+    def escape(self):
+        """The key an escape sequence stands for: an arrow, PgUp, PgDn, Delete; a lone ESC is Esc.
+        None for one this prompt has no use for."""
+        start = self.read_byte(0.05)
+        if start is None:
+            return "esc"
+        if start not in (b"[", b"O"):
+            return None  # Alt and a key
+        parameters = b""
+        while True:
+            byte = self.read_byte(0.05)
+            if byte is None:
+                return None
+            if 0x40 <= byte[0] <= 0x7E:
+                break
+            parameters += byte
+        final = byte.decode()
+        if final in self.ARROWS:
+            return self.ARROWS[final]
+        if final == "~":
+            return self.TILDE.get(parameters.decode())
+        return None
+
+
+def fits_inline():
+    size = shutil.get_terminal_size((0, 0))
+    return size.lines >= InlineUI.MIN_ROWS and size.columns >= InlineUI.MIN_COLS
+
+
 def fits():
     size = shutil.get_terminal_size((0, 0))
     return size.lines >= CursesUI.MIN_ROWS and size.columns >= CursesUI.MIN_COLS
 
 
+def has_terminfo():
+    """Whether curses can drive this TERM: a terminal this machine has no terminfo entry for (a new
+    terminal's own TERM over SSH, say) can't have the full screen."""
+    try:
+        curses.setupterm()
+    except curses.error:
+        return False
+    return True
+
+
 def make_ui(ctx):
-    """CursesUI in a terminal big enough for it, else LineUI."""
+    """CursesUI in a terminal big enough for it that curses knows, else LineUI."""
     if sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get("YGG_PLAIN") \
-            and os.environ.get("TERM", "dumb") != "dumb" and fits():
+            and os.environ.get("TERM", "dumb") != "dumb" and fits() and has_terminfo():
         return CursesUI(ctx)
     return LineUI()

@@ -184,6 +184,18 @@ class PromptFallbackTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("terminal", result.stderr)
 
+    def test_given_any_failure_then_prompt_exits_2_for_the_numbered_prompt(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yggcli import prompt, ui
+        err = io.StringIO()
+        with mock.patch.object(prompt, "in_a_terminal", return_value=True), \
+                mock.patch.object(ui.InlineUI, "__enter__", side_effect=OSError(6, "No such device or address")), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(prompt.main(["choose", "Which?", "a", "b"]), 2)
+        self.assertEqual(len(err.getvalue().splitlines()), 1)
+
 
 class InterruptTests(unittest.TestCase):
     def test_ctrl_c_outside_a_command_exits_130_without_a_traceback(self):

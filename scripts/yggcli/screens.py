@@ -32,6 +32,7 @@ class View:
     message: str = ""           # an error or a notice
     input: str | None = None    # a text field's content
     hidden: bool = False        # the text field is a secret
+    question: str = ""          # what a prompt asks, drawn whole (the header cuts a long one short)
 
 
 @dataclasses.dataclass
@@ -187,9 +188,17 @@ class Picker(ListScreen):
 
     keys_hint = "↑↓ move · Enter choose · type to filter or to write a value · ? help · Esc back"
 
-    def __init__(self, crumbs, choices, open=False, check=None, help=""):
+    def __init__(self, crumbs, choices, open=False, check=None, help="", question=None):
         super().__init__()
         self.crumbs, self.choices, self.open, self.check, self.help = tuple(crumbs), choices, open, check, help
+        self.question = self.crumbs[-1] if question is None else question
+        if not open:
+            self.keys_hint = "↑↓ move · Enter choose · type to filter · ? help · Esc back"
+
+    def view(self):
+        view = super().view()
+        view.question = self.question
+        return view
 
     def shortcuts(self):
         return {"?": self.show_help}
@@ -224,7 +233,7 @@ class TextInput(Screen):
     def view(self):
         keys = "type · Enter accept · Ctrl-U clear · Esc cancel"
         return View(list(self.crumbs), input=self.text, hidden=self.hidden, message=self.message,
-                    keys=keys + (" · hidden as you type" if self.hidden else ""))
+                    keys=keys + (" · hidden as you type" if self.hidden else ""), question=self.crumbs[-1])
 
     def key(self, key):
         if isinstance(key, tuple):
@@ -282,8 +291,13 @@ class ConfirmScreen(ListScreen):
 
     def __init__(self, crumbs, question, default=False):
         super().__init__()
-        self.crumbs = tuple(crumbs) + (question,)
+        self.crumbs, self.question = tuple(crumbs) + (question,), question
         self.cursor = 0 if default else 1
+
+    def view(self):
+        view = super().view()
+        view.question = self.question
+        return view
 
     def rows(self):
         return [Row("Yes", value=True), Row("No", value=False)]

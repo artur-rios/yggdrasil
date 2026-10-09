@@ -200,6 +200,69 @@ class CursesUITests(unittest.TestCase):
         self.assertEqual(terminal.read_key(), "esc")
 
 
+    def test_a_failure_after_initscr_ends_curses_before_it_is_raised(self):
+        import curses
+        from unittest import mock
+        from yggcli import ui
+        with mock.patch.object(ui, "curses", wraps=curses) as fake, mock.patch.object(ui.locale, "setlocale"):
+            fake.initscr.return_value = mock.Mock()
+            fake.raw.side_effect = curses.error("raw")
+            for name in ("noecho", "echo", "noraw", "endwin", "curs_set", "has_colors"):
+                setattr(fake, name, mock.Mock())
+            with self.assertRaises(curses.error):
+                ui.CursesUI(None).__enter__()
+            fake.endwin.assert_called_once()
+
+    def test_make_ui_falls_back_to_numbered_lines_without_terminfo(self):
+        import curses
+        from unittest import mock
+        from yggcli import ui
+        with mock.patch.object(ui, "fits", return_value=True), \
+                mock.patch.object(ui.sys, "stdin", mock.Mock(isatty=lambda: True)), \
+                mock.patch.object(ui.sys, "stdout", mock.Mock(isatty=lambda: True)), \
+                mock.patch.dict(ui.os.environ, {"TERM": "xterm-ghostty"}), \
+                mock.patch.object(ui.curses, "setupterm", side_effect=curses.error("setupterm")):
+            ui.os.environ.pop("YGG_PLAIN", None)
+            self.assertIsInstance(ui.make_ui(None), ui.LineUI)
+
+
+class InlineUITests(unittest.TestCase):
+    """What ui.InlineUI draws for a view (the pty tests in test_ygg_tui.py drive it for real)."""
+
+    def render(self, view, rows=30, cols=60):
+        from unittest import mock
+        from yggcli import ui
+        terminal = ui.InlineUI()
+        with mock.patch.object(terminal, "size", return_value=(rows, cols)):
+            return terminal.render(view)
+
+    def plain(self, lines):
+        import re
+        return [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in lines]
+
+    def test_a_hidden_value_is_drawn_as_bullets_and_left_as_hidden(self):
+        from yggcli import prompt
+        screen = screens.TextInput(("Password",), "s3cr3t", hidden=True)
+        lines = self.plain(self.render(screen.view()))
+        self.assertNotIn("s3cr3t", "".join(lines))
+        self.assertIn("••••••", "".join(lines))
+        args = prompt.parser().parse_args(["ask", "Password"])
+        self.assertEqual(prompt.shown(args, screen, "s3cr3t"), "(hidden)")
+
+    def test_a_long_question_wraps_and_the_rows_follow_the_cursor(self):
+        question = "word " * 40
+        picker = screens.Picker((question,), [sources.Choice(f"option-{n}") for n in range(30)])
+        for _ in range(25):
+            picker.key("down")
+        lines = self.plain(self.render(picker.view()))
+        self.assertTrue(all(len(line) < 60 for line in lines))
+        self.assertEqual(" ".join(" ".join(lines).split()).count("word"), 40)
+        options = [line for line in lines if "option-" in line]
+        self.assertEqual(len(options), 10)
+        self.assertIn("▸ option-25", options[-1])
+        self.assertIn("26/30", lines[-1])
+
+
 class FormTests(StoreFixture):
     def form(self, path):
         return screens.FormScreen(self.ctx, ("yggdrasil",), tree.find(path))

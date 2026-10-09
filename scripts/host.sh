@@ -50,24 +50,29 @@ die() { printf '%sygg: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 # local with the caller's variable's name would hide it.
 
 # picker <variable> <kind> <arguments...>: the arrow-key prompt of ygg.py when stdin and stdout are a
-# terminal (it draws on the terminal and answers on fd 3). Status 0 with the answer, 1 when cancelled,
-# 2 when it can't run here: the caller then asks with its numbered prompt.
+# terminal, drawn below the output (it answers on fd 3). Status 0 with the answer, 1 for Esc, 130 for
+# Ctrl-C, 2 when it can't run here or fails in any way: the caller then asks with its numbered prompt.
 picker() {
   local _picker_variable=$1 _picker_answer _picker_status
   shift
   [[ -t 0 && -t 1 && -z "${YGG_PLAIN:-}" ]] || return 2
   _picker_answer=$(python3 "$root/scripts/ygg.py" prompt "$@" 3>&1 1>/dev/tty) && _picker_status=0 || _picker_status=$?
-  ((_picker_status == 0)) && printf -v "$_picker_variable" '%s' "$_picker_answer"
+  case $_picker_status in
+    0) printf -v "$_picker_variable" '%s' "$_picker_answer" ;;
+    1 | 130) ;;
+    *) _picker_status=2 ;;
+  esac
   return "$_picker_status"
 }
 
-# ask <variable> <question> [default]
+# ask <variable> <question> [default]: Esc stops the operation.
 ask() {
   local _answer _status
-  picker _answer ask "$2" --default "${3:-}" && _status=0 || _status=$?
+  picker _answer ask --default="${3:-}" -- "$2" && _status=0 || _status=$?
   case $_status in
     0) printf -v "$1" '%s' "${_answer:-${3:-}}"; return ;;
     1) exit 1 ;;
+    130) exit 130 ;;
   esac
   read -r -p "$2${3:+ [$3]}: " _answer || exit 1
   printf -v "$1" '%s' "${_answer:-${3:-}}"
@@ -91,11 +96,12 @@ ask_match() {
 confirm() {
   local _answer _status _default=()
   [[ "${2:-}" == y ]] && _default=(--yes)
-  picker _answer confirm "$1" "${_default[@]}" && _status=0 || _status=$?
-  if ((_status == 0)); then
-    [[ "$_answer" == y ]]
-    return
-  fi
+  picker _answer confirm "${_default[@]}" -- "$1" && _status=0 || _status=$?
+  case $_status in
+    0) [[ "$_answer" == y ]]; return ;;
+    1) return 1 ;;
+    130) exit 130 ;;
+  esac
   if [[ "${2:-}" == y ]]; then
     read -r -p "$1 [Y/n]: " _answer || exit 1
     [[ -z "$_answer" || "$_answer" == [yY]* ]]
@@ -106,20 +112,21 @@ confirm() {
 }
 
 # choose <variable> <question> <option>...: the chosen option's text. Esc picks the "Back" option
-# when there is one, and stops the operation otherwise.
+# (in any case: `back` too) when there is one, and stops the operation otherwise; Ctrl-C stops it.
 choose() {
   local _variable=$1 _question=$2 _answer _i _status
   shift 2
   (($#)) || die "nothing to choose from: $_question"
-  picker _answer choose "$_question" "$@" && _status=0 || _status=$?
+  picker _answer choose -- "$_question" "$@" && _status=0 || _status=$?
   case $_status in
     0) printf -v "$_variable" '%s' "$_answer"; return ;;
     1)
       for _answer in "$@"; do
-        if [[ "$_answer" == Back ]]; then printf -v "$_variable" '%s' Back; return; fi
+        if [[ "${_answer,,}" == back ]]; then printf -v "$_variable" '%s' "$_answer"; return; fi
       done
       exit 1
       ;;
+    130) exit 130 ;;
   esac
   say "$_question"
   for ((_i = 1; _i <= $#; _i++)); do printf '  %d) %s\n' "$_i" "${!_i}"; done
