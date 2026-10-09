@@ -432,7 +432,28 @@ class FormScreen(ListScreen):
     def set_group(self, members, flag):
         if flag is not CANCEL:
             self.values[members[0].field] = None if flag == "(neither)" else flag
+            if self.secret_chosen():
+                self.hide_assignments()
         return None
+
+    def secret_chosen(self):
+        """Whether the form says --secret (`vars set`): every value it sets is a secret then."""
+        return any(a.flag == "--secret" and self.values.get(a.field) == "--secret" for a in self.target.args)
+
+    def hide_assignments(self):
+        """Turns the KEY=value entries into KEY=-, their values on stdin in the order of the
+        command line, so a value that became a secret leaves the arguments."""
+        hidden, stdin = iter(self.stdin), []
+        for kind, item in self.fields():
+            if kind != "arg" or item.source != "assignment":
+                continue
+            entries = []
+            for entry in self.values.get(item.field) or []:
+                key, _, value = entry.partition("=")
+                stdin.append(next(hidden) if value == "-" else value)
+                entries.append(f"{key}=-")
+            self.values[item.field] = entries
+        self.stdin = stdin
 
     def edit(self, arg, label):
         crumbs = self.crumbs + (label,)
@@ -473,7 +494,7 @@ class FormScreen(ListScreen):
         if key is CANCEL:
             return None
         found = self.stored(key)
-        secret = context.vars_module().is_secret_name(key) or bool(found and found[1])
+        secret = self.secret_chosen() or context.vars_module().is_secret_name(key) or bool(found and found[1])
         default = "" if secret or not found else found[0]
         return self.ask(TextInput(self.crumbs + (key,), default, hidden=secret, check=sources.check_value),
                         lambda value: self.add_assignment(arg, key, value, secret))

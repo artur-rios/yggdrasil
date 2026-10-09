@@ -227,6 +227,33 @@ class FormTests(StoreFixture):
         self.assertEqual(effect.stdin, "n3w\n")
         self.assertNotIn("n3w", " ".join(v.command for v in ui.views))
 
+    def test_with_secret_chosen_first_any_value_is_typed_hidden_and_passed_on_stdin(self):
+        _, ui, runner = drive(self.form(("vars", "set")), [
+            ("text", "scope"), ("text", "heimdall-api@production"),
+            ("text", "--secret | --no-secret"), ("text", "--secret"),
+            ("text", "KEY=value"), ("text", "STRIPE_LIVE_VALUE"), ("text", "sk_live_123"),
+            ("text", "▶ Run")])
+        self.assertTrue(ui.views[-3].hidden)
+        effect = runner.ran[0]
+        self.assertEqual(effect.argv, ["vars", "set", "heimdall-api@production", "STRIPE_LIVE_VALUE=-", "--secret"])
+        self.assertEqual(effect.stdin, "sk_live_123\n")
+        self.assertNotIn("sk_live_123", " ".join(v.command for v in ui.views))
+
+    def test_choosing_secret_after_plain_values_moves_them_to_stdin_in_order(self):
+        _, ui, runner = drive(self.form(("vars", "set")), [
+            ("text", "scope"), ("text", "heimdall-api@production"),
+            ("text", "KEY=value"), ("text", "STRIPE_LIVE_VALUE"), ("text", "sk_live_123"),
+            ("text", "KEY=value"), ("text", "HEIMDALL_MASTER_USER_PASSWORD"), ("text", "n3w"),
+            ("text", "KEY=value"), ("text", "OTHER_VALUE"), ("text", "plain-2"),
+            ("text", "--secret | --no-secret"), ("text", "--secret"),
+            ("text", "▶ Run")])
+        effect = runner.ran[0]
+        self.assertEqual(effect.argv, ["vars", "set", "heimdall-api@production", "STRIPE_LIVE_VALUE=-",
+                                       "HEIMDALL_MASTER_USER_PASSWORD=-", "OTHER_VALUE=-", "--secret"])
+        self.assertEqual(effect.stdin, "sk_live_123\nn3w\nplain-2\n")
+        after = ui.views[ui.views.index(next(v for v in ui.views if "--secret" in v.command)):]
+        self.assertNotIn("sk_live_123", " ".join(v.command + " ".join(r.detail for r in v.rows) for v in after))
+
     def test_a_plain_assignment_offers_the_current_value(self):
         _, ui, runner = drive(self.form(("vars", "set")), [
             ("text", "scope"), ("text", "platform"), ("text", "KEY=value"), ("text", "DOMAIN"), ("text", ""),
