@@ -183,6 +183,8 @@ read it. Changes you don't apply reach the application on its next deploy, from 
 | `ygg help [<command>]`, `ygg version`, `ygg completion bash` | Help and version | |
 
 Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command, a missing argument).
+`ygg env` and `ygg vars` pass their words to `host.sh` and `vars.py`, whose own exit codes apply
+(for `vars`, see [variables.md](variables.md#exit-status-and-environment)).
 
 | Environment variable | Default | What |
 |---|---|---|

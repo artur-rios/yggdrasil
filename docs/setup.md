@@ -381,7 +381,9 @@ Ubuntu or Debian, over SSH.
 On Ubuntu, once 4.1 and 4.2 have cloned your fork, `scripts/ygg.sh install` in it does 1 to 3 and
 the rest of 4, asking before each one, and `scripts/ygg.sh check` covers 5
 ([cli.md](cli.md#check-and-install)). The steps below are what it runs. It also installs the `ygg`
-command; from then on `ygg` works from any directory ([cli.md](cli.md#install)).
+command; from then on `ygg` works from any directory ([cli.md](cli.md#install)). If you did this step by hand,
+`scripts/ygg.sh self-install` installs it; until then, `scripts/ygg.sh` works in place of `ygg` in the
+steps below.
 
 1. **Docker Engine and the Compose plugin.** Follow
    [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) for your distribution:

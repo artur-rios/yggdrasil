@@ -371,7 +371,7 @@ It writes `vars-<UTC timestamp>.db` (a consistent copy, taken while the store is
 `vars-<UTC timestamp>.key`, both `0600`. A weekly cron line, in `/etc/cron.d/yggdrasil-vars`:
 
 ```text
-0 3 * * 0 root /opt/yggdrasil/ygg vars backup /root/yggdrasil-backups
+0 3 * * 0 root /opt/yggdrasil/scripts/ygg vars backup /root/yggdrasil-backups
 ```
 
 Nothing installs it for you. A backup next to the key is as sensitive as the store: keep copies
