@@ -107,5 +107,48 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(self.prompt(["confirm", "Sure?"], b"\x1b"), (0, "n"))
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs a Linux pty")
+class HostShPromptTests(unittest.TestCase):
+    """host.sh's choose, ask and confirm in a terminal: the answer reaches the caller's variable."""
+
+    def test_the_callers_receive_the_answers(self):
+        import subprocess
+        import tempfile
+        host = (SCRIPTS / "host.sh").read_text()
+        start, end = host.index("say() {"), host.index("title() {")
+        prompts = host[host.index("# ---- Prompts"):host.index("# ---- Host facts")]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp, "out")
+            driver = pathlib.Path(tmp, "driver.sh")
+            driver.write_text(
+                "set -euo pipefail\n"
+                f"root={SCRIPTS.parent}\n"
+                "dim='' reset=''\n"
+                + host[start:end]
+                + host[host.index("warn() {"):host.index("\n", host.index("die() {"))]
+                + "\n" + prompts
+                + 'choose c "Pick one?" alpha beta\n'
+                + 'ask a "Name?" dflt\n'
+                + 'if confirm "Sure?"; then y=yes; else y=no; fi\n'
+                + 'if confirm "Really?"; then e=yes; else e=no; fi\n'
+                + 'choose b "Back?" alpha Back\n'
+                + f'printf "%s|%s|%s|%s|%s" "$c" "$a" "$y" "$e" "$b" > {out}\n')
+            env = dict(os.environ, TERM="xterm-256color", ESCDELAY="25", LANG="C.UTF-8")
+            env.pop("YGG_PLAIN", None)
+            pid, fd = pty.fork()
+            if pid == 0:
+                try:
+                    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+                    os.execve("/bin/bash", ["bash", str(driver)], env)
+                finally:
+                    os._exit(127)
+            for question, keys in (("Pick one?", b"beta\r"), ("Name?", b"\x15abc\r"), ("Sure?", b"y"),
+                                   ("Really?", b"\x1b"), ("Back?", b"\x1b")):
+                read_until(fd, question)
+                os.write(fd, keys)
+            self.assertEqual(wait(pid), 0)
+            self.assertEqual(out.read_text(), "beta|abc|yes|no|Back")
+
+
 if __name__ == "__main__":
     unittest.main()

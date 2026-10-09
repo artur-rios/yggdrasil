@@ -53,12 +53,12 @@ die() { printf '%sygg: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 # terminal (it draws on the terminal and answers on fd 3). Status 0 with the answer, 1 when cancelled,
 # 2 when it can't run here: the caller then asks with its numbered prompt.
 picker() {
-  local _variable=$1 _answer _status
+  local _picker_variable=$1 _picker_answer _picker_status
   shift
   [[ -t 0 && -t 1 && -z "${YGG_PLAIN:-}" ]] || return 2
-  _answer=$(python3 "$root/scripts/ygg.py" prompt "$@" 3>&1 1>/dev/tty) && _status=0 || _status=$?
-  ((_status == 0)) && printf -v "$_variable" '%s' "$_answer"
-  return "$_status"
+  _picker_answer=$(python3 "$root/scripts/ygg.py" prompt "$@" 3>&1 1>/dev/tty) && _picker_status=0 || _picker_status=$?
+  ((_picker_status == 0)) && printf -v "$_picker_variable" '%s' "$_picker_answer"
+  return "$_picker_status"
 }
 
 # ask <variable> <question> [default]
