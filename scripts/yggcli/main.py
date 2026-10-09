@@ -38,7 +38,32 @@ def catalog_words(args):
     return words
 
 
+def missing_packages():
+    """The Python packages the catalog and the variables store need that are not installed."""
+    missing = []
+    for module, package in (("yaml", "PyYAML"), ("cryptography", "cryptography")):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(package)
+    return missing
+
+
 def main(argv):
+    try:
+        return run(argv)
+    except ImportError:
+        # The menu, the help and the commands that read the catalog import PyYAML; `check` and
+        # `install` don't, so they can still report and install it.
+        missing = missing_packages()
+        if not missing:
+            raise
+        print(f"ygg: {' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} missing: "
+              "run scripts/ygg.sh install", file=sys.stderr)
+        return 1
+
+
+def run(argv):
     if argv[:1] == ["__complete"]:
         from . import complete
         return complete.main(argv[1:])
@@ -53,7 +78,9 @@ def main(argv):
         rest = argv[1:]
         if "-h" in rest or "--help" in rest:
             from . import tree
-            return tree.print_help(["env"] + [word for word in rest if not word.startswith("-")])
+            # The help of the action the words name: what follows it (an environment) is no command.
+            command, _ = tree.deepest(["env"] + [word for word in rest if not word.startswith("-")])
+            return tree.print_help(list(command.path) if command else ["env"])
         host("env", *rest)
     args = commands.parser().parse_args(argv)
     if args.show_version:

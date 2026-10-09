@@ -82,8 +82,9 @@ def menu(ctx, start=None):
     """The menu, from the top; with start=(application, environment) (`ygg config`), at that
     application's variables, asking for what is not given."""
     from . import ui as terminal, variables
+    top = screens.MenuScreen(ctx)  # before the full screen: it fails here when PyYAML is missing
     with terminal.make_ui(ctx) as ui:
-        application = App(ui, screens.MenuScreen(ctx), Runner(pause=ui.interactive))
+        application = App(ui, top, Runner(pause=ui.interactive))
         if start is not None:
             apps = variables.ApplicationsScreen(ctx, ("yggdrasil", "Applications"))
             application.stack.append(apps)

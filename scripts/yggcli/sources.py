@@ -192,9 +192,12 @@ def default(source, ctx, values, arg):
 
 def checkout_version(directory):
     """<latest tag>-<commit> of a checkout, as Jenkins labels releases (host.sh's checkout_version);
-    '' when it is not a git checkout."""
+    '' when it is not a git checkout, or git is not installed."""
     def git(*arguments):
-        return subprocess.run(["git", "-C", directory, *arguments], capture_output=True, text=True).stdout.strip()
+        try:
+            return subprocess.run(["git", "-C", directory, *arguments], capture_output=True, text=True).stdout.strip()
+        except OSError:
+            return ""
 
     commit = git("rev-parse", "HEAD")[:7]
     if not commit:

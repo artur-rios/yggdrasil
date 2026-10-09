@@ -1,6 +1,9 @@
 """Tests for the command tree (scripts/yggcli/tree.py): parity with the host scripts, the menu
 placement and pick list of every argument, the command lines forms build, confirmations, the help."""
 
+import contextlib
+import io
+import os
 import pathlib
 import re
 import shutil
@@ -68,6 +71,14 @@ class ParityTests(unittest.TestCase):
             if path is None:
                 continue
             self.assertTrue(any(c.path[:len(path)] == path for c in tree.commands_list()), operation)
+
+    def test_vars_py_secret_name_has_the_same_pattern_as_the_script_its_comment_names(self):
+        text = (SCRIPTS / "vars.py").read_text()
+        named = re.search(r"SECRET_NAME in scripts/(\S+?):", text)
+        self.assertIsNotNone(named, "vars.py's SECRET_NAME comment names no script")
+        twin = re.search(r"^SECRET_NAME='(.*)'$", (SCRIPTS / named[1]).read_text(), re.M)
+        self.assertIsNotNone(twin, f"scripts/{named[1]} has no SECRET_NAME")
+        self.assertEqual(twin[1], context.vars_module().SECRET_NAME.pattern)
 
 
 class ArgvTests(unittest.TestCase):
@@ -141,11 +152,22 @@ class HelpTests(unittest.TestCase):
     def test_help_of_a_group_lists_its_commands(self):
         self.assertIn("logs", tree.help_text(("platform",)))
 
+    def print_help(self, topic):
+        """print_help's status and what it printed, kept out of the test run's output."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = tree.print_help(topic)
+        return status, out.getvalue(), err.getvalue()
+
     def test_help_of_an_unknown_command_is_a_usage_error(self):
-        self.assertEqual(tree.print_help(["nope"]), 2)
+        status, _, err = self.print_help(["nope"])
+        self.assertEqual(status, 2)
+        self.assertIn("no command 'nope'", err)
 
     def test_help_topics_written_as_one_word_are_split(self):
-        self.assertEqual(tree.print_help(["vars get"]), 0)
+        status, out, _ = self.print_help(["vars get"])
+        self.assertEqual(status, 0)
+        self.assertIn("usage: ygg vars get", out)
 
 
 class CheckTests(unittest.TestCase):
@@ -243,6 +265,11 @@ class SourceTests(StoreFixture):
         subprocess.run([*git, "tag", "v1.2.3"], check=True)
         commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout[:7]
         self.assertEqual(sources.checkout_version(str(repo)), f"1.2.3-{commit}")
+
+    def test_without_git_a_checkout_has_no_version(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PATH": str(self.dir)}):
+            self.assertEqual(sources.checkout_version(str(self.dir)), "")
 
 
 if __name__ == "__main__":

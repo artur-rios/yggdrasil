@@ -46,7 +46,7 @@ import catalog as catalog_module  # noqa: E402
 
 SCHEMA_VERSION = 1
 KEY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# The same pattern as SECRET_NAME in scripts/ygg.sh: keep the two in step.
+# The same pattern as SECRET_NAME in scripts/host.sh: keep the two in step.
 SECRET_NAME = re.compile(
     r"(^|_)(PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|KEY|CREDENTIALS?)(_PREVIOUS)?$|(^|_)CONNECTION_?STRING$",
     re.IGNORECASE)

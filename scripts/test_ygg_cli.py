@@ -50,6 +50,11 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage: ygg env", result.stdout)
 
+    def test_given_env_help_after_an_environment_then_it_is_that_action_s_help(self):
+        result = self.run_ygg("env", "stop", "production", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: ygg env stop", result.stdout)
+
     def test_given_catalog_environments_then_it_is_catalog_py_output(self):
         expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "environments"],
                                   capture_output=True, text=True).stdout
@@ -180,6 +185,23 @@ class PromptFallbackTests(unittest.TestCase):
         self.assertIn("terminal", result.stderr)
 
 
+class MissingPackagesTests(unittest.TestCase):
+    """Without PyYAML, what needs the catalog says what to install instead of a traceback."""
+
+    def test_given_no_pyyaml_then_the_menu_and_the_help_say_how_to_install_it(self):
+        hidden = pathlib.Path(tempfile.mkdtemp(prefix="ygg-hidden-"))
+        self.addCleanup(shutil.rmtree, hidden, ignore_errors=True)
+        (hidden / "yaml").mkdir()
+        (hidden / "yaml" / "__init__.py").write_text("raise ImportError('hidden by the test')\n")
+        env = dict(os.environ, PYTHONPATH=str(hidden))
+        for arguments in ((), ("help",), ("--help",), ("help", "vars", "get")):
+            result = ygg(*arguments, env=env)
+            self.assertEqual(result.returncode, 1, arguments)
+            self.assertNotIn("Traceback", result.stderr, arguments)
+            self.assertIn("PyYAML is missing", result.stderr, arguments)
+            self.assertIn("ygg.sh install", result.stderr, arguments)
+
+
 class CompletionTests(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(SCRIPTS))
@@ -248,6 +270,18 @@ class SelfInstallTests(unittest.TestCase):
         result = ygg("self-install", env=self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("not a link", result.stderr)
+
+    def test_without_sudo_it_says_so_and_fails(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yggcli import context, install
+        missing = FileNotFoundError(2, "No such file or directory", "sudo")
+        err = io.StringIO()
+        with mock.patch.object(install.subprocess, "run", side_effect=missing), contextlib.redirect_stderr(err):
+            status = install.self_install(context.Context(), environ=self.env)
+        self.assertEqual(status, 1)
+        self.assertIn("sudo", err.getvalue())
 
 
 if __name__ == "__main__":

@@ -47,4 +47,7 @@ def self_install(ctx, environ=None):
     except subprocess.CalledProcessError as error:
         print(f"ygg: {' '.join(error.cmd)} failed (exit {error.returncode})", file=sys.stderr)
         return 1
+    except OSError as error:  # sudo (or ln, tee) is not installed
+        print(f"ygg: can't run {error.filename or 'a command'}: {error.strerror}", file=sys.stderr)
+        return 1
     return 0
