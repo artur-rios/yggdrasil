@@ -184,6 +184,22 @@ class LineUITests(unittest.TestCase):
         self.assertEqual(line.read_key(), "eof")
 
 
+class CursesUITests(unittest.TestCase):
+    def test_a_terminal_too_small_ignores_every_key_but_resize_esc_and_q(self):
+        import curses
+        from unittest import mock
+        from yggcli import ui
+        terminal = ui.CursesUI(None)
+        terminal.window = mock.Mock(getmaxyx=lambda: (5, 30))
+        terminal.draw(screens.View(["yggdrasil"]))  # says the terminal is too small, and nothing else
+        terminal.window.get_wch = mock.Mock(side_effect=["\r", "x", curses.KEY_DOWN, "q"])
+        self.assertEqual(terminal.read_key(), "q")
+        terminal.window.get_wch = mock.Mock(side_effect=["\r", curses.KEY_RESIZE])
+        self.assertEqual(terminal.read_key(), "resize")
+        terminal.window.get_wch = mock.Mock(side_effect=["\r", "\x1b"])
+        self.assertEqual(terminal.read_key(), "esc")
+
+
 class FormTests(StoreFixture):
     def form(self, path):
         return screens.FormScreen(self.ctx, ("yggdrasil",), tree.find(path))

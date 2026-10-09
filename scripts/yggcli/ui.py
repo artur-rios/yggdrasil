@@ -97,6 +97,7 @@ class CursesUI:
 
     def __init__(self, ctx):
         self.ctx, self.window = ctx, None
+        self.too_small = False
 
     def __enter__(self):
         os.environ.setdefault("ESCDELAY", "25")
@@ -149,7 +150,8 @@ class CursesUI:
         window = self.window
         window.erase()
         rows, cols = window.getmaxyx()
-        if rows < self.MIN_ROWS or cols < self.MIN_COLS:
+        self.too_small = rows < self.MIN_ROWS or cols < self.MIN_COLS
+        if self.too_small:
             self.put(0, 0, f"The terminal is too small: the menu needs {self.MIN_COLS}×{self.MIN_ROWS}.", curses.A_BOLD)
             window.refresh()
             return
@@ -215,10 +217,15 @@ class CursesUI:
             except KeyboardInterrupt:
                 return "ctrl-c"
             if isinstance(key, int):
-                if key in self.KEYS:
-                    return self.KEYS[key]
+                if key not in self.KEYS:
+                    continue
+                key = self.KEYS[key]
+            else:
+                key = self.CHARS.get(key, key)
+            # A terminal too small shows no screen, so only what resizes or leaves it acts.
+            if self.too_small and key not in ("resize", "esc", "ctrl-c", "q"):
                 continue
-            return self.CHARS.get(key, key)
+            return key
 
 
 def fits():
