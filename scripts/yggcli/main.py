@@ -39,6 +39,9 @@ def catalog_words(args):
 
 
 def main(argv):
+    if argv[:1] == ["__complete"]:
+        from . import complete
+        return complete.main(argv[1:])
     if argv[:1] == ["prompt"]:
         from . import prompt
         return prompt.main(argv[1:])
@@ -67,6 +70,13 @@ def main(argv):
     if command == "help":
         from . import tree
         return tree.print_help(args.topic)
+    if command == "completion":
+        from . import complete
+        print(complete.script(), end="")
+        return 0
+    if command == "self-install":
+        from . import install
+        return install.self_install(ctx)
     if command in ("status", "check", "install", "add"):
         host(command)
     if command == "config":
@@ -84,5 +94,4 @@ def main(argv):
         _exec(["bash", str(context.SCRIPTS / "platform.sh"), *words])
     if command == "catalog":
         python("catalog.py", *catalog_words(args))
-    print(f"ygg: '{command}' is not available yet", file=sys.stderr)
-    return 1
+    raise AssertionError(f"no dispatch for {command}")  # every command of commands.parser() is handled above

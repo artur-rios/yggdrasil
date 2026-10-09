@@ -346,6 +346,15 @@ check_report() {
     row missing "cryptography" "package python3-cryptography (the variables store needs it)"
     missing_packages+=(python3-cryptography)
   fi
+  local ygg_path
+  ygg_path=$(command -v ygg 2>/dev/null || true)
+  if [[ -n "$ygg_path" && "$(readlink -f "$ygg_path")" == "$(readlink -f "$root/scripts/ygg")" ]]; then
+    row ok "ygg command" "$ygg_path"
+  elif [[ -n "$ygg_path" ]]; then
+    row warn "ygg command" "$ygg_path runs another checkout: scripts/ygg.sh self-install from this one"
+  else
+    row warn "ygg command" "not installed: scripts/ygg.sh self-install"
+  fi
 
   if has docker; then
     row ok "docker" "$(docker --version)"
@@ -547,6 +556,10 @@ install_host() {
   say "A firewall that lets in only SSH, HTTP and HTTPS. For a server; skip it on a laptop or in WSL."
   confirm "Set up ufw?" && setup_firewall && did=1
 
+  if [[ "$(readlink -f "$(command -v ygg 2>/dev/null || echo /nonexistent)")" != "$(readlink -f "$root/scripts/ygg")" ]]; then
+    say "The ygg command ($root/scripts/ygg as /usr/local/bin/ygg) and its tab completion."
+    confirm "Install them?" y && python3 "$root/scripts/ygg.py" self-install && did=1
+  fi
   [[ -n "$did" ]] || say "Nothing installed."
   check_host
 }

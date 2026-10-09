@@ -180,5 +180,75 @@ class PromptFallbackTests(unittest.TestCase):
         self.assertIn("terminal", result.stderr)
 
 
+class CompletionTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        from yggcli import complete, context
+        self.complete = complete
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="ygg-complete-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        v = context.vars_module()
+        v.init(self.dir, confirm=lambda prompt: "saved")
+        with v.Store.open(self.dir) as store:
+            store.set("platform", "DOMAIN", "example.com", None, "set")
+            store.set("app:heimdall-api@production", "HEIMDALL_X", "1", None, "set")
+        self.ctx = context.Context(environ={"YGG_SECRETS_DIR": str(self.dir)})
+
+    def words(self, line):
+        return self.complete.complete(line, self.ctx)
+
+    def test_commands_and_subcommands(self):
+        self.assertIn("vars", self.words("ygg "))
+        self.assertEqual(self.words("ygg va"), ["vars"])
+        self.assertEqual(self.words("ygg vars g"), ["get"])
+        self.assertEqual(self.words("ygg completion "), ["bash"])
+
+    def test_scopes_are_completed_after_the_last_word_break(self):
+        self.assertEqual(self.words("ygg vars get heimdall-api@pr"), ["production"])
+        self.assertIn("production", self.words("ygg vars get heimdall-api@"))
+
+    def test_keys_of_the_scope_typed_before(self):
+        self.assertEqual(self.words("ygg vars get heimdall-api@production "), ["HEIMDALL_X"])
+        self.assertEqual(self.words("ygg vars set platform DOM"), ["DOMAIN="])
+
+    def test_options_and_typed_values(self):
+        self.assertEqual(self.words("ygg vars get platform DOMAIN --re"), ["--reveal"])
+        self.assertEqual(self.words("ygg vars history --limit "), [])
+        self.assertIn("traefik", self.words("ygg platform logs "))
+
+    def test_the_script_is_valid_bash_and_registers_ygg(self):
+        result = ygg("completion", "bash")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("complete -o default -F _ygg ygg", result.stdout)
+        self.assertEqual(subprocess.run(["bash", "-n"], input=result.stdout, text=True).returncode, 0)
+
+    def test_complete_entry_point_prints_one_word_per_line(self):
+        self.assertEqual(ygg("__complete", "ygg vars g").stdout, "get\n")
+
+
+class SelfInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="ygg-install-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        (self.dir / "bin").mkdir()
+        self.env = dict(os.environ, YGG_BIN_DIR=str(self.dir / "bin"), YGG_COMPLETION_DIR=str(self.dir / "completion"))
+
+    def test_it_links_and_writes_then_says_it_is_done(self):
+        first = ygg("self-install", env=self.env)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        link = self.dir / "bin" / "ygg"
+        self.assertEqual(link.resolve(), (SCRIPTS / "ygg").resolve())
+        self.assertIn("complete -o default -F _ygg ygg", (self.dir / "completion" / "ygg").read_text())
+        second = ygg("self-install", env=self.env)
+        self.assertIn("already runs", second.stdout)
+        self.assertIn("up to date", second.stdout)
+
+    def test_a_file_in_the_way_is_not_replaced(self):
+        (self.dir / "bin" / "ygg").write_text("#!/bin/sh\n")
+        result = ygg("self-install", env=self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not a link", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
