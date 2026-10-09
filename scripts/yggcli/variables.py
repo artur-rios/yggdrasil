@@ -400,16 +400,28 @@ class ApplicationsScreen(ListScreen):
 
     def choose(self, row):
         if isinstance(row.value, tree.Command):
+            if row.value.path == ("config",) and self.ctx.has_store():
+                # `ygg config` would open a second menu inside this one: its screen opens here.
+                return self.ask(Picker(self.crumbs + ("config",), sources.choices("host-application", self.ctx, {})),
+                                lambda application: None if application is CANCEL else self.open_app(application))
             return open_command(self.ctx, self.crumbs, row.value)
         return self.open_app(row.value[1])
 
     def open_app(self, application, environment=None):
-        if environment:
-            return self.open_env(application, environment)
-        environments = self.ctx.app_host_environments(application)
+        try:
+            environments = self.ctx.app_host_environments(application)
+        except Exception as error:  # not in the catalog, or the catalog can't be read
+            self.message = str(error)
+            return None
         if not environments:
             self.message = f"{application} deploys to none of this host's environments"
             return None
+        if environment:
+            if environment not in environments:
+                self.message = (f"'{environment}' is not one of {application}'s environments on this host "
+                                f"({', '.join(environments)})")
+                return None
+            return self.open_env(application, environment)
         if len(environments) == 1:
             return self.open_env(application, environments[0])
         choices = [sources.Choice(e, "on demand" if self.ctx.on_demand(e) else "") for e in environments]

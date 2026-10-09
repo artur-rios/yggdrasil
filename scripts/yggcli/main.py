@@ -38,6 +38,17 @@ def catalog_words(args):
     return words
 
 
+def on_this_host(ctx, application, environment):
+    """Whether `ygg config`'s application and environment, those given, are of this host."""
+    if not application:
+        return True
+    try:
+        environments = ctx.app_host_environments(application)
+    except Exception:  # not in the catalog, or the catalog can't be read
+        return False
+    return bool(environments) and (not environment or environment in environments)
+
+
 def missing_packages():
     """The Python packages the catalog and the variables store need that are not installed."""
     missing = []
@@ -110,7 +121,9 @@ def run(argv):
     if command in ("status", "check", "install", "add"):
         host(command)
     if command == "config":
-        if interactive() and ctx.has_store():
+        # The menu's variables screen, for an application and environment of this host; host.sh's
+        # config says why any other is refused.
+        if interactive() and ctx.has_store() and on_this_host(ctx, args.application, args.environment):
             from . import app
             return app.menu(ctx, start=(args.application, args.environment))
         host("config", *[word for word in (args.application, args.environment) if word])

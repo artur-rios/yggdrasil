@@ -134,7 +134,9 @@ When the store can't be read (a lost or wrong key), the screen says why and offe
 ([recovery](variables.md#backup-and-recovery)). The commands, the scopes and the recipes behind the
 screen are in [variables.md](variables.md#commands) and [its recipes](variables.md#recipes).
 
-From the command line, `ygg config <application> <environment>` opens that screen directly.
+From the command line, `ygg config <application> <environment>` opens that screen directly, in a
+terminal (one of them left out is asked). An application or environment that isn't on this host is
+refused, as without a store (exit 1).
 
 ### On a machine without a store
 

@@ -207,6 +207,25 @@ class ApplicationsScreenTests(StoreFixture):
         self.assertEqual((runner.ran[0].program, runner.ran[0].argv), ("host", ["config", "heimdall-api", "production"]))
 
 
+    def test_config_opens_the_variables_screen_in_this_menu(self):
+        _, ui, runner = drive(self.apps(), [("text", "config"), ("text", "heimdall-api"), ("text", "production")])
+        self.assertEqual(runner.ran, [])
+        self.assertIn("HEIMDALL_MASTER_USER_PASSWORD", [r.label for r in ui.views[-1].rows])
+
+    def test_without_a_store_config_is_its_form(self):
+        (self.dir / "vars.db").unlink()
+        application, _, _ = drive(self.apps(), [("text", "config")])
+        self.assertIsInstance(application.stack[-1], screens.FormScreen)
+
+    def test_an_application_or_environment_not_on_this_host_is_refused(self):
+        apps = self.apps()
+        self.assertIsNone(apps.open_app("nope"))
+        self.assertIn("nope", apps.message)
+        self.assertIsNone(apps.open_app("heimdall-api", "nowhere"))
+        self.assertIn("nowhere", apps.message)
+        self.assertIsNone(apps.open_app("heimdall-api", "homologation"))
+        self.assertIn("homologation", apps.message)
+
 class VariablesMenuTests(StoreFixture):
     def test_browse_a_scope_and_the_vars_commands(self):
         menu = variables.VariablesMenu(self.ctx, ("yggdrasil", "Variables and secrets"))

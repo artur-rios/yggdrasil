@@ -37,6 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `scripts/ygg.sh` now runs `ygg` (`scripts/ygg.py`); its operations moved to `scripts/host.sh`. Every existing
   `scripts/ygg.sh` command line works as before, except that an unknown command is now a usage error (exit 2,
   was 1) and `scripts/ygg.sh help` prints `ygg help`.
+- `scripts/ygg.sh config <app> <environment>` (and `ygg config`), in a terminal on a host with a variables store,
+  opens the menu's variables screen of that application instead of the numbered `config` screen. An application or
+  environment that isn't on this host is refused with the same message as before (exit 1); in a pipe, or with
+  `YGG_PLAIN`, and on a host without a store, `config` is the numbered screen as before.
 - [docs/cli.md](docs/cli.md) is rewritten around `ygg`, its menu, the variables screens and tab completion; the
   other docs use `ygg` in their commands.
 

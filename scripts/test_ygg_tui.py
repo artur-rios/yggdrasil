@@ -17,8 +17,8 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 ANSI = re.compile(r"\x1b(\[[0-9;?]*[A-Za-z]|[()][A-Z0-9]|[=>]|O[A-Z])")
 
 
-def spawn(arguments, fd3=None, rows=30, cols=100):
-    env = dict(os.environ, TERM="xterm-256color", ESCDELAY="25", LANG="C.UTF-8")
+def spawn(arguments, fd3=None, rows=30, cols=100, env=None, term="xterm-256color"):
+    env = dict(os.environ, **(env or {}), TERM=term, ESCDELAY="25", LANG="C.UTF-8")
     env.pop("YGG_PLAIN", None)
     pid, fd = pty.fork()
     if pid == 0:
@@ -58,6 +58,15 @@ def wait(pid, timeout=15):
     raise AssertionError("still running")
 
 
+def stop(pid):
+    """Kills what a failed test left running."""
+    try:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+    except (ProcessLookupError, ChildProcessError):
+        pass
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "needs a Linux pty")
 class FullScreenTests(unittest.TestCase):
     def test_the_menu_draws_and_q_quits(self):
@@ -94,6 +103,37 @@ class FullScreenTests(unittest.TestCase):
         os.write(fd, b"q")
         self.assertEqual(wait(pid), 0)
 
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs a Linux pty")
+class ConfigTests(unittest.TestCase):
+    """`ygg config` in a terminal with a store opens the menu, but only for what is on this host."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        sys.path.insert(0, str(SCRIPTS))
+        from yggcli import context
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="ygg-config-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        v = context.vars_module()
+        v.init(self.dir, confirm=lambda prompt: "saved")
+        with v.Store.open(self.dir) as store:
+            store.set("platform", "ENVIRONMENTS", "development,production", None, "set")
+        self.env = {"YGG_SECRETS_DIR": str(self.dir)}
+
+    def refused(self, arguments, message):
+        pid, fd = spawn(["config", *arguments], env=self.env)
+        self.addCleanup(stop, pid)
+        seen = read_until(fd, message)
+        self.assertEqual(wait(pid), 1)
+        self.assertNotIn("Traceback", seen)
+
+    def test_an_unknown_application_is_refused(self):
+        self.refused(["nope"], "'nope' is not an application")
+
+    def test_an_environment_not_on_this_host_is_refused(self):
+        self.refused(["heimdall-api", "nowhere"], "'nowhere' is not an environment of this host")
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "needs a Linux pty")
 class PromptTests(unittest.TestCase):
