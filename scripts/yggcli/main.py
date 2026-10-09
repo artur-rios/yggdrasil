@@ -55,9 +55,8 @@ def main(argv):
     ctx = context.Context()
     command = args.command
     if command is None:
-        from . import tree
-        print(tree.overview(), end="")
-        return 0
+        from . import app
+        return app.menu(ctx)
     if command == "version":
         version, commit = ctx.version()
         print(f"yggdrasil {version} ({commit}) at {ctx.root}")
@@ -68,6 +67,9 @@ def main(argv):
     if command in ("status", "check", "install", "add"):
         host(command)
     if command == "config":
+        if interactive() and ctx.has_store():
+            from . import app
+            return app.menu(ctx, start=(args.application, args.environment))
         host("config", *[word for word in (args.application, args.environment) if word])
     if command == "deploy":
         host("deploy-app", args.environment, args.application, args.app_dir or "", args.version or "",

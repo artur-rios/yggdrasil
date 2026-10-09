@@ -127,5 +127,51 @@ class HelpCommandTests(unittest.TestCase):
         self.assertIn("--reveal", result.stdout)
 
 
+class NumberedMenuTests(unittest.TestCase):
+    """`ygg` without a terminal: the menu as numbered lines, answers read line by line."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        from yggcli import context
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="ygg-menu-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        v = context.vars_module()
+        v.init(self.dir, confirm=lambda prompt: "saved")
+        with v.Store.open(self.dir) as store:
+            store.set("platform", "ENVIRONMENTS", "development,homologation,production", None, "set")
+            store.set("platform", "DOMAIN", "example.com", None, "set")
+            store.set("app:heimdall-api@production", "HEIMDALL_MASTER_USER_PASSWORD", "s3cr3t-value", None, "set")
+        self.env = dict(os.environ, YGG_SECRETS_DIR=str(self.dir), USER="tester")
+        self.env.pop("YGG_ENVIRONMENT", None)
+
+    def menu(self, *lines):
+        return ygg(env=self.env, input="".join(line + "\n" for line in lines))
+
+    def test_a_secret_is_shown_only_when_asked(self):
+        result = self.menu("Applications", "heimdall-api", "production", "HEIMDALL_MASTER_USER_PASSWORD",
+                           "Show value", "", "q")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("s3cr3t-value"), 1)
+        self.assertIn("yggdrasil › Applications › heimdall-api › production", result.stdout)
+
+    def test_a_secret_changed_from_the_menu_never_reaches_the_output(self):
+        result = self.menu("Applications", "heimdall-api", "production", "HEIMDALL_MASTER_USER_PASSWORD",
+                           "Change value", "n3w-value", "1", "q")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("$ ygg vars set heimdall-api@production HEIMDALL_MASTER_USER_PASSWORD=-", result.stdout)
+        self.assertNotIn("n3w-value", result.stdout)
+        got = ygg("vars", "get", "heimdall-api@production", "HEIMDALL_MASTER_USER_PASSWORD", "--reveal", env=self.env)
+        self.assertEqual(got.stdout, "n3w-value\n")
+
+    def test_a_command_form_runs_its_command_line(self):
+        result = self.menu("Variables and secrets", "vars get", "scope", "platform", "key", "DOMAIN", "▶ Run", "", "q")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("$ ygg vars get platform DOMAIN", result.stdout)
+        self.assertIn("example.com", result.stdout)
+
+    def test_end_of_input_leaves_the_menu(self):
+        self.assertEqual(self.menu("Catalog").returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
