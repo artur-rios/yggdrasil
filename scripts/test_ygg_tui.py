@@ -80,6 +80,20 @@ class FullScreenTests(unittest.TestCase):
         os.write(fd, b"q")
         self.assertEqual(wait(pid), 0)
 
+    def test_ctrl_c_at_the_pause_goes_back_to_the_menu(self):
+        pid, fd = spawn([])
+        read_until(fd, "Applications")
+        os.write(fd, b"Help\r")
+        read_until(fd, "completion")
+        os.write(fd, b"version\r")
+        read_until(fd, "Enter to return")
+        os.write(fd, b"\x03")
+        read_until(fd, "Help and version")
+        os.write(fd, b"\x1b")
+        time.sleep(0.2)
+        os.write(fd, b"q")
+        self.assertEqual(wait(pid), 0)
+
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "needs a Linux pty")
 class PromptTests(unittest.TestCase):

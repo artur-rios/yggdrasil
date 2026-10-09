@@ -139,6 +139,51 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(application.stack, [])
 
 
+class RunnerTests(unittest.TestCase):
+    """app.Runner: the command line it runs, and the pause after it, which Ctrl-C ends too."""
+
+    def run_effect(self, effect, pause=True, answer=None):
+        from unittest import mock
+        done = mock.Mock(returncode=3)
+        with mock.patch.object(app.subprocess, "run", return_value=done) as run, \
+                mock.patch("builtins.input", side_effect=answer or [""]) as typed, \
+                mock.patch("builtins.print"):
+            status = app.Runner(pause=pause)(effect, ("yggdrasil", "Host"))
+        return status, run, typed
+
+    def test_a_ygg_command_runs_ygg_py_with_the_crumbs(self):
+        status, run, _ = self.run_effect(screens.Run(["vars", "get", "platform", "DOMAIN"], "x\n"))
+        self.assertEqual(status, 3)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[1:], [str(context.SCRIPTS / "ygg.py"), "vars", "get", "platform", "DOMAIN"])
+        self.assertEqual(run.call_args.kwargs["input"], "x\n")
+        self.assertEqual(run.call_args.kwargs["env"]["YGG_CRUMBS"], "yggdrasil › Host")
+
+    def test_a_host_command_runs_host_sh(self):
+        _, run, _ = self.run_effect(screens.Run(["config", "heimdall-api", "production"], program="host"))
+        self.assertEqual(run.call_args.args[0], ["bash", str(context.SCRIPTS / "host.sh"), "config", "heimdall-api",
+                                                 "production"])
+
+    def test_without_pause_it_does_not_wait(self):
+        _, _, typed = self.run_effect(screens.Run(["version"]), pause=False)
+        typed.assert_not_called()
+
+    def test_ctrl_c_at_the_pause_returns_to_the_menu(self):
+        status, _, typed = self.run_effect(screens.Run(["version"]), answer=KeyboardInterrupt)
+        typed.assert_called_once()
+        self.assertEqual(status, 3)
+
+
+class LineUITests(unittest.TestCase):
+    def test_ctrl_c_at_a_numbered_prompt_goes_back_and_end_of_input_leaves(self):
+        from unittest import mock
+        from yggcli import ui
+        stdin = mock.Mock(isatty=lambda: False, readline=mock.Mock(side_effect=[KeyboardInterrupt, ""]))
+        line = ui.LineUI(stdin=stdin, stdout=mock.Mock())
+        self.assertEqual(line.read_key(), "esc")
+        self.assertEqual(line.read_key(), "eof")
+
+
 class FormTests(StoreFixture):
     def form(self, path):
         return screens.FormScreen(self.ctx, ("yggdrasil",), tree.find(path))

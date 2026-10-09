@@ -40,6 +40,8 @@ class Runner:
                 input("Enter to return to the menu ")
             except EOFError:
                 pass
+            except KeyboardInterrupt:  # Ctrl-C at the pause returns too: the menu stays
+                print(flush=True)
         return status
 
 

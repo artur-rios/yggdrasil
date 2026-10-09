@@ -185,6 +185,17 @@ class PromptFallbackTests(unittest.TestCase):
         self.assertIn("terminal", result.stderr)
 
 
+class InterruptTests(unittest.TestCase):
+    def test_ctrl_c_outside_a_command_exits_130_without_a_traceback(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yggcli import main
+        with mock.patch.object(main, "run", side_effect=KeyboardInterrupt), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main.main([]), 130)
+
+
 class MissingPackagesTests(unittest.TestCase):
     """Without PyYAML, what needs the catalog says what to install instead of a traceback."""
 

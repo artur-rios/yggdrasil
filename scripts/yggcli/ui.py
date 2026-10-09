@@ -60,13 +60,19 @@ class LineUI:
 
     def read_key(self):
         view = self.view
-        if view is not None and view.hidden and self.stdin.isatty():
-            line = getpass.getpass("")
-        else:
-            line = self.stdin.readline()
-            if line == "":
-                return "eof"
-            line = line.rstrip("\n")
+        try:
+            if view is not None and view.hidden and self.stdin.isatty():
+                line = getpass.getpass("")
+            else:
+                line = self.stdin.readline()
+                if line == "":
+                    return "eof"
+                line = line.rstrip("\n")
+        except KeyboardInterrupt:  # Ctrl-C at a numbered prompt goes back, as Esc does
+            self.say()
+            return "esc"
+        except EOFError:
+            return "eof"
         if view is not None and view.text is not None:
             return "esc"
         if view is not None and view.input is not None:

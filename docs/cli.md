@@ -69,7 +69,7 @@ keys of the screen.
 | Backspace | Edits the filter; in a form, with the filter empty, clears the field under the cursor |
 | `?` | The help of the screen or command (its full `--help`) |
 | `q` | Quits (outside a text field) |
-| Ctrl-C | Stops the command that is running, not the menu |
+| Ctrl-C | Stops the command that is running, not the menu. At the pause after a command it returns to the menu; in the numbered menu it goes back, as Esc does |
 
 The top menu groups the commands by task:
 

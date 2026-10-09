@@ -52,6 +52,9 @@ def missing_packages():
 def main(argv):
     try:
         return run(argv)
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        return 130
     except ImportError:
         # The menu, the help and the commands that read the catalog import PyYAML; `check` and
         # `install` don't, so they can still report and install it.
