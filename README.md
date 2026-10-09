@@ -13,7 +13,7 @@ like) in one catalog file. yggdrasil then:
 - **Rolls back** to the previous image when a deploy doesn't become healthy.
 - **Serves applications** behind Traefik with Let's Encrypt wildcard certificates (DNS-01, any DNS provider).
 - **Monitors everything**: Prometheus metrics and Loki logs, in Grafana.
-- **Runs environments on demand**: development and homologation can stay stopped until someone uses them (`scripts/ygg.sh env start development`), next to an always-on production.
+- **Runs environments on demand**: development and homologation can stay stopped until someone uses them (`ygg env start development`), next to an always-on production.
 - **Shows it all in a console** for the web, Windows and Android. Each system has a status per environment; expand it to see each application's health, version, commit, deploy time and container state.
 
 Adding an application, an environment or a whole system is a catalog entry, not a change to the platform.
@@ -173,8 +173,9 @@ first release. In short:
 | **Hosts** | Bring up the controller host (in the default setup, the one VPS), any other host, then the application env files | [8–11](docs/setup.md#8-prepare-every-host) |
 | **Finish** | Apply the GitHub rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-github-rules) |
 
-On an Ubuntu host, [`scripts/ygg.sh`](docs/cli.md) does the host steps from a menu: it installs
-the tools, sets up applications, shows what runs and changes their configuration.
+On an Ubuntu host, [`ygg`](docs/cli.md) does the host steps, as a command or from an arrow-key
+menu: it installs the tools, sets up and deploys applications, shows what runs, and shows, changes
+and rolls back each application's variables and secrets (`scripts/ygg.sh self-install` installs it).
 
 [docs/examples/docker-desktop-and-vps](docs/examples/docker-desktop-and-vps/README.md) is the
 default setup worked through on real hardware:
@@ -188,8 +189,9 @@ default setup worked through on real hardware:
 |---|---|
 | `catalog.yaml` | Environments, systems and applications: what everything else reads |
 | `stacks/` | Per-application Compose files and overlays: `<app>.proxy.yml`, `<app>.ports.yml`, optional `<app>.<environment>.yml` |
-| `scripts/ygg.sh` | The host helper: a menu to install the tools, set up an application, see what runs, change an application's configuration and start or stop an on-demand environment ([docs/cli.md](docs/cli.md)) |
-| `scripts/vars.py` | The variables store: layers, references, encryption, history, import and backup, behind `scripts/ygg.sh vars` ([docs/variables.md](docs/variables.md)) |
+| `scripts/ygg.py`, `scripts/yggcli/` | `ygg`, the host's command line app: commands, an arrow-key menu where every command and option is too, tab completion ([docs/cli.md](docs/cli.md)). `scripts/ygg` is the launcher `/usr/local/bin/ygg` links to; `scripts/ygg.sh` runs it for older command lines |
+| `scripts/host.sh` | The host operations `ygg` runs: check, install, add an application, status, configuration, deploys, environments |
+| `scripts/vars.py` | The variables store: layers, references, encryption, history, import and backup, behind `ygg vars` ([docs/variables.md](docs/variables.md)) |
 | `scripts/deploy.sh` | Build, label, deploy, health-wait and roll back one application in one environment, as the Compose project `<application>-<environment>`. Jenkins runs it; so can you |
 | `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
 | `scripts/platform.sh` | Brings a host's platform up or down: one per host, for all its environments |
@@ -209,13 +211,14 @@ default setup worked through on real hardware:
 |---|---|
 | Release an application | `git switch -c release/1.4.0 develop && git push -u origin release/1.4.0`, then open the PR into `main` |
 | Deploy by hand | `scripts/deploy.sh <environment> <application> <checkout> <version>` on the environment's host, or "Build with Parameters" → `DEPLOY_TO` in Jenkins for `branch` environments and `manual` ones that set an `agent` (an on-demand environment is left running) |
-| Use an on-demand environment | `scripts/ygg.sh env start development` on its host, then `env stop development` when done. Jenkins keeps deploying to it while it is stopped, and leaves it stopped ([setup.md](docs/setup.md#on-demand-environments)) |
-| See which environments are on | `scripts/ygg.sh env status`, or the console |
-| Add an application, environment or system | `scripts/ygg.sh add` for an application ([docs/cli.md](docs/cli.md#set-up-an-application)); [docs/setup.md#adding-things](docs/setup.md#adding-things) for all three |
-| See what runs on a host | `scripts/ygg.sh status`: every environment of the host |
-| Change an application's variables and redeploy it | `scripts/ygg.sh config <application> <environment>` |
-| Set or read a variable | `scripts/ygg.sh vars set heimdall-api@development KEY=value` (`KEY=-` types it hidden); `vars list heimdall-api@development --resolved` ([docs/variables.md](docs/variables.md)) |
-| See who changed a variable, or undo it | `scripts/ygg.sh vars history`, then `vars rollback <id>` |
+| Use an on-demand environment | `ygg env start development` on its host, then `env stop development` when done. Jenkins keeps deploying to it while it is stopped, and leaves it stopped ([setup.md](docs/setup.md#on-demand-environments)) |
+| See which environments are on | `ygg env status`, or the console |
+| Add an application, environment or system | `ygg add` for an application ([docs/cli.md](docs/cli.md#set-up-an-application)); [docs/setup.md#adding-things](docs/setup.md#adding-things) for all three |
+| See what runs on a host | `ygg status`: every environment of the host |
+| Change an application's variables and redeploy it | `ygg config <application> <environment>` |
+| Set or read a variable | `ygg vars set heimdall-api@development KEY=value` (`KEY=-` types it hidden); `vars list heimdall-api@development --resolved` ([docs/variables.md](docs/variables.md)) |
+| Read a secret | `ygg vars get heimdall-api@production KEY --reveal`, or `ygg` › Applications › heimdall-api › production › the variable › Show value |
+| See who changed a variable, or undo it | `ygg vars history`, then `vars rollback <id>` |
 | Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
 | Change GitHub rules | `python3 github/rulesets.py --dry-run`, then without |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |
@@ -226,7 +229,8 @@ Upgrading an existing installation from one release to the next is described in
 [CHANGELOG.md](./CHANGELOG.md), under each release that asks something of the operator: from 0.4
 to 0.5 (several environments per host), see
 [Upgrading from 0.4 to 0.5](./CHANGELOG.md#upgrading-from-04-to-05); from 0.5 to 0.6 (the variables store, optional), see
-[Upgrading from 0.5 to 0.6](./CHANGELOG.md#upgrading-from-05-to-06).
+[Upgrading from 0.5 to 0.6](./CHANGELOG.md#upgrading-from-05-to-06); from 0.6 to 0.7 (the `ygg` command), see
+[Upgrading from 0.6 to 0.7](./CHANGELOG.md#upgrading-from-06-to-07).
 
 ## Changelog
 

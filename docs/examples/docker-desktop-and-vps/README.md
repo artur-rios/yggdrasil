@@ -170,19 +170,19 @@ cp /opt/yggdrasil/docs/examples/docker-desktop-and-vps/env/development/heimdall-
 chmod 640 /etc/yggdrasil/*/*.env
 ```
 
-`scripts/ygg.sh config <application> <environment>` opens one of them, and redeploys after a change
-([cli.md](../../cli.md#change-the-configuration)).
+`ygg config <application> <environment>` opens one of them, and redeploys after a change
+([cli.md](../../cli.md#on-a-machine-without-a-store)).
 
 **With the variables store** ([variables.md](../../variables.md)), the same templates are `vars import`
 input and nothing is copied into `/etc/yggdrasil` by hand. On the VPS, once:
 
 ```bash
 cd /opt/yggdrasil
-scripts/ygg.sh vars init                  # prints the key: store it in your password manager
+ygg vars init                  # prints the key: store it in your password manager
 e=docs/examples/docker-desktop-and-vps/env
-scripts/ygg.sh vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
-scripts/ygg.sh vars import heimdall-ui@development  $e/development/heimdall-ui.env.example
-scripts/ygg.sh vars edit heimdall-api@development    # fill in DB_PASSWORD and the secrets
+ygg vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
+ygg vars import heimdall-ui@development  $e/development/heimdall-ui.env.example
+ygg vars edit heimdall-api@development    # fill in DB_PASSWORD and the secrets
 # ... and so on for each application and environment
 ```
 
@@ -193,8 +193,8 @@ applications). fortuna-api's `FORTUNA_AUTH_TOKEN_SECRET` is heimdall-api's
 `HEIMDALL_AUTH_TOKEN_SECRET` of the same environment, so it becomes a reference instead of a copy:
 
 ```bash
-scripts/ygg.sh vars set fortuna-api@development FORTUNA_AUTH_TOKEN_SECRET='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
-scripts/ygg.sh vars list fortuna-api@development --resolved
+ygg vars set fortuna-api@development FORTUNA_AUTH_TOKEN_SECRET='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
+ygg vars list fortuna-api@development --resolved
 ```
 
 ## Local: Docker Desktop
@@ -271,11 +271,11 @@ Each system is an API plus a Flutter web UI:
 
 | Task | How |
 |---|---|
-| Work on `develop` | `scripts/ygg.sh env start development` on the VPS, then use `https://heimdall-dev.example.com` |
-| Test a release | Push `release/x.y.z`, then `scripts/ygg.sh env start homologation` |
+| Work on `develop` | `ygg env start development` on the VPS, then use `https://heimdall-dev.example.com` |
+| Test a release | Push `release/x.y.z`, then `ygg env start homologation` |
 | Try a branch Jenkins doesn't deploy by itself | In Jenkins, the application's job → the branch (`develop`, `release/*` or `main`) → **Build with Parameters** → `DEPLOY_TO` `development`: deploys it and leaves development running |
-| Done for now | `scripts/ygg.sh env stop development` (or `homologation`) |
-| See what is on | `scripts/ygg.sh env status`, or the console |
+| Done for now | `ygg env stop development` (or `homologation`) |
+| See what is on | `ygg env status`, or the console |
 
 What Jenkins does meanwhile:
 

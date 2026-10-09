@@ -380,7 +380,8 @@ Ubuntu or Debian, over SSH.
 
 On Ubuntu, once 4.1 and 4.2 have cloned your fork, `scripts/ygg.sh install` in it does 1 to 3 and
 the rest of 4, asking before each one, and `scripts/ygg.sh check` covers 5
-([cli.md](cli.md#check-and-install)). The steps below are what it runs.
+([cli.md](cli.md#check-and-install)). The steps below are what it runs. It also installs the `ygg`
+command; from then on `ygg` works from any directory ([cli.md](cli.md#install)).
 
 1. **Docker Engine and the Compose plugin.** Follow
    [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) for your distribution:
@@ -600,11 +601,11 @@ Leave the agent section for 9.5.
 move them into the encrypted store, which becomes their only source (skip this to keep the files):
 
 ```bash
-/opt/yggdrasil/scripts/ygg.sh vars init          # prints the key: store it in your password manager, then type saved
-/opt/yggdrasil/scripts/ygg.sh vars import --all  # platform.env, acme.env and any application env files; renames them *.env.imported
+ygg vars init          # prints the key: store it in your password manager, then type saved
+ygg vars import --all  # platform.env, acme.env and any application env files; renames them *.env.imported
 ```
 
-Change a value later with `scripts/ygg.sh vars set platform KEY=value` (or `vars edit platform`),
+Change a value later with `ygg vars set platform KEY=value` (or `vars edit platform`),
 and delete the `*.env.imported` files once `platform.sh up` has worked. The check below works
 either way. Check the settings:
 
@@ -685,8 +686,8 @@ no agent for them: leave `COMPOSE_PROFILES=jenkins`.
 For each other host, prepared as in step 8, once the controller is up (step 9). The default layout
 has none: its one VPS is the controller host, so skip to the `ports` environments below. Another
 host's env files are simpler, because the controller is elsewhere. Each host has its own variables
-store, if you use one: after filling in the files, `scripts/ygg.sh vars init` and
-`scripts/ygg.sh vars import --all` there, as in [9.2](#92-the-env-files-first-pass).
+store, if you use one: after filling in the files, `ygg vars init` and
+`ygg vars import --all` there, as in [9.2](#92-the-env-files-first-pass).
 
 - `acme.env`: the DNS credential, as in 9.2.
 - `platform.env`:
@@ -746,19 +747,19 @@ applications or environments is defined once.
 
 ```bash
 cd /opt/yggdrasil
-scripts/ygg.sh vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
-scripts/ygg.sh vars set heimdall-api@development DB_PASSWORD=-       # typed hidden
-scripts/ygg.sh vars set @development DB_HOST=postgres.example.com    # shared by every application of development
-scripts/ygg.sh vars edit heimdall-api@development                    # or all of it in $EDITOR
+ygg vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
+ygg vars set heimdall-api@development DB_PASSWORD=-       # typed hidden
+ygg vars set @development DB_HOST=postgres.example.com    # shared by every application of development
+ygg vars edit heimdall-api@development                    # or all of it in $EDITOR
 ```
 
 `<application>@<environment>` is one application in one environment, `@<environment>` all of an
 environment, `<application>` one application everywhere ([scopes](variables.md#scopes-and-layers)).
-`scripts/ygg.sh config <application> <environment>` and `add` use the store too. The rest of this
+`ygg config <application> <environment>` and `add` use the store too. The rest of this
 step describes what goes in; the files below are for a host without a store.
 
-`scripts/ygg.sh config <application> <environment>` creates a missing file from the stack files and
-opens it ([cli.md](cli.md#change-the-configuration)). By hand:
+`ygg config <application> <environment>` creates a missing file from the stack files and
+opens it ([cli.md](cli.md#on-a-machine-without-a-store)). By hand:
 
 ```bash
 install -d -m 2750 /etc/yggdrasil/<environment>
@@ -847,7 +848,7 @@ git switch -c release/0.1.0 && git push -u origin release/0.1.0
 1. Environments whose `branches` match `release/*` deploy it (homologation, in the default
    catalog). Follow it in Jenkins, in the application's job, on the `release/0.1.0` branch. An
    on-demand environment that is stopped is stopped again once the new version is healthy: run
-   `scripts/ygg.sh env start homologation` on its host to try it
+   `ygg env start homologation` on its host to try it
    ([On-demand environments](#on-demand-environments)).
 2. Open the pull request `release/0.1.0 → main`. Once its checks pass, Jenkins deploys it to each
    release environment in order, asking for approval where the catalog says so (**Deploy** in the
@@ -892,9 +893,9 @@ An environment with `onDemand: true` (development and homologation in the defaul
 only while someone uses it. On its host:
 
 ```bash
-scripts/ygg.sh env start development     # starts every application of development
-scripts/ygg.sh env stop development      # stops them again
-scripts/ygg.sh env status                # which environments of this host are on
+ygg env start development     # starts every application of development
+ygg env stop development      # stops them again
+ygg env status                # which environments of this host are on
 ```
 
 | | While it is stopped | While it is on |
@@ -910,7 +911,7 @@ Details: [cli.md](cli.md#start-and-stop-environments).
 
 ### An application
 
-`scripts/ygg.sh add` does 1, 2 and 4 on the host you run it on, and prints the rest
+`ygg add` does 1, 2 and 4 on the host you run it on, and prints the rest
 ([cli.md](cli.md#set-up-an-application)).
 
 1. **Catalog:** add it under its system (or a new system) in `catalog.yaml`: `id`, `kind`, `health`, and if they apply `host`, `metrics` and `checks`. Add `environments` only if it doesn't deploy everywhere.
@@ -981,7 +982,7 @@ A service's log: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, e.g. `yggd
 | A new application or environment doesn't appear in Jenkins or the console | The containers still see the old catalog: restart them as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog) |
 | `deploy: missing or unreadable env file ...` | The application's env file isn't at `/etc/yggdrasil/<environment>/<application>.env`, or the agent can't read it: the directories must be group `docker` with mode `2750`, the file `640` ([8.4](#8-prepare-every-host), [11](#11-application-env-files)) |
 | A **Build with Parameters → `DEPLOY_TO`** build waits forever | The `manual` environment has no `agent` in the catalog, so Jenkins has no node for it. Set `agent`, or deploy it by hand with `scripts/deploy.sh` |
-| An application is `stopped` right after a Jenkins deploy | Expected in an on-demand environment that was stopped: the deploy checked the new version and stopped it again. `scripts/ygg.sh env start <environment>` ([On-demand environments](#on-demand-environments)) |
+| An application is `stopped` right after a Jenkins deploy | Expected in an on-demand environment that was stopped: the deploy checked the new version and stopped it again. `ygg env start <environment>` ([On-demand environments](#on-demand-environments)) |
 | `YGG_ENVIRONMENT is set by scripts/deploy.sh` from `docker compose` | A stack's proxy overlay used without `deploy.sh`, which exports it. Deploy with `deploy.sh`, or export `YGG_ENVIRONMENT=<environment>` and `-p <application>-<environment>` |
 | After upgrading from 0.4, Traefik routes an application to the old container, or a deploy fails on a name already in use | The project from before 0.5 (`<application>`, without the environment) still runs: `docker compose -p <application> down` ([CHANGELOG, Upgrading from 0.4 to 0.5](../CHANGELOG.md#upgrading-from-04-to-05)) |
 | `deploy/<environment>` never appears on the pull request | The release environment's agent is offline, or a GitHub check never finishes (a path-filtered workflow in `checks`) |

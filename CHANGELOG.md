@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`ygg`, the host's command line app** ([docs/cli.md](docs/cli.md)). Every command of the host scripts
+  (`host.sh`, `vars.py`, `platform.sh`, `deploy.sh`, `catalog.py`'s read commands) is a `ygg` command and is in
+  an arrow-key menu: forms built from the commands' own options, pick lists of applications, environments,
+  scopes and keys (or type a value), the command line shown as you fill a form, confirmation before deleting
+  or stopping, help on `?`. Without a terminal the menu is numbered lines.
+- **An application's variables and secrets in the menu**: Applications › `<app>` › `<environment>` lists them
+  with the scope each comes from; select one to show its value (drawn, never printed), change it (hidden for a
+  secret, in the scope you choose), mark it secret, remove it, or roll back one of its changes.
+- `ygg self-install` (also offered by `ygg install`) links `/usr/local/bin/ygg` and installs bash tab
+  completion (`ygg completion bash`) of commands, options, applications, environments, scopes and keys.
+- `ygg deploy <environment> <app> [<app-dir>] [<version>] [--leave-running]`, `ygg platform ...`,
+  `ygg catalog ...`, `ygg version`, `ygg help [<command>]`. Without a terminal, `ygg deploy` does not ask and
+  does not leave a stopped on-demand application running unless `--leave-running` is given.
+- The bash prompts of `add`, `config` and `status` use the same arrow-key picker in a terminal. In them, Esc
+  goes back where there is a **Back** option, stops the operation on any other choice, and answers no to a
+  yes/no question. `YGG_PLAIN` (any value) forces plain numbered prompts.
+
 ### Changed
 
 - `vars.py --help` (and `scripts/ygg.sh vars` with no command) explains every command, the scopes, examples, exit
@@ -15,6 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   application gets, add a hidden secret, rotate a signing secret, share a value, references, undo a change), the
   `render` commands, and the exact messages for a missing, damaged or foreign key. [docs/cli.md](docs/cli.md) gains
   a command summary of `ygg.sh vars`.
+- `scripts/ygg.sh` now runs `ygg` (`scripts/ygg.py`); its operations moved to `scripts/host.sh`. Every existing
+  `scripts/ygg.sh` command line works as before, except that an unknown command is now a usage error (exit 2,
+  was 1) and `scripts/ygg.sh help` prints `ygg help`.
+- [docs/cli.md](docs/cli.md) is rewritten around `ygg`, its menu, the variables screens and tab completion; the
+  other docs use `ygg` in their commands.
+
+### Upgrading from 0.6 to 0.7
+
+Nothing breaks and nothing is required, but each host that runs the helper gains from one step:
+
+1. Update the checkout (`/opt/yggdrasil`) and run `scripts/ygg.sh self-install` once. It links
+   `/usr/local/bin/ygg` to the checkout and installs bash tab completion for new shells. `ygg version` shows
+   what is installed; `ygg check` warns when `ygg` is missing or points at another checkout.
+2. Scripts that call `scripts/ygg.sh` keep working. If one tests for exit status 1 on an unknown command, it
+   gets 2 now, and if one reads `scripts/ygg.sh help`, it gets `ygg help`'s text.
+
+No container is touched and no variable or env file changes.
 
 ## [0.6.1] - 2026-10-08
 
