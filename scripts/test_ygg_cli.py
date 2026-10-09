@@ -173,5 +173,12 @@ class NumberedMenuTests(unittest.TestCase):
         self.assertEqual(self.menu("Catalog").returncode, 0)
 
 
+class PromptFallbackTests(unittest.TestCase):
+    def test_given_no_terminal_then_prompt_refuses_with_2(self):
+        result = ygg("prompt", "choose", "Which?", "a", "b")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("terminal", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

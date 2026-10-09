@@ -39,6 +39,9 @@ def catalog_words(args):
 
 
 def main(argv):
+    if argv[:1] == ["prompt"]:
+        from . import prompt
+        return prompt.main(argv[1:])
     if argv[:1] in (["-h"], ["--help"]):
         argv = ["help"]
     if argv[:1] == ["vars"]:
