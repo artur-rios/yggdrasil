@@ -64,12 +64,35 @@ class VariablesScreenTests(StoreFixture):
         self.assertIn("+ Add a variable", rows)
 
     def test_r_reveals_and_hides_every_secret(self):
+        self.ctx.full_screen = True
         screen = self.screen()
         screen.key("r")
         self.assertIn("s3cr3t-value", {r.label: r for r in screen.view().rows}["HEIMDALL_MASTER_USER_PASSWORD"].detail)
         self.assertIn("--reveal", screen.view().command)
         screen.key("r")
         self.assertNotIn("s3cr3t-value", {r.label: r for r in screen.view().rows}["HEIMDALL_MASTER_USER_PASSWORD"].detail)
+
+    def test_in_the_numbered_menu_show_value_says_it_prints_and_r_asks_first(self):
+        self.ctx.full_screen = False
+        screen = self.screen()
+        _, ui, _ = drive(screen, [("text", "HEIMDALL_MASTER_USER_PASSWORD")])
+        row = next(r for r in ui.views[-1].rows if r.label == "Show value")
+        self.assertIn("prints", row.detail)
+        self.assertNotIn("on this screen only", row.detail)
+        for answer, revealed in (("No", False), ("Yes", True)):
+            screen = self.screen()
+            _, ui, _ = drive(screen, ["r", ("text", answer)])
+            self.assertIn("scrollback", ui.views[1].crumbs[-1])
+            self.assertEqual(screen.reveal, revealed)
+        history = variables.HistoryScreen(self.ctx, ("h",), ["heimdall-api@production"], None)
+        drive(history, ["r", ("text", "No")])
+        self.assertFalse(history.reveal)
+
+    def test_full_screen_show_value_is_drawn_on_this_screen_only(self):
+        self.ctx.full_screen = True
+        _, ui, _ = drive(self.screen(), [("text", "HEIMDALL_MASTER_USER_PASSWORD")])
+        row = next(r for r in ui.views[-1].rows if r.label == "Show value")
+        self.assertIn("on this screen only", row.detail)
 
     def test_show_value_draws_the_secret_and_runs_nothing(self):
         _, ui, runner = drive(self.screen(), [("text", "HEIMDALL_MASTER_USER_PASSWORD"), ("text", "Show value")])

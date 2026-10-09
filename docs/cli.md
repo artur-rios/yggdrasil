@@ -115,16 +115,16 @@ Select a variable for its actions:
 
 | Action | Does | Command line |
 |---|---|---|
-| **Show value** | Shows the value on the screen until you press a key. It is drawn, not printed, so it stays out of the terminal's scrollback | `ygg vars get <scope> KEY --reveal` |
+| **Show value** | Shows the value on the screen until you press a key. It is drawn, not printed, so it stays out of the terminal's scrollback. The numbered menu (no terminal, or `YGG_PLAIN`) can only print it, and the row says so | `ygg vars get <scope> KEY --reveal` |
 | **Change value** | A secret is typed hidden; another value starts from the current one. Then where: this application in this environment (the default), the application in every environment, or the environment's shared scope. For a value it inherits, the first choice changes the shared value and another overrides it for this application only | `ygg vars set <scope> KEY=-` (the value on stdin) |
 | **Mark as secret / not secret** | Masks the value or stops masking it | `ygg vars set <scope> KEY=- --secret` |
 | **Remove** | Deletes it from the scope it comes from, after you confirm | `ygg vars unset <scope> KEY` |
 | **History** | Its changes; select one to roll it back (`--force` when it changed again since) | `ygg vars history`, `ygg vars rollback <id>` |
 | **Copy command** | The command lines for this variable, to paste in a script | |
 
-On the list, `r` reveals or hides every secret, `e` edits the scope in `$EDITOR`
-(`ygg vars edit`), `h` shows the history, `+ Add a variable` asks the name, secret or not, the
-value and where, and `d` (also **Deploy** once something changed) redeploys the application so the
+On the list, `r` reveals or hides every secret (the numbered menu asks first, as it prints them),
+`e` edits the scope in `$EDITOR` (`ygg vars edit`), `h` shows the history, `+ Add a variable` asks
+the name, secret or not, the value and where, and `d` (also **Deploy** once something changed) redeploys the application so the
 changes reach it. An application with no variables yet offers to create them from its stack files,
 as `add` does. **Variables and secrets › Browse a scope** opens the same screen for any scope
 (`platform`, `@production`, ...).

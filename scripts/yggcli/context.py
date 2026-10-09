@@ -34,6 +34,9 @@ class Context:
         self.host_env = environ.get("YGG_ENVIRONMENT", "")
         self._catalog = None
         self._version = None
+        # Whether the menu draws full screen, where a value shown is gone with the screen; the
+        # numbered menu prints it, and the terminal's scrollback keeps it. Set by app.menu.
+        self.full_screen = False
 
     # ---- The catalog
 

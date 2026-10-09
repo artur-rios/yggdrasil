@@ -86,6 +86,7 @@ def menu(ctx, start=None):
     from . import ui as terminal, variables
     top = screens.MenuScreen(ctx)  # before the full screen: it fails here when PyYAML is missing
     with terminal.make_ui(ctx) as ui:
+        ctx.full_screen = isinstance(ui, terminal.CursesUI)
         application = App(ui, top, Runner(pause=ui.interactive))
         if start is not None:
             apps = variables.ApplicationsScreen(ctx, ("yggdrasil", "Applications"))

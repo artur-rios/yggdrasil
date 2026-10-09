@@ -12,12 +12,29 @@ from .screens import (CANCEL, ConfirmScreen, ListScreen, Picker, Pop, Push, Row,
 HELP = """An application's variables in an environment: what it gets from each layer (its own
 <application>@<environment> values, then <application>, then @<environment>), and where each comes from.
 
-Enter on a variable: show its value (on this screen only), change it (hidden for a secret; choose
-the scope: this application in this environment, every environment, or the environment's shared
-scope), mark it secret or not, remove it, its history and rollback, the commands for it.
+Enter on a variable: show its value (on this screen only; the numbered menu prints it), change it
+(hidden for a secret; choose the scope: this application in this environment, every environment, or
+the environment's shared scope), mark it secret or not, remove it, its history and rollback, the
+commands for it.
 
-r reveals or hides every secret; e edits the scope in $EDITOR; h shows the scope's history;
-d deploys the application, so the changes reach it; / starts a filter."""
+r reveals or hides every secret (the numbered menu asks first); e edits the scope in $EDITOR; h
+shows the scope's history; d deploys the application, so the changes reach it; / starts a filter."""
+
+PRINTS = "This prints the secrets in the terminal, and its scrollback keeps them. Show them?"
+
+
+def toggle_reveal(screen):
+    """r on a screen that masks secrets: in the numbered menu, which prints them where the
+    terminal's scrollback keeps them, only after asking."""
+    if screen.reveal or screen.ctx.full_screen:
+        screen.reveal = not screen.reveal
+        return None
+
+    def answered(yes):
+        screen.reveal = yes is True
+        return None
+
+    return screen.ask(ConfirmScreen(screen.crumbs, PRINTS), answered)
 
 
 @dataclasses.dataclass
@@ -116,8 +133,7 @@ class VariablesScreen(ListScreen):
         return result
 
     def toggle_reveal(self):
-        self.reveal = not self.reveal
-        return None
+        return toggle_reveal(self)
 
     def edit(self):
         return Run(["vars", "edit", self.scope], then=self.ran)
@@ -244,7 +260,9 @@ class VariableScreen(ListScreen):
 
     def rows(self):
         v = self.variable
-        return [Row("Show value", "on this screen only, until a key is pressed", value=self.show),
+        shown = ("on this screen only, until a key is pressed" if self.owner.ctx.full_screen
+                 else "prints it in the terminal, whose scrollback keeps it")
+        return [Row("Show value", shown, value=self.show),
                 Row("Change value", "typed hidden" if v.secret else v.value, value=self.change),
                 Row("Mark as not secret" if v.secret else "Mark as secret", "", value=self.toggle_secret),
                 Row("Remove", f"from {v.scope}", value=self.remove),
@@ -342,8 +360,7 @@ class HistoryScreen(ListScreen):
         return result
 
     def toggle_reveal(self):
-        self.reveal = not self.reveal
-        return None
+        return toggle_reveal(self)
 
     def choose(self, row):
         v = context.vars_module()
