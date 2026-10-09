@@ -3,7 +3,10 @@ placement and pick list of every argument, the command lines forms build, confir
 
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -154,6 +157,92 @@ class CheckTests(unittest.TestCase):
         self.assertIsNone(sources.check_number(""))
         self.assertIsNotNone(sources.check_number("x"))
         self.assertIn("single quote", sources.check_value("it's"))
+
+
+class StoreFixture(unittest.TestCase):
+    """A scratch secrets directory with a store: platform ENVIRONMENTS, a secret and a plain value."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="ygg-sources-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        v = context.vars_module()
+        v.init(self.dir, confirm=lambda prompt: "saved")
+        with v.Store.open(self.dir) as store:
+            store.set("platform", "ENVIRONMENTS", "development,production", None, "set")
+            store.set("platform", "DOMAIN", "example.com", None, "set")
+            store.set("app:heimdall-api@production", "HEIMDALL_MASTER_USER_PASSWORD", "s3cr3t-value", None, "set")
+            store.set("env:production", "POSTGRES_HOST", "postgres", None, "set")
+        self.ctx = context.Context(environ={"YGG_SECRETS_DIR": str(self.dir), "YGG_APPS_DIR": str(self.dir / "apps")})
+
+
+class SourceTests(StoreFixture):
+    def values(self, source, **values):
+        return [c.value for c in sources.choices(source, self.ctx, values)]
+
+    def test_scopes_cover_every_layer(self):
+        scopes = self.values("scope")
+        for scope in ("platform", "platform:acme", "@production", "heimdall-api", "heimdall-api@production"):
+            self.assertIn(scope, scopes)
+
+    def test_keys_are_those_of_the_chosen_scope_with_secrets_marked(self):
+        choices = sources.choices("key", self.ctx, {"scope": "heimdall-api@production"})
+        self.assertEqual([(c.value, c.note) for c in choices], [("HEIMDALL_MASTER_USER_PASSWORD", "secret")])
+        self.assertEqual(self.values("key"), [])
+
+    def test_host_environments_come_from_the_store(self):
+        self.assertEqual(self.values("host-environment"), ["development", "production"])
+
+    def test_an_application_s_environments_on_this_host(self):
+        self.assertEqual(self.values("app-host-environment", application="heimdall-api"), ["development", "production"])
+
+    def test_applications_of_an_environment_are_deployable_ones_that_deploy_there(self):
+        self.assertIn("heimdall-api", self.values("app-of-environment", environment="production"))
+        self.assertNotIn("traefik", self.values("app-of-environment", environment="production"))
+
+    def test_this_host_s_applications_are_the_deployable_ones(self):
+        self.assertEqual(self.values("host-application"), ["heimdall-api", "heimdall-ui", "fortuna-api", "fortuna-ui"])
+
+    def test_changes_are_the_history_newest_first(self):
+        changes = self.values("change")
+        self.assertEqual(changes, sorted(changes, key=int, reverse=True))
+        self.assertEqual(len(changes), 4)
+
+    def test_services_are_the_platform_compose_services(self):
+        self.assertIn("traefik", self.values("service"))
+
+    def test_options_of_an_environment_and_of_an_application(self):
+        self.assertIn("onDemand", self.values("environment-option", environment="development"))
+        self.assertIn("mode", self.values("app-option", application="heimdall-api", environment="development"))
+
+    def test_commands_are_the_tree_s(self):
+        self.assertIn("vars get", self.values("command"))
+
+    def test_a_list_that_cannot_be_read_is_empty(self):
+        (self.dir / "vars.key").write_text("not a key\n")
+        self.assertEqual(self.values("key", scope="platform"), [])
+
+    def test_defaults_of_typed_values(self):
+        deploy = tree.find(("deploy",))
+        app_dir = next(a for a in deploy.args if a.dest == "app_dir")
+        self.assertEqual(sources.default("directory", self.ctx, {"application": "heimdall-api"}, app_dir),
+                         str(self.dir / "apps" / "heimdall-api"))
+        backup = next(a for a in tree.find(("vars", "backup")).args if a.dest == "dir")
+        self.assertTrue(sources.default("directory", self.ctx, {}, backup).endswith("yggdrasil-backups"))
+        limit = next(a for a in tree.find(("vars", "history")).args if a.dest == "limit")
+        self.assertEqual(sources.default("number", self.ctx, {}, limit), "50")
+        file = next(a for a in tree.find(("vars", "import")).args if a.dest == "file")
+        self.assertEqual(sources.default("file", self.ctx, {"scope": "heimdall-api@production"}, file),
+                         str(self.dir / "production" / "heimdall-api.env"))
+
+    def test_the_version_of_a_checkout_is_its_tag_and_commit(self):
+        repo = self.dir / "repo"
+        repo.mkdir()
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        subprocess.run([*git, "tag", "v1.2.3"], check=True)
+        commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout[:7]
+        self.assertEqual(sources.checkout_version(str(repo)), f"1.2.3-{commit}")
 
 
 if __name__ == "__main__":
