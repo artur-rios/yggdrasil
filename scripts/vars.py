@@ -46,7 +46,7 @@ import catalog as catalog_module  # noqa: E402
 
 SCHEMA_VERSION = 1
 KEY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# The same pattern as SECRET_NAME in scripts/ygg.sh: keep the two in step.
+# The same pattern as SECRET_NAME in scripts/host.sh: keep the two in step.
 SECRET_NAME = re.compile(
     r"(^|_)(PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|KEY|CREDENTIALS?)(_PREVIOUS)?$|(^|_)CONNECTION_?STRING$",
     re.IGNORECASE)
@@ -840,10 +840,10 @@ scripts/ygg.sh vars <command> runs the same commands."""
 SCOPE_HELP = "platform, platform:acme, @<environment>, <application> or <application>@<environment>"
 
 
-def parser():
+def parser(prog=None):
     raw = argparse.RawDescriptionHelpFormatter
     p = argparse.ArgumentParser(
-        prog="vars.py", formatter_class=raw, epilog=HELP_EPILOG,
+        prog=prog or os.environ.get("YGG_VARS_PROG") or "vars.py", formatter_class=raw, epilog=HELP_EPILOG,
         description="The yggdrasil variables store: every application's and the platform's env variables and\n"
                     "secrets, encrypted in one SQLite database per machine ($YGG_SECRETS_DIR/vars.db).")
     sub = p.add_subparsers(dest="command", required=True, metavar="<command>", title="commands")

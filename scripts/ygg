@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The `ygg` command: /usr/local/bin/ygg links here (ygg self-install), so it runs this checkout.
+self=$(readlink -f "${BASH_SOURCE[0]}")
+exec python3 "${self%/*}/ygg.py" "$@"

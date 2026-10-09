@@ -11,7 +11,7 @@ Every part of yggdrasil reads it:
 | Jenkins: the shared pipeline | What each push or pull request deploys, where, and with which options |
 | `scripts/deploy.sh` | Whether the application deploys to that environment, its mode, timeouts, rollback depth and whether it runs on demand |
 | `scripts/platform.sh` | That every environment in the host's `ENVIRONMENTS` exists; the GitHub owner and repository for Jenkins |
-| `scripts/ygg.sh` | The applications of each of the host's environments; which environments it may stop |
+| `ygg` (`scripts/host.sh`) | The applications of each of the host's environments; which environments it may stop |
 | `github/rulesets.py` | Each repository's required checks, and the `deploy/<environment>` statuses on `main` |
 | Status API | Which applications run in each of its host's environments, how to probe them, how they group into systems |
 | Prometheus | Scrape targets, through the status API |
@@ -127,8 +127,8 @@ own `DOMAIN` (`example.com`, `staging.example.com`).
 | `waitTimeout` | `300` | Seconds `deploy.sh` waits for the new containers to be healthy before rolling back to the image that was running, if there is one. `DEPLOY_WAIT_TIMEOUT` overrides it for one run by hand. |
 | `keepImages` | `3` | Images of each application kept on the host after a successful deploy, the running one included: what rollbacks use. `DEPLOY_KEEP_IMAGES` overrides it for one run by hand. |
 | `checksTimeout` | `3600` | For `trigger: release`: seconds Jenkins waits for every GitHub Actions check on the release pull request before failing the build. Only the value on the application's **first** release environment counts. |
-| `hostSuffix` | `""` | Appended to every application's `host` in this environment: `heimdall` with `-dev` is `https://heimdall-dev.<DOMAIN>`. How several environments share one host, one `DOMAIN`, one `*.DOMAIN` certificate and one `*.DOMAIN` DNS record. Lowercase letters, digits and dashes, not ending with a dash (*status API*); `<host><hostSuffix>` must stay one DNS label of at most 63 characters (*status API*). It only changes the console's link: the router is `PUBLIC_HOST` (or `UI_HOST`) in the env file, which `scripts/ygg.sh` writes with the suffix. |
-| `onDemand` | `false` | `true`: the environment runs only while it is used. `scripts/ygg.sh env start <id>` and `env stop <id>` turn it on and off. The status API reports its stopped applications as `stopped`, which is not a problem, instead of `down`. A deploy of an application that wasn't running (switched off, or never deployed) starts it, waits for it to be healthy (rolling back as usual if it isn't), and stops it again, so a push to `develop` doesn't switch development on. A Jenkins **`DEPLOY_TO`** build, or `DEPLOY_START=1 scripts/deploy.sh ...`, leaves it running. |
+| `hostSuffix` | `""` | Appended to every application's `host` in this environment: `heimdall` with `-dev` is `https://heimdall-dev.<DOMAIN>`. How several environments share one host, one `DOMAIN`, one `*.DOMAIN` certificate and one `*.DOMAIN` DNS record. Lowercase letters, digits and dashes, not ending with a dash (*status API*); `<host><hostSuffix>` must stay one DNS label of at most 63 characters (*status API*). It only changes the console's link: the router is `PUBLIC_HOST` (or `UI_HOST`) in the env file, which `ygg` writes with the suffix. |
+| `onDemand` | `false` | `true`: the environment runs only while it is used. `ygg env start <id>` and `env stop <id>` turn it on and off. The status API reports its stopped applications as `stopped`, which is not a problem, instead of `down`. A deploy of an application that wasn't running (switched off, or never deployed) starts it, waits for it to be healthy (rolling back as usual if it isn't), and stops it again, so a push to `develop` doesn't switch development on. A Jenkins **`DEPLOY_TO`** build, or `DEPLOY_START=1 scripts/deploy.sh ...`, leaves it running. |
 
 Any other key is an error. Numbers must be whole and at least 1; `approval` and `onDemand` are
 `true` or `false`.
@@ -245,7 +245,7 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py owner` / `repository` | The GitHub owner; this repository's name (default `yggdrasil`) |
 | `python3 scripts/catalog.py systems` | `<id><TAB><name>`, one system per line |
 | `python3 scripts/catalog.py show <app>` | JSON: the application's fields, plus `system`, its system's id |
-| `python3 scripts/catalog.py add-application < new.json` | Adds an application, keeping every comment of `catalog.yaml`. Reads `{"system": {"id", "name", "description"}, "application": {...}}`: the application goes at the end of that system, or of a new one (then `name` and `description` count), placed before the `yggdrasil` system. Refuses anything that would make the catalog invalid. [`scripts/ygg.sh add`](cli.md) writes the JSON for you |
+| `python3 scripts/catalog.py add-application < new.json` | Adds an application, keeping every comment of `catalog.yaml`. Reads `{"system": {"id", "name", "description"}, "application": {...}}`: the application goes at the end of that system, or of a new one (then `name` and `description` count), placed before the `yggdrasil` system. Refuses anything that would make the catalog invalid. [`ygg add`](cli.md) writes the JSON for you |
 
 It exits with `0` on success, `1` for an invalid catalog, an unknown application or environment,
 an unknown option, or an application that doesn't deploy to that environment, and `2` for a wrong
@@ -272,10 +272,10 @@ can keep none), and `onDemand: true` to those that should run only while used:
 ```
 
 On the host, list them all in `platform.env` (`ENVIRONMENTS=development,production`) and create an
-env file per environment and application (`scripts/ygg.sh config <app> <environment>`), with the
+env file per environment and application (`ygg config <app> <environment>`), with the
 suffixed host names: `PUBLIC_HOST=heimdall-api-dev.example.com`. One `*.example.com` DNS record and
 certificate covers them all. Then `scripts/platform.sh up`, and run the agent named `vps`.
-`scripts/ygg.sh env start development` switches development on, `env stop development` off again.
+`ygg env start development` switches development on, `env stop development` off again.
 
 **A dev server that follows `develop`, on a host of its own.** Add the environment below and push
 it to `main`. Then pull and restart Jenkins on the controller host (it creates the new agent only
@@ -305,6 +305,6 @@ when it starts), and bring up a host for it with that agent's secret
 
 **An application that must stay up in an on-demand environment** (a service the others depend
 on): `environments: { development: { onDemand: false } }` and so on for the others it deploys to.
-`scripts/ygg.sh env stop development` then leaves it running.
+`ygg env stop development` then leaves it running.
 
 **Per-environment Compose settings** (replicas, resource limits, an extra volume) go in `stacks/<app>.<environment>.yml`. `deploy.sh` applies it last, when it exists.
