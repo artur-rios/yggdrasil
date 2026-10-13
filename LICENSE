@@ -6,11 +6,50 @@ This software and its associated source code, documentation, and related
 materials (the "Software") are the proprietary and confidential property of
 Artur Rios (the "Copyright Holder").
 
-No license, express or implied, is granted to any person or entity. Without the
-prior written permission of the Copyright Holder, no part of the Software may be
-used, copied, reproduced, modified, merged, published, distributed, sublicensed,
-sold, or otherwise exploited, in whole or in part, by any means, and no
-derivative works may be created from it.
+1. Limited grant for self-hosting
+
+Subject to the conditions in section 2, the Copyright Holder grants any person
+or organization (the "Licensee") a non-exclusive, non-transferable,
+non-sublicensable, revocable, royalty-free license to:
+
+  (a) make one copy of the Software in a source repository the Licensee
+      controls, as a fork on the hosting service that publishes the Software
+      or as an imported or private repository;
+  (b) modify that copy, including its catalog, stack files, scripts and
+      configuration, to install and operate it; and
+  (c) install and run that copy, and builds made from it, on hosts and
+      devices the Licensee controls, solely to build, deploy and monitor the
+      Licensee's own applications.
+
+2. Conditions
+
+  (a) The Licensee may not distribute, publish, sublicense, sell, lease or
+      otherwise make the Software, or any copy or modification of it,
+      available to any third party. A fork kept on the hosting service that
+      publishes the Software, made through that service's fork function, is
+      not a breach of this condition merely because the service makes it
+      visible to others, provided it is used only as permitted in section 1.
+  (b) The Licensee may not offer the Software, or any copy or modification of
+      it, to third parties as a hosted, managed or other service. Operating
+      the Licensee's own applications for their users is permitted.
+  (c) Every copy must keep this license and the copyright notice above,
+      unmodified.
+
+3. Termination
+
+The license in section 1 ends automatically if the Licensee breaches any of
+its conditions, and the Copyright Holder may revoke it at any time by written
+notice. When it ends, the Licensee must stop using the Software and delete
+every copy of it.
+
+4. Reservation of rights
+
+Except as expressly granted in section 1, no license, express or implied, is
+granted to any person or entity. Without the prior written permission of the
+Copyright Holder, no part of the Software may be used, copied, reproduced,
+modified, merged, published, distributed, sublicensed, sold, or otherwise
+exploited, in whole or in part, by any means, and no derivative works may be
+created from it.
 
 Unauthorized use, reproduction, or distribution of the Software, or any portion
 of it, may result in civil and criminal penalties, and will be prosecuted to the
