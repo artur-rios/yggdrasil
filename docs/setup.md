@@ -111,6 +111,10 @@ Your installation lives in your own copy of this repository: your catalog, your 
 **`main`** branch is what counts: every host runs a checkout of it, and every deploy clones it
 ([details](#where-jenkins-and-the-hosts-read-the-catalog)).
 
+The [license](../LICENSE) allows this copy: you may fork or import the repository, change it and
+run it on hosts you control to deploy your own applications. You may not redistribute it or offer
+it to others as a service.
+
 1. On GitHub, **Fork** this repository into your owner (step 0), and untick *Copy the `develop`
    branch only*: this repository's default branch is `develop`, its work in progress, while
    releases are merged into `main`, the branch your installation runs. For a private copy, use

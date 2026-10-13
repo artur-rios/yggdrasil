@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The license now grants what the setup guide asks for: you may fork or copy the repository, change it and run
+  it on hosts you control to deploy your own applications. Redistributing it or offering it as a service is still
+  not allowed. See [LICENSE](LICENSE).
+
 ## [0.7.1] - 2026-10-13
 
 ### Fixed
