@@ -10,6 +10,10 @@ import 'status_visuals.dart';
 
 /// One system: its status, name, description and one chip per environment;
 /// expanded, one section per environment with a row per application.
+///
+/// The platform system (only platform components) serves the whole host: one
+/// chip and one section for all environments, each component once, so an
+/// on-demand environment that is stopped does not look up because of it.
 class SystemCard extends StatelessWidget {
   const SystemCard({
     super.key,
@@ -27,9 +31,13 @@ class SystemCard extends StatelessWidget {
   final VoidCallback onToggle;
   final DateTime now;
 
+  /// What the host-wide chip and section are called.
+  static const String allEnvironments = 'All environments';
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final hostWide = hostWideApplications(system);
 
     return Card(
       child: Column(
@@ -72,23 +80,33 @@ class SystemCard extends StatelessWidget {
                             spacing: 6,
                             runSpacing: 6,
                             children: <Widget>[
-                              for (final environment in system.environments)
+                              if (hostWide != null)
                                 EnvironmentStatusChip(
-                                  key: ValueKey<String>(
-                                    'chip-${system.id}-'
-                                    '${environment.environment}',
+                                  key: ValueKey<String>('chip-${system.id}'),
+                                  name: allEnvironments,
+                                  status: system.status,
+                                  detail: applicationsSummary(hostWide),
+                                )
+                              else
+                                for (final environment in system.environments)
+                                  EnvironmentStatusChip(
+                                    key: ValueKey<String>(
+                                      'chip-${system.id}-'
+                                      '${environment.environment}',
+                                    ),
+                                    name: host.environmentName(
+                                      environment.environment,
+                                    ),
+                                    status: environment.status,
+                                    onDemand:
+                                        host
+                                            .environment(
+                                              environment.environment,
+                                            )
+                                            ?.onDemand ??
+                                        false,
+                                    detail: environmentSummary(environment),
                                   ),
-                                  name: host.environmentName(
-                                    environment.environment,
-                                  ),
-                                  status: environment.status,
-                                  onDemand:
-                                      host
-                                          .environment(environment.environment)
-                                          ?.onDemand ??
-                                      false,
-                                  detail: environmentSummary(environment),
-                                ),
                             ],
                           ),
                         ],
@@ -116,21 +134,35 @@ class SystemCard extends StatelessWidget {
                 ? Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: <Widget>[
-                      for (final environment in system.environments)
+                      if (hostWide != null)
                         EnvironmentSection(
-                          key: ValueKey<String>(
-                            'section-${system.id}-${environment.environment}',
-                          ),
+                          key: ValueKey<String>('section-${system.id}'),
                           system: system,
-                          environment: environment,
-                          name: host.environmentName(environment.environment),
-                          onDemand:
-                              host
-                                  .environment(environment.environment)
-                                  ?.onDemand ??
-                              false,
+                          environmentId: null,
+                          status: system.status,
+                          applications: hostWide,
+                          name: allEnvironments,
+                          onDemand: false,
                           now: now,
-                        ),
+                        )
+                      else
+                        for (final environment in system.environments)
+                          EnvironmentSection(
+                            key: ValueKey<String>(
+                              'section-${system.id}-${environment.environment}',
+                            ),
+                            system: system,
+                            environmentId: environment.environment,
+                            status: environment.status,
+                            applications: environment.applications,
+                            name: host.environmentName(environment.environment),
+                            onDemand:
+                                host
+                                    .environment(environment.environment)
+                                    ?.onDemand ??
+                                false,
+                            now: now,
+                          ),
                     ],
                   )
                 : const SizedBox(width: double.infinity),
@@ -142,19 +174,27 @@ class SystemCard extends StatelessWidget {
 }
 
 /// A system in one environment, inside an expanded card: the environment's
-/// name, status and summary, then a row per application.
+/// name, status and summary, then a row per application. For the platform
+/// system, the one section for all environments.
 class EnvironmentSection extends StatelessWidget {
   const EnvironmentSection({
     super.key,
     required this.system,
-    required this.environment,
+    required this.environmentId,
+    required this.status,
+    required this.applications,
     required this.name,
     required this.onDemand,
     required this.now,
   });
 
   final SystemStatus system;
-  final SystemEnvironment environment;
+
+  /// The environment's id, or `null` for the section of all environments.
+  final String? environmentId;
+
+  final Status status;
+  final List<ApplicationStatus> applications;
 
   /// The environment's display name.
   final String name;
@@ -168,7 +208,7 @@ class EnvironmentSection extends StatelessWidget {
     final muted = theme.textTheme.bodySmall?.copyWith(
       color: scheme.onSurfaceVariant,
     );
-    final applications = sortApplications(environment.applications);
+    final sorted = sortApplications(applications);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -187,7 +227,7 @@ class EnvironmentSection extends StatelessWidget {
                   header: true,
                   child: Text(name, style: theme.textTheme.titleSmall),
                 ),
-                StatusChip(environment.status),
+                StatusChip(status),
                 if (onDemand)
                   Tooltip(
                     message:
@@ -206,22 +246,22 @@ class EnvironmentSection extends StatelessWidget {
                       ],
                     ),
                   ),
-                Text(environmentSummary(environment), style: muted),
+                Text(applicationsSummary(applications), style: muted),
               ],
             ),
           ),
         ),
-        if (applications.isEmpty)
+        if (sorted.isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
             child: Text('No applications in $name.', style: muted),
           ),
-        for (final (index, application) in applications.indexed) ...[
+        for (final (index, application) in sorted.indexed) ...[
           if (index > 0) const Divider(height: 1, indent: 16),
           ApplicationRow(
             system: system,
-            environmentId: environment.environment,
-            environmentName: name,
+            environmentId: environmentId,
+            environmentName: environmentId == null ? null : name,
             application: application,
             now: now,
           ),
