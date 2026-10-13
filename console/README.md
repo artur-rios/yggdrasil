@@ -8,7 +8,7 @@ The yggdrasil deploy console: a Flutter app (web, Android and Windows) that show
 - **System cards**: name, description and one chip per environment the system is deployed to (environment name + status), in the same order. Cards are sorted worst first by the system's overall status, then by name; **Problems only** keeps the systems whose overall status is down, degraded or unknown.
 - **Expanded card**: one section per environment (name, status, an *on demand* hint for on-demand environments, and a summary such as `2 applications · all up`) listing its applications. Tapping an application opens its details (a bottom sheet on a phone, a dialog on wider screens), including the environment it is in.
 - **Stopped** (pause icon, neutral grey-blue) is the normal state of an on-demand environment that is switched off (`scripts/ygg.sh env stop <environment>`): it is not a problem, does not count for *Problems only*, and sorts between *Up* and *Not deployed*. A stopped application is not probed.
-- The platform system (Traefik, the status API, the console, ...) runs once per host and appears in every environment with the same result.
+- The platform system (Traefik, the status API, the console, ...) runs once per host: its card has one chip and, expanded, one section, *All environments*, listing each component once. The status API reports it in every environment with the same result; shown per environment, its `Up` would make a stopped on-demand environment look up.
 - A host whose status API still answers with the v1 contract (one environment per host) is shown as a host with that one environment, named after it.
 - One column on a phone, two from 600 dp, three from 1200 dp; the environment chips wrap on narrow screens.
 

@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-13
+
+### Fixed
+
+- The console showed the Yggdrasil card as `Up` in every environment, so a stopped on-demand environment looked
+  running while `ygg env stop` found nothing running in it. Platform components serve the whole host: the card
+  now has one *All environments* chip and, expanded, lists each component once.
+
 ## [0.7.0] - 2026-10-09
 
 ### Added
@@ -410,7 +418,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/artur-rios/yggdrasil/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/artur-rios/yggdrasil/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/artur-rios/yggdrasil/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/artur-rios/yggdrasil/compare/v0.5.1...v0.6.0

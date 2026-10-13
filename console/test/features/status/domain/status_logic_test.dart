@@ -273,6 +273,60 @@ void main() {
     );
   });
 
+  group('hostWideApplications', () {
+    SystemStatus across(List<ApplicationStatus> applications) => SystemStatus(
+      id: 'platform',
+      name: 'Platform',
+      status: Status.up,
+      environments: <SystemEnvironment>[
+        for (final environment in <String>['development', 'production'])
+          SystemEnvironment(
+            environment: environment,
+            status: Status.up,
+            applications: applications,
+          ),
+      ],
+    );
+
+    test('lists each platform component once, in the order the API sent', () {
+      final platform = across(<ApplicationStatus>[
+        app('traefik', Status.up, ApplicationKind.platform),
+        app('loki', Status.down, ApplicationKind.platform),
+      ]);
+
+      expect(
+        hostWideApplications(platform)?.map((a) => (a.id, a.status)),
+        <(String, Status)>[('traefik', Status.up), ('loki', Status.down)],
+      );
+    });
+
+    test('is null for a system with an application in an environment', () {
+      final mixed = across(<ApplicationStatus>[
+        app('traefik', Status.up, ApplicationKind.platform),
+        app('api', Status.stopped),
+      ]);
+
+      expect(hostWideApplications(mixed), isNull);
+    });
+
+    test('is null for a system with no applications', () {
+      expect(hostWideApplications(across(const <ApplicationStatus>[])), isNull);
+    });
+
+    test('the demo platform system is host-wide, its applications not', () {
+      final systems = demoStatus().systems;
+
+      expect(
+        systems.map((s) => (s.id, hostWideApplications(s)?.length)),
+        <(String, int?)>[
+          ('heimdall', null),
+          ('fortuna', null),
+          ('yggdrasil', 8),
+        ],
+      );
+    });
+  });
+
   test('every status has a label', () {
     expect(
       <Status, String>{for (final s in Status.values) s: statusLabel(s)},
