@@ -121,10 +121,10 @@ void main() {
       'Homologation · Stopped',
       'Production · Up',
     ]);
+    // The platform serves the whole host: one chip, not one per environment,
+    // so a stopped on-demand environment does not look up because of it.
     expect(chipsIn(tester, card('yggdrasil')), <String>[
-      'Development · Up',
-      'Homologation · Up',
-      'Production · Up',
+      'All environments · Up',
     ]);
     expect(find.text('Development · Stopped'), findsNWidgets(3));
 
@@ -176,6 +176,35 @@ void main() {
     expect(find.byType(ApplicationRow), findsNothing);
   });
 
+  testWidgets('expanding the platform shows each component once', (
+    tester,
+  ) async {
+    await pumpConsole(tester, source: FakeStatusSource());
+
+    await tester.ensureVisible(systemHeader('yggdrasil'));
+    await tester.pump();
+    await tester.tap(systemHeader('yggdrasil'));
+    await settle(tester);
+
+    final section = tester.widget<EnvironmentSection>(
+      find.byType(EnvironmentSection),
+    );
+    expect(section.name, 'All environments');
+    expect(section.environmentId, isNull);
+    expect(find.byType(ApplicationRow), findsNWidgets(8));
+    expect(find.text('Traefik'), findsOneWidget);
+    expect(find.text('on demand'), findsNothing);
+    expect(find.text('8 applications · 1 not deployed'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('application-traefik')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('section-yggdrasil')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('320 dp: one column, nothing overflows when all is expanded', (
     tester,
   ) async {
@@ -187,9 +216,9 @@ void main() {
 
     await expandAll(tester, demoSystems);
 
-    // 2 + 2 applications in 3 environments, and 8 platform components in 3.
-    expect(find.byType(ApplicationRow), findsNWidgets(36));
-    expect(find.byType(EnvironmentSection), findsNWidgets(9));
+    // 2 + 2 applications in 3 environments, and 8 platform components once.
+    expect(find.byType(ApplicationRow), findsNWidgets(20));
+    expect(find.byType(EnvironmentSection), findsNWidgets(7));
     final lefts = tester
         .widgetList<SystemCard>(find.byType(SystemCard))
         .map((card) => tester.getTopLeft(find.byWidget(card)).dx)
@@ -250,7 +279,7 @@ void main() {
 
     expect(find.byType(BottomSheet), findsOneWidget);
     expect(find.byType(ApplicationDetail), findsOneWidget);
-    expect(find.text('Yggdrasil · Development · jenkins'), findsOneWidget);
+    expect(find.text('Yggdrasil · jenkins'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Not probed: not deployed on this host.'),
       200,
@@ -432,7 +461,8 @@ void main() {
 
     await expandAll(tester, <String>['fortuna']);
 
-    expect(find.byType(EnvironmentStatusChip), findsNWidgets(12));
+    // The host's 3, heimdall's and fortuna's 3 each, the platform's 1.
+    expect(find.byType(EnvironmentStatusChip), findsNWidgets(10));
     expect(tester.takeException(), isNull);
   });
 

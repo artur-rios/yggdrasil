@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The console showed the Yggdrasil card as `Up` in every environment, so a stopped on-demand environment looked
+  running while `ygg env stop` found nothing running in it. Platform components serve the whole host: the card
+  now has one *All environments* chip and, expanded, lists each component once.
+
 ## [0.7.0] - 2026-10-09
 
 ### Added
