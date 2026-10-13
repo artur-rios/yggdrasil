@@ -245,3 +245,6 @@ process of this repository are described in [CONTRIBUTING.md](./CONTRIBUTING.md)
 ## Legal
 
 Proprietary. See [LICENSE](LICENSE). Copyright (c) 2026 Artur Rios. All rights reserved.
+
+The license lets you fork or copy this repository, change it and run it on your own hosts to deploy your own
+applications. It does not let you redistribute it, or offer it to others as a service.
