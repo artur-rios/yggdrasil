@@ -22,21 +22,14 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
             return BuildApplication(target, observations[target.Key], generatedAt);
         }
 
-        // Each system in the host's environments it has an application in, and only those.
-        var systems = catalog.Systems
-            .Select(system =>
-            {
-                var environments = catalog.Environments
-                    .Select(environment => (environment.Id, Applications: HostCatalog.In(system, environment)
-                        .Select(application => Application(application, environment))
-                        .ToList()))
-                    .Where(environment => environment.Applications.Count > 0)
-                    .Select(environment => new SystemEnvironmentStatus(environment.Id,
-                        StatusRules.Aggregate(environment.Applications.Select(application => application.Status)), environment.Applications))
-                    .ToList();
-                return new SystemStatus(system.Id, system.Name, system.Description,
-                    StatusRules.Aggregate(environments.Select(environment => environment.Status)), environments);
-            })
+        // Each system's applications in each of the host's environments it has an application in.
+        var applications = catalog.Systems
+            .Select(system => catalog.Environments
+                .Select(environment => (environment.Id, Applications: HostCatalog.In(system, environment)
+                    .Select(application => Application(application, environment))
+                    .ToList()))
+                .Where(environment => environment.Applications.Count > 0)
+                .ToList())
             .ToList();
 
         // Over the applications, not the systems: the same rule either way, but this way an environment
@@ -45,11 +38,30 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
         // stopped look up.
         var summaries = catalog.Environments
             .Select(environment => new EnvironmentSummary(environment.Id, environment.Name, environment.OnDemand,
-                StatusRules.Aggregate(systems
-                    .SelectMany(system => system.Environments.Where(e => e.Environment == environment.Id))
+                StatusRules.Aggregate(applications
+                    .SelectMany(system => system.Where(e => e.Id == environment.Id))
                     .SelectMany(e => e.Applications)
                     .Where(application => application.Kind != ApplicationKind.Platform)
                     .Select(application => application.Status))))
+            .ToList();
+
+        // A system in a stopped environment is stopped: its platform components serve nothing there, so
+        // they count as stopped in that environment's roll-up, while each still reports its own status.
+        var stopped = summaries.Where(summary => summary.Status == StatusLevel.Stopped).Select(summary => summary.Id).ToHashSet();
+        var systems = catalog.Systems
+            .Zip(applications, (system, environments) =>
+            {
+                var statuses = environments
+                    .Select(environment => new SystemEnvironmentStatus(environment.Id,
+                        StatusRules.Aggregate(environment.Applications.Select(application =>
+                            application.Kind == ApplicationKind.Platform && stopped.Contains(environment.Id)
+                                ? StatusLevel.Stopped
+                                : application.Status)),
+                        environment.Applications))
+                    .ToList();
+                return new SystemStatus(system.Id, system.Name, system.Description,
+                    StatusRules.Aggregate(statuses.Select(environment => environment.Status)), statuses);
+            })
             .ToList();
 
         // ...and so the host counts them, once each, beside its environments.
