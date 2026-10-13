@@ -359,7 +359,7 @@
       "environments": [
         {
           "environment": "development",
-          "status": "up",
+          "status": "stopped",
           "applications": [
             {
               "id": "traefik",
@@ -565,7 +565,7 @@
         },
         {
           "environment": "homologation",
-          "status": "up",
+          "status": "stopped",
           "applications": [
             {
               "id": "traefik",

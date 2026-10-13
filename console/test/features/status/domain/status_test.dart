@@ -80,8 +80,16 @@ void main() {
       final yggdrasil = systemOf(status, 'yggdrasil');
 
       expect(yggdrasil.environments, hasLength(3));
+      // Stopped where the environment is; its components still report up.
+      expect(yggdrasil.environments.map((e) => e.status), <Status>[
+        Status.stopped,
+        Status.stopped,
+        Status.up,
+      ]);
       expect(
-        yggdrasil.environments.map((e) => e.status),
+        yggdrasil.environments
+            .expand((e) => e.applications)
+            .map((a) => a.status),
         everyElement(Status.up),
       );
     });

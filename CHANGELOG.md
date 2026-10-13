@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-13
+
+### Fixed
+
+- The Yggdrasil card is back to one chip per environment, like the other systems, and each chip now shows that
+  environment's real state: *Stopped* in an on-demand environment that is stopped, the platform's own status
+  elsewhere. 0.7.1 had replaced the chips with a single *All environments* one. The status API reports the platform
+  system as `stopped` in a stopped environment; expanded, each component still shows its own status.
+
 ## [0.7.2] - 2026-10-13
 
 ### Changed
@@ -426,7 +435,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/artur-rios/yggdrasil/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/artur-rios/yggdrasil/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/artur-rios/yggdrasil/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/artur-rios/yggdrasil/compare/v0.6.1...v0.7.0

@@ -171,7 +171,7 @@ One rule gives the status of everything made of members:
 
 | Level | Members |
 |---|---|
-| A system in one environment (`systems[].environments[].status`) | Its applications in that environment |
+| A system in one environment (`systems[].environments[].status`) | Its applications in that environment; platform components count as `stopped` where the environment is `stopped` |
 | An environment (`environments[].status`) | Its applications that are not platform components, in every system |
 | A system (`systems[].status`) | Its environments (`systems[].environments[].status`) |
 | The host (`status`) | The environments (`environments[].status`), and each platform component once |
@@ -186,7 +186,7 @@ One rule gives the status of everything made of members:
 
 So `not_deployed` and `stopped` members never make anything worse, and a stopped development environment next to a running production one leaves the host `up`.
 
-Platform components are left out of the environments' roll-up, and counted once in the host's: they belong to the host, not to an environment, and counting their `up` in every environment would show an environment whose applications are all stopped as `up`. A platform problem still shows: in the platform system (in every environment) and in the host's `status`.
+Platform components are left out of the environments' roll-up, and counted once in the host's: they belong to the host, not to an environment, and counting their `up` in every environment would show an environment whose applications are all stopped as `up`. For the same reason, the platform system is `stopped` in an environment that is `stopped`: it serves nothing there. Its components still carry their own status in that environment's `applications`. A platform problem shows in the platform system in every environment that is not `stopped`, and in the host's `status`.
 
 When the Docker proxy is unreachable, applications whose probe fails are `down` and those whose probe passes are `unknown`. Without Docker, a stopped application can't be told from a broken one either, and applications that are not deployed on that host usually fail their probe (their host name does not resolve): both show `down` until Docker is back.
 
