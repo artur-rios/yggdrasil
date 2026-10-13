@@ -351,11 +351,25 @@ void main() {
       test(name, () {
         final host = load();
 
+        // Platform components count as stopped where the environment is.
+        final stopped = <String>{
+          for (final e in host.environments)
+            if (e.status == Status.stopped) e.id,
+        };
+
         for (final system in host.systems) {
           for (final environment in system.environments) {
             expect(
               environment.status,
-              rollup(environment.applications.map((a) => a.status)),
+              rollup(
+                environment.applications.map(
+                  (a) =>
+                      a.kind == ApplicationKind.platform &&
+                          stopped.contains(environment.environment)
+                      ? Status.stopped
+                      : a.status,
+                ),
+              ),
               reason: '${system.id} in ${environment.environment}',
             );
           }

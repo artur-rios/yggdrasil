@@ -198,10 +198,13 @@ public class SnapshotBuilderTests
         Assert.Equal(["heimdall-api", "heimdall-ui", "heimdall-worker"], heimdall.Environments[0].Applications.Select(a => a.Id));
         Assert.Equal(["heimdall-api", "heimdall-ui"], heimdall.Environments[2].Applications.Select(a => a.Id));
 
-        // The platform system in every environment, with the one observation of each component.
+        // The platform system in every environment, with the one observation of each component, but
+        // stopped where the environment is: it serves nothing there.
         var yggdrasil = snapshot.Systems[1];
-        Assert.Equal(TestData.HostEnvironments, yggdrasil.Environments.Select(e => e.Environment));
-        Assert.All(yggdrasil.Environments, e => Assert.Equal(StatusLevel.Up, e.Status));
+        Assert.Equal(
+            [("development", StatusLevel.Stopped), ("homologation", StatusLevel.Stopped), ("production", StatusLevel.Up)],
+            yggdrasil.Environments.Select(e => (e.Environment, e.Status)));
+        Assert.Equal(StatusLevel.Up, yggdrasil.Status);
         Assert.All(yggdrasil.Environments, e => Assert.Equal(StatusLevel.Up, e.Applications.Single(a => a.Id == "traefik").Status));
 
         // Only where it has an application: development.
@@ -239,6 +242,47 @@ public class SnapshotBuilderTests
         Assert.All(snapshot.Systems.Single(s => s.Id == "yggdrasil").Environments, e => Assert.Equal(StatusLevel.Degraded, e.Status));
         Assert.All(snapshot.Environments, e => Assert.Equal(StatusLevel.Up, e.Status));
         Assert.Equal(StatusLevel.Degraded, snapshot.Status);
+    }
+
+    [Fact]
+    public void GivenAPlatformComponentDownAndAStoppedEnvironment_WhenBuilt_ThenThePlatformIsStoppedThereAndDegradedElsewhere()
+    {
+        var builder = new SnapshotBuilder(catalog, TestData.Options());
+        var observations = catalog.Targets.ToDictionary(t => t.Key, _ => Up);
+        foreach (var key in observations.Keys.Where(key => key.EndsWith(".development", StringComparison.Ordinal)).ToList())
+        {
+            observations[key] = Exited;
+        }
+
+        observations["traefik"] = Exited;
+
+        var snapshot = builder.Build(observations, TestData.Now);
+
+        var yggdrasil = snapshot.Systems.Single(s => s.Id == "yggdrasil");
+        Assert.Equal(
+            [("development", StatusLevel.Stopped), ("homologation", StatusLevel.Degraded), ("production", StatusLevel.Degraded)],
+            yggdrasil.Environments.Select(e => (e.Environment, e.Status)));
+        Assert.Equal(StatusLevel.Degraded, yggdrasil.Status);
+        // The component itself is still reported as it is, in every environment.
+        Assert.All(yggdrasil.Environments, e => Assert.Equal(StatusLevel.Down, e.Applications.Single(a => a.Id == "traefik").Status));
+        Assert.Equal(StatusLevel.Degraded, snapshot.Status);
+    }
+
+    [Fact]
+    public void GivenAnEnvironmentWithNothingDeployed_WhenBuilt_ThenThePlatformShowsItsOwnStatusThere()
+    {
+        var builder = new SnapshotBuilder(catalog, TestData.Options());
+        var observations = catalog.Targets.ToDictionary(t => t.Key, _ => Up);
+        foreach (var key in observations.Keys.Where(key => key.EndsWith(".development", StringComparison.Ordinal)).ToList())
+        {
+            observations[key] = NotDeployed;
+        }
+
+        var snapshot = builder.Build(observations, TestData.Now);
+
+        Assert.Equal(StatusLevel.NotDeployed, snapshot.Environments.Single(e => e.Id == "development").Status);
+        Assert.Equal(StatusLevel.Up,
+            snapshot.Systems.Single(s => s.Id == "yggdrasil").Environments.Single(e => e.Environment == "development").Status);
     }
 
     [Fact]

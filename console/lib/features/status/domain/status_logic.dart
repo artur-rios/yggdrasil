@@ -104,29 +104,6 @@ String applicationsSummary(Iterable<ApplicationStatus> applications) {
 String environmentSummary(SystemEnvironment environment) =>
     applicationsSummary(environment.applications);
 
-/// The applications of a system made only of platform components, each once,
-/// in the order the API sent them; `null` for any other system.
-///
-/// Platform components belong to the host, not to an environment: the API
-/// repeats them, with the one result, in every environment of the host. Shown
-/// per environment, their "up" would make a stopped on-demand environment
-/// look up, so such a system is shown once, for all environments.
-List<ApplicationStatus>? hostWideApplications(SystemStatus system) {
-  final applications = system.applications;
-
-  if (applications.isEmpty ||
-      applications.any((a) => a.kind != ApplicationKind.platform)) {
-    return null;
-  }
-
-  final seen = <String>{};
-
-  return <ApplicationStatus>[
-    for (final application in applications)
-      if (seen.add(application.id)) application,
-  ];
-}
-
 /// The one-line summary of a host, e.g.
 /// `3 systems · 3 environments · 1 down · 2 degraded`.
 ///
