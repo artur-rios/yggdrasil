@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Chimera is registered as a web application across local, development,
+  homologation and production, with hardened proxy and loopback-port stacks.
+
 ## [0.7.3] - 2026-10-13
 
 ### Fixed
