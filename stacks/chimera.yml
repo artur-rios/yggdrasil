@@ -1,0 +1,27 @@
+# Chimera: a Flutter web build served by the repository's unprivileged NGINX
+# image. Build arguments are public values compiled into the application; never
+# pass credentials or other secrets here.
+
+services:
+  web:
+    build:
+      context: ${APP_DIR:?APP_DIR is set by scripts/deploy.sh}
+      dockerfile: deploy/web/Dockerfile
+      args:
+        YGG_ENVIRONMENT: ${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}
+        CHIMERA_BASE_PATH: ${CHIMERA_BASE_PATH:-/}
+        CHIMERA_RELEASE_REPOSITORY: ${CHIMERA_RELEASE_REPOSITORY:-artur-rios/chimera}
+        CHIMERA_UPDATE_CHANNEL: ${CHIMERA_UPDATE_CHANNEL:-stable}
+    image: chimera:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+

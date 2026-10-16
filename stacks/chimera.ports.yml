@@ -1,0 +1,7 @@
+# Local ports mode binds only to loopback. Override CHIMERA_PORT when 8083 is
+# already occupied on the developer workstation.
+
+services:
+  web:
+    ports:
+      - "${CHIMERA_PORT:-127.0.0.1:8083}:8080"

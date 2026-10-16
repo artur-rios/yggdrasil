@@ -1,0 +1,20 @@
+# Proxy environments expose Chimera through Traefik. The environment-qualified
+# network alias is also the identity used by Yggdrasil's health probe.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["chimera.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.chimera-${YGG_ENVIRONMENT}.rule=Host(`${CHIMERA_HOST:?set CHIMERA_HOST in the env file}`)
+      - traefik.http.routers.chimera-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.chimera-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.chimera-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true
+

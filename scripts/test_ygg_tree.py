@@ -222,7 +222,10 @@ class SourceTests(StoreFixture):
         self.assertNotIn("traefik", self.values("app-of-environment", environment="production"))
 
     def test_this_host_s_applications_are_the_deployable_ones(self):
-        self.assertEqual(self.values("host-application"), ["heimdall-api", "heimdall-ui", "fortuna-api", "fortuna-ui"])
+        self.assertEqual(
+            self.values("host-application"),
+            ["heimdall-api", "heimdall-ui", "fortuna-api", "fortuna-ui", "chimera"],
+        )
 
     def test_changes_are_the_history_newest_first(self):
         changes = self.values("change")
