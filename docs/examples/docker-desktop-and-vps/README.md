@@ -189,11 +189,12 @@ ygg vars edit heimdall-api@development    # fill in DB_PASSWORD and the secrets
 Then give the values the environments share one home. `DB_HOST` is `host.docker.internal` in
 every application of an environment, so it moves up to `@development` (with `vars import --all` it
 is offered as a move-up; by hand: `vars set @development DB_HOST=...`, then `vars unset` it from the
-applications). fortuna-api's `FORTUNA_AUTH_TOKEN_SECRET` is heimdall-api's
-`HEIMDALL_AUTH_TOKEN_SECRET` of the same environment, so it becomes a reference instead of a copy:
+applications). No secret is shared between applications: heimdall-api signs its tokens with its
+own `HEIMDALL_AUTH_SIGNING_KEY`, and fortuna-api verifies them with the public keys at
+`FORTUNA_HEIMDALL_JWKS_URL` (`http://heimdall-api.development:8080/.well-known/jwks.json`), which
+the env file already has. Check what an application gets with:
 
 ```bash
-ygg vars set fortuna-api@development FORTUNA_AUTH_TOKEN_SECRET='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
 ygg vars list fortuna-api@development --resolved
 ```
 
@@ -255,7 +256,9 @@ Each system is an API plus a Flutter web UI:
   (`http://heimdall-api.development:8080/` in development), not its public host through Traefik, so
   Fortuna's users never share the per-source limit Traefik puts on Heimdall's `/api/auth/` routes.
   fortuna-api 3.1.0 or later accepts that plain-HTTP URL because it resolves to a private address.
-  Its `FORTUNA_AUTH_TOKEN_SECRET` is that environment's `HEIMDALL_AUTH_TOKEN_SECRET`.
+  It verifies Heimdall's ES256 tokens with the public keys at `FORTUNA_HEIMDALL_JWKS_URL`
+  (`http://heimdall-api.<env>:8080/.well-known/jwks.json`), so no secret is shared: only
+  heimdall-api holds its `HEIMDALL_AUTH_SIGNING_KEY`.
 - **ASP.NET environments.**
 
   | | `local` | `development` | `homologation` | `production` |
