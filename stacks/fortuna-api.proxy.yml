@@ -20,10 +20,12 @@
 # /metrics is on port 9464, which is on neither the router nor the host: Prometheus reaches it over
 # the telemetry network as fortuna-api.<environment>:9464.
 #
-# fortuna-api reaches heimdall-api through its environment's public heimdall-api host, over HTTPS
-# and Traefik (FORTUNA_HEIMDALL_BASE_URL=https://heimdall-api-dev.example.com/ in development,
-# https://heimdall-api.example.com/ in production): it accepts only an HTTPS URL, so not the plain
-# HTTP alias heimdall-api.<environment>, which is for the status API's probes and Prometheus.
+# fortuna-api reaches heimdall-api over the edge network, at its environment's alias
+# (FORTUNA_HEIMDALL_BASE_URL=http://heimdall-api.<environment>:8080/, e.g.
+# http://heimdall-api.production:8080/), never through its public host and Traefik. fortuna-api
+# 3.1.0 or later accepts that plain-HTTP URL because it resolves to a private address; it connects
+# only to one, and follows no redirect. So Fortuna's users never share Heimdall's per-source limit
+# at the edge (stacks/heimdall-api.proxy.yml), where they would all come from one source.
 
 services:
   api:

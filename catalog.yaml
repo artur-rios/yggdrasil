@@ -163,6 +163,22 @@ systems:
           - Vendored C header matches the one the API publishes
           - FFI bindings match the vendored header
 
+  - id: chimera
+    name: Chimera
+    description: Local-first developer toolbox
+    applications:
+      - id: chimera
+        name: Chimera web
+        kind: web
+        health: http://chimera:8080/healthz
+        host: chimera
+        checks:
+          - Analyze and test
+          - Cross-platform
+          - Container
+          - Accessibility and performance
+        container: { service: web }
+
   # yggdrasil itself, so the console also answers "is the platform up?". Not deployed by Jenkins:
   # scripts/platform.sh runs these.
   - id: yggdrasil

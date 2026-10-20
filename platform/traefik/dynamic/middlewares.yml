@@ -2,14 +2,29 @@
 
 http:
   middlewares:
-    # Attached to every public router as secure-headers@file. The UIs' nginx sets its own
-    # frame/nosniff headers too; repeating them here covers the APIs, Grafana and Jenkins.
+    # Attached as secure-headers@file to every public router but heimdall-ui's and fortuna-ui's:
+    # the APIs, Chimera, the status API, the console, Grafana, Jenkins and the Traefik dashboard.
     secure-headers:
       headers:
         stsSeconds: 31536000
         stsIncludeSubdomains: true
         contentTypeNosniff: true
         referrerPolicy: strict-origin-when-cross-origin
+        customResponseHeaders:
+          Server: ""
+          X-Powered-By: ""
+
+    # Attached as secure-headers-ui@file to the heimdall-ui and fortuna-ui routers only: the same
+    # headers without Referrer-Policy. The UIs' nginx sends Referrer-Policy itself, per route
+    # (no-referrer on the pages whose URL carries a token, such as heimdall-ui's /password-reset and
+    # /verify-email), and Traefik would overwrite it. Written out in full rather than with a YAML
+    # anchor: Traefik's file provider is not guaranteed to merge one. scripts/test_edge.py keeps
+    # the two in step.
+    secure-headers-ui:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
         customResponseHeaders:
           Server: ""
           X-Powered-By: ""

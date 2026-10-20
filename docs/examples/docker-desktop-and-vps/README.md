@@ -251,10 +251,11 @@ Each system is an API plus a Flutter web UI:
   needs no CORS, which matters because fortuna-api has no CORS support at all. The APIs keep their
   own host names for the mobile and desktop clients.
 - **Service to service.** fortuna-api validates tokens against the heimdall-api **of its own
-  environment**. It requires HTTPS for that, so it calls heimdall-api's public host through Traefik
-  (`https://heimdall-api-dev.example.com/` in development), not its alias on the `edge` network
-  (`heimdall-api.development`). Its `FORTUNA_AUTH_TOKEN_SECRET` is that environment's
-  `HEIMDALL_AUTH_TOKEN_SECRET`.
+  environment**. It calls heimdall-api's alias on the `edge` network
+  (`http://heimdall-api.development:8080/` in development), not its public host through Traefik, so
+  Fortuna's users never share the per-source limit Traefik puts on Heimdall's `/api/auth/` routes.
+  fortuna-api 3.1.0 or later accepts that plain-HTTP URL because it resolves to a private address.
+  Its `FORTUNA_AUTH_TOKEN_SECRET` is that environment's `HEIMDALL_AUTH_TOKEN_SECRET`.
 - **ASP.NET environments.**
 
   | | `local` | `development` | `homologation` | `production` |

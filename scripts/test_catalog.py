@@ -231,6 +231,56 @@ class ResolveTests(unittest.TestCase):
         self.assertFalse(c.matches_branch(staging, "develop"))
 
 
+class ChimeraCatalogTests(unittest.TestCase):
+    def test_given_repository_catalog_when_chimera_is_resolved_then_its_contract_is_complete(self):
+        value = c.load()
+        application = c.application(value, "chimera")
+        system = c.system_of(value, "chimera")
+
+        self.assertEqual(system["id"], "chimera")
+        self.assertEqual(application["kind"], "web")
+        self.assertEqual(application["health"], "http://chimera:8080/healthz")
+        self.assertEqual(application["host"], "chimera")
+        self.assertEqual(application["container"], {"service": "web"})
+        self.assertEqual(application["checks"], [
+            "Analyze and test",
+            "Cross-platform",
+            "Container",
+            "Accessibility and performance",
+        ])
+
+        plan = c.resolve(value, "chimera")
+        self.assertEqual(
+            [environment["id"] for environment in plan],
+            ["local", "development", "homologation", "production"],
+        )
+
+    def test_given_chimera_stacks_when_loaded_then_runtime_is_hardened_and_routable(self):
+        stacks = c.CATALOG.parent / "stacks"
+        base = c.yaml.safe_load((stacks / "chimera.yml").read_text(encoding="utf-8"))
+        proxy = c.yaml.safe_load((stacks / "chimera.proxy.yml").read_text(encoding="utf-8"))
+        ports = c.yaml.safe_load((stacks / "chimera.ports.yml").read_text(encoding="utf-8"))
+
+        web = base["services"]["web"]
+        self.assertEqual(web["build"]["dockerfile"], "deploy/web/Dockerfile")
+        self.assertTrue(web["read_only"])
+        self.assertEqual(web["cap_drop"], ["ALL"])
+        self.assertIn("no-new-privileges:true", web["security_opt"])
+        self.assertEqual(web["tmpfs"], ["/tmp"])
+        self.assertEqual(
+            proxy["services"]["web"]["networks"]["edge"]["aliases"],
+            ["chimera.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"],
+        )
+        self.assertIn(
+            "traefik.http.services.chimera-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080",
+            proxy["services"]["web"]["labels"],
+        )
+        self.assertEqual(
+            ports["services"]["web"]["ports"],
+            ["${CHIMERA_PORT:-127.0.0.1:8083}:8080"],
+        )
+
+
 class DeployableTests(unittest.TestCase):
     def test_given_platform_components_when_listing_deployable_then_they_are_excluded(self):
         ids = [a["id"] for _, a in c.applications(catalog(), deployable=True)]
