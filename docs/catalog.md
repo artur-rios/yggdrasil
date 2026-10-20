@@ -91,7 +91,7 @@ so the environments of one Docker engine never touch each other:
 | Compose project | `<application>-<environment>`, set by `deploy.sh` | `heimdall-api-production` |
 | Network alias on `edge` and `telemetry` | `<application>.<environment>`, set by the stacks' proxy overlays from `YGG_ENVIRONMENT`, which `deploy.sh` exports. There is no plain `<application>` alias | `heimdall-api.production` |
 | Health and metrics address | The catalog's `health` and `metrics` keep the plain id as host; the status API and Prometheus qualify it with the environment for every application that isn't `kind: platform` | `http://heimdall-api.production:8080/healthcheck`, `heimdall-api.production:9464` |
-| Traefik routers and services | `<application>-<environment>`, in the stacks' proxy overlays | `heimdall-api-production`, `heimdall-api-production-same-origin` |
+| Traefik routers and services | `<application>-<environment>`, in the stacks' proxy overlays | `heimdall-api-production`, `heimdall-api-production-same-origin`, `heimdall-api-production-auth` |
 | Image tag | `<environment>-<version>`. The same commit is built once per environment (a web front end compiles environment values into its image); rollback and pruning only look at this environment's tags. The `yggdrasil.version` label stays the version alone | `heimdall-ui:production-1.4.0-3f2a9c1` |
 | Container label | `yggdrasil.environment`, on every container `deploy.sh` starts; Alloy makes it the `environment` label of the logs in Loki | `yggdrasil.environment=production` |
 | Env file | `<secrets>/<environment>/<application>.env` on a host without a [variables store](variables.md); with one, the `<application>@<environment>` scope | `/etc/yggdrasil/production/heimdall-api.env` |

@@ -18,7 +18,7 @@ services:
       - traefik.docker.network=edge
       - traefik.http.routers.fortuna-ui-${YGG_ENVIRONMENT}.rule=Host(`${UI_HOST:?set UI_HOST in the env file}`)
       - traefik.http.routers.fortuna-ui-${YGG_ENVIRONMENT}.entrypoints=websecure
-      - traefik.http.routers.fortuna-ui-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.routers.fortuna-ui-${YGG_ENVIRONMENT}.middlewares=secure-headers-ui@file
       - traefik.http.services.fortuna-ui-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
 
 networks:
