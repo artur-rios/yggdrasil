@@ -4,6 +4,7 @@
 """
 
 import pathlib
+import re
 import unittest
 
 import yaml
@@ -17,8 +18,13 @@ UI_STACKS = ("heimdall-ui.proxy.yml", "fortuna-ui.proxy.yml")
 
 AUTH = "traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-auth"
 AUTH_LIMIT = "traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit"
-AUTH_RULE = ("(Host(`${PUBLIC_HOST}`) || Host(`${UI_HOST}`))"
-             " && PathRegexp(`(?i)^/api/auth/`) && Method(`POST`)")
+PUBLIC_HOST = "${PUBLIC_HOST:?set PUBLIC_HOST in the env file}"
+UI_HOST = "${UI_HOST:?set UI_HOST in the env file}"
+# Every method but the safe ones: Traefik's Method matcher is case-sensitive, while ASP.NET routes a
+# lowercase `post` to [HttpPost], so Method(`POST`) would let `post` skip the limit.
+SAFE_METHODS_EXCLUDED = " && !Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)"
+AUTH_RULE = (f"(Host(`{PUBLIC_HOST}`) || Host(`{UI_HOST}`))"
+             f" && PathRegexp(`(?i)^/api/auth/`){SAFE_METHODS_EXCLUDED}")
 HOSTS = {"PUBLIC_HOST": "heimdall-api.example.com", "UI_HOST": "heimdall.example.com"}
 
 
@@ -48,13 +54,19 @@ def rule(stack, router):
     return values[0]
 
 
-def substituted(value):
-    """The rule as Traefik sees it: ${NAME:?message} and ${NAME} replaced by the example hosts."""
-    for name, host in HOSTS.items():
-        value = value.replace(f"${{{name}:?set {name} in the env file}}", host)
-        value = value.replace(f"${{{name}}}", host)
+PLACEHOLDER = re.compile(r"[$][{][A-Z_]+[^}]*[}]")
+
+
+def substituted(value, hosts=None):
+    """The rule as Traefik sees it: each ${NAME} or ${NAME:?message} replaced by its host."""
+    hosts = HOSTS if hosts is None else hosts
+    value = PLACEHOLDER.sub(lambda match: hosts[re.match(r"[$][{]([A-Z_]+)", match[0])[1]], value)
     assert "${" not in value, value
     return value
+
+
+def placeholders(value):
+    return set(PLACEHOLDER.findall(value))
 
 
 def middlewares():
@@ -113,7 +125,7 @@ class EdgeTests(unittest.TestCase):
 
     def test_auth_rule_is_case_insensitive_and_covers_both_hosts(self):
         auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")
-        for part in ("PathRegexp(`(?i)^/api/auth/`)", "Host(`${PUBLIC_HOST}`)", "Host(`${UI_HOST}`)"):
+        for part in ("PathRegexp(`(?i)^/api/auth/`)", f"Host(`{PUBLIC_HOST}`)", f"Host(`{UI_HOST}`)"):
             self.assertIn(part, auth)
         same_origin = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-same-origin")
         ui = rule("heimdall-ui.proxy.yml", "heimdall-ui-${YGG_ENVIRONMENT}")
@@ -121,9 +133,23 @@ class EdgeTests(unittest.TestCase):
         self.assertGreater(len(substituted(auth)), len(substituted(same_origin)))
         self.assertGreater(len(substituted(same_origin)), len(substituted(ui)))
 
+    def test_auth_rule_outranks_same_origin_and_ui_for_any_hosts(self):
+        # With every host empty, the fixed text alone keeps the order; and each rule holds every
+        # host placeholder of the one below it, so real host names add at least as much above.
+        auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")
+        same_origin = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-same-origin")
+        ui = rule("heimdall-ui.proxy.yml", "heimdall-ui-${YGG_ENVIRONMENT}")
+        empty = {name: "" for name in HOSTS}
+        self.assertGreater(len(substituted(auth, empty)), len(substituted(same_origin, empty)))
+        self.assertGreater(len(substituted(same_origin, empty)), len(substituted(ui, empty)))
+        self.assertTrue(placeholders(ui))
+        self.assertLessEqual(placeholders(same_origin), placeholders(auth))
+        self.assertLessEqual(placeholders(ui), placeholders(same_origin))
+
     def test_get_routes_bypass_auth_limit(self):
         auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")
-        self.assertTrue(auth.endswith(" && Method(`POST`)"), auth)
+        self.assertTrue(auth.endswith(SAFE_METHODS_EXCLUDED), auth)
+        self.assertNotIn("Method(`POST`)", auth)
 
     def test_fortuna_examples_use_internal_heimdall(self):
         for env in ("development", "homologation", "production"):
@@ -131,6 +157,19 @@ class EdgeTests(unittest.TestCase):
                 example = (EXAMPLES / env / "fortuna-api.env.example").read_text().splitlines()
                 urls = [line for line in example if line.startswith("FORTUNA_HEIMDALL_BASE_URL=")]
                 self.assertEqual(urls, [f"FORTUNA_HEIMDALL_BASE_URL=http://heimdall-api.{env}:8080/"])
+
+    def test_fortuna_examples_have_the_keys_3_0_requires(self):
+        jwks = {env: f"http://heimdall-api.{env}:8080/.well-known/jwks.json"
+                for env in ("development", "homologation", "production")}
+        jwks["local"] = "http://host.docker.internal:8080/.well-known/jwks.json"
+        for env, url in jwks.items():
+            with self.subTest(env=env):
+                example = (EXAMPLES / env / "fortuna-api.env.example").read_text().splitlines()
+                self.assertEqual([line for line in example if line.startswith("FORTUNA_HEIMDALL_JWKS_URL=")],
+                                 [f"FORTUNA_HEIMDALL_JWKS_URL={url}"])
+                # A placeholder only: never a real secret in an example.
+                self.assertEqual([line for line in example if line.startswith("FORTUNA_LOCAL_TOKEN_SECRET=")],
+                                 ["FORTUNA_LOCAL_TOKEN_SECRET="])
 
 
 if __name__ == "__main__":

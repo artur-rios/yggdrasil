@@ -12,10 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Chimera is registered as a web application across local, development,
   homologation and production, with hardened proxy and loopback-port stacks.
 - Heimdall's credential routes are limited per source at the edge. A third router, `heimdall-api-<environment>-auth`,
-  takes `POST` requests to `/api/auth/` (any case) on the API's host and on the web UI's same-origin `/api/`, and
-  its `heimdall-api-<environment>-auth-limit` middleware admits 10 a minute with a burst of 10 per source, an IPv6
-  caller counted by its /56. A refused request gets Traefik's own `429` and never reaches Heimdall. The `GET`s
-  under `/api/auth/` stay on the other routers. Applies to an environment once heimdall-api is redeployed there.
+  takes requests to `/api/auth/` (any case) on the API's host and on the web UI's same-origin `/api/`, with any
+  method but `GET`, `HEAD` and `OPTIONS`, and its `heimdall-api-<environment>-auth-limit` middleware admits 10 a
+  minute with a burst of 10 per source, an IPv6 caller counted by its /56. A refused request gets Traefik's own
+  `429` and never reaches Heimdall. The profile and admin pages' `GET`s under `/api/auth/` stay on the other
+  routers. The rule excludes the safe methods rather than naming `POST` because Traefik matches a method
+  case-sensitively and ASP.NET does not: under ``Method(`POST`)``, a lowercase `post` would reach Heimdall's
+  `[HttpPost]` actions unlimited. Applies to an environment once heimdall-api is redeployed there; see
+  *Upgrading* below first. [docs/dns.md](docs/dns.md) (A7) notes that the limit, like Heimdall's own, counts the
+  address Traefik sees: with the Cloudflare proxy on, or for IPv6 clients, many users share one bucket.
 
 ### Changed
 
@@ -27,6 +32,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `http://heimdall-api.<environment>:8080/`, instead of its public host, so Fortuna's users never share the
   edge limit on Heimdall's credential routes. Needs fortuna-api 3.1.0 or later, which accepts a plain-HTTP URL to a
   private address; an earlier version refuses it at start-up.
+- The example fortuna-api env files list `FORTUNA_HEIMDALL_JWKS_URL` (heimdall-api's alias again) and an empty
+  `FORTUNA_LOCAL_TOKEN_SECRET`, which fortuna-api 3.0.0 or later requires at start-up.
+
+### Upgrading from 0.7.3 to 0.7.4
+
+Order matters, per environment:
+
+1. Pull this release onto the host (`git -C /opt/yggdrasil pull --ff-only`) before deploying any web UI. The UI
+   routers name `secure-headers-ui@file`, which only this release's `middlewares.yml` defines, and Traefik
+   disables a router whose middleware is missing.
+2. Before redeploying heimdall-api with this release's labels, move Fortuna to fortuna-api 3.1.0 or later and point
+   its `FORTUNA_HEIMDALL_BASE_URL` at `http://heimdall-api.<environment>:8080/`. A fortuna-api that still calls
+   Heimdall's public host goes through Traefik from one source, so every sign-in it relays would share one edge
+   bucket of 10 a minute.
+3. Redeploy heimdall-api, heimdall-ui and fortuna-ui so that their containers carry the new labels. Labels only
+   change when a container is recreated.
 
 ## [0.7.3] - 2026-10-13
 

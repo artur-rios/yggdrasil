@@ -208,6 +208,14 @@ once the real certificate works ([step 4](#4-switch-to-the-real-certificate)):
 API responses (JSON) aren't cached by default. GitHub's webhooks and the Jenkins agents' WebSockets
 work through the proxy.
 
+**Per-source limits see Cloudflare.** Heimdall's edge limit on its credential routes
+(`stacks/heimdall-api.proxy.yml`), like Heimdall's own, counts the client address Traefik sees.
+Traefik trusts no forwarded headers, so with the proxy on that address is a Cloudflare egress
+address, and every user behind one shares a bucket of 10 a minute. The same goes for IPv6 without
+the proxy: the `edge` network has no IPv6 (`scripts/platform.sh` creates it without), so with an
+AAAA record every IPv6 client reaches Traefik through Docker's port proxy as one gateway address,
+in one bucket.
+
 ## Option B: DuckDNS, free
 
 [DuckDNS](https://www.duckdns.org) gives you up to five free subdomains of `duckdns.org`. Each
