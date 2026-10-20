@@ -435,8 +435,8 @@ Traefik renews the certificate by itself, 30 days before it expires.
    - `acme.env`: the new provider's credentials.
    - Every application env file, in every environment of the host: `PUBLIC_HOST`, `UI_HOST`, and
      every URL built from the domain. In the example applications: `HEIMDALL_API_BASE_URL`, `FORTUNA_API_BASE_URL`,
-     `HEIMDALL_EMAIL_VERIFICATION_URL`, `HEIMDALL_PASSWORD_RESET_URL`,
-     `HEIMDALL_CORS_ALLOWED_ORIGINS` and `FORTUNA_HEIMDALL_BASE_URL`.
+     `HEIMDALL_EMAIL_VERIFICATION_URL`, `HEIMDALL_PASSWORD_RESET_URL` and
+     `HEIMDALL_CORS_ALLOWED_ORIGINS`.
 3. `scripts/platform.sh up`, then redeploy each application so it picks up its new host names. Web
    UIs compile their URLs into the bundle, so they must be rebuilt, which a deploy does.
 4. Update the GitHub App's URLs, and each host's URL in the Windows and Android consoles.

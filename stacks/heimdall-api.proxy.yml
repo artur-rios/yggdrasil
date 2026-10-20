@@ -6,16 +6,31 @@
 # after the environment, from YGG_ENVIRONMENT (exported by deploy.sh; a docker compose run without it
 # stops, saying so):
 #   network alias   heimdall-api.<environment>, e.g. heimdall-api.production, on edge and telemetry
-#   Traefik         routers heimdall-api-<environment> and
-#                   heimdall-api-<environment>-same-origin, service heimdall-api-<environment>
+#   Traefik         routers heimdall-api-<environment>, heimdall-api-<environment>-same-origin and
+#                   heimdall-api-<environment>-auth, service heimdall-api-<environment>, and the
+#                   middleware heimdall-api-<environment>-auth-limit
 # The labels are a list, not a mapping, because Compose substitutes variables in values only.
 #
-# Two routers, one service:
+# Three routers, one service:
 #   PUBLIC_HOST                the API's own host name, for the mobile and desktop clients
 #   UI_HOST + /api/            the same API under the web UI's own origin. Every API route already
 #                              starts with /api/, so nothing is rewritten: the browser build of
 #                              heimdall-ui uses https://<UI_HOST> as its API base URL and needs no CORS
 #                              and no preflight requests.
+#   POST + /api/auth/ on       the credential routes, limited per source before they reach the API:
+#   either host                10 a minute, a burst of 10, an IPv6 caller counted by its /56, as the
+#                              API itself counts. The API's own limit, moved in front of it: a
+#                              refused request costs nothing and never reaches an instance, and the
+#                              /api/auth/ POSTs the API leaves unthrottled are bounded too
+#                              (heimdall-api's operations.md, "Bounding a distributed flood at the
+#                              edge"). POST only: the profile and admin pages' GETs under /api/auth/
+#                              stay on the other two routers. (?i) because ASP.NET routes paths
+#                              case-insensitively, so /API/Auth/login must not slip past. The
+#                              longest rule wins, so no priority. The chain is replaced, not
+#                              extended, so it repeats secure-headers@file. Never one global bucket
+#                              for every source: it would deny every caller at a lower cost.
+#                              fortuna-api calls the API over the alias, not through Traefik, so its
+#                              users never share this bucket (stacks/fortuna-api.proxy.yml).
 #
 # /metrics is on port 9464, which is on neither the router nor the host: Prometheus reaches it over
 # the telemetry network as heimdall-api.<environment>:9464.
@@ -44,6 +59,14 @@ services:
       - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-same-origin.entrypoints=websecure
       - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-same-origin.middlewares=secure-headers@file
       - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-same-origin.service=heimdall-api-${YGG_ENVIRONMENT}
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-auth.rule=(Host(`${PUBLIC_HOST}`) || Host(`${UI_HOST}`)) && PathRegexp(`(?i)^/api/auth/`) && Method(`POST`)
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-auth.entrypoints=websecure
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-auth.middlewares=secure-headers@file,heimdall-api-${YGG_ENVIRONMENT}-auth-limit
+      - traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-auth.service=heimdall-api-${YGG_ENVIRONMENT}
+      - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.average=10
+      - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.period=1m
+      - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.burst=10
+      - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.sourcecriterion.ipstrategy.ipv6subnet=56
       - traefik.http.services.heimdall-api-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
 
 networks:

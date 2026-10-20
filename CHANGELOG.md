@@ -11,6 +11,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Chimera is registered as a web application across local, development,
   homologation and production, with hardened proxy and loopback-port stacks.
+- Heimdall's credential routes are limited per source at the edge. A third router, `heimdall-api-<environment>-auth`,
+  takes `POST` requests to `/api/auth/` (any case) on the API's host and on the web UI's same-origin `/api/`, and
+  its `heimdall-api-<environment>-auth-limit` middleware admits 10 a minute with a burst of 10 per source, an IPv6
+  caller counted by its /56. A refused request gets Traefik's own `429` and never reaches Heimdall. The `GET`s
+  under `/api/auth/` stay on the other routers. Applies to an environment once heimdall-api is redeployed there.
+
+### Changed
+
+- The heimdall-ui and fortuna-ui routers use the new `secure-headers-ui` middleware: the same headers as
+  `secure-headers` without `Referrer-Policy`, so each UI's own Referrer-Policy reaches the browser, including
+  heimdall-ui's `no-referrer` on the pages whose link carries a token. Pull this release onto the host before
+  deploying a UI: a router that names a missing `secure-headers-ui@file` is disabled.
+- The example fortuna-api env files point `FORTUNA_HEIMDALL_BASE_URL` at heimdall-api's alias on the edge network,
+  `http://heimdall-api.<environment>:8080/`, instead of its public host, so Fortuna's users never share the
+  edge limit on Heimdall's credential routes. Needs fortuna-api 3.1.0 or later, which accepts a plain-HTTP URL to a
+  private address; an earlier version refuses it at start-up.
 
 ## [0.7.3] - 2026-10-13
 
