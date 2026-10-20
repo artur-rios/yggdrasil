@@ -90,16 +90,18 @@ deploy. An application can still override it with its own `DB_HOST` in either na
 ## References
 
 A value that is exactly `${ref:<application>:<KEY>}` is replaced by that application's `<KEY>`, as
-resolved in the **same environment**. This is how fortuna-api shares heimdall-api's token secret:
+resolved in the **same environment**. This is how fortuna-api follows heimdall-api's token issuer:
 
 ```bash
-ygg vars set fortuna-api FORTUNA_AUTH_TOKEN_SECRET='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
+ygg vars set fortuna-api FORTUNA_AUTH_TOKEN_ISSUER='${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_ISSUER}'
 ```
 
 ```console
 $ ygg vars list fortuna-api@development --resolved
-FORTUNA_AUTH_TOKEN_SECRET=••••••23  (ref → heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET)
+FORTUNA_AUTH_TOKEN_ISSUER=heimdall  (ref → heimdall-api:HEIMDALL_AUTH_TOKEN_ISSUER)
 ```
+
+A reference to a secret is masked like the secret itself.
 
 Rules:
 
@@ -211,21 +213,24 @@ Menu: Applications › `<app>` › `<env>` › + Add a variable.
 It asks with echo off, so the value is in neither your shell history nor `ps`. It is masked in
 `list`, `get` and `history` unless `--reveal`.
 
-**Rotate a signing secret without signing everyone out** (heimdall-api, fortuna-api)
+**Rotate heimdall-api's signing key without signing everyone out**
 
 ```bash
-old=$(ygg vars get heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET --reveal)
-printf '%s\n' "$old" | ygg vars set heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET_PREVIOUS=-
-openssl rand -hex 48 | ygg vars set heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET=-
+old=$(ygg vars get heimdall-api@production HEIMDALL_AUTH_SIGNING_KEY --reveal)
+printf '%s\n' "$old" | ygg vars set heimdall-api@production HEIMDALL_AUTH_SIGNING_KEY_PREVIOUS=-
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  | base64 -w0 | ygg vars set heimdall-api@production HEIMDALL_AUTH_SIGNING_KEY=-
 unset old
 ```
 
 Menu: the variable › Change value, and choose where.
 
-Redeploy, and once a token lifetime has passed, clear the previous key:
-`ygg vars set heimdall-api@production HEIMDALL_AUTH_TOKEN_SECRET_PREVIOUS=`. An application
-whose secret is a reference to heimdall's (`${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}`) follows
-the new value at its own next deploy.
+Redeploy: the new key signs, and the old one stays published, so its tokens stay valid. Once a
+token lifetime has passed (`HEIMDALL_AUTH_TOKEN_EXPIRATION_IN_SECONDS`, an hour by default, or
+`HEIMDALL_APPLICATION_TOKEN_EXPIRATION_IN_SECONDS` if that is longer), clear the previous key
+(`ygg vars set heimdall-api@production HEIMDALL_AUTH_SIGNING_KEY_PREVIOUS=`) and redeploy again.
+fortuna-api needs no change: it reads the new public key from heimdall-api's key set
+(`/.well-known/jwks.json`).
 
 **Share one value between environments or applications**
 
@@ -240,7 +245,7 @@ Menu: the variable › Change value, and choose where.
 **Make one application follow another's value**
 
 ```bash
-ygg vars set fortuna-api@<env> 'FORTUNA_AUTH_TOKEN_SECRET=${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}'
+ygg vars set fortuna-api@<env> 'FORTUNA_AUTH_TOKEN_ISSUER=${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_ISSUER}'
 ```
 
 Menu: the variable › Change value, and choose where.
@@ -331,8 +336,8 @@ Take a copy of `/etc/yggdrasil` first (`tar czf`), as for any upgrade.
    Only values identical in every scope imported in that run are offered. Each move is one
    transaction (set above, unset below) and keeps the secret flag. Typically `DB_HOST`, `DB_PORT`
    and a locale go to `@<environment>`.
-4. **Use references** where applications share a secret, e.g. fortuna-api's
-   `FORTUNA_AUTH_TOKEN_SECRET` as `${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET}` in each
+4. **Use references** where one application must follow another's value, e.g. fortuna-api's
+   `FORTUNA_AUTH_TOKEN_ISSUER` as `${ref:heimdall-api:HEIMDALL_AUTH_TOKEN_ISSUER}` in each
    environment ([References](#references)).
 5. **Check.** `ygg vars check`. Compare what the platform will read with the file you
    imported: `ygg vars export platform | diff - /etc/yggdrasil/platform.env.imported`

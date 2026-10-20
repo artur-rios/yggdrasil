@@ -158,7 +158,7 @@ the stack files as `add` does. Then it offers:
   quotes, which Compose reads literally; a value with a single quote is refused (use **Edit**).
   Values of variables whose name ends in `PASSWORD`, `PASSWD`, `PASS`, `PWD`, `SECRET`, `TOKEN`,
   `KEY` or `CREDENTIAL(S)`, optionally followed by `_PREVIOUS`, or in `CONNECTIONSTRING`
-  (`DB_PASSWORD`, `API_KEY`, `HEIMDALL_AUTH_TOKEN_SECRET_PREVIOUS`, `FORTUNA_DATA_CONNECTIONSTRING`;
+  (`DB_PASSWORD`, `API_KEY`, `HEIMDALL_AUTH_SIGNING_KEY_PREVIOUS`, `FORTUNA_DATA_CONNECTIONSTRING`;
   not `HEIMDALL_PASSWORD_RESET_URL`) are typed hidden and shown as `********`, unless you ask to see them.
 - **Edit** the file in `$EDITOR` (default `nano`).
 - **Apply**: redeploys with `deploy.sh`. Containers read their env file only when they are created,
