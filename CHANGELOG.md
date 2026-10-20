@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-20
+
+### Changed
+
+- The examples and docs give heimdall-api an ES256 signing key and fortuna-api Heimdall's key set URL instead of a
+  shared HS256 secret, and the rotation recipe rotates the signing key.
+
 ## [0.7.4] - 2026-10-20
 
 ### Added
@@ -479,7 +486,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/artur-rios/yggdrasil/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/artur-rios/yggdrasil/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/artur-rios/yggdrasil/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/artur-rios/yggdrasil/compare/v0.7.1...v0.7.2
