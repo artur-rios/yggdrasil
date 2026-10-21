@@ -3,6 +3,7 @@
 configuration-as-code
 job-dsl
 workflow-aggregator
+lockable-resources
 pipeline-stage-view
 pipeline-graph-view
 git

@@ -212,6 +212,8 @@ def _application_field_errors(where, app):
     checks = app.get("checks")
     if checks is not None and (not isinstance(checks, list) or not all(_text(check) for check in checks)):
         errors.append(f"{where}.checks: a list of GitHub check names, none empty")
+    if "releaseArtifacts" in app and not isinstance(app["releaseArtifacts"], bool):
+        errors.append(f"{where}.releaseArtifacts: true or false")
     container = app.get("container")
     if container is not None and (not isinstance(container, dict)
                                   or any(container.get(k) is not None and not _text(container[k]) for k in ("project", "service"))):

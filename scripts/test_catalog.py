@@ -162,9 +162,10 @@ class ValidateTests(unittest.TestCase):
     def test_given_malformed_application_fields_when_validated_then_each_is_reported(self):
         value = catalog()
         app = value["systems"][0]["applications"][0]
-        app.update(metrics="shop-api", metricsPath="metrics", host="Shop.API", repository="shop api", checks=["test", " "])
+        app.update(metrics="shop-api", metricsPath="metrics", host="Shop.API", repository="shop api", checks=["test", " "],
+                   releaseArtifacts="yes")
         errors = c.validate(value)
-        for field in ("metrics", "metricsPath", "host", "repository", "checks"):
+        for field in ("metrics", "metricsPath", "host", "repository", "checks", "releaseArtifacts"):
             self.assertTrue(any(f"'shop-api'.{field}" in e for e in errors), (field, errors))
 
     def test_given_a_metrics_path_without_metrics_when_validated_then_it_is_an_error(self):
@@ -242,6 +243,7 @@ class ChimeraCatalogTests(unittest.TestCase):
         self.assertEqual(application["health"], "http://chimera:8080/healthz")
         self.assertEqual(application["host"], "chimera")
         self.assertEqual(application["container"], {"service": "web"})
+        self.assertTrue(application["releaseArtifacts"])
         self.assertEqual(application["checks"], [
             "Analyze and test",
             "Cross-platform",
@@ -254,6 +256,20 @@ class ChimeraCatalogTests(unittest.TestCase):
             [environment["id"] for environment in plan],
             ["local", "development", "homologation", "production"],
         )
+        self.assertTrue(plan[-1]["approval"])
+
+    def test_given_release_pipeline_when_loaded_then_the_whole_application_release_is_serialized(self):
+        root = c.CATALOG.parent
+        pipeline = (root / "jenkins/library/vars/yggdrasilPipeline.groovy").read_text(encoding="utf-8")
+        plugins = (root / "platform/jenkins/controller/plugins.txt").read_text(encoding="utf-8")
+
+        self.assertIn('lock(resource: "release-${app}")', pipeline)
+        self.assertIn("release(app, plan.findAll", pipeline)
+        self.assertLess(
+            pipeline.index('lock(resource: "release-${app}")'),
+            pipeline.index("release(app, plan.findAll"),
+        )
+        self.assertIn("lockable-resources", plugins.splitlines())
 
     def test_given_chimera_stacks_when_loaded_then_runtime_is_hardened_and_routable(self):
         stacks = c.CATALOG.parent / "stacks"

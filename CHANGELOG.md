@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Chimera production releases now require an explicit Jenkins approval. After a successful deploy,
+  Jenkins creates an immutable tag and private draft, dispatches Chimera's release-artifact
+  workflow, and waits for its validated artifacts to publish before completing cleanup. Existing
+  installations must grant the Jenkins GitHub App **Actions: Read and write** before the first such
+  release. Release flows are serialized per application across multibranch jobs.
 - The example's PostgreSQL steps create each heimdall-api database with heimdall-api's
   `scripts/sql/new-deployment.sql`: an owner role that migrates and a runtime login that owns nothing, with a
   `pg_hba.conf` line for each, and `HEIMDALL_MIGRATIONS_CONNECTIONSTRING` in the store. A database the API's own
