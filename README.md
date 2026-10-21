@@ -106,10 +106,18 @@ sequenceDiagram
         J->>R: deploy.sh
         J->>GH: status deploy/<environment> = success
     end
-    J->>GH: merge (merge commit), tag + release v1.4.0, delete release/1.4.0
+    J->>GH: merge
+    alt releaseArtifacts: true
+        J->>GH: create immutable tag + private draft
+        J->>GH: dispatch the application's artifact workflow
+        GH-->>J: verified artifacts uploaded; draft published
+    else direct release
+        J->>GH: create tag + public release
+    end
+    J->>GH: delete release/1.4.0
 ```
 
-If a deploy fails, it rolls back to the image that was running, `deploy/<environment>` is set to failure, and the pull request stays open, blocked by the ruleset. **Rollback does not undo database migrations**, so keep each migration compatible with the previous release.
+If a deploy fails, it rolls back to the image that was running, `deploy/<environment>` is set to failure, and the pull request stays open, blocked by the ruleset. For an application with `releaseArtifacts: true`, a packaging or upload failure after the merge leaves the GitHub release as a private draft and Jenkins reports failure instead of announcing an incomplete release. **Rollback does not undo database migrations**, so keep each migration compatible with the previous release.
 
 ### Inside a host
 
@@ -195,7 +203,7 @@ default setup worked through on real hardware:
 | `scripts/deploy.sh` | Build, label, deploy, health-wait and roll back one application in one environment, as the Compose project `<application>-<environment>`. Jenkins runs it; so can you |
 | `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
 | `scripts/platform.sh` | Brings a host's platform up or down: one per host, for all its environments |
-| `scripts/github.sh` | The GitHub side of a release: wait for checks, set status, merge, release, delete branch |
+| `scripts/github.sh` | The GitHub side of a release: wait for checks, set status, merge, create the tag and draft, dispatch packaging, wait for publication, delete the branch |
 | `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, and the Jenkins controller and agent |
 | `jenkins/library/` | The shared pipeline every application's `Jenkinsfile` calls |
 | `github/rulesets.py` | Rulesets, required checks and settings of every catalog repository |

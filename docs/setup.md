@@ -316,6 +316,7 @@ other one at *No access*:
 | Permission | Access | What Jenkins does with it |
 |---|---|---|
 | Contents | Read and write | Checks the code out, merges the release pull request, creates the `vx.y.z` tag and release, deletes the release branch |
+| Actions | Read and write | Starts the application's release-artifact workflow after deployment and waits for its verified draft release to be published |
 | Pull requests | Read and write | Finds release pull requests and merges them |
 | Commit statuses | Read and write | Sets the `deploy/<environment>` statuses that `main`'s ruleset requires |
 | Checks | Read-only | Waits for every GitHub Actions check of a release pull request before deploying |
@@ -859,12 +860,18 @@ git switch -c release/0.1.0 && git push -u origin release/0.1.0
 2. Open the pull request `release/0.1.0 → main`. Once its checks pass, Jenkins deploys it to each
    release environment in order, asking for approval where the catalog says so (**Deploy** in the
    build's page).
-3. After the last one, Jenkins merges the pull request, tags and releases `v0.1.0`, and deletes the
-   branch. The console shows the version, commit and deploy time.
+3. After the last one, Jenkins merges the pull request and creates `v0.1.0`. With
+   `releaseArtifacts: true`, it creates an immutable tag and private draft, dispatches the
+   application's release-artifact workflow, and waits for its validated artifacts to publish;
+   otherwise it creates the public release directly. It then deletes the branch. The console shows
+   the version, commit and deploy time.
 
-If a deploy fails, it rolls back to the previous image and the pull request stays open. The
-build's console output says why: usually a missing env file variable or a health check that never
-passes. Fix it on `develop` (or on the host, for an env file) and cut a new release.
+If a deploy fails, it rolls back to the previous image and the pull request stays open. With
+`releaseArtifacts: true`, a packaging or upload failure after the merge leaves the release as a
+private draft and fails the Jenkins build.
+The build's console output says why: usually a missing env file variable, a health check that never
+passes, or a failed artifact workflow. Fix it on `develop` (or on the host, for an env file) and cut
+a new release.
 
 Day to day from here: [README.md#day-to-day](../README.md#day-to-day).
 

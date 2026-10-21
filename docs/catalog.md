@@ -138,13 +138,17 @@ or from the environment.
 The list order is the **promotion order**: the order release environments deploy in on a release
 pull request, and the order a push deploys to several matching `branch` environments.
 
+Jenkins serializes the complete release flow per application across all `release/*` branch jobs:
+checks, promotion, merge, artifact publication and cleanup. A second release for the same
+application waits instead of replacing production while the first release is still publishing.
+
 ### Triggers
 
 | Trigger | Deploys | Typical use |
 |---|---|---|
 | `manual` | Only when asked: `scripts/deploy.sh` on the host, or **Build with Parameters → `DEPLOY_TO`** in Jenkins, which leaves an `onDemand` environment running (`DEPLOY_TO` also offers `branch` environments, to deploy any discovered branch there and switch it on). `DEPLOY_TO` exists on the branches Jenkins discovers (`main`, and those matching a `branch` environment's globs), once the branch has been built once. Jenkins creates an agent for a manual environment only when it sets `agent`; without one, it's deploy-by-hand only, and a `DEPLOY_TO` build would wait forever for a node. | A laptop; an environment for demos. |
 | `branch` | The pushed commit, whenever a branch matching `branches` is pushed. `release/x.y.z` deploys as version `x.y.z`; any other branch as its name, with characters other than letters, digits, `_`, `.` and `-` replaced by `-` (`feature/x` → `feature-x`). The image tag is `<environment>-<version>-<7-character commit>`. In an `onDemand` environment, an application that wasn't running is stopped again after the deploy. **Build with Parameters → `DEPLOY_TO`** deploys any discovered branch here by hand, and leaves it running. | Staging from `release/*`; a dev server from `develop`. |
-| `release` | The head of a `release/x.y.z → main` pull request, once every GitHub Actions check on it has passed (`branch-policy` included). Jenkins marks every `deploy/<id>` pending, then deploys the release environments one after another in catalog order, setting `deploy/<id>` after each. After the last one succeeds, it merges the pull request with a merge commit, creates the GitHub release and tag `vx.y.z`, and deletes the branch. Pushing to the branch meanwhile fails the build. | Production; a pre-production environment right before it. |
+| `release` | The head of a `release/x.y.z → main` pull request, once every GitHub Actions check on it has passed (`branch-policy` included). Jenkins marks every `deploy/<id>` pending, then deploys the release environments one after another in catalog order, setting `deploy/<id>` after each. After the last one succeeds, it merges the pull request and creates the GitHub release and tag. With `releaseArtifacts: true`, that is an immutable tag plus private draft; Jenkins dispatches the application's release-artifact workflow and waits for it to verify every upload and publish the draft. Only then does Jenkins complete cleanup. Pushing to the branch meanwhile fails the build. | Production; a pre-production environment right before it. |
 
 An application with no `release` environment is never deployed or merged by Jenkins on a release
 pull request. Its release pull requests are merged by hand, and its `main` ruleset requires no
@@ -200,6 +204,7 @@ An application's environment variables are not catalog fields: they come from th
 | `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. Starts with `/`, and needs `metrics` (*status API*). |
 | `host` | A lowercase host name: letters, digits and dashes (*status API*). The link the console shows: `https://<host><hostSuffix>.<DOMAIN>`, with the environment's `hostSuffix`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
 | `checks` | GitHub Actions job names required on `develop` and `main`, besides `branch-policy`: the job part of `<workflow> / <job>` in a pull request's Checks tab. Only checks from GitHub Actions satisfy them. Only list checks that run on **every** pull request: a path-filtered workflow that doesn't run would leave its required check pending forever. No empty entries (*status API*). |
+| `releaseArtifacts` | Optional boolean, default `false`. With `true`, Jenkins creates the immutable tag and a private draft after deployment, dispatches `.github/workflows/release-artifacts.yml` with `tag`, `publish` and `release_id` inputs, and waits for that workflow to publish the verified draft. Without it, Jenkins creates the tag and public GitHub release directly. |
 | `container` | `{project, service}`: the Compose labels that find the application's container. `project` defaults to the id; the status API looks for `<project>-<environment>`, which is what `deploy.sh` uses (platform components: `project` as it is). Without `service`, **any** container of the project matches (a running one first, then the newest), so set `service` when the stack has more than one service, e.g. `{ service: api }` next to a database. |
 | `environments` | See below. |
 

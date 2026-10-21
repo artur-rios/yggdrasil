@@ -13,7 +13,9 @@
 //   PR release/x.y.z -> main -> wait for every GitHub Actions check on the pull request's head, then
 //                               deploy that commit to each trigger: release environment in catalog
 //                               order, setting deploy/<environment> (required on main) after each;
-//                               then merge the pull request, tag and release vx.y.z, delete the branch
+//                               then merge the pull request and release vx.y.z. Applications with
+//                               releaseArtifacts: true use an immutable tag and private draft, and
+//                               wait for their artifact workflow to publish it before cleanup
 //   any other pull request   -> nothing
 //
 // An environment with approval: true waits for someone to click "Deploy" first, without holding an
@@ -36,6 +38,8 @@ def call(Map config) {
   String app = config.stack
   Map catalog = loadCatalog()
   List plan = resolve(catalog, app)
+  Map application = catalog.systems.collectMany { it.applications ?: [] }.find { it.id == app }
+  boolean releaseArtifacts = application.releaseArtifacts == true
   String owner = catalog.owner
   String repository = catalog.repository ?: 'yggdrasil'
 
@@ -54,7 +58,12 @@ def call(Map config) {
     withEnv(["GITHUB_OWNER=${owner}", "YGGDRASIL_REPOSITORY=${repository}"]) {
       if (env.CHANGE_ID) {
         if (env.CHANGE_TARGET == 'main' && (env.CHANGE_BRANCH ?: '') ==~ RELEASE_BRANCH) {
-          release(app, plan.findAll { it.trigger == 'release' })
+          // A multibranch job's disableConcurrentBuilds is branch-local. This application-wide
+          // lock covers checks, every promotion, merge, packaging and publication, so two release
+          // branches cannot race through production or publish out of deployment order.
+          lock(resource: "release-${app}") {
+            release(app, plan.findAll { it.trigger == 'release' }, releaseArtifacts)
+          }
         } else {
           echo "Nothing to deploy for a pull request from ${env.CHANGE_BRANCH} into ${env.CHANGE_TARGET}."
         }
@@ -77,8 +86,9 @@ def call(Map config) {
   }
 }
 
-// The release pull request: every release environment in order, then merge, tag, clean up.
-void release(String app, List environments) {
+// The release pull request: every release environment in order, then merge, package, publish and
+// clean up. A packaging failure leaves the release draft private and fails the Jenkins build.
+void release(String app, List environments, boolean releaseArtifacts) {
   if (!environments) {
     echo "${app} has no environment with trigger: release; nothing deploys on this pull request."
     return
@@ -104,12 +114,14 @@ void release(String app, List environments) {
     deployTo(app, environment, version, sha)
   }
 
-  stage('Merge, tag and clean up') {
+  stage('Merge, package, publish and clean up') {
     node(environments[-1].agent) {
       try {
         checkoutAll()
         String mergeSha = github("merge-pr ${app} ${env.CHANGE_ID} ${sha} 'release: v${version} (#${env.CHANGE_ID})'", true)
-        String url = github("release ${app} ${version} ${mergeSha}", true)
+        String url = releaseArtifacts
+          ? github("publish-release ${app} ${version} ${mergeSha}", true)
+          : github("release ${app} ${version} ${mergeSha}", true)
         github("delete-branch ${app} ${env.CHANGE_BRANCH}")
         currentBuild.description = "v${version} -> ${url}"
         echo "Released v${version}: ${url}"

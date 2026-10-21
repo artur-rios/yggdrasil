@@ -25,6 +25,7 @@ FAKE_CURL = textwrap.dedent(r"""
     count_file="$FAKE_CURL_DIR/$key.count"
     n=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     echo "$n" >"$count_file"
+    printf '%s\n' "$*" >"$FAKE_CURL_DIR/$key.request.$n"
     response="$FAKE_CURL_DIR/$key.$n"
     [[ -f "$response" ]] || response="$FAKE_CURL_DIR/$key.last"
     read -r status body <"$response"
@@ -65,6 +66,9 @@ class GitHubTests(unittest.TestCase):
     def github(self, *arguments):
         return subprocess.run(["bash", str(SCRIPT), *arguments], env=self.env, capture_output=True, text=True,
                               timeout=60)
+
+    def request(self, key, number=1):
+        return (self.state / f"{key}.request.{number}").read_text()
 
     def test_given_every_check_passed_when_waiting_then_it_succeeds(self):
         self.respond("check-suites", last=(0, SUITES_DONE))
@@ -117,6 +121,54 @@ class GitHubTests(unittest.TestCase):
         result = self.github("delete-branch", "app", "release/1.0.0")
         self.assertEqual(result.returncode, 1)
         self.assertIn("not accessible", result.stderr)
+
+    def test_given_a_release_when_publishing_then_it_stays_draft_until_the_workflow_finishes(self):
+        self.respond("refs", (0, {"ref": "refs/tags/v1.2.3"}))
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "https://example/release/17"}))
+        self.respond("dispatches", (0, None))
+        self.respond(
+            "17",
+            (0, {"tag_name": "v1.2.3", "draft": True, "html_url": "https://example/release/17"}),
+            (0, {"tag_name": "v1.2.3", "draft": False, "html_url": "https://example/release/17"}),
+        )
+
+        result = self.github("publish-release", "app", "1.2.3", "abc123", "60")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip().splitlines()[-1], "https://example/release/17")
+        tag_request = "".join(self.request("refs").split())
+        release_request = "".join(self.request("releases").split())
+        dispatch_request = "".join(self.request("dispatches").split())
+        self.assertIn('"ref":"refs/tags/v1.2.3"', tag_request)
+        self.assertIn('"draft":true', release_request)
+        self.assertIn('"ref":"v1.2.3"', dispatch_request)
+        self.assertIn('"release_id":"17"', dispatch_request)
+        self.assertEqual((self.state / "17.count").read_text().strip(), "2")
+
+    def test_given_workflow_dispatch_is_refused_when_publishing_then_the_draft_stays_private(self):
+        self.respond("refs", (0, {"ref": "refs/tags/v1.2.3"}))
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "https://example/release/17"}))
+        self.respond("dispatches", (22, {"message": "Resource not accessible by integration"}))
+
+        result = self.github("publish-release", "app", "1.2.3", "abc123", "60")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not accessible", result.stderr)
+        self.assertFalse((self.state / "17.count").exists())
+
+    def test_given_the_packaging_workflow_never_publishes_when_waiting_then_it_times_out(self):
+        self.respond("refs", (0, {"ref": "refs/tags/v1.2.3"}))
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "https://example/release/17"}))
+        self.respond("dispatches", (0, None))
+        self.respond(
+            "17",
+            last=(0, {"tag_name": "v1.2.3", "draft": True, "html_url": "https://example/release/17"}),
+        )
+
+        result = self.github("publish-release", "app", "1.2.3", "abc123", "0")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr)
 
 
 if __name__ == "__main__":

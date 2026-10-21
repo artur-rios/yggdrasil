@@ -5,7 +5,8 @@
 #     scripts/github.sh wait-checks   <repo> <sha> [timeout-seconds]
 #     scripts/github.sh set-status    <repo> <sha> <state> <context> <description> [target-url]
 #     scripts/github.sh merge-pr      <repo> <number> <sha> <title>      -> prints the merge commit
-#     scripts/github.sh release       <repo> <version> <sha>             -> tag + GitHub release v<version>
+#     scripts/github.sh release       <repo> <version> <sha>             -> direct GitHub release
+#     scripts/github.sh publish-release <repo> <version> <sha> [timeout] -> verified public release
 #     scripts/github.sh delete-branch <repo> <branch>
 #
 # <repo> is the repository name; the owner is $GITHUB_OWNER (the catalog's owner; the pipeline sets it).
@@ -106,10 +107,47 @@ merge_pr() {
 
 release() {
   local repo=$1 version=$2 sha=$3
-  # Creating the release creates the lightweight tag v<version> on <sha> with it, and the release
-  # notes are generated from the pull requests merged since the previous tag.
+  # Applications without a release-artifact workflow retain the original GitHub release path.
   api POST "repos/$owner/$repo/releases" "$(jq -n --arg tag "v$version" --arg sha "$sha" \
     '{tag_name: $tag, target_commitish: $sha, name: $tag, generate_release_notes: true}')" | jq -r '.html_url'
+}
+
+publish_release() {
+  local repo=$1 version=$2 sha=$3 timeout=${4:-7200}
+  local tag="v$version" deadline=$((SECONDS + timeout)) release_json release_id release_url
+
+  # The tag is made explicit before packaging, so the application workflow checks out exactly the
+  # commit Jenkins deployed and merged. Its release-tags ruleset makes that ref immutable.
+  api POST "repos/$owner/$repo/git/refs" "$(jq -n --arg ref "refs/tags/$tag" --arg sha "$sha" \
+    '{ref: $ref, sha: $sha}')" >/dev/null
+
+  # Artifacts are assembled behind a draft. The application workflow alone publishes it, after it
+  # has compared every uploaded byte and digest with the locally validated bundle.
+  release_json=$(api POST "repos/$owner/$repo/releases" "$(jq -n --arg tag "$tag" --arg sha "$sha" \
+    '{tag_name: $tag, target_commitish: $sha, name: $tag, generate_release_notes: true, draft: true, prerelease: false}')")
+  release_id=$(jq -er 'select(.draft == true) | .id' <<<"$release_json") \
+    || die "GitHub did not create an unpublished draft release for $tag"
+  release_url=$(jq -er '.html_url' <<<"$release_json") \
+    || die "GitHub did not return the draft release URL for $tag"
+
+  api POST "repos/$owner/$repo/actions/workflows/release-artifacts.yml/dispatches" "$(jq -n \
+    --arg ref "$tag" --arg tag "$tag" --arg release_id "$release_id" \
+    '{ref: $ref, inputs: {tag: $tag, publish: "true", release_id: $release_id}}')" >/dev/null
+
+  while :; do
+    if release_json=$(api GET "repos/$owner/$repo/releases/$release_id"); then
+      [[ "$(jq -r '.tag_name' <<<"$release_json")" == "$tag" ]] \
+        || die "draft release $release_id changed from tag $tag"
+      if [[ "$(jq -r '.draft' <<<"$release_json")" == "false" ]]; then
+        jq -er '.html_url' <<<"$release_json"
+        return 0
+      fi
+    fi
+    ((SECONDS < deadline)) \
+      || die "timed out after ${timeout}s waiting for the packaging workflow to publish $tag; draft: $release_url"
+    echo "github: waiting for the packaging workflow to publish $tag"
+    sleep "$poll_seconds"
+  done
 }
 
 delete_branch() {
@@ -133,6 +171,7 @@ case "$command" in
   set-status) set_status "$@" ;;
   merge-pr) merge_pr "$@" ;;
   release) release "$@" ;;
+  publish-release) publish_release "$@" ;;
   delete-branch) delete_branch "$@" ;;
   *) die "unknown command '$command'" ;;
 esac
