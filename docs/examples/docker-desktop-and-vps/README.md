@@ -126,15 +126,34 @@ production's data. The env file templates of the API repositories name them:
 
 | Application | `development` | `homologation` | `production` |
 |---|---|---|---|
-| heimdall-api | `heimdall_development`, login `heimdall_development_svc` | `heimdall_homologation`, login `heimdall_homologation_svc` | `heimdall`, login `heimdall_svc` |
+| heimdall-api | `heimdall_development`, owner `heimdall_development_owner`, login `heimdall_development_svc` | `heimdall_homologation`, owner `heimdall_homologation_owner`, login `heimdall_homologation_svc` | `heimdall`, owner `heimdall_owner`, login `heimdall_svc` |
 | fortuna-api | `fortuna_development`, login `fortuna_development` | `fortuna_homologation`, login `fortuna_homologation` | `fortuna`, login `fortuna` |
 
-Production keeps the database it has: create the others. Each `createuser` asks for the login's
-password, which goes in that environment's env file (`DB_PASSWORD`):
+Production keeps the database it has: create the others. heimdall-api's database belongs to an owner
+role that applies the migrations, and the API runs as a login that owns nothing, so it cannot switch
+off the audit trail's triggers (heimdall-api's Threat Model, TH-18). Its repository's
+`scripts/sql/new-deployment.sql` creates both and the database; it holds no password, so each is set
+after it. The login's password goes in that environment's env file (`DB_PASSWORD`), the owner's in
+`HEIMDALL_MIGRATIONS_CONNECTIONSTRING`:
 
 ```bash
-sudo -u postgres createuser --pwprompt heimdall_development_svc && sudo -u postgres createdb --owner heimdall_development_svc heimdall_development
-sudo -u postgres createuser --pwprompt heimdall_homologation_svc && sudo -u postgres createdb --owner heimdall_homologation_svc heimdall_homologation
+cd ~/yggdrasil-apps/heimdall-api
+sudo -u postgres psql -X -v owner=heimdall_development_owner -v runtime=heimdall_development_svc \
+    -v database=heimdall_development -f scripts/sql/new-deployment.sql
+sudo -u postgres psql -X -v owner=heimdall_homologation_owner -v runtime=heimdall_homologation_svc \
+    -v database=heimdall_homologation -f scripts/sql/new-deployment.sql
+for role in heimdall_development_owner heimdall_development_svc heimdall_homologation_owner heimdall_homologation_svc; do
+    sudo -u postgres psql -c "\\password $role"
+done
+```
+
+Run each `new-deployment.sql` line once more after that environment's first deploy has created the
+tables: the second run takes `DELETE` on the audit trail away from the login. A heimdall-api database
+that belongs to the API's own login, as `createdb --owner` made it before, is moved to the two roles
+with `scripts/sql/separate-owner.sql`: heimdall-api's operations guide, "Separating the migration
+owner from the runtime login", has the order. Fortuna's databases keep one login each:
+
+```bash
 sudo -u postgres createuser --pwprompt fortuna_development && sudo -u postgres createdb --owner fortuna_development fortuna_development
 sudo -u postgres createuser --pwprompt fortuna_homologation && sudo -u postgres createdb --owner fortuna_homologation fortuna_homologation
 ```
@@ -147,7 +166,9 @@ the host's Docker bridge (`extra_hosts: host-gateway`). By default PostgreSQL on
    `ip -4 addr show docker0`).
 2. `pg_hba.conf`: one line per database and its login, from the Compose networks, e.g.
    `host heimdall_development heimdall_development_svc 172.16.0.0/12 scram-sha-256`, so each
-   login reaches its own database and no other.
+   login reaches its own database and no other. heimdall-api's owner role gets its own line, since
+   the container's migrations connect as it:
+   `host heimdall_development heimdall_development_owner 172.16.0.0/12 scram-sha-256`.
 3. `sudo ufw allow from 172.16.0.0/12 to any port 5432 proto tcp`, then
    `sudo systemctl restart postgresql`.
 4. Check from a container:
@@ -182,7 +203,7 @@ ygg vars init                  # prints the key: store it in your password manag
 e=docs/examples/docker-desktop-and-vps/env
 ygg vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
 ygg vars import heimdall-ui@development  $e/development/heimdall-ui.env.example
-ygg vars edit heimdall-api@development    # fill in DB_PASSWORD and the secrets
+ygg vars edit heimdall-api@development    # fill in DB_PASSWORD, HEIMDALL_MIGRATIONS_CONNECTIONSTRING and the secrets
 # ... and so on for each application and environment
 ```
 
