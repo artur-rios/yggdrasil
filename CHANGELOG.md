@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The example's PostgreSQL steps create each heimdall-api database with heimdall-api's
+  `scripts/sql/new-deployment.sql`: an owner role that migrates and a runtime login that owns nothing, with a
+  `pg_hba.conf` line for each, and `HEIMDALL_MIGRATIONS_CONNECTIONSTRING` in the store. A database the API's own
+  login owns is moved with heimdall-api's `separate-owner.sql` runbook.
+
 ## [0.7.5] - 2026-10-20
 
 ### Changed
