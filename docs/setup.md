@@ -568,11 +568,13 @@ Next to each part is what you would type to do it by hand. Every command is run 
    - A file that is already there is never replaced.
 10. **The firewall.** Dev machine:
     ```bash
-    sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw allow 2222/tcp && sudo ufw enable
+    sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw allow 2222/tcp
+    sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw enable
     ```
     Apps machine: SSH, and 80 and 443 only from Cloudflare's published ranges:
     ```bash
     sudo ufw allow OpenSSH
+    sudo ufw default deny incoming && sudo ufw default allow outgoing
     { curl -fsS https://www.cloudflare.com/ips-v4; echo; curl -fsS https://www.cloudflare.com/ips-v6; echo; } | grep . > ~/cloudflare-ips
     for range in $(cat ~/cloudflare-ips); do
       sudo ufw allow proto tcp from "$range" to any port 80,443 comment yggdrasil-cloudflare
@@ -581,6 +583,8 @@ Next to each part is what you would type to do it by hand. Every command is run 
     sudo ufw enable
     ```
     - `ufw allow OpenSSH` comes first, so turning the firewall on does not cut your session.
+    - `default deny incoming`: what no rule allows is refused (Ubuntu's default, but the rules mean nothing
+      without it, so the installer sets it and `ygg check` reads it from `ufw status verbose`).
     - `2222/tcp`: Forgejo's git over SSH (the dev machine only).
     - `from "$range" … comment yggdrasil-cloudflare`: lets one Cloudflare range in on the two web ports and
       labels the rule, so that a later `ygg install` knows it is its own and can update it.
@@ -589,8 +593,16 @@ Next to each part is what you would type to do it by hand. Every command is run 
     - `cloudflare-ips`: the same ranges, which Traefik trusts for the visitor's address
       ([hosts.md](hosts.md#client-addresses)). Rootless Docker publishes ports as ordinary
       processes, so these rules apply to them: Docker no longer goes around `ufw`.
-    - If Cloudflare's list cannot be downloaded, the installer changes nothing about the firewall.
-      It never opens 80 and 443 to everyone to make up for it.
+    - If Cloudflare's list cannot be downloaded, the installer still allows SSH, denies the rest and turns
+      `ufw` on, and leaves only the Cloudflare rules and `cloudflare-ips` as they were (none, on a new machine:
+      80 and 443 stay closed until `ygg install` runs again). It never opens 80 and 443 to everyone to make up
+      for it.
+    - After `cloudflare-ips` changes, Traefik trusts the new ranges once `scripts/platform.sh up` runs again as
+      `ygg` (it renders Traefik's configuration from the file).
+    - `ygg check` reports any rule that lets everyone in and that the installer did not make: another port, a
+      range, or an application profile such as `Nginx Full` (80 and 443 under another name). On the apps machine
+      the installer deletes plain `80`, `443` or `80,443/tcp` rules from anywhere; the others are yours to look at
+      (`sudo ufw status numbered`, then `sudo ufw delete <number>`).
 11. **Rootless Docker for each service user.** For `ygg` (and the same for each of the others):
     ```bash
     sudo loginctl enable-linger ygg

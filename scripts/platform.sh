@@ -104,7 +104,8 @@ render_traefik_config() {
   cleanup_paths+=("$partial")
   # The settings go in the renderer's environment, from the same file Compose reads.
   # shellcheck source=/dev/null
-  (set -a; . "$env_file"; python3 "$root/scripts/traefik_config.py" ${options[@]+"${options[@]}"} >"$partial")     || die "could not render Traefik's configuration from $env_file (see above)"
+  (set -a; . "$env_file"; python3 "$root/scripts/traefik_config.py" ${options[@]+"${options[@]}"} >"$partial") \
+    || die "could not render Traefik's configuration from $env_file (see above)"
   chmod 600 "$partial"
   mv -f "$partial" "$traefik_file"
 }

@@ -232,7 +232,7 @@ are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine 
 |---|---|
 | **System** | The packages; the machine's own Docker is switched off, and disabled after a reboot, and nobody is in the `docker` group; the three system files (unprivileged ports, AppArmor, cgroup delegation); unattended upgrades |
 | **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` limits (dev); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
-| **Firewall** | `ufw` is on with the role's ports. On an apps machine, 80 and 443 are open to Cloudflare only, and the rules and `cloudflare-ips` match Cloudflare's current list |
+| **Firewall** | `ufw` is on and denies incoming by default, with the role's ports, and no other rule lets everyone in (a port, a range or a profile such as `Nginx Full`). On an apps machine, 80 and 443 are open to Cloudflare only, and the rules and `cloudflare-ips` match Cloudflare's current list |
 | **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a dev machine: `ci` and `release` cannot read `ygg`'s socket or secrets |
 | **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled |
 

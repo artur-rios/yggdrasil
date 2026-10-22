@@ -263,7 +263,8 @@ FAKES = {
     # The rules are lines of "<to><TAB><from><TAB><comment>" in $FAKE_STATE/ufw-rules, and
     # $FAKE_STATE/ufw-on exists while the firewall is enabled. Like ufw, it skips a rule it already has,
     # gives a rule for "Anywhere" an IPv6 twin, lists nothing while it is off, and deletes by what the
-    # rule says (not by its comment).
+    # rule says (not by its comment). The default for incoming is $FAKE_STATE/ufw-default-incoming (deny,
+    # as on a fresh Ubuntu, when there is none), shown by `status verbose` and set by `default`.
     "ufw": r"""
         echo "ufw $*" >>"$FAKE_STATE/calls"
         rules="$FAKE_STATE/ufw-rules"
@@ -283,15 +284,26 @@ FAKES = {
         case "$1" in
           status)
             if [[ ! -e "$FAKE_STATE/ufw-on" ]]; then echo "Status: inactive"; exit 0; fi
-            printf 'Status: active\n\nTo                         Action      From\n--                         ------      ----\n'
+            echo "Status: active"
+            action=ALLOW
+            if [[ "${2:-}" == verbose ]]; then
+              action="ALLOW IN"
+              printf 'Logging: on (low)\nDefault: %s (incoming), %s (outgoing), disabled (routed)\nNew profiles: skip\n' \
+                "$(cat "$FAKE_STATE/ufw-default-incoming" 2>/dev/null || echo deny)" \
+                "$(cat "$FAKE_STATE/ufw-default-outgoing" 2>/dev/null || echo allow)"
+            fi
+            printf '\nTo                         Action      From\n--                         ------      ----\n'
             while IFS=$'\t' read -r to from comment; do
-              printf '%-26s %-11s %-26s' "$to" ALLOW "$from"
+              printf '%-26s %-11s %-26s' "$to" "$action" "$from"
               [[ -z "$comment" ]] || printf ' # %s' "$comment"
               echo
             done <"$rules"
             ;;
           --force)
             [[ "$2" == enable ]] && touch "$FAKE_STATE/ufw-on"
+            ;;
+          default)
+            echo "$2" >"$FAKE_STATE/ufw-default-$3"
             ;;
           allow)
             shift
@@ -1068,6 +1080,9 @@ class MachineRoleTests(unittest.TestCase):
     def test_given_a_machine_set_up_when_checked_then_every_row_is_ok(self):
         for role in ("dev", "apps"):
             with self.subTest(role=role):
+                # A fresh firewall: the dev machine's 2222 is, rightly, not the apps machine's.
+                (self.state / "ufw-rules").unlink(missing_ok=True)
+                (self.state / "ufw-on").unlink(missing_ok=True)
                 self.install(role)
                 stdout, rows = self.rows(role)
                 bad = [line for line in rows if not line.startswith("  ok ")]
@@ -1092,9 +1107,12 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(
             sorted(self.ufw_rules()),
             [("2222/tcp", "Anywhere", ""), ("80,443/tcp", "Anywhere", ""), ("OpenSSH", "Anywhere", "")])
-        # SSH is allowed before the firewall is on, so the session running this isn't cut.
+        # SSH is allowed before the firewall is on, so the session running this isn't cut, and what
+        # nothing allows is refused.
         calls = self.calls()
         self.assertLess(calls.index("ufw allow OpenSSH"), calls.index("ufw --force enable"))
+        self.assertLess(calls.index("ufw default deny incoming"), calls.index("ufw --force enable"))
+        self.assertIn("ufw default allow outgoing", calls)
         stdout, rows = self.rows("dev")
         self.assertTrue(self.row(rows, "ufw").startswith("  ok "), stdout)
         self.assertTrue(self.row(rows, "ports").startswith("  ok "), stdout)
@@ -1120,7 +1138,9 @@ class MachineRoleTests(unittest.TestCase):
         self.assertTrue(self.row(rows, "cloudflare ranges").startswith("  ok "), stdout)
 
     def test_given_role_apps_when_the_firewall_is_set_then_cloudflare_ips_is_written_for_traefik(self):
-        self.install("apps")
+        result = self.install("apps")
+        # Traefik reads the file when platform.sh renders its configuration, not before.
+        self.assertIn("after the next 'scripts/platform.sh up' as ygg", result.stdout)
         path = self.etc("yggdrasil/cloudflare-ips")
         self.assertEqual(path.read_text(), "".join(line + "\n" for line in CLOUDFLARE_V4 + CLOUDFLARE_V6))
         self.assertEqual(path.stat().st_mode & 0o777, 0o644)
@@ -1160,44 +1180,79 @@ class MachineRoleTests(unittest.TestCase):
         stdout, rows = self.rows("apps")
         self.assertTrue(self.row(rows, "cloudflare ranges").startswith("  ok "), stdout)
 
-    UNCHANGED = "could not fetch Cloudflare's ranges: the firewall and cloudflare-ips are unchanged"
+    UNFETCHED = "could not fetch Cloudflare's ranges: ufw is on with ssh allowed and incoming denied"
 
     def firewall_calls(self, since=0):
         return [call for call in self.calls()[since:] if call.startswith(("ufw allow", "ufw delete", "ufw --force"))]
 
-    def test_given_cloudflare_unreachable_when_the_firewall_is_set_then_nothing_changes(self):
+    def assert_closed_without_cloudflare(self, result):
+        """The firewall fails closed: ssh in, everything else refused, no Cloudflare rule or file made."""
+        self.assertIn(self.UNFETCHED, result.stderr)
+        self.assertTrue(self.ufw_enabled())
+        self.assertIn(("OpenSSH", "Anywhere", ""), self.ufw_rules())
+        self.assertEqual((self.state / "ufw-default-incoming").read_text().strip(), "deny")
+        calls = self.calls()
+        self.assertLess(calls.index("ufw allow OpenSSH"), calls.index("ufw --force enable"))
+        self.assertLess(calls.index("ufw default deny incoming"), calls.index("ufw --force enable"))
+
+    def test_given_cloudflare_unreachable_when_the_firewall_is_set_then_it_is_on_and_web_is_closed(self):
         (self.cloudflare / "ips-v6").unlink()
         result = self.install("apps")
-        self.assertIn(self.UNCHANGED, result.stderr)
-        self.assertEqual(self.firewall_calls(), [])
-        self.assertFalse(self.ufw_enabled())
+        self.assert_closed_without_cloudflare(result)
+        self.assertEqual(self.cloudflare_rules(), [])
+        self.assertEqual(self.ufw_rules(), [("OpenSSH", "Anywhere", "")])
         self.assertFalse(self.etc("yggdrasil/cloudflare-ips").exists())
         # The rest of the machine was set up all the same.
         self.assertTrue(self.etc("yggdrasil-role").exists())
 
-    def test_given_cloudflare_unreachable_after_a_firewall_was_set_then_rules_and_file_are_kept(self):
+    def test_given_cloudflare_unreachable_after_a_firewall_was_set_then_its_rules_and_file_are_kept(self):
         self.install("apps")
-        rules = (self.state / "ufw-rules").read_text()
         ips = self.etc("yggdrasil/cloudflare-ips").read_text()
-        # The firewall is off, so install tries to put it right: and the download fails.
+        # The firewall is off (and lets everything in by default), so install puts it right: and the
+        # download fails.
         (self.state / "ufw-on").unlink()
+        (self.state / "ufw-default-incoming").write_text("allow\n")
         (self.cloudflare / "ips-v4").unlink()
         (self.cloudflare / "ips-v6").unlink()
         before = len(self.calls())
         result = self.install("apps")
-        self.assertIn(self.UNCHANGED, result.stderr)
-        self.assertEqual((self.state / "ufw-rules").read_text(), rules)
+        self.assert_closed_without_cloudflare(result)
+        # The Cloudflare rules that were there stay: the ones of the last download that worked.
+        self.assertEqual(self.cloudflare_rules(), sorted(CLOUDFLARE_V4 + CLOUDFLARE_V6))
         self.assertEqual(self.etc("yggdrasil/cloudflare-ips").read_text(), ips)
-        self.assertFalse(self.ufw_enabled())
-        self.assertEqual(self.firewall_calls(before), [])
+        self.assertEqual([call for call in self.firewall_calls(before) if "proto" in call], [])
 
-    def test_given_a_range_that_is_not_a_cidr_when_fetched_then_nothing_changes(self):
+    def test_given_a_range_that_is_not_a_cidr_when_fetched_then_no_cloudflare_rule_is_made(self):
         (self.cloudflare / "ips-v4").write_text("<html><body>502 Bad Gateway</body></html>\n")
         result = self.install("apps")
-        self.assertIn(self.UNCHANGED, result.stderr)
-        self.assertEqual(self.firewall_calls(), [])
-        self.assertFalse(self.ufw_enabled())
+        self.assert_closed_without_cloudflare(result)
+        self.assertEqual(self.cloudflare_rules(), [])
         self.assertFalse(self.etc("yggdrasil/cloudflare-ips").exists())
+
+    def test_given_cloudflare_unreachable_with_80_open_to_everyone_when_installed_then_it_is_closed(self):
+        self.install("apps")
+        self.set_ufw(self.ufw_rules() + [("80,443/tcp", "Anywhere", "")])
+        (self.cloudflare / "ips-v4").unlink()
+        result = self.install("apps")
+        self.assertIn(self.UNFETCHED, result.stderr)
+        self.assertNotIn(("80,443/tcp", "Anywhere", ""), self.ufw_rules())
+        self.assertEqual(self.cloudflare_rules(), sorted(CLOUDFLARE_V4 + CLOUDFLARE_V6))
+
+    def test_given_incoming_allowed_by_default_when_checked_then_it_is_reported_and_install_denies_it(self):
+        for role in ("dev", "apps"):
+            with self.subTest(role=role):
+                self.install(role)
+                (self.state / "ufw-default-incoming").write_text("allow\n")
+                stdout, rows = self.rows(role)
+                line = self.row(rows, "ufw")
+                self.assertFalse(line.startswith("  ok "), line)
+                self.assertIn("allow", line)
+                # Read from what ufw says verbosely, which is the only place it says it.
+                self.assertIn("sudo -n ufw status verbose", self.calls())
+                self.install(role)
+                self.assertEqual((self.state / "ufw-default-incoming").read_text().strip(), "deny")
+                stdout, rows = self.rows(role)
+                self.assertTrue(self.row(rows, "ufw").startswith("  ok "), stdout)
 
     def cloudflare_ranges(self):
         return subprocess.run(
@@ -1291,10 +1346,37 @@ class MachineRoleTests(unittest.TestCase):
                 self.assertFalse(line.startswith("  ok "), line)
                 self.assertIn("open to everyone", line)
                 self.assertIn(rule, line)
-        # 80 for one address, or other ports for everyone, are fine.
-        self.set_ufw(rules + [("80/tcp", "10.0.0.5", ""), ("22/udp", "Anywhere", ""), ("2222/tcp", "Anywhere", "")])
+        # 80 for one address is fine.
+        self.set_ufw(rules + [("80/tcp", "10.0.0.5", "")])
         stdout, rows = self.rows("apps")
         self.assertTrue(self.row(rows, "ports").startswith("  ok "), stdout)
+
+    def test_given_a_rule_from_anywhere_that_install_did_not_make_when_checked_then_it_is_reported(self):
+        cases = {
+            # An application profile: "Nginx Full" is 80 and 443, to everyone, under another name.
+            "apps": [("Nginx Full", "Anywhere", ""), ("WWW Full", "Anywhere", ""), ("2222/tcp", "Anywhere", ""),
+                     ("22/udp", "Anywhere", "")],
+            "dev": [("8080/tcp", "Anywhere", ""), ("Nginx Full", "Anywhere", "")],
+        }
+        for role, extra in cases.items():
+            with self.subTest(role=role):
+                self.install(role)
+                rules = self.ufw_rules()
+                for rule in extra:
+                    self.set_ufw(rules + [rule])
+                    stdout, rows = self.rows(role)
+                    line = self.row(rows, "ports")
+                    self.assertTrue(line.startswith("  !! "), line)
+                    self.assertIn(rule[0], line)
+                    self.assertIn("open to everyone", line)
+                # Install reports them but takes out only the plain 80/443 rules it knows (the default
+                # policy is what makes the firewall step run again here).
+                self.set_ufw(rules + extra)
+                (self.state / "ufw-default-incoming").write_text("allow\n")
+                self.install(role)
+                self.assertIn("ufw default deny incoming", self.calls())
+                for rule in extra:
+                    self.assertIn(rule, self.ufw_rules())
 
     def test_given_an_open_web_rule_on_apps_when_installed_then_it_is_closed_and_cloudflare_kept(self):
         self.install("apps")

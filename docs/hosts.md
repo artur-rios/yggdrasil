@@ -153,8 +153,10 @@ change rarely. `ygg install --role apps` downloads them from `https://www.cloudf
 `/ips-v6` and adds one `ufw` rule per range, marked with the comment `yggdrasil-cloudflare`.
 `ygg check --role apps` compares the rules with Cloudflare's current list and says what is missing
 or out of date. Run `ygg install` again to update them. A download that fails or returns anything but
-address ranges changes nothing: a firewall built from half an answer would lock real visitors out
-or let everyone in.
+address ranges changes no Cloudflare rule: a firewall built from half an answer would lock real
+visitors out or let everyone in. The rest of the firewall is still set, and fails closed: SSH in,
+everything else refused (on a new machine, 80 and 443 stay closed until a download works). After the
+ranges change, `scripts/platform.sh up` (as `ygg`) makes Traefik trust the new ones.
 
 ### Client addresses
 
@@ -427,7 +429,7 @@ WantedBy=timers.target
 | `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`. Files `600`. A file that is already there is never touched. |
 | `/etc/yggdrasil/cloudflare-ips` (apps machine) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
 | `/etc/yggdrasil/traefik.yml` | Not written by `ygg install`: `platform.sh` renders Traefik's static configuration there (as `ygg`, mode `600`) at every run, and Traefik's container mounts it. It stays there so that Traefik starts again after a crash or a reboot; deleting it takes ingress down at the next restart of the container, until the next `platform.sh up`. |
-| `ufw` rules | Dev: `OpenSSH`, `80,443/tcp`, `2222/tcp`. Apps: `OpenSSH`, and for each Cloudflare range `allow proto tcp from <range> to any port 80,443 comment yggdrasil-cloudflare`. Then `ufw` is turned on, with SSH allowed first so the session that runs the install is not cut. |
+| `ufw` rules | Dev: `OpenSSH`, `80,443/tcp`, `2222/tcp`. Apps: `OpenSSH`, and for each Cloudflare range `allow proto tcp from <range> to any port 80,443 comment yggdrasil-cloudflare`. The defaults: `deny incoming`, `allow outgoing`. Then `ufw` is turned on, with SSH allowed first so the session that runs the install is not cut. `ygg check` reports any other rule that lets everyone in. |
 | Packages | `git curl openssl python3 apache2-utils ca-certificates python3-yaml python3-cryptography uidmap dbus-user-session slirp4netns docker-ce docker-ce-cli containerd.io docker-ce-rootless-extras docker-buildx-plugin docker-compose-plugin ufw rsync unattended-upgrades`. Docker's come from its own apt repository; the distribution's `docker.io` and similar are removed first, if you agree. |
 
 ## 5. Rootless Docker
