@@ -12,6 +12,8 @@ BACKUP_TARGET=
 # BACKUP_KEY=~/.ssh/yggdrasil-backup
 
 # How many days are kept in ~/backups on this machine (the other machine's copy follows). Default: 7
+# An item's newest good file is kept even beyond that, in its own day, so an item that fails for longer
+# than BACKUP_KEEP days never loses its last good dump.
 # BACKUP_KEEP=7
 
 # The items, one per line. Each becomes one file in ~/backups/<YYYY-MM-DD>/.

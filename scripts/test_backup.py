@@ -31,6 +31,9 @@ FAKES = {
     # forgejo container; `exec` and `run` print what the dump would; `cp` writes the file copied out.
     "docker": r"""
         echo "docker $*" >>"$FAKE_LOG"
+        # The lock on ~/backups is fd 9 of backup.sh: a child that kept it open (ssh's ControlPersist,
+        # say) would hold the lock after backup.sh is gone.
+        [[ ! -e /proc/self/fd/9 ]] || echo "fd 9 open in docker $1" >>"$FAKE_LOG"
         if [[ -n "${FAKE_FAIL:-}" && "$*" == *"$FAKE_FAIL"* ]]; then
           echo "fake docker: failing on purpose" >&2
           exit 1
@@ -51,6 +54,7 @@ FAKES = {
     """,
     "rsync": r"""
         echo "rsync $*" >>"$FAKE_LOG"
+        [[ ! -e /proc/self/fd/9 ]] || echo "fd 9 open in rsync" >>"$FAKE_LOG"
         exit "${FAKE_RSYNC_STATUS:-0}"
     """,
     "ssh": r"""
@@ -59,6 +63,7 @@ FAKES = {
 }
 
 THREE_KINDS = "forgejo\nvolume yggdrasil_jenkins_home\npostgres app-db-1 postgres\n"
+BUSYBOX = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 
 
 @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
@@ -127,7 +132,8 @@ class BackupTests(unittest.TestCase):
         run = next(call for call in calls if call.startswith("docker run"))
         self.assertIn("--rm", run)
         self.assertIn("yggdrasil_jenkins_home:/volume:ro", run)
-        self.assertIn("busybox tar", run)
+        # Pinned by version and digest, like the platform's images.
+        self.assertIn(f"{BUSYBOX} tar", run)
         self.assertEqual((day / "volume-yggdrasil_jenkins_home.tar.gz").read_text(), "tar of the volume\n")
         self.assertIn("docker exec app-db-1 pg_dumpall -U postgres", calls)
         with gzip.open(day / "postgres-app-db-1.sql.gz", "rt") as dump:
@@ -187,6 +193,50 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(kept, sorted(["2020-01-04", "2020-01-05", "notes", self.today]))
         # The removal is before the send, so the other machine's copy loses them too (--delete).
         self.assertTrue([call for call in self.calls() if call.startswith("rsync ")])
+
+    def day(self, name, *files):
+        directory = self.backups / name
+        directory.mkdir(parents=True, exist_ok=True)
+        for file in files:
+            (directory / file).write_text(f"{file} of {name}")
+        return directory
+
+    def files_by_day(self):
+        return {day.name: sorted(path.name for path in day.iterdir())
+                for day in sorted(self.backups.iterdir()) if day.is_dir()}
+
+    def test_given_an_item_failing_for_longer_than_kept_when_run_then_its_newest_good_file_stays(self):
+        self.conf(items="forgejo\npostgres app-db-1 postgres\n", extra="BACKUP_KEEP=2\n")
+        self.day("2020-01-01", "forgejo.zip", "postgres-app-db-1.sql.gz", "volume-gone.tar.gz")
+        self.day("2020-01-02", "postgres-app-db-1.sql.gz")
+        self.day("2020-01-03", "postgres-app-db-1.sql.gz")
+        # Forgejo has failed every night since the 1st, and fails again.
+        result = self.backup("run", FAKE_FAIL="forgejo dump")
+        self.assertNotEqual(result.returncode, 0)
+        # The two newest days stay whole. Beyond them only forgejo.zip of the 1st is kept: it is the
+        # last good copy of Forgejo anywhere, and --delete would take it off the other machine too.
+        # The rest of that day goes, the file of an item no longer in backup.conf included.
+        self.assertEqual(self.files_by_day(), {
+            "2020-01-01": ["forgejo.zip"],
+            "2020-01-03": ["postgres-app-db-1.sql.gz"],
+            self.today: ["postgres-app-db-1.sql.gz"],
+        })
+        self.assertEqual((self.backups / "2020-01-01" / "forgejo.zip").read_text(), "forgejo.zip of 2020-01-01")
+        self.assertIn("keeping 2020-01-01/forgejo.zip", result.stdout)
+
+    def test_given_a_newer_good_file_when_run_then_the_old_days_go_whole(self):
+        self.conf(items="forgejo\n", extra="BACKUP_KEEP=1\n")
+        self.day("2020-01-01", "forgejo.zip")
+        self.day("2020-01-02", "forgejo.zip.partial")
+        self.assertEqual(self.backup("run").returncode, 0)
+        # Today's forgejo.zip is the newest good one; a .partial left by a crash is no backup.
+        self.assertEqual(self.files_by_day(), {self.today: ["forgejo.zip"]})
+
+    def test_given_a_run_when_done_then_no_child_holds_the_lock(self):
+        self.conf()
+        self.assertEqual(self.backup("run").returncode, 0)
+        self.assertTrue([call for call in self.calls() if call.startswith("rsync ")])
+        self.assertEqual([call for call in self.calls() if "fd 9 open" in call], [])
 
     def test_given_the_default_keep_when_run_then_seven_days_stay(self):
         self.conf()
@@ -299,6 +349,30 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(lines[2], "2020-01-02")
         # list is a read: it needs no configuration and runs nothing.
         self.assertEqual(self.calls(), [])
+
+    def test_given_a_complete_newest_day_when_listed_then_it_says_so(self):
+        self.conf(items="forgejo\nvolume data\n")
+        self.day("2020-01-01", "forgejo.zip")
+        self.day("2020-01-02", "forgejo.zip", "volume-data.tar.gz")
+        result = self.backup("list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1], "Newest: 2020-01-02, complete (every item of backup.conf)")
+        self.assertEqual(self.calls(), [])
+
+    def test_given_an_incomplete_newest_day_when_listed_then_it_names_what_is_missing(self):
+        self.conf(items="forgejo\nvolume data\npostgres db postgres\n")
+        self.day("2020-01-02", "volume-data.tar.gz", "forgejo.zip.partial")
+        result = self.backup("list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1],
+                         "Newest: 2020-01-02, INCOMPLETE: no forgejo.zip, postgres-db.sql.gz")
+
+    def test_given_no_config_when_listed_then_the_newest_day_is_shown_without_a_verdict(self):
+        self.day("2020-01-02", "forgejo.zip")
+        result = self.backup("list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Newest: 2020-01-02", result.stdout.splitlines()[-1])
+        self.assertIn("backup.conf", result.stdout.splitlines()[-1])
 
     def test_given_no_backups_when_listed_then_it_says_so(self):
         result = self.backup("list")

@@ -12,7 +12,8 @@ docker_socket() {
     echo "${DOCKER_HOST#unix://}"
     return
   fi
-  local socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
+  local socket
+  socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
   [[ -S "$socket" ]] || die "no rootless Docker engine for $(id -un): run 'ygg install' (docs/hosts.md)"
   echo "$socket"
 }
