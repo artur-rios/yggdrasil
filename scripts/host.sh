@@ -20,6 +20,8 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 secrets=${YGG_SECRETS_DIR:-/etc/yggdrasil}
+# Where the machine roles' system files live: empty on a real host, a temporary directory in the tests.
+sysroot=${YGG_SYSROOT:-}
 apps_dir=${YGG_APPS_DIR:-$HOME/yggdrasil-apps}
 me=$(id -un)
 host_env=${YGG_ENVIRONMENT:-}
@@ -92,8 +94,10 @@ ask_match() {
   done
 }
 
-# confirm <question> [y]: true on yes. With y, an empty answer is yes; Esc is no.
+# confirm <question> [y]: true on yes. With y, an empty answer is yes; Esc is no. YGG_ASSUME_YES=1
+# answers yes to everything without asking (the tests, and an install run from a script).
 confirm() {
+  [[ "${YGG_ASSUME_YES:-}" == 1 ]] && return 0
   local _answer _status _default=()
   [[ "${2:-}" == y ]] && _default=(--yes)
   picker _answer confirm "${_default[@]}" -- "$1" && _status=0 || _status=$?
@@ -160,8 +164,12 @@ catalog() { python3 "$root/scripts/catalog.py" "$@"; }
 version_at_least() { [[ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]; }
 
 # shellcheck source=/dev/null
-os_field() { (. /etc/os-release 2>/dev/null && eval "echo \"\${$1:-}\""); }
+os_field() { (. "$sysroot/etc/os-release" 2>/dev/null && eval "echo \"\${$1:-}\""); }
 is_ubuntu() { [[ "$(os_field ID)" == ubuntu || " $(os_field ID_LIKE) " == *" ubuntu "* ]]; }
+
+# The dev and apps machine roles: their steps, report rows and install (scripts/machine.sh).
+# shellcheck source=machine.sh
+source "$root/scripts/machine.sh"
 
 # env_value <file> <name>: the value of NAME= in an env file, without surrounding quotes.
 env_value() {
@@ -485,27 +493,38 @@ install_packages() {
 # Docker's own packages, as docs.docker.com/engine/install/ubuntu does it: the distribution's
 # docker.io ships a Compose too old for the overlays' !reset.
 install_docker() {
-  local conflicting=() name codename
+  remove_conflicting || return 0
+  add_docker_repository
+  apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  # Without systemd (some WSL distributions) the service is started by hand.
+  as_root systemctl enable --now docker 2>/dev/null || as_root service docker start 2>/dev/null || true
+}
+
+# Removes the distribution's packages that clash with Docker's, after asking. False when declined.
+remove_conflicting() {
+  local conflicting=() name
   for name in "${CONFLICTING[@]}"; do installed "$name" && conflicting+=("$name"); done
   if ((${#conflicting[@]})); then
     warn "These packages clash with Docker's and are removed first: ${conflicting[*]}"
     note "Images, containers and volumes in /var/lib/docker stay."
-    confirm "Remove them?" || return 0
+    confirm "Remove them?" || return 1
     apt_get remove -y "${conflicting[@]}"
   fi
+}
+
+# Docker's apt repository and its signing key, and an apt update that sees them.
+add_docker_repository() {
+  local codename
   codename=$(os_field UBUNTU_CODENAME)
   [[ -n "$codename" ]] || codename=$(os_field VERSION_CODENAME)
   apt_get update
   apt_get install -y ca-certificates curl
-  as_root install -m 0755 -d /etc/apt/keyrings
-  as_root curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  as_root chmod a+r /etc/apt/keyrings/docker.asc
+  as_root install -m 0755 -d "$sysroot/etc/apt/keyrings"
+  as_root curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$sysroot/etc/apt/keyrings/docker.asc"
+  as_root chmod a+r "$sysroot/etc/apt/keyrings/docker.asc"
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $codename stable" \
-    | as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
+    | as_root tee "$sysroot/etc/apt/sources.list.d/docker.list" >/dev/null
   apt_get update
-  apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  # Without systemd (some WSL distributions) the service is started by hand.
-  as_root systemctl enable --now docker 2>/dev/null || as_root service docker start 2>/dev/null || true
 }
 
 add_to_docker_group() {
@@ -569,6 +588,42 @@ install_host() {
   fi
   [[ -n "$did" ]] || say "Nothing installed."
   check_host
+}
+
+# The role of `check` and `install`: `<role>` or `--role <role>`; none means the machine's own (its
+# role file, else workstation).
+requested_role() {
+  case ${1:-} in
+    --role) [[ -n "${2:-}" ]] || die "--role needs a role: ${MACHINE_ROLES[*]}"; machine_role "$2" ;;
+    "") machine_role ;;
+    *) machine_role "$1" ;;
+  esac
+}
+
+# check [<role>]: a workstation is checked as before; dev and apps by their steps.
+check_for_role() {
+  local role
+  role=$(requested_role "$@")
+  if [[ "$role" == workstation ]]; then
+    check_host
+  else
+    check_machine "$role"
+  fi
+}
+
+# install [<role>]: likewise. A machine role is installed by the admin, who runs this with sudo.
+install_for_role() {
+  local role
+  role=$(requested_role "$@")
+  if [[ "$role" == workstation ]]; then
+    install_host
+    return
+  fi
+  machine_preflight "$role"
+  check_machine "$role" quiet
+  title "Install"
+  install_machine "$role"
+  check_machine "$role"
 }
 
 # ---- Stack and env files ------------------------------------------------------------------------
@@ -1406,8 +1461,8 @@ run() {
 }
 
 case ${1:-} in
-  check) check_host ;;
-  install) install_host ;;
+  check) shift; check_for_role "$@" ;;
+  install) shift; install_for_role "$@" ;;
   add) add_application ;;
   status) show_status ;;
   config) configure_app "${2:-}" "${3:-}" ;;
