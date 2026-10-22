@@ -117,7 +117,7 @@ services:
       retries: 5
     labels:
       traefik.enable: "true"
-      traefik.http.routers.dashboard.rule: Host(`traefik.${DOMAIN}`)
+      traefik.http.routers.dashboard.rule: Host(`traefik${PLATFORM_HOST_SUFFIX:-}.${DOMAIN}`)
       traefik.http.routers.dashboard.entrypoints: websecure
       traefik.http.routers.dashboard.service: api@internal
       traefik.http.routers.dashboard.middlewares: dashboard-auth,secure-headers@file
@@ -271,7 +271,7 @@ services:
     restart: unless-stopped
     logging: *logging
     environment:
-      GF_SERVER_ROOT_URL: https://grafana.${DOMAIN}/
+      GF_SERVER_ROOT_URL: https://grafana${PLATFORM_HOST_SUFFIX:-}.${DOMAIN}/
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in the env file}
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -289,7 +289,7 @@ services:
       - loki
     labels:
       traefik.enable: "true"
-      traefik.http.routers.grafana.rule: Host(`grafana.${DOMAIN}`)
+      traefik.http.routers.grafana.rule: Host(`grafana${PLATFORM_HOST_SUFFIX:-}.${DOMAIN}`)
       traefik.http.routers.grafana.entrypoints: websecure
       traefik.http.routers.grafana.middlewares: secure-headers@file
       traefik.http.services.grafana.loadbalancer.server.port: "3000"

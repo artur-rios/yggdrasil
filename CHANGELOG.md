@@ -33,6 +33,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   **Cloudflare in front** (`CLOUDFLARE_PROXIED`): Traefik trusts the forwarded client address from Cloudflare's ranges
   only, from `<secrets>/cloudflare-ips`, which `ygg install --role apps` writes. Traefik's static configuration is now a
   file rendered by `scripts/traefik_config.py`; the settings are the same.
+- **`PLATFORM_HOST_SUFFIX`** (optional, empty by default) in `platform.env`: put after `traefik` and `grafana` in
+  the names of the Traefik dashboard and Grafana (and Grafana's root URL). The dev machine sets `-dev`, so it serves
+  `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>` instead of claiming the apps machine's `traefik.` and `grafana.`
+  under the same domain; they need DNS-only records to the dev machine. Unset, nothing changes.
 - A machine without the `apps` profile (the dev machine) has Prometheus read a written-out list of the platform's own
   targets (`platform/prometheus/prometheus-static.yml`).
 
@@ -58,7 +62,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `apps` running the `jenkins` profile too is still supported), steps 6 and 8 to 11 and Troubleshooting follow the
   new layout, and [docs/dns.md](docs/dns.md) covers two zones, the proxy and the token's scope. [docs/cli.md](docs/cli.md)
   documents `check`/`install --role`, `agent` and `backup`.
-
 - Chimera production releases now require an explicit Jenkins approval. After a successful deploy,
   Jenkins creates an immutable tag and private draft, dispatches Chimera's release-artifact
   workflow, and waits for its validated artifacts to publish before completing cleanup. Existing
@@ -82,6 +85,10 @@ For a VPS set up with the earlier guide, on the same server: stop the platform a
 back up the volumes, pull and run `ygg install --role apps`, hand `/etc/yggdrasil` to `ygg`, restore the volumes into
 `ygg`'s engine, add `apps` to `COMPOSE_PROFILES`, start. Step by step:
 [docs/hosts.md](docs/hosts.md#9-upgrading-a-host-from-rootful-docker). Plan for downtime.
+
+A last-good copy saved by an earlier release lacks `traefik.yml` (Traefik's configuration is now a rendered file),
+so `platform.sh config --last-good` and `logs --last-good` stop on it: run `platform.sh up` once from the
+variables store after upgrading, which saves a complete copy.
 
 ## [0.7.5] - 2026-10-20
 

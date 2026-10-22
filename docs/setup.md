@@ -257,8 +257,8 @@ domain also works) and:
 - on each domain, a `*.<DOMAIN>` record and the bare-domain record for the **apps machine**'s public
   IP, **proxied** (orange cloud). One wildcard covers every environment of the machine:
   `heimdall-dev.<DOMAIN>`, `heimdall-hml.<DOMAIN>` and `heimdall.<DOMAIN>` are all one label under it;
-- on the application domain, records of their own for the **dev machine**'s names, `git` and
-  `jenkins`, pointing at its IP and **DNS only** (grey cloud): git over SSH cannot pass Cloudflare's
+- on the application domain, records of their own for the **dev machine**'s names, `git`, `jenkins`,
+  `traefik-dev` and `grafana-dev`, pointing at its IP and **DNS only** (grey cloud): git over SSH cannot pass Cloudflare's
   proxy. A specific record wins over the wildcard ([hosts.md, Domains and Cloudflare](hosts.md#2-domains-and-cloudflare));
 - SSL/TLS mode **Full (strict)** on both zones;
 - one API token, with **Zone Read** and **DNS Edit** on both zones, which goes into each machine's
@@ -573,7 +573,7 @@ Next to each part is what you would type to do it by hand. Every command is run 
     Apps machine: SSH, and 80 and 443 only from Cloudflare's published ranges:
     ```bash
     sudo ufw allow OpenSSH
-    { curl -fsS https://www.cloudflare.com/ips-v4; echo; curl -fsS https://www.cloudflare.com/ips-v6; echo; } > ~/cloudflare-ips
+    { curl -fsS https://www.cloudflare.com/ips-v4; echo; curl -fsS https://www.cloudflare.com/ips-v6; echo; } | grep . > ~/cloudflare-ips
     for range in $(cat ~/cloudflare-ips); do
       sudo ufw allow proto tcp from "$range" to any port 80,443 comment yggdrasil-cloudflare
     done
@@ -584,6 +584,8 @@ Next to each part is what you would type to do it by hand. Every command is run 
     - `2222/tcp`: Forgejo's git over SSH (the dev machine only).
     - `from "$range" … comment yggdrasil-cloudflare`: lets one Cloudflare range in on the two web ports and
       labels the rule, so that a later `ygg install` knows it is its own and can update it.
+    - `| grep .`: drops the blank lines between the two lists, so the file is exactly one range per line,
+      as the installer writes it (otherwise `ygg check` reports the file as different).
     - `cloudflare-ips`: the same ranges, which Traefik trusts for the visitor's address
       ([hosts.md](hosts.md#client-addresses)). Rootless Docker publishes ports as ordinary
       processes, so these rules apply to them: Docker no longer goes around `ufw`.
@@ -597,24 +599,27 @@ Next to each part is what you would type to do it by hand. Every command is run 
     `sudo -u ci env XDG_RUNTIME_DIR=/run/user/$(id -u ci) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u ci)/bus <command>`):
     ```bash
     mkdir -p ~/.config/systemd/user/docker.service.d
-    nano ~/.config/systemd/user/docker.service.d/override.conf      # the lines of hosts.md
+    nano ~/.config/systemd/user/docker.service.d/override.conf      # exactly the three lines of hosts.md
     dockerd-rootless-setuptool.sh install
     systemctl --user daemon-reload
     systemctl --user enable --now docker
-    echo "export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> ~/.profile
+    printf '\n%s\n%s\n%s\n' '# >>> yggdrasil >>>' "export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" '# <<< yggdrasil <<<' >> ~/.profile
     ```
     - `loginctl enable-linger`: starts the user's systemd at boot and keeps it running with nobody logged in.
       Without it the engine stops with the user's last session.
     - `override.conf`: switches the engine's network and port driver to `slirp4netns`, so that Traefik sees
-      the real address of each visitor ([hosts.md, Rootless Docker](hosts.md#5-rootless-docker)).
+      the real address of each visitor. Its exact content is in
+      [hosts.md, In each service user's home](hosts.md#in-each-service-users-home); the reason in
+      [Rootless Docker](hosts.md#5-rootless-docker).
     - `dockerd-rootless-setuptool.sh install`: Docker's own tool; it makes the user's `docker.service`.
     - `systemctl --user enable --now docker`: starts the engine now and at every boot.
-    - The `~/.profile` line points the user's `docker` command at its own engine. (The installer keeps it
-      between marker comments, so running it again replaces the line instead of adding another.)
+    - The `~/.profile` lines point the user's `docker` command at its own engine. The marker comments are
+      what the installer looks for: it replaces the block between them on every run instead of adding another
+      (the block's exact form is in [hosts.md](hosts.md#in-each-service-users-home)).
 12. **The nightly backup**, as `ygg`:
     ```bash
     mkdir -p ~/.config/systemd/user
-    cp /opt/yggdrasil/platform/systemd/yggdrasil-backup.service /opt/yggdrasil/platform/systemd/yggdrasil-backup.timer ~/.config/systemd/user/
+    cp /opt/yggdrasil/platform/systemd/yggdrasil-backup.service /opt/yggdrasil/platform/systemd/yggdrasil-backup.timer ~/.config/systemd/user/   # their content: hosts.md
     systemctl --user daemon-reload
     systemctl --user enable --now yggdrasil-backup.timer
     ```
@@ -720,6 +725,7 @@ rm <app>.private-key.pem
 | `DOMAIN` | This machine's domain, e.g. `example.com`. `git.` and `jenkins.` are under it |
 | `EXTRA_DOMAINS` | Empty on the dev machine |
 | `CLOUDFLARE_PROXIED` | `false`: the dev machine's names are DNS only. On a single machine behind Cloudflare, `true` ([hosts.md](hosts.md#client-addresses)) |
+| `PLATFORM_HOST_SUFFIX` | `-dev` on the dev machine: its Traefik dashboard and Grafana are then `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>`, not the apps machine's `traefik.` and `grafana.`. They need DNS-only records to this machine ([step 6](#6-domain-and-dns), [hosts.md](hosts.md#dns-records)). Leave it empty on a single machine |
 | `ACME_EMAIL` | Your e-mail address: the Let's Encrypt account's contact. Not an `@example.com` one |
 | `ACME_DNS_PROVIDER` | `cloudflare`, `duckdns`, ... |
 | `ACME_CA_SERVER` | **Uncomment** it (remove the `#`): the staging CA, for this first run |
@@ -1022,7 +1028,7 @@ change only through pull requests.
 | Agent can read the env files | `docker exec yggdrasil-agent-1 ls /etc/yggdrasil/<environment>` on each host, for each of its environments | Lists the application env files, no `Permission denied` |
 | Console | `https://yggdrasil.<DOMAIN>` | The host, with a chip per environment it runs. The platform system is `up`. Applications are `not deployed` until the first release |
 | Status API | `curl -H "Authorization: Bearer <YGGDRASIL_STATUS_TOKEN>" https://yggdrasil.<DOMAIN>/api/status` | JSON with every environment of the host, and every system that has an application in one of them |
-| Grafana | `https://grafana.<DOMAIN>`, `admin` / `GRAFANA_ADMIN_PASSWORD` | Prometheus and Loki data sources work |
+| Grafana | `https://grafana.<DOMAIN>` (`grafana-dev.<DOMAIN>` on the dev machine), `admin` / `GRAFANA_ADMIN_PASSWORD` | Prometheus and Loki data sources work |
 
 **Windows and Android consoles**: download them from the releases of
 [artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil/releases) (your fork has none until you

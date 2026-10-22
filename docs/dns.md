@@ -39,8 +39,8 @@ With `DOMAIN=example.dev`, one host serves, for all its environments:
 | Host name | What |
 |---|---|
 | `yggdrasil.<DOMAIN>` | The web console, and the status API under `/api/` |
-| `grafana.<DOMAIN>` | Grafana |
-| `traefik.<DOMAIN>` | The Traefik dashboard. Answers `401` until you sign in |
+| `grafana<PLATFORM_HOST_SUFFIX>.<DOMAIN>` | Grafana (`PLATFORM_HOST_SUFFIX` is empty unless you set it; the dev machine sets `-dev`, giving `grafana-dev.<DOMAIN>`) |
+| `traefik<PLATFORM_HOST_SUFFIX>.<DOMAIN>` | The Traefik dashboard. Answers `401` until you sign in |
 | `jenkins.<DOMAIN>` | The Jenkins controller, only on the host whose `COMPOSE_PROFILES` includes `jenkins`. GitHub's webhooks go here |
 | `<name><hostSuffix>.<DOMAIN>` | Each deployed application in each environment, at the `PUBLIC_HOST` or `UI_HOST` of its env file (its `host` in `catalog.yaml` plus the environment's `hostSuffix`: `heimdall-dev`, `heimdall-hml`, `heimdall`). Traefik answers `404` until the application is deployed there |
 
@@ -104,7 +104,8 @@ one `DOMAIN`. Only another host, with a `DOMAIN` of its own, needs another recor
 **With two machines and two domains** (the default setup, [hosts.md](hosts.md#2-domains-and-cloudflare)),
 make the records on **each** zone for the **apps machine**: `*` and the bare domain (the apps machine's
 `DOMAIN` and `EXTRA_DOMAINS` are both served by it). Then on the zone of the machine's `DOMAIN` add the
-**dev machine**'s own names, `git` and `jenkins`, pointing at the dev machine's IP. A specific record
+**dev machine**'s own names, `git`, `jenkins`, `traefik-dev` and `grafana-dev` (its dashboards, with
+`PLATFORM_HOST_SUFFIX=-dev`), pointing at the dev machine's IP. A specific record
 wins over the wildcard. The dev machine's records stay **DNS only** for good: git over SSH cannot pass
 Cloudflare's proxy, and a large push over HTTPS would hit its request size limit.
 
@@ -120,8 +121,10 @@ Check it from any machine, a minute later:
 nslookup yggdrasil.example.dev 1.1.1.1
 ```
 
-It should print your host's IP. `nslookup example.dev` (without a name in front) finds nothing, and
-that's expected.
+It should print your host's IP. `nslookup example.dev` (without a name in front) answers only if you
+made the bare-domain record too: with two machines and two domains you did (and it should print the
+apps machine's IP); with the one `*` record of a single host it finds nothing, and that's expected,
+because `*` covers names under the domain, not the domain itself.
 
 ### A4. Create the API token
 
@@ -180,7 +183,7 @@ CF_DNS_API_TOKEN=<token>
 ```
 DOMAIN=example.dev
 EXTRA_DOMAINS=example.tech
-CLOUDFLARE_PROXIED=true
+CLOUDFLARE_PROXIED=false
 ACME_EMAIL=you@example.com
 ACME_DNS_PROVIDER=cloudflare
 ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
@@ -189,8 +192,12 @@ JENKINS_URL=https://jenkins.example.dev/
 
 - `EXTRA_DOMAINS`: other domains the machine serves, comma-separated, each with its own wildcard
   certificate; the same API token must manage them all. Empty if there is one domain.
-- `CLOUDFLARE_PROXIED`: `true` once the records are proxied ([A7](#a7-optional-the-cloudflare-proxy));
-  `false` for a machine whose records are DNS only, such as the dev machine.
+- `CLOUDFLARE_PROXIED`: `false` for now, as the records are DNS only. It becomes `true` once the records
+  are proxied: [A7](#a7-optional-the-cloudflare-proxy) step 6 flips it. `false` for good on a machine whose
+  records stay DNS only, such as the dev machine.
+- `PLATFORM_HOST_SUFFIX`: not in this sample. The dev machine sets `PLATFORM_HOST_SUFFIX=-dev`, so its
+  Traefik dashboard and Grafana are `traefik-dev.` and `grafana-dev.` and do not take the apps machine's
+  names (hosts.md, [DNS records](hosts.md#dns-records)).
 - `ACME_CA_SERVER` is commented out in the template: remove the `#` in front of it. It points
   Traefik at Let's Encrypt's staging service for the first run: see
   [Bring it up](#bring-it-up-either-option).

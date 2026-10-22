@@ -49,7 +49,7 @@ plans.
 | Runs | Traefik, Forgejo, the Jenkins controller, monitoring, the CI agent and its checks, Renovate, AI sessions | Traefik, status API, console, monitoring, the applications, the deploy agent |
 | Compose profiles in `platform.env` | `forge,jenkins`, run by `ygg` | `apps,agent`, run by `ygg` |
 | Build agents | `ci` and `release`, each started by `ygg agent up --user …` ([agent.env](#6-credentials)) | none: its deploy agent is the `agent` profile |
-| Public names | `git.techcraftsmen.net`, `jenkins.techcraftsmen.net` | **`techcraftsmen.net`**: the applications and APIs, `yggdrasil.`, `traefik.`, `grafana.`. **`artur-rios.tech`**: the static and docs sites |
+| Public names | `git.techcraftsmen.net`, `jenkins.techcraftsmen.net`, and its own dashboards: `traefik-dev.techcraftsmen.net`, `grafana-dev.techcraftsmen.net` | **`techcraftsmen.net`**: the applications and APIs, `yggdrasil.`, `traefik.`, `grafana.`. **`artur-rios.tech`**: the static and docs sites |
 | Cloudflare | DNS only (grey cloud) | Proxied (orange cloud) |
 | Inbound ports | 22 (SSH), 80, 443, 2222 (Forgejo's git over SSH) | 22; 80 and 443 only from Cloudflare's address ranges |
 | Jenkins agents | `ci`, `release` | its deploy agent (`vps` in the default catalog) |
@@ -108,9 +108,9 @@ On each domain:
 |---|---|---|
 | `A` `*` | the apps machine | **Proxied** (orange) |
 | `A` the bare domain | the apps machine | **Proxied** |
-| `A` `git`, `jenkins` (techcraftsmen.net only) | the dev machine | **DNS only** (grey) |
+| `A` `git`, `jenkins`, `traefik-dev`, `grafana-dev` (techcraftsmen.net only) | the dev machine | **DNS only** (grey) |
 
-A specific record wins over the wildcard, so `git.` and `jenkins.` reach the dev machine and
+A specific record wins over the wildcard, so these four names reach the dev machine and
 everything else reaches the apps machine.
 
 Why the dev machine is not proxied:
@@ -119,10 +119,14 @@ Why the dev machine is not proxied:
 - **Large pushes over HTTPS** would hit the proxy's limit on a request's size (about 100 MB on the
   free plan).
 
-The names `traefik.<DOMAIN>` and `grafana.<DOMAIN>` exist on every machine, because the platform
-Compose file routes them the same way everywhere. On `techcraftsmen.net` those two names belong to
-the apps machine (the wildcard). Don't give the dev machine records for them: its own Traefik
-dashboard and Grafana have no public name yet.
+Every machine runs its own Traefik dashboard and Grafana, and `*.techcraftsmen.net` reaches the apps
+machine, so the two machines cannot both be `traefik.` and `grafana.`. The optional platform variable
+`PLATFORM_HOST_SUFFIX` (empty by default) is put after `traefik` and `grafana` in the dashboard's and
+Grafana's names (and Grafana's root URL): the apps machine leaves it empty and keeps `traefik.<DOMAIN>`
+and `grafana.<DOMAIN>`; the dev machine sets `PLATFORM_HOST_SUFFIX=-dev` in its `platform.env` and its
+dashboards are `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>`. Those two names need their own
+DNS-only records pointing at the dev machine (the table above), because the wildcard would send them
+to the apps machine. The certificate already covers them: it is for `*.<DOMAIN>`.
 
 ### Cloudflare settings
 
@@ -345,17 +349,74 @@ means root. Masking means an upgrade of `docker-ce` cannot turn them back on. Ev
 
 ### In each service user's home
 
-| Path | Content | Why |
-|---|---|---|
-| `~/.config/systemd/user/docker.service.d/override.conf` | `[Service]` and two `Environment=` lines: `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns` and `DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns` | Keeps client addresses. See [Rootless Docker](#5-rootless-docker). |
-| `~/.profile`, between `# >>> yggdrasil >>>` and `# <<< yggdrasil <<<` | `export DOCKER_HOST=unix:///run/user/<uid>/docker.sock` | A login shell's `docker` talks to the user's own engine. A later install replaces the block instead of adding a second. |
-| `/var/lib/systemd/linger/<user>` (made by `loginctl enable-linger`) | an empty file | Starts the user's systemd, and so its engine, at boot with nobody logged in. |
+| Path | Why |
+|---|---|
+| `~/.config/systemd/user/docker.service.d/override.conf` | Keeps client addresses. See [Rootless Docker](#5-rootless-docker). |
+| `~/.profile`, between `# >>> yggdrasil >>>` and `# <<< yggdrasil <<<` | A login shell's `docker` talks to the user's own engine. A later install replaces the block instead of adding a second. |
+| `/var/lib/systemd/linger/<user>` (made by `loginctl enable-linger`) | Starts the user's systemd, and so its engine, at boot with nobody logged in. The file is empty. |
+
+`~/.config/systemd/user/docker.service.d/override.conf`:
+
+```ini
+[Service]
+Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns"
+Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns"
+```
+
+The block `ygg install` adds at the end of `~/.profile` (after a blank line, and replacing an earlier
+block of its own; `<uid>` is the user's id, `id -u`). Everything outside the two marker lines is left
+as it is:
+
+```sh
+# >>> yggdrasil >>>
+export DOCKER_HOST=unix:///run/user/<uid>/docker.sock
+# <<< yggdrasil <<<
+```
 
 ### In `ygg`'s home
 
-| Path | Content | Why |
-|---|---|---|
-| `~/.config/systemd/user/yggdrasil-backup.service` and `.timer` | Copies of [platform/systemd](../platform/systemd) | The nightly backup. [Backups](#7-backups-and-restore) |
+`~/.config/systemd/user/yggdrasil-backup.service` and `yggdrasil-backup.timer` are copies of
+[platform/systemd](../platform/systemd), the nightly backup ([Backups](#7-backups-and-restore)).
+Their content, with the comments in the files:
+
+`yggdrasil-backup.service`:
+
+```ini
+# The nightly backup of this machine to the other one (scripts/backup.sh), a user unit of ygg: it is
+# installed into ~ygg/.config/systemd/user/ by `ygg install` (step backup-timer) and started by the timer
+# next to it. What to back up and where to is in $YGG_SECRETS_DIR/backup.conf (env/backup.conf.example).
+[Unit]
+Description=Back up yggdrasil to the other machine
+# The dumps are taken through ygg's rootless engine, which is the user unit docker.service: a catch-up run
+# at boot (the timer is Persistent) must wait for it.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# A user unit doesn't read ygg's .profile, which is where its shells get DOCKER_HOST: %t is the user's
+# runtime directory, where its rootless engine keeps the socket.
+Environment=DOCKER_HOST=unix://%t/docker.sock
+ExecStart=/opt/yggdrasil/scripts/backup.sh run
+```
+
+`yggdrasil-backup.timer`:
+
+```ini
+# Starts yggdrasil-backup.service every night. Persistent: a machine that was off at 03:30 backs up when
+# it is next on. The random delay keeps the two machines (and any others) from calling each other at the
+# same second.
+[Unit]
+Description=Back up yggdrasil every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
+```
 
 ### Other files and rules
 
@@ -595,8 +656,8 @@ the backup; "receiver" is the one that stores it.
    ```
    It shows the receiver's fingerprint and asks `Are you sure…?`. Compare it with
    `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on the receiver, then answer `yes`. The
-   command then fails with a message from `rrsync` (`SSH_ORIGINAL_COMMAND does not run rsync`).
-   That is expected: the key may only run `rsync`. The unattended backup needs this step because
+   command then ends with a refusal from `rrsync`, which only accepts `rsync`. That is expected: the key
+   may only run `rsync`. The unattended backup needs this step because
    `rsync` runs `ssh` with `BatchMode=yes`, which refuses to ask questions.
 4. **Try it**, on the sender: `ygg backup run`. Then on the receiver: `ls ~/received/from-dev`.
 
@@ -620,6 +681,12 @@ rsync -a -e "ssh -i ~/.ssh/yggdrasil-backup" ygg@<other-machine>:. ~/restore/
 - `ygg@<other-machine>:.`: the restricted directory, as above. The days are then in `~/restore/<date>/`.
 
 If the machine still has its own `~/backups/<date>/`, use that directly.
+
+A rebuilt machine has also lost its backup key. Generate a new one as in step 1 of
+[The key](#the-key-on-both-machines), and on the **other** machine replace the old
+`yggdrasil-backup@<rebuilt machine>` line in `~/.ssh/authorized_keys` with the new public key (the same
+`restrict,command="rrsync …"` prefix). Until you do, the rebuilt machine can neither fetch its backup nor
+send a new one. Do this before the `rsync` above, which uses that key.
 
 **Forgejo, from a dump** (`forgejo.zip`). The dump holds the database, the repositories, the settings
 and the data directory. Put the steps in this order: Forgejo must be stopped while its data is replaced.
