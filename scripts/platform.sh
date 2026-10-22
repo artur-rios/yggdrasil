@@ -28,23 +28,11 @@ fi
 cleanup_paths=()
 trap 'rm -rf ${cleanup_paths[@]+"${cleanup_paths[@]}"}' EXIT
 
-# The platform's settings: rendered from the variables store when this host has one
-# (docs/variables.md), else platform.env and acme.env. --last-good starts from the copy the last
-# successful `up` saved, without opening the store: for when the store or its key is unusable, with
-# any command (down, ps, logs and config need the settings too, to read the project).
-render_dir=""
-if [[ -n "$last_good" ]]; then
-  env_file="$secrets/last-good/platform.env"
-  acme_file="$secrets/last-good/acme.env"
-  [[ -f "$env_file" ]] || die "no last-good copy in $secrets/last-good (one is saved by every successful 'platform.sh up' from the store)"
-  echo "platform: starting from the last-good copy in $secrets/last-good, not the variables store" >&2
-elif [[ -f "$secrets/vars.db" ]]; then
-  # Only the platform's own values: an application's broken reference is its deploy's problem.
-  python3 "$root/scripts/vars.py" check --platform >&2 \
-    || die "the variables store failed its check; fix it (scripts/ygg.sh vars check) or run 'platform.sh $command --last-good'"
-  # /run/yggdrasil for root; else the user's own runtime directory (a tmpfs only they read), else
-  # a directory of theirs under $TMPDIR.
-  run_base=/run/yggdrasil
+# A private directory for what this run renders (the env files from the store, Traefik's
+# traefik.yml): /run/yggdrasil for root; else the user's own runtime directory (a tmpfs only they
+# read), else a directory of theirs under $TMPDIR. Removed on exit. Sets render_dir.
+run_dir() {
+  local run_base=/run/yggdrasil
   if ! { mkdir -p "$run_base" 2>/dev/null && [[ -w "$run_base" ]]; }; then
     if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -w "$XDG_RUNTIME_DIR" ]]; then
       run_base="$XDG_RUNTIME_DIR/yggdrasil"
@@ -55,18 +43,57 @@ elif [[ -f "$secrets/vars.db" ]]; then
   mkdir -p "$run_base" && chmod 700 "$run_base"
   render_dir=$(mktemp -d "$run_base/platform.XXXXXX")
   cleanup_paths+=("$render_dir")
+}
+
+# The platform's settings: rendered from the variables store when this host has one
+# (docs/variables.md), else platform.env and acme.env. --last-good starts from the copy the last
+# successful `up` saved, without opening the store: for when the store or its key is unusable, with
+# any command (down, ps, logs and config need the settings too, to read the project).
+render_dir=""
+from_store=""
+if [[ -n "$last_good" ]]; then
+  env_file="$secrets/last-good/platform.env"
+  acme_file="$secrets/last-good/acme.env"
+  traefik_file="$secrets/last-good/traefik.yml"
+  [[ -f "$env_file" ]] || die "no last-good copy in $secrets/last-good (one is saved by every successful 'platform.sh up' from the store)"
+  [[ -f "$traefik_file" ]] || die "the last-good copy in $secrets/last-good has no traefik.yml (saved by a 'platform.sh up' from before Traefik's config was a file); run 'platform.sh up' once from the store"
+  echo "platform: starting from the last-good copy in $secrets/last-good, not the variables store" >&2
+elif [[ -f "$secrets/vars.db" ]]; then
+  # Only the platform's own values: an application's broken reference is its deploy's problem.
+  python3 "$root/scripts/vars.py" check --platform >&2 \
+    || die "the variables store failed its check; fix it (scripts/ygg.sh vars check) or run 'platform.sh $command --last-good'"
+  run_dir
+  from_store=1
   env_file="$render_dir/platform.env"
   acme_file="$render_dir/acme.env"
   (umask 077 && python3 "$root/scripts/vars.py" render-platform >"$env_file" \
     && python3 "$root/scripts/vars.py" render-platform --acme >"$acme_file") \
     || die "could not render the platform's variables; 'platform.sh $command --last-good' reads the last copy that worked"
 else
+  run_dir
   env_file="$secrets/platform.env"
   acme_file="$secrets/acme.env"
   [[ -f "$env_file" ]] || die "missing $env_file (template: env/platform.env.example)"
   echo "platform: reading $env_file; move to the variables store with scripts/ygg.sh vars init && scripts/ygg.sh vars import --all" >&2
 fi
 export YGG_ACME_ENV_FILE="$acme_file"
+
+# Traefik's static configuration (traefik.yml), rendered from the settings: a file because the list
+# of domains it serves cannot be written as flags. Compose requires it for every command (it
+# interpolates the whole file), so every command renders one -- except --last-good, which reuses the
+# copy kept with the rest. Cloudflare's ranges (<secrets>/cloudflare-ips) are read only when
+# CLOUDFLARE_PROXIED=true.
+render_traefik_config() {
+  traefik_file="$render_dir/traefik.yml"
+  local options=()
+  [[ -f "$secrets/cloudflare-ips" ]] && options=(--cloudflare-ips "$secrets/cloudflare-ips")
+  # The settings go in the renderer's environment, from the same file Compose reads.
+  # shellcheck source=/dev/null
+  (set -a; . "$env_file"; python3 "$root/scripts/traefik_config.py" ${options[@]+"${options[@]}"} >"$traefik_file") \
+    || die "could not render Traefik's configuration from $env_file (see above)"
+}
+[[ -n "$last_good" ]] || render_traefik_config
+export YGG_TRAEFIK_CONFIG_FILE="$traefik_file"
 
 compose() { docker compose --env-file "$env_file" -f "$root/platform/compose.yml" "$@"; }
 
@@ -124,9 +151,9 @@ case "$command" in
     fi
     compose up --detach --build --remove-orphans --wait
     compose ps
-    if [[ -n "$render_dir" ]]; then
+    if [[ -n "$from_store" ]]; then
       install -d -m 700 "$secrets/last-good"
-      install -m 600 "$env_file" "$acme_file" "$secrets/last-good/"
+      install -m 600 "$env_file" "$acme_file" "$traefik_file" "$secrets/last-good/"
     fi
     ;;
   down) compose down ;;

@@ -77,58 +77,11 @@ services:
     image: traefik:v3.6
     restart: unless-stopped
     logging: *logging
+    # The static configuration is a file, rendered by scripts/platform.sh from the platform's settings
+    # (scripts/traefik_config.py, which also explains each setting): one wildcard certificate per
+    # domain in DOMAIN and EXTRA_DOMAINS cannot be written as flags.
     command:
-      - --log.format=json
-      - --log.level=INFO
-      - --accesslog=true
-      - --accesslog.format=json
-      - --ping=true
-      # /ping on the internal metrics port, where the status API probes it; the container health
-      # check below uses the same entry point.
-      - --ping.entrypoint=metrics
-
-      - --providers.docker=true
-      # Through traefik-docker-proxy, never the socket itself: Traefik faces the internet.
-      - --providers.docker.endpoint=tcp://traefik-docker-proxy:2375
-      # Nothing is routed unless it opts in with traefik.enable=true.
-      - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=edge
-      - --providers.file.directory=/etc/traefik/dynamic
-      - --providers.file.watch=true
-
-      - --entrypoints.web.address=:80
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.websecure.address=:443
-      - --entrypoints.websecure.http.tls.certresolver=letsencrypt
-      # No tls.options here: the options named `default` in traefik/dynamic apply to every router by
-      # themselves, and have no provider namespace -- `default@file` is an unknown name, and Traefik
-      # then builds no HTTPS router at all.
-      # One wildcard certificate for the whole host instead of one per host name: it covers every
-      # environment of the host too, as their host names differ by hostSuffix (heimdall-dev.DOMAIN),
-      # not by a sub-domain. It is what makes DNS-01 worth it -- and a host behind NAT can never
-      # answer an HTTP-01 challenge anyway.
-      - --entrypoints.websecure.http.tls.domains[0].main=${DOMAIN:?set DOMAIN in the env file}
-      - --entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN}
-
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL in the env file}
-      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
-      # Point at https://acme-staging-v02.api.letsencrypt.org/directory while trying things out:
-      # the production Let's Encrypt service rate-limits failed validations per hour.
-      - --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
-      # Any provider Traefik supports (https://doc.traefik.io/traefik/https/acme/#providers): its
-      # code here, and its credentials in acme.env next to platform.env.
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${ACME_DNS_PROVIDER:?set ACME_DNS_PROVIDER in the env file}
-      # Check propagation against public resolvers, not the host's, which on a home network may
-      # cache the old answer for longer than the challenge waits.
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=${ACME_DNS_RESOLVERS:-1.1.1.1:53,8.8.8.8:53}
-
-      - --entrypoints.metrics.address=:8082
-      - --metrics.prometheus=true
-      - --metrics.prometheus.entrypoint=metrics
-      - --metrics.prometheus.addrouterslabels=true
-
-      - --api.dashboard=true
+      - --configFile=/etc/traefik/traefik.yml
     # The DNS provider's credentials (CF_DNS_API_TOKEN for Cloudflare, AWS_* for Route 53, ...),
     # kept out of platform.env so no other container ever sees them. Template: env/acme.env.example.
     # (Rendered by platform.sh from the variables store, or acme.env next to platform.env.)
@@ -138,6 +91,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
+      - ${YGG_TRAEFIK_CONFIG_FILE:?run through scripts/platform.sh}:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
       - letsencrypt:/letsencrypt
     networks:
@@ -147,7 +101,8 @@ services:
     depends_on:
       - traefik-docker-proxy
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entrypoint=metrics", "--entrypoints.metrics.address=:8082"]
+      # Reads the ping entry point from the same file.
+      test: ["CMD", "traefik", "healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 5

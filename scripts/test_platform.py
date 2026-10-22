@@ -5,12 +5,19 @@
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 
 SCRIPT = pathlib.Path(__file__).resolve().parent / "platform.sh"
+
+# What every command needs to render Traefik's configuration (compose.yml requires the file on all of
+# them, down and ps included), whatever else a test is about.
+TRAEFIK_SETTINGS = {"DOMAIN": "techcraftsmen.net", "ACME_EMAIL": "ops@techcraftsmen.net",
+                    "ACME_DNS_PROVIDER": "cloudflare"}
+TRAEFIK_ENV = "".join(f"{key}={value}\n" for key, value in TRAEFIK_SETTINGS.items())
 
 
 @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
@@ -21,7 +28,14 @@ class PlatformTests(unittest.TestCase):
         bin_dir = self.temp / "bin"
         bin_dir.mkdir()
         docker = bin_dir / "docker"
-        docker.write_text('#!/usr/bin/env bash\necho "docker $*" >>"$FAKE_DOCKER_LOG"\n')
+        # Logs what compose is given, Traefik's rendered configuration included: it only exists while
+        # platform.sh runs, so the log is the one place a test can read it.
+        docker.write_text('#!/usr/bin/env bash\n'
+                          'echo "docker $*" >>"$FAKE_DOCKER_LOG"\n'
+                          'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
+                          '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
+                          '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
+                          'fi\n')
         docker.chmod(0o755)
         self.log = self.temp / "docker.log"
         self.secrets = self.temp / "secrets"
@@ -30,7 +44,7 @@ class PlatformTests(unittest.TestCase):
                         YGG_SECRETS_DIR=str(self.secrets), FAKE_DOCKER_LOG=str(self.log))
 
     def up(self, platform_env):
-        (self.secrets / "platform.env").write_text(platform_env)
+        (self.secrets / "platform.env").write_text(TRAEFIK_ENV + platform_env)
         return subprocess.run(["bash", str(SCRIPT), "up"], env=self.env, capture_output=True, text=True)
 
     def docker_calls(self):
@@ -42,7 +56,7 @@ class PlatformTests(unittest.TestCase):
         import vars as v
         v.init(self.secrets, confirm=lambda prompt: "saved")
         with v.Store.open(self.secrets) as store:
-            for key, value in platform.items():
+            for key, value in {**TRAEFIK_SETTINGS, **platform}.items():
                 store.set("platform", key, value, None, "set")
             for key, value in acme.items():
                 store.set("platform:acme", key, value, None, "set")
@@ -56,7 +70,9 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn(f"--env-file {self.secrets}/platform.env", self.docker_calls())
         last_good = self.secrets / "last-good"
-        self.assertEqual((last_good / "platform.env").read_text(), "COMPOSE_PROFILES=''\nENVIRONMENTS='production'\n")
+        self.assertEqual((last_good / "platform.env").read_text(),
+                         "ACME_DNS_PROVIDER='cloudflare'\nACME_EMAIL='ops@techcraftsmen.net'\n"
+                         "COMPOSE_PROFILES=''\nDOMAIN='techcraftsmen.net'\nENVIRONMENTS='production'\n")
         self.assertEqual((last_good / "acme.env").read_text(), "CF_DNS_API_TOKEN='abc'\n")
         self.assertEqual((last_good / "platform.env").stat().st_mode & 0o777, 0o600)
 
@@ -158,6 +174,64 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("is not an environment in catalog.yaml", result.stderr)
         self.assertEqual(self.docker_calls(), "")
+
+    def test_given_an_env_file_when_up_then_compose_gets_a_rendered_traefik_config(self):
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\nEXTRA_DOMAINS=artur-rios.tech\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        # Exported to Compose, in a private run directory that exists while Compose runs...
+        self.assertRegex(calls, r"traefik-config-file: \S+/traefik\.yml")
+        # ... and holding the rendered file, with the host's domain and the extra one.
+        self.assertIn("main: techcraftsmen.net", calls)
+        self.assertIn("main: artur-rios.tech", calls)
+        # Gone with the run directory afterwards.
+        path = re.search(r"traefik-config-file: (\S+)", calls).group(1)
+        self.assertFalse(pathlib.Path(path).exists())
+
+    def test_given_every_command_when_run_then_compose_gets_the_traefik_config(self):
+        (self.secrets / "platform.env").write_text(TRAEFIK_ENV + "ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n")
+        for command in ("down", "ps", "logs", "config"):
+            self.log.unlink(missing_ok=True)
+            result = self.run_platform(command)
+            self.assertEqual(result.returncode, 0, f"{command}: {result.stderr}")
+            self.assertIn("main: techcraftsmen.net", self.docker_calls(), command)
+
+    def test_given_cloudflare_ranges_when_proxied_then_the_rendered_config_trusts_them(self):
+        (self.secrets / "cloudflare-ips").write_text("173.245.48.0/20\n2400:cb00::/32\n")
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\nCLOUDFLARE_PROXIED=true\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertIn("173.245.48.0/20", calls)
+        self.assertIn("2400:cb00::/32", calls)
+
+    def test_given_proxied_without_the_ranges_when_up_then_it_is_refused_before_compose_runs(self):
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\nCLOUDFLARE_PROXIED=true\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cloudflare-ips", result.stderr)
+        self.assertEqual(self.docker_calls(), "")
+
+    def test_given_last_good_when_up_from_a_store_then_the_traefik_config_is_kept_too(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": "", "EXTRA_DOMAINS": "artur-rios.tech"}, {})
+        result = self.run_platform("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        kept = self.secrets / "last-good" / "traefik.yml"
+        self.assertIn("main: artur-rios.tech", kept.read_text())
+        self.assertEqual(kept.stat().st_mode & 0o777, 0o600)
+
+    def test_given_last_good_when_run_then_compose_gets_the_kept_traefik_config_not_a_new_one(self):
+        self.use_store({"ENVIRONMENTS": "production", "COMPOSE_PROFILES": "", "EXTRA_DOMAINS": "artur-rios.tech"}, {})
+        self.assertEqual(self.run_platform("up").returncode, 0)
+        (self.secrets / "vars.key").unlink()
+        self.log.unlink()
+        result = self.run_platform("config", "--last-good")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertIn(f"traefik-config-file: {self.secrets}/last-good/traefik.yml", calls)
+        self.assertIn("main: artur-rios.tech", calls)
+
+    def test_given_an_env_file_when_up_then_no_traefik_config_is_kept_without_a_store(self):
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=\n").returncode, 0)
+        self.assertFalse((self.secrets / "last-good").exists())
 
     def test_given_the_agent_profile_without_its_variables_when_up_then_it_is_refused(self):
         result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=agent\nJENKINS_URL=https://jenkins.example.com/\n")

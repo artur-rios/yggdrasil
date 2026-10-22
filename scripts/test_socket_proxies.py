@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler
 
 try:
     import yaml
+    from traefik_config import render  # needs PyYAML too
 except ImportError:  # CI installs it; the static tests need it.
     yaml = None
 
@@ -249,7 +250,9 @@ class AllowlistTests(unittest.TestCase):
 
     def test_given_each_client_then_it_talks_to_its_own_proxy(self):
         self.assertEqual(self.services["status"]["environment"]["YGGDRASIL_DOCKER_URL"], "http://docker-proxy:2375")
-        self.assertIn("--providers.docker.endpoint=tcp://traefik-docker-proxy:2375", self.services["traefik"]["command"])
+        # Traefik's configuration is a file now (scripts/traefik_config.py renders it).
+        rendered = render({"DOMAIN": "example.com", "ACME_EMAIL": "ops@example.com", "ACME_DNS_PROVIDER": "cloudflare"}, None)
+        self.assertEqual(rendered["providers"]["docker"]["endpoint"], "tcp://traefik-docker-proxy:2375")
         alloy = ALLOY_CONFIG.read_text()
         self.assertNotIn("unix://", alloy)
         self.assertEqual(re.findall(r'host\s*=\s*"([^"]+)"', alloy), ["tcp://alloy-docker-proxy:2375"] * 2)
