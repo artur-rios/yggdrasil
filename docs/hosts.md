@@ -109,9 +109,18 @@ On each domain:
 | `A` `*` | the apps machine | **Proxied** (orange) |
 | `A` the bare domain | the apps machine | **Proxied** |
 | `A` `git`, `jenkins`, `traefik-dev`, `grafana-dev` (techcraftsmen.net only) | the dev machine | **DNS only** (grey) |
+| `CAA` the bare domain: `0 issue "letsencrypt.org; validationmethods=dns-01"` | n/a | n/a |
 
 A specific record wins over the wildcard, so these four names reach the dev machine and
 everything else reaches the apps machine.
+
+The `CAA` record, one per zone: `0 issue "letsencrypt.org; validationmethods=dns-01"`: only Let's Encrypt may issue certificates for
+the zone, and only after a DNS-01 proof, which needs the Cloudflare API token. Traefik proves control by DNS-01
+alone, so nothing legitimate is lost; without the record, whoever answers on port 80 of a name's address (a
+process on the dev machine that got there before Traefik, say) could pass Let's Encrypt's HTTP-01 check and get a
+certificate for `git.` or `jenkins.`. The dev machine also keeps its other users off
+ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-portsconf-dev-machine)); the record
+covers what that can't.
 
 Why the dev machine is not proxied:
 
@@ -231,7 +240,8 @@ there, never on the controller and never on the apps machine.
   and deploy. Only the owner logs in as it.
 - **`ci`** can read code and post nothing. A compromised check could read the repositories and the other
   containers of the `ci` engine, and nothing else. It cannot push, merge, tag or deploy. `ygg check`
-  verifies that `ci` and `release` cannot read `ygg`'s Docker socket or its secrets.
+  verifies that no other service user (`ci`, `release`, `dev`, `renovate`) can read `ygg`'s Docker socket or its
+  secrets, and that `ci` cannot read `release`'s socket or `agent.env`. None of them can bind a port below 1024.
 - **`dev`** pushes to Forgejo as its own account (`claude`). It can push `feature/` and `fix/`
   branches, open pull requests and merge into `develop`. It cannot push `release/*`, merge into
   `main` or create `v*` tags.
@@ -311,6 +321,26 @@ MemoryMax=20G
 six CPUs (600% is six full ones) and 20 GB of memory. A build cannot starve Forgejo, the release agent
 or an AI session.
 
+### `/etc/systemd/system/user-<uid>.slice.d/50-yggdrasil-ports.conf` (dev machine)
+
+```text
+[Slice]
+SocketBindDeny=tcp:1-1023
+SocketBindDeny=udp:1-1023
+```
+
+One per user that runs code the owner didn't write or hasn't reviewed: `ci`, `release`, `renovate` and `dev`
+(`<uid>` is that user's). The unprivileged-ports setting above lets every user bind 80 and 443, not only `ygg`:
+without this, a check in `ci`'s engine could publish `-p 80:80 -p 443:443`, take the ports while `ygg`'s Traefik
+restarts, and pass Let's Encrypt's HTTP-01 check for `git.` or `jenkins.`. The rule is on the user's slice, so it
+covers the user's engine and every container in it, a container binding port 80 inside its own network
+included: such a check must listen on 1024 or above. `ygg check` shows a "low ports" row per user. The
+[`CAA` record](#dns-records) closes the same door at the certificate authority.
+
+> **To verify on the real host:** that the rule takes effect on a running slice after `systemctl daemon-reload`
+> (or only once the user's manager restarts: `sudo systemctl restart user@<uid>`), and that it refuses the
+> bind of rootlesskit's port forwarder: as `ci`, `docker run --rm -p 80:80 nginx` should fail to publish.
+
 ### `/etc/ssh/sshd_config.d/00-yggdrasil.conf`
 
 ```text
@@ -347,7 +377,8 @@ before closing it.
 (`systemctl disable --now` then `systemctl mask`). The Docker packages install them and enable them,
 and the rootful engine answers on `/var/run/docker.sock` to anyone in the `docker` group, which
 means root. Masking means an upgrade of `docker-ce` cannot turn them back on. Every member of the
-`docker` group is removed from it.
+`docker` group is removed from it: the group is emptied, not deleted (the packages own it, and
+`ygg check` only asks that it has no members).
 
 ### In each service user's home
 
@@ -471,14 +502,23 @@ switch the network and the port driver to `slirp4netns`, which keeps the real so
 connection. `ygg check` shows a "client addresses" row per user. After a change the engine must restart
 (`systemctl --user restart docker`, as that user). To see it working, read Traefik's access log, which
 records the client address of each request: `docker logs yggdrasil-traefik-1 2>&1 | tail -5`, run as `ygg`
-after a request from a machine whose address you know.
+after a request from a machine whose address you know. What to expect differs by machine:
+
+- **Dev machine** (DNS only, clients connect directly): your own public address. An address like `10.0.2.2`
+  or the engine's own for every request means the `slirp4netns` settings are not in force.
+- **Apps machine** (behind Cloudflare's proxy): a **Cloudflare** address, from one of the ranges in
+  `cloudflare-ips`, never yours: Cloudflare is what connects. That is the `slirp4netns` part working. Your
+  own address is in the `X-Forwarded-For` header, which Traefik trusts from those ranges only
+  ([Client addresses](#client-addresses)); an application behind it sees it there. The same internal address
+  for every request would mean, here too, that the settings are not in force.
 
 **The firewall applies.** A rootless engine publishes ports as ordinary listening processes, so `ufw`
 sees them. This is why the dev machine opens 2222 for Forgejo in `ufw` and why the apps machine can
 restrict 80 and 443 to Cloudflare.
 
-**Isolation, checked.** `ygg check --role dev` proves that `ci` and `release` cannot read `ygg`'s engine socket or
-`/etc/yggdrasil/platform.env`. It first proves that its test can fail (that commands run as that user, that
+**Isolation, checked.** `ygg check --role dev` proves that `ci`, `release`, `dev` and `renovate` cannot read
+`ygg`'s engine socket or `/etc/yggdrasil/platform.env`, and that `ci` cannot read `release`'s engine socket or
+`/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that
 the path exists) so a green row means something.
 
 ## 6. Credentials
@@ -548,7 +588,8 @@ flowchart LR
 | `yggdrasil-backup.service` | Runs `/opt/yggdrasil/scripts/backup.sh run`, after `docker.service` of the user (the timer's catch-up run at boot must wait for the engine). It gets `DOCKER_HOST` itself, since a user unit does not read `~/.profile`. |
 
 You can run it by hand as `ygg`: `ygg backup run`. `ygg backup list` shows the days and files kept in
-`~/backups`. `systemctl --user list-timers`, `systemctl --user status yggdrasil-backup` and
+`~/backups`, then the newest day and whether it has a file for every item of `backup.conf`
+(`Newest: 2026-10-21, complete …` or `… INCOMPLETE: no forgejo.zip`). `systemctl --user list-timers`, `systemctl --user status yggdrasil-backup` and
 `journalctl --user -u yggdrasil-backup` show the timer and its last run.
 
 `backup.sh run`:
@@ -563,11 +604,16 @@ You can run it by hand as `ygg`: `ygg backup run`. `ygg backup list` shows the d
    dumps hold databases and repositories). Each dump is written to `….partial` and renamed when whole,
    so a failed one never leaves a file that looks like a backup. One item failing does not stop the
    others, but the exit status says so.
-4. Deletes the local days beyond `BACKUP_KEEP` (7 by default), keeping the newest.
+4. Deletes the local days beyond `BACKUP_KEEP` (7 by default), keeping the newest, **except, for each item
+   of `backup.conf`, its newest good file**: an item that has failed for longer than `BACKUP_KEEP` days keeps
+   its last good dump, in its old day, alone (the rest of that day goes). Without that, a week of failures
+   would delete the last good copy here and, through `--delete`, on the other machine.
 5. Sends `~/backups/` to `BACKUP_TARGET` with `rsync -a --delete`, so the other machine has the same days.
 
 A timer started before `backup.conf` exists fails loudly in the journal, instead of being silently
-missing.
+missing. `ygg check` notices failing backups too: under **Backups** it shows whether `backup.conf` is there,
+the result of the last run (`systemctl --user show yggdrasil-backup.service`), and how old the newest day
+in `~/backups` is, with a warning past 36 hours.
 
 ### `backup.conf`
 
@@ -650,7 +696,11 @@ the backup; "receiver" is the one that stores it.
    - `from-dev` is the sender's name: `from-apps` on the dev machine.
    - `restrict`: turns off everything SSH can do for this key: a shell, port forwarding, agent forwarding.
    - `command="rrsync …"`: whatever the key asks for, the receiver runs `rrsync`, which lets only `rsync`
-     through, and only inside that directory. A stolen key can write backups there, and nothing more.
+     through, and only inside that directory. A stolen key gets nothing outside it: no shell, no other
+     file. Inside it, it can do whatever `rsync` can, since `rrsync` is given neither `-wo` (write only) nor
+     `-no-del`: read the backups received there (databases and repositories), overwrite them and delete them.
+     The sender needs that (`--delete` keeps the copy to the same days), so guard the private key like the data
+     it sends, and keep the sender's own `~/backups` as the second copy.
      (`rrsync` is part of the `rsync` package, which `ygg install` installs.)
    - The path in `BACKUP_TARGET` is **relative to that directory**: `:.` is the directory itself.
 3. **Accept the receiver's host key once, by hand**, on the sender as `ygg`:
@@ -802,15 +852,27 @@ downtime: the applications are off while you move their data.
    ```bash
    sudo chown -R ygg:ygg /etc/yggdrasil
    sudo chmod -R u=rwX,go= /etc/yggdrasil
+   sudo chmod 750 /etc/yggdrasil
    ```
    - `chown -R ygg:ygg`: `ygg` owns the directory and everything in it.
    - `chmod -R u=rwX,go=`: only `ygg` can read or write. The capital `X` keeps directories enterable.
+   - `chmod 750`: the directory itself as the installer makes it (`ygg check` reports anything else).
    The GitHub App key (`github-app.pem`), if this host ran the controller, moves to the dev machine
-   ([setup.md step 9](setup.md#9-the-dev-machine)).
-5. **Restore the volumes into `ygg`'s engine.** Give `ygg` the archives, log in as it
-   (`ssh ygg@<host>`; the install copied your key) and unpack each one:
+   ([setup.md step 9](setup.md#9-the-dev-machine)). If this host **keeps** the controller (`apps,jenkins,agent`),
+   the key must stay readable by the controller's container user, which is not `ygg` (uid 1000 in the container
+   is a subordinate id on the host), so give it back its `644`:
+   ```bash
+   sudo chmod 644 /etc/yggdrasil/github-app.pem
+   ```
+   The directory's `750` still keeps everyone but `ygg` out: the container reaches the file through its
+   mount ([setup.md 9.1](setup.md#91-the-github-app-key)).
+5. **Restore the volumes into `ygg`'s engine.** First, as the admin, give `ygg` the archives (`ygg` has no
+   `sudo`):
    ```bash
    sudo chown -R ygg:ygg /srv/migration
+   ```
+   Then log in as `ygg` (`ssh ygg@<host>`; the install copied your key) and unpack each one:
+   ```bash
    docker run --rm -v <volume>:/volume -v /srv/migration:/backup:ro busybox tar -C /volume -xzf /backup/volume-<volume>.tar.gz
    ```
    The images are not moved: the next deploy builds them again.

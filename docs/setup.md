@@ -528,6 +528,10 @@ Next to each part is what you would type to do it by hand. Every command is run 
      privileged group. If the admin user has the same name as one of them, it is left alone.
 6. **The `ci` limits** (dev machine): `/etc/systemd/system/user-<uid>.slice.d/limits.conf` with six CPUs and
    20 GB (`CPUQuota=600%`, `MemoryMax=20G`), where `<uid>` is `id -u ci`, then `sudo systemctl daemon-reload`.
+   **The low ports** (dev machine): for each of `ci`, `release`, `renovate` and `dev`,
+   `/etc/systemd/system/user-<uid>.slice.d/50-yggdrasil-ports.conf` with `[Slice]`, `SocketBindDeny=tcp:1-1023` and
+   `SocketBindDeny=udp:1-1023`, then `sudo systemctl daemon-reload`: only `ygg` may bind 80 and 443
+   ([hosts.md](hosts.md#etcsystemdsystemuser-uidsliced50-yggdrasil-portsconf-dev-machine)).
 7. **SSH.** First your key goes to the SSH users that have none:
    ```bash
    sudo install -d -m 700 -o ygg -g ygg /home/ygg/.ssh
@@ -562,7 +566,8 @@ Next to each part is what you would type to do it by hand. Every command is run 
    sudo install -m 600 -o ci -g ci /opt/yggdrasil/env/agent.env.example /etc/yggdrasil-ci/agent.env
    ```
    - `/etc/yggdrasil` is `ygg`'s; every other service user has `/etc/yggdrasil-<user>` (`ci` and `release` get an
-     `agent.env`, the others an empty directory).
+     `agent.env`, the others an empty directory). Those users have no login: edit their files as the admin with
+     `sudoedit /etc/yggdrasil-ci/agent.env`, which keeps the owner and the `600`.
    - `-m 750`: the owner reads and writes, its group reads, nobody else gets in. Files are `600`: the owner only.
      They hold passwords and tokens.
    - A file that is already there is never replaced.

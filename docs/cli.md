@@ -231,17 +231,17 @@ are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine 
 | Group | Checks |
 |---|---|
 | **System** | The packages; the machine's own Docker is switched off, and disabled after a reboot, and nobody is in the `docker` group; the three system files (unprivileged ports, AppArmor, cgroup delegation); unattended upgrades |
-| **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` limits (dev); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
+| **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` limits and, for `ci`, `release`, `renovate` and `dev`, no port below 1024 (dev); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
 | **Firewall** | `ufw` is on and denies incoming by default, with the role's ports, and no other rule lets everyone in (a port, a range or a profile such as `Nginx Full`). On an apps machine, 80 and 443 are open to Cloudflare only, and the rules and `cloudflare-ips` match Cloudflare's current list |
-| **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a dev machine: `ci` and `release` cannot read `ygg`'s socket or secrets |
-| **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled |
+| **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a dev machine: `ci`, `release`, `dev` and `renovate` cannot read `ygg`'s socket or secrets, and `ci` cannot read `release`'s |
+| **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled; `backup.conf` is there; the last run succeeded (or a warning: never run, failed); the newest day in `~/backups` is at most 36 hours old |
 
 Rows that ask another user's engine or read a closed directory need `sudo`. `check` runs `sudo -v` first, which asks
 for your password once; if that fails it says so and goes on, and those rows say "not checked".
 
 `install` works on Ubuntu 24.04 only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
 part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci`
-limits, SSH, the checkout, secrets directories, the firewall, each user's engine, the backup timer and the role
+limits, the low ports, SSH, the checkout, secrets directories, the firewall, each user's engine, the backup timer and the role
 file. It refuses up front, changing nothing: when it doesn't run from `/opt/yggdrasil` (clone yggdrasil there), when
 `sudo -v` fails (a check that can't run as root would find nothing to do), and when the admin has no
 `~/.ssh/authorized_keys`. It writes the role file before the first part it does, so an install that stops halfway
@@ -289,11 +289,19 @@ On the dev machine, the `ci` and `release` users each run a Jenkins build agent 
 `scripts/agent.sh` as the service user, which has no login. `--user` is required and is `ci` or `release`.
 
 `agent.sh` reads `/etc/yggdrasil-<user>/agent.env`, which `ygg install` copied from
-[env/agent.env.example](../env/agent.env.example). Fill it in as that file says:
+[env/agent.env.example](../env/agent.env.example). The file is `600` and belongs to the service user, which has no
+login, so edit it as the **admin** with `sudoedit`: it opens a copy in your editor and writes it back as the file's
+owner, keeping the owner and the mode.
+
+```bash
+sudoedit /etc/yggdrasil-ci/agent.env
+```
+
+Fill it in as that file says:
 
 | Variable | Value |
 |---|---|
-| `JENKINS_URL` | The controller's address; the agent dials out to it over WebSocket |
+| `JENKINS_URL` | The controller's address (`https://jenkins.<DOMAIN>/` of the dev machine); the agent dials out to it over WebSocket. Empty in the template, like the next and the last |
 | `JENKINS_AGENT_NAME` | `ci` for the `ci` user, `release` for `release`. Left empty in the template on purpose, so an unedited copy fails instead of starting the wrong node. Lowercase letters, digits, `-` and `_` |
 | `JENKINS_AGENT_SECRET` | The node's secret, from its page in Jenkins once the node exists |
 | `YGG_AGENT_WORKDIR` | Absolute, owned by the user: `/home/ci/agent` for `ci`, `/home/release/agent` for `release`. Mounted at the same path in the agent and on the host, so a check's `docker run -v $WORKSPACE:…` finds the same directory in the engine. Also empty in the template |
@@ -308,7 +316,7 @@ apps machine.
 
 ```bash
 ygg backup run      # dump now, prune old days, send them to the other machine
-ygg backup list     # the days and files in ~/backups
+ygg backup list     # the days and files in ~/backups, and whether the newest day is complete
 ```
 
 Run as `ygg`, whose engine holds the data; the nightly timer does it at 03:30. What is backed up and where it goes

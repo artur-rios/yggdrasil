@@ -19,7 +19,7 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets firewall engines backup-timer role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines backup-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -177,6 +177,25 @@ machine_ci_limits_path() {
   [[ -z "$uid" ]] || echo "${YGG_SYSROOT:-}/etc/systemd/system/user-$uid.slice.d/limits.conf"
 }
 machine_ci_limits_content() { printf '%s\n' "[Slice]" "CPUQuota=600%" "MemoryMax=20G"; }
+
+# The unprivileged-ports sysctl (machine_sysctl_content) lets every user bind 80 and 443, not only ygg:
+# a check in ci's engine could publish -p 80:80 -p 443:443 and win the ports while ygg's Traefik
+# restarts, then answer Let's Encrypt for git. and jenkins. So the users that run code the owner didn't
+# write or hasn't reviewed (ci, release, renovate, dev) may not bind a port below 1024 at all, on their
+# slice, which holds their engine and every container in it. That includes a container binding 80 in
+# its own network namespace (an nginx in a check): such a check must listen on 1024 or above.
+#
+# NEEDS VERIFYING on the real host (Ubuntu 24.04, systemd 255, cgroup v2): that SocketBindDeny= takes
+# effect on a user-<uid>.slice drop-in after `systemctl daemon-reload` (or only once the user's
+# manager restarts), and that rootlesskit's port forwarder (slirp4netns port driver) is refused the
+# bind. Syntax: systemd.resource-control(5), "[address-family:][transport-protocol:][ip-ports]".
+MACHINE_LOW_PORT_USERS=(ci release renovate dev)
+machine_low_ports_path() {
+  local uid
+  uid=$(passwd_field "$1" 3)
+  [[ -z "$uid" ]] || echo "${YGG_SYSROOT:-}/etc/systemd/system/user-$uid.slice.d/50-yggdrasil-ports.conf"
+}
+machine_low_ports_content() { printf '%s\n' "[Slice]" "SocketBindDeny=tcp:1-1023" "SocketBindDeny=udp:1-1023"; }
 
 # The admin is whoever runs install (it refuses root). Only the admin and the role's ssh users may log
 # in, and only with a key.
@@ -718,6 +737,20 @@ machine_check_ci_limits() {
   fi
 }
 
+machine_check_low_ports() {
+  [[ "$machine_current_role" == dev ]] || return 0
+  local user path
+  for user in "${MACHINE_LOW_PORT_USERS[@]}"; do
+    path=$(machine_low_ports_path "$user")
+    if [[ -z "$path" ]]; then
+      row missing "low ports $user" "no $user user yet: install keeps it off ports below 1024 once it exists"
+      machine_need low-ports
+    else
+      machine_check_file "low ports $user" "$path" "$(machine_low_ports_content)" low-ports
+    fi
+  done
+}
+
 machine_check_ssh() {
   local path legacy keys effective conflict
   path=$(machine_ssh_path)
@@ -939,14 +972,21 @@ machine_check_engine() {
   fi
 }
 
-# machine_check_isolation: the users that run other people's code (ci) and the release agent must not be
-# able to reach what ygg has: its engine (that is root over the platform) and its secrets. What a check
-# finds here, install can't repair: it is for the admin to look at.
+# machine_check_isolation: no other service user may reach what ygg has: its engine (that is root over
+# the platform) and its secrets. And ci, which runs other people's code, may not reach the release
+# agent's engine or secrets either (the signing keys come with later plans). What a check finds here,
+# install can't repair: it is for the admin to look at.
 machine_check_isolation() {
   user_exists ygg || return 0
-  machine_check_cannot_read "ci → ygg engine" ci "$(machine_engine_socket ygg)"
-  machine_check_cannot_read "release → ygg engine" release "$(machine_engine_socket ygg)"
-  machine_check_cannot_read "ci → ygg secrets" ci "$(secrets_dir_of ygg)/platform.env"
+  local user
+  for user in ci release dev renovate; do
+    machine_check_cannot_read "$user → ygg engine" "$user" "$(machine_engine_socket ygg)"
+  done
+  machine_check_cannot_read "ci → release engine" ci "$(machine_engine_socket release)"
+  for user in ci release dev renovate; do
+    machine_check_cannot_read "$user → ygg secrets" "$user" "$(secrets_dir_of ygg)/platform.env"
+  done
+  machine_check_cannot_read "ci → release secrets" ci "$(secrets_dir_of release)/agent.env"
 }
 
 # machine_check_cannot_read <row name> <user> <path>: ok only when the user's failing to read the path
@@ -982,6 +1022,9 @@ machine_check_backup_timer() {
   fi
   if ! machine_can_read_as_users; then
     row warn "backup timer" "the home of ygg is closed to you and sudo would ask for a password: not checked (run check with sudo)"
+    for unit in backup.conf "last backup" "newest backup"; do
+      row warn "$unit" "asking ygg needs sudo without a password: not checked"
+    done
     return 0
   fi
   dir=$(machine_backup_unit_dir)
@@ -998,6 +1041,61 @@ machine_check_backup_timer() {
     machine_need backup-timer
   else
     row ok "backup timer" "yggdrasil-backup.timer enabled for ygg, every night at 03:30 ($dir)"
+  fi
+  machine_check_backup_health
+}
+
+# Backups older than this are a warning: the timer runs every night, so a day and a half without one is
+# a night missed.
+MACHINE_BACKUP_MAX_AGE_HOURS=36
+
+# machine_check_backup_health: whether the backups actually happen, which the units being there doesn't
+# say: backup.conf is there, the last run succeeded, and the newest day in ~ygg/backups is recent. Asked
+# of ygg (its secrets directory and home are closed to the admin), through sudo without a password.
+# None of it is install's to repair: they are warnings for the owner.
+machine_check_backup_health() {
+  local conf shown result="" started="" key value home newest modified age_hours
+  conf="$(secrets_dir_of ygg)/backup.conf"
+  if read_as_user ygg test -f "$conf" 2>/dev/null; then
+    row ok "backup.conf" "$conf"
+  else
+    row warn "backup.conf" "$conf is not there: copy env/backup.conf.example and fill it in, as ygg (docs/hosts.md): every nightly run fails until then"
+  fi
+
+  if shown=$(read_as_user ygg systemctl --user show yggdrasil-backup.service -p Result -p ExecMainStartTimestamp 2>/dev/null); then
+    while IFS='=' read -r key value; do
+      case $key in
+        Result) result=$value ;;
+        ExecMainStartTimestamp) started=$value ;;
+      esac
+    done <<<"$shown"
+    if [[ -z "$started" || "$started" == n/a ]]; then
+      row warn "last backup" "never run yet: the timer runs it at 03:30, or 'ygg backup run' as ygg now"
+    elif [[ "$result" == success ]]; then
+      row ok "last backup" "succeeded, started $started"
+    else
+      row warn "last backup" "failed (Result=${result:-unknown}), started $started: journalctl --user -u yggdrasil-backup, as ygg"
+    fi
+  else
+    row warn "last backup" "systemctl --user show yggdrasil-backup.service failed as ygg: not checked"
+  fi
+
+  home=$(passwd_field ygg 6)
+  # The days are named by date, so the last one by name is the newest; its age is its directory's
+  # modification time (the dumps are written into it).
+  newest=$(read_as_user ygg find "$home/backups" -mindepth 1 -maxdepth 1 -type d \
+    -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -printf '%f %T@\n' 2>/dev/null | sort | tail -n1) || newest=""
+  if [[ -z "$newest" ]]; then
+    row warn "newest backup" "none in $home/backups yet"
+  else
+    # find's %T@ is seconds with a fraction: the whole seconds are enough.
+    modified=${newest#* }
+    age_hours=$((($(date +%s) - ${modified%%.*}) / 3600))
+    if ((age_hours > MACHINE_BACKUP_MAX_AGE_HOURS)); then
+      row warn "newest backup" "${newest%% *}, $age_hours hours old: nothing newer in $MACHINE_BACKUP_MAX_AGE_HOURS hours (see the last backup row)"
+    else
+      row ok "newest backup" "${newest%% *}, $age_hours hours old ($home/backups)"
+    fi
   fi
 }
 
@@ -1029,6 +1127,7 @@ machine_step_text() {
     unattended-upgrades) echo "Install security updates by themselves (${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades)." ;;
     users) echo "Create the service users of the $machine_current_role role ($(role_users "$machine_current_role" | paste -sd' ' -)) without sudo or docker access, and close their home directories (750)." ;;
     ci-limits) echo "Cap the ci user at six CPUs and 20G of memory." ;;
+    low-ports) echo "Keep ${MACHINE_LOW_PORT_USERS[*]} (and their containers) off every port below 1024, so none of them can take 80 or 443 from ygg's Traefik." ;;
     ssh) echo "Harden ssh (00-yggdrasil.conf, ahead of the cloud image's own files): keys only, no root login, and only $(machine_admin) and the role's ssh users may log in. Your key is offered to the ones without one." ;;
     checkout) echo "Give the checkout, $root, to the ygg user." ;;
     secrets) echo "Create the users' secrets directories (750, each its user's) with the env templates copied in, never over a file that is there." ;;
@@ -1146,6 +1245,20 @@ step_ci_limits() {
   fi
   write_system_file "$path" 0644 "$(machine_ci_limits_content)"
   as_root systemctl daemon-reload
+}
+
+step_low_ports() {
+  local user path wrote=""
+  for user in "${MACHINE_LOW_PORT_USERS[@]}"; do
+    path=$(machine_low_ports_path "$user")
+    if [[ -z "$path" ]]; then
+      warn "there is no $user user yet: its port limit is left for the next install."
+      continue
+    fi
+    write_system_file "$path" 0644 "$(machine_low_ports_content)"
+    wrote=1
+  done
+  [[ -z "$wrote" ]] || as_root systemctl daemon-reload
 }
 
 # Passwords off is only safe when a key gets the admin in: without one this refuses, before anything is

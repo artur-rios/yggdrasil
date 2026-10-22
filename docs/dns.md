@@ -112,6 +112,17 @@ Cloudflare's proxy, and a large push over HTTPS would hit its request size limit
 A private address (`192.168.x.x`) is fine for a host only used on a LAN, or behind NAT: Let's
 Encrypt never connects to the host, it only reads the TXT record.
 
+Add one more record per zone, a **CAA** record on the bare domain (Name `@`, Tag *Only allow specific hostnames*,
+CA domain name `letsencrypt.org`; or, in the record's text form, `0 issue "letsencrypt.org; validationmethods=dns-01"`).
+Cloudflare's form has no field for `validationmethods`: use the API, or the *DNS → Records → Import* of a zone
+file line `@ 300 IN CAA 0 issue "letsencrypt.org; validationmethods=dns-01"`. `0 issue "letsencrypt.org; validationmethods=dns-01"`: only Let's Encrypt may issue certificates for
+the zone, and only after a DNS-01 proof, which needs the Cloudflare API token. Traefik proves control by DNS-01
+alone, so nothing legitimate is lost; without the record, whoever answers on port 80 of a name's address (a
+process on the dev machine that got there before Traefik, say) could pass Let's Encrypt's HTTP-01 check and get a
+certificate for `git.` or `jenkins.`.
+Without `validationmethods=dns-01` the record still limits issuance to Let's Encrypt, but no longer to the proof
+Traefik uses.
+
 Start with **DNS only**: nothing sits between you and the host while you set things up. The proxy is
 [step A7](#a7-optional-the-cloudflare-proxy), for the apps machine only.
 

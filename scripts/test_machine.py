@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 HOST = pathlib.Path(__file__).resolve().parent / "host.sh"
@@ -109,6 +110,10 @@ FAKES = {
             case "$2" in
               is-active) [[ -e "$FAKE_STATE/user-active-${FAKE_AS_USER:-}" ]]; exit $? ;;
               is-enabled) grep -qxF -- "$3" "$FAKE_STATE/user-enabled-${FAKE_AS_USER:-}" 2>/dev/null; exit $? ;;
+              # The properties of the user's units, as `show -p` prints them: what
+              # $FAKE_STATE/user-show-<user> says, else those of a unit that never ran.
+              show) cat "$FAKE_STATE/user-show-${FAKE_AS_USER:-}" 2>/dev/null \
+                      || printf '%s\n' Result=success ExecMainStartTimestamp= ;;
               enable | restart | start)
                 [[ "${@: -1}" != docker ]] || touch "$FAKE_STATE/user-active-${FAKE_AS_USER:-}"
                 [[ "$2" != enable ]] || echo "${@: -1}" >>"$FAKE_STATE/user-enabled-${FAKE_AS_USER:-}"
@@ -406,6 +411,18 @@ DELEGATE = "[Service]\nDelegate=cpu cpuset io memory pids\n"
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA admin@laptop\n"
 UPGRADES = 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n'
 LIMITS = "[Slice]\nCPUQuota=600%\nMemoryMax=20G\n"
+LOW_PORTS = "[Slice]\nSocketBindDeny=tcp:1-1023\nSocketBindDeny=udp:1-1023\n"
+# The users that run code the owner didn't write, or didn't review yet: none may take 80 or 443.
+LOW_PORT_USERS = ["ci", "release", "renovate", "dev"]
+# Every (row, user, path) of the dev machine's isolation, for a ygg uid, a release uid and the sysroot.
+ISOLATION = [
+    ("ci \u2192 ygg engine", "ci", "ygg-socket"), ("release \u2192 ygg engine", "release", "ygg-socket"),
+    ("dev \u2192 ygg engine", "dev", "ygg-socket"), ("renovate \u2192 ygg engine", "renovate", "ygg-socket"),
+    ("ci \u2192 release engine", "ci", "release-socket"),
+    ("ci \u2192 ygg secrets", "ci", "ygg-secrets"), ("release \u2192 ygg secrets", "release", "ygg-secrets"),
+    ("dev \u2192 ygg secrets", "dev", "ygg-secrets"), ("renovate \u2192 ygg secrets", "renovate", "ygg-secrets"),
+    ("ci \u2192 release secrets", "ci", "release-secrets"),
+]
 SSH_DEV = "PermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAllowUsers admin ygg dev\n"
 DEV_USERS = ["ygg", "ci", "release", "renovate", "dev"]
 CLOUDFLARE_V4 = ["173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22"]
@@ -916,6 +933,46 @@ class MachineRoleTests(unittest.TestCase):
         calls = self.calls()
         self.assertGreater(len(calls) - 1 - calls[::-1].index("systemctl daemon-reload"), calls.index(f"sudo tee {path}"))
 
+    def low_ports_file(self, user):
+        return self.etc(f"systemd/system/user-{self.users()[user][2]}.slice.d/50-yggdrasil-ports.conf")
+
+    def test_given_role_dev_when_installed_then_no_user_running_others_code_may_bind_a_low_port(self):
+        self.install("dev")
+        for user in LOW_PORT_USERS:
+            with self.subTest(user=user):
+                path = self.low_ports_file(user)
+                self.assertEqual(path.read_text(), LOW_PORTS)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+        # ygg is the one that publishes 80 and 443 (Traefik): its slice is left alone.
+        self.assertFalse(self.low_ports_file("ygg").exists())
+        calls = self.calls()
+        last = self.low_ports_file(LOW_PORT_USERS[-1])
+        self.assertGreater(len(calls) - 1 - calls[::-1].index("systemctl daemon-reload"), calls.index(f"sudo tee {last}"))
+        stdout, rows = self.rows("dev")
+        for user in LOW_PORT_USERS:
+            self.assertTrue(self.row(rows, f"low ports {user}").startswith("  ok "), stdout)
+        self.assertIsNone(self.row(rows, "low ports ygg"))
+
+    def test_given_a_changed_low_ports_file_when_checked_then_it_is_not_ok_and_install_rewrites_it(self):
+        self.install("dev")
+        self.low_ports_file("ci").write_text("[Slice]\n")
+        stdout, rows = self.rows("dev")
+        self.assertFalse(self.row(rows, "low ports ci").startswith("  ok "), stdout)
+        self.assertTrue(self.row(rows, "low ports dev").startswith("  ok "), stdout)
+        self.install("dev")
+        self.assertEqual(self.low_ports_file("ci").read_text(), LOW_PORTS)
+
+    def test_given_no_users_yet_when_checked_then_the_low_ports_rows_are_missing(self):
+        stdout, rows = self.rows("dev")
+        for user in LOW_PORT_USERS:
+            self.assertTrue(self.row(rows, f"low ports {user}").startswith("  -- "), stdout)
+
+    def test_given_role_apps_when_installed_then_no_low_ports_file_is_written(self):
+        self.install("apps")
+        self.assertEqual(list(self.sysroot.glob("etc/systemd/system/user-*.slice.d/50-yggdrasil-ports.conf")), [])
+        stdout, rows = self.rows("apps")
+        self.assertFalse([line for line in rows if "low ports" in line], stdout)
+
     def test_given_an_admin_without_authorized_keys_when_ssh_is_hardened_then_it_is_refused_and_nothing_written(self):
         for keys in ("missing", "empty"):
             with self.subTest(keys=keys):
@@ -1084,6 +1141,7 @@ class MachineRoleTests(unittest.TestCase):
                 (self.state / "ufw-rules").unlink(missing_ok=True)
                 (self.state / "ufw-on").unlink(missing_ok=True)
                 self.install(role)
+                self.backups_working()
                 stdout, rows = self.rows(role)
                 bad = [line for line in rows if not line.startswith("  ok ")]
                 self.assertEqual(bad, [], stdout)
@@ -1498,6 +1556,7 @@ class MachineRoleTests(unittest.TestCase):
         self.assertNotIn(f"chmod 750 {self.admin_home}", calls)
         self.assertEqual(
             self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text().splitlines()[-1], "AllowUsers dev ygg")
+        self.backups_working()
         stdout, rows = self.rows("dev", FAKE_ADMIN="dev")
         self.assertIn("admin", self.row(rows, "user dev"))
         self.assertEqual([line for line in rows if not line.startswith("  ok ")], [], stdout)
@@ -1551,8 +1610,10 @@ class MachineRoleTests(unittest.TestCase):
                 line = self.row(rows, f"{name} {user}")
                 self.assertIsNotNone(line, f"no row {name} {user} in:\n{stdout}")
                 self.assertTrue(line.startswith("  ok "), line)
-        for name in ("ci → ygg engine", "release → ygg engine", "ci → ygg secrets"):
-            self.assertTrue(self.row(rows, name).startswith("  ok "), stdout)
+        for name, user, path in ISOLATION:
+            line = self.row(rows, name)
+            self.assertIsNotNone(line, f"no row {name} in:\n{stdout}")
+            self.assertTrue(line.startswith("  ok "), line)
 
     def test_given_role_apps_when_engines_are_installed_then_only_ygg_gets_one(self):
         self.install("apps")
@@ -1646,6 +1707,29 @@ class MachineRoleTests(unittest.TestCase):
         stdout, rows = self.rows("dev")
         self.assertFalse(self.row(rows, "release → ygg engine").startswith("  ok "), stdout)
         self.assertTrue(self.row(rows, "ci → ygg engine").startswith("  ok "), stdout)
+
+    def isolation_path(self, kind):
+        return {
+            "ygg-socket": f"/run/user/{self.uid_of('ygg')}/docker.sock",
+            "release-socket": f"/run/user/{self.uid_of('release')}/docker.sock",
+            "ygg-secrets": f"{self.etc('yggdrasil')}/platform.env",
+            "release-secrets": f"{self.etc('yggdrasil-release')}/agent.env",
+        }[kind]
+
+    def test_given_any_user_able_to_read_what_it_must_not_when_checked_then_only_that_row_is_broken(self):
+        self.install("dev")
+        for name, user, kind in ISOLATION:
+            with self.subTest(name):
+                for other in DEV_USERS:
+                    (self.state / f"readable-{other}").unlink(missing_ok=True)
+                (self.state / f"readable-{user}").write_text(self.isolation_path(kind) + "\n")
+                stdout, rows = self.rows("dev")
+                line = self.row(rows, name)
+                self.assertFalse(line.startswith("  ok "), line)
+                self.assertIn(self.isolation_path(kind), line)
+                # Each row asks about its own user and path, so the others stay green.
+                broken = [row for row in rows if "\u2192" in row and not row.startswith("  ok ")]
+                self.assertEqual(broken, [line], stdout)
 
     def test_given_ci_able_to_read_the_ygg_secrets_when_checked_then_isolation_is_reported_broken(self):
         self.install("dev")
@@ -1807,6 +1891,80 @@ class MachineRoleTests(unittest.TestCase):
     def timer_row(self, rows):
         return self.row(rows, "backup timer")
 
+    LAST_RUN = "Wed 2026-10-21 03:31:02 UTC"
+
+    def backups_working(self, age_hours=2):
+        """What the owner adds after install: backup.conf, a run that succeeded, a fresh day of backups."""
+        self.etc("yggdrasil/backup.conf").write_text("BACKUP_TARGET=ygg@other:.\nforgejo\n")
+        self.last_run("success")
+        self.backup_day("2026-10-21", age_hours)
+
+    def last_run(self, result, started=LAST_RUN):
+        (self.state / "user-show-ygg").write_text(f"Result={result}\nExecMainStartTimestamp={started}\n")
+
+    def backup_day(self, name, age_hours):
+        day = self.home_of("ygg") / "backups" / name
+        day.mkdir(parents=True, exist_ok=True)
+        moment = time.time() - age_hours * 3600
+        os.utime(day, (moment, moment))
+        return day
+
+    def test_given_working_backups_when_checked_then_the_three_backup_rows_are_ok(self):
+        self.install("apps")
+        self.backups_working()
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.row(rows, "backup.conf").startswith("  ok "), stdout)
+        self.assertIn(self.LAST_RUN, self.row(rows, "last backup"))
+        self.assertTrue(self.row(rows, "last backup").startswith("  ok "), stdout)
+        self.assertTrue(self.row(rows, "newest backup").startswith("  ok "), stdout)
+        self.assertIn("2026-10-21", self.row(rows, "newest backup"))
+        # Asked of ygg (the directory and the home are closed to the admin), without a password.
+        self.assertIn(self.as_user("ygg", "systemctl --user show yggdrasil-backup.service -p Result -p ExecMainStartTimestamp")
+                      .replace("sudo -u", "sudo -n -u"), self.calls())
+
+    def test_given_no_backup_conf_when_checked_then_it_is_reported(self):
+        self.install("dev")
+        self.backups_working()
+        self.etc("yggdrasil/backup.conf").unlink()
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "backup.conf")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("env/backup.conf.example", line)
+
+    def test_given_a_failed_last_run_when_checked_then_it_is_reported(self):
+        self.install("apps")
+        self.backups_working()
+        self.last_run("exit-code")
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "last backup")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("exit-code", line)
+        self.assertIn("journalctl", line)
+
+    def test_given_a_backup_that_never_ran_when_checked_then_it_is_a_warning(self):
+        self.install("apps")
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "last backup")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("never run", line)
+        line = self.row(rows, "newest backup")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("none", line)
+
+    def test_given_a_newest_backup_older_than_36_hours_when_checked_then_it_is_a_warning(self):
+        self.install("apps")
+        self.backups_working(age_hours=40)
+        self.backup_day("2026-10-19", 90)
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "newest backup")
+        self.assertTrue(line.startswith("  !! "), line)
+        # The newest day is the one named last, and its age is said.
+        self.assertIn("2026-10-21", line)
+        self.assertIn("40 hours", line)
+        self.backups_working(age_hours=35)
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.row(rows, "newest backup").startswith("  ok "), stdout)
+
     def test_given_role_dev_when_installed_then_ygg_has_the_backup_timer_enabled(self):
         self.install("dev")
         for name in ("yggdrasil-backup.service", "yggdrasil-backup.timer"):
@@ -1876,6 +2034,8 @@ class MachineRoleTests(unittest.TestCase):
         line = self.timer_row(rows)
         self.assertTrue(line.startswith("  !! "), stdout)
         self.assertIn("not checked", line)
+        for name in ("backup.conf", "last backup", "newest backup"):
+            self.assertIn("not checked", self.row(rows, name), stdout)
         self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
 
 
