@@ -151,7 +151,8 @@ GITHUB_OWNER=$(python3 "$root/scripts/catalog.py" owner) || exit 1
 YGGDRASIL_REPOSITORY=$(python3 "$root/scripts/catalog.py" repository) || exit 1
 export GITHUB_OWNER YGGDRASIL_REPOSITORY
 
-# The profile-only variables compose.yml cannot mark as required (see the note at its top).
+# The profile-only variables compose.yml cannot mark as required (see the note at its top). The forge
+# profile has none: Forgejo needs only DOMAIN, and FORGEJO_SSH_PORT defaults to 2222.
 check_profile_variables() {
   local required=()
   [[ "$profiles" == *,jenkins,* ]] && required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD GITHUB_APP_ID GITHUB_APP_KEY_FILE)

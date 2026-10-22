@@ -17,6 +17,7 @@
 # the env file (env/platform.env.example) and which profiles COMPOSE_PROFILES turns on:
 #
 #   apps            the status API, its socket proxy and the console: a host that runs applications
+#   forge           Forgejo, the git forge, on the development machine
 #   jenkins         the Jenkins controller, on the one host that runs it
 #   agent           the Jenkins agent that deploys to this host's engine, dialling out to the controller
 #   (none)          the proxy, the observability stack and nothing else
@@ -293,6 +294,53 @@ services:
       traefik.http.routers.grafana.middlewares: secure-headers@file
       traefik.http.services.grafana.loadbalancer.server.port: "3000"
 
+  forgejo:
+    # The git forge of the development machine, at git.DOMAIN: the repositories Jenkins builds from.
+    # The rootless image, pinned by version and digest (it runs as uid 1000 in the container, i.e. as
+    # the service user's subuid on the host, never as root). SQLite, so there is no database to run.
+    # Registration is closed and nothing is readable signed out: the accounts are created by hand
+    # (`forgejo admin user create`). It writes its own configuration (app.ini, under the data volume:
+    # the rootless image keeps it in /var/lib/gitea/custom/conf), so the filesystem is not read-only.
+    # Git over SSH is Forgejo's own server on 2222, published on the host (FORGEJO_SSH_PORT); the web
+    # side goes through Traefik. No Docker socket, directly or through a proxy.
+    profiles: [forge]
+    image: codeberg.org/forgejo/forgejo:17.0.0-rootless@sha256:6554520f7574602100b7d6620c6ac5b18cec30325f823777497eac36234f5cf8
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      FORGEJO__server__ROOT_URL: https://git.${DOMAIN}/
+      FORGEJO__server__DOMAIN: git.${DOMAIN}
+      FORGEJO__server__SSH_DOMAIN: git.${DOMAIN}
+      FORGEJO__server__START_SSH_SERVER: "true"
+      # What clone URLs show (the host port) and what the server listens on in the container.
+      FORGEJO__server__SSH_PORT: ${FORGEJO_SSH_PORT:-2222}
+      FORGEJO__server__SSH_LISTEN_PORT: "2222"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      # Without it the first visit is the install wizard, which anyone could complete.
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__log__MODE: console
+    ports:
+      - "${FORGEJO_SSH_PORT:-2222}:2222"
+    volumes:
+      - forgejo-data:/var/lib/gitea
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:3000/api/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # The first start creates the database and the keys.
+      start_period: 30s
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.forgejo.rule: Host(`git.${DOMAIN}`)
+      traefik.http.routers.forgejo.entrypoints: websecure
+      traefik.http.routers.forgejo.middlewares: secure-headers@file
+      traefik.http.services.forgejo.loadbalancer.server.port: "3000"
+
   jenkins:
     profiles: [jenkins]
     build: ./jenkins/controller
@@ -382,5 +430,6 @@ volumes:
   loki:
   alloy:
   grafana:
+  forgejo-data:
   jenkins:
   agent:

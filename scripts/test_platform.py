@@ -310,6 +310,11 @@ class PlatformTests(unittest.TestCase):
         self.assertIn("up --detach", self.docker_calls())
         self.assertIn("PROMETHEUS_CONFIG_FILE=prometheus-static.yml\n", self.docker_calls())
 
+    def test_given_the_forge_profile_when_up_then_no_jenkins_or_agent_variable_is_required(self):
+        result = self.up("COMPOSE_PROFILES=forge\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("up --detach", self.docker_calls())
+
     def test_given_the_apps_profile_when_up_then_prometheus_discovers_its_targets(self):
         result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n")
         self.assertEqual(result.returncode, 0, result.stderr)
