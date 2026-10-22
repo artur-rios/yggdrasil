@@ -19,7 +19,7 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets firewall role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets firewall engines role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -250,6 +250,108 @@ EOF
 # Users' units get the controllers a rootless engine's resource limits (CPUQuota, MemoryMax) need.
 machine_delegate_content() {
   printf '%s\n' "[Service]" "Delegate=cpu cpuset io memory pids"
+}
+
+# ---- Rootless engines ---------------------------------------------------------------------------
+
+# The marks around what install adds to a user's .profile, so a later install replaces it instead of
+# adding a second one.
+PROFILE_BEGIN="# >>> yggdrasil >>>"
+PROFILE_END="# <<< yggdrasil <<<"
+
+# Where the systemd user manager of a service user keeps the drop-in of its docker.service, in the home.
+machine_override_path() { echo "$(passwd_field "$1" 6)/.config/systemd/user/docker.service.d/override.conf"; }
+# The engine publishes and reaches through slirp4netns, so a container sees the addresses of its clients
+# (the default driver would show them all as the engine's own).
+machine_override_content() {
+  printf '%s\n' "[Service]" \
+    'Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns"' \
+    'Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns"'
+}
+machine_engine_socket() { echo "/run/user/$(passwd_field "$1" 3)/docker.sock"; }
+# What systemd writes down for a user whose manager starts at boot, without anyone logging in.
+machine_linger_path() { echo "${YGG_SYSROOT:-}/var/lib/systemd/linger/$1"; }
+# The block of a user's .profile: the CLI talks to the user's own engine, in login shells too.
+machine_profile_block() {
+  printf '%s\n' "$PROFILE_BEGIN" "export DOCKER_HOST=unix://$(machine_engine_socket "$1")" "$PROFILE_END"
+}
+
+# as_user <sudo option or ""> <user> <command...>: the command as the user, in the user's systemd and
+# bus (so `systemctl --user` and a rootless docker find them), from / (the admin's directory is closed to
+# the service users, and a nologin user has no shell to start in). sudo, not a shell: ci, release and
+# renovate can't log in.
+as_user() {
+  local sudo_option=$1 user=$2 uid
+  shift 2
+  uid=$(passwd_field "$user" 3)
+  [[ -n "$uid" ]] || die "there is no $user user"
+  (cd / && sudo ${sudo_option:+"$sudo_option"} -u "$user" env \
+    "XDG_RUNTIME_DIR=/run/user/$uid" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" "$@")
+}
+
+# run_as_user <user> <command...>: as_user, asking for a password if sudo wants one.
+run_as_user() {
+  local user=$1
+  shift
+  as_user "" "$user" "$@"
+}
+
+# read_as_user <user> <command...>: as_user for a check, which never waits for a password: it fails
+# when sudo would ask.
+read_as_user() {
+  local user=$1
+  shift
+  as_user -n "$user" "$@"
+}
+
+# machine_can_read_as_users: sudo would run something for another user without asking for a password.
+machine_can_read_as_users() {
+  ((EUID == 0)) || { has sudo && sudo -n true 2>/dev/null; }
+}
+
+# user_file_read <user> <path>: the file's content, read as the user (homes are closed to the admin);
+# fails when it isn't there.
+user_file_read() { run_as_user "$1" cat "$2" 2>/dev/null; }
+
+# user_file_write <user> <path> <content>: the content plus a newline in the user's file, made by the user
+# so that it is theirs.
+user_file_write() {
+  run_as_user "$1" mkdir -p "$(dirname "$2")"
+  printf '%s\n' "$3" | run_as_user "$1" tee "$2" >/dev/null
+}
+
+# profile_with_block <user> <profile content>: the profile without any block of ours, then the block
+# with the user's socket. A begin mark without its end is not a block: it is kept as it is.
+profile_with_block() {
+  local stripped
+  stripped=$(awk -v begin="$PROFILE_BEGIN" -v end="$PROFILE_END" '
+    $0 == begin { inside = 1; held = $0; next }
+    inside { held = held ORS $0; if ($0 == end) { inside = 0; held = "" }; next }
+    { print }
+    END { if (inside) print held }' <<<"$2")
+  printf '%s%s\n' "${stripped:+$stripped$'\n\n'}" "$(machine_profile_block "$1")"
+}
+
+# machine_override_has <content>: the content has every line of the drop-in (what else it holds is the
+# user's business).
+machine_override_has() {
+  local line
+  while IFS= read -r line; do
+    grep -qxF -- "$line" <<<"$1" || return 1
+  done < <(machine_override_content)
+}
+
+# machine_wait_for_user_manager <user>: enabling linger starts the user's systemd, which takes a moment,
+# and the engine's setup needs it (and its bus) to be there.
+machine_wait_for_user_manager() {
+  local tries
+  for ((tries = 0; tries < 30; tries++)); do
+    if run_as_user "$1" systemctl --user show-environment >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  die "the systemd user manager of $1 did not start (loginctl enable-linger $1 and journalctl -u user@$(passwd_field "$1" 3))"
 }
 
 # ---- Firewall -----------------------------------------------------------------------------------
@@ -713,6 +815,87 @@ machine_check_cloudflare_ranges() {
   fi
 }
 
+machine_check_engines() {
+  title "Rootless Docker"
+  local users user
+  mapfile -t users < <(role_users "$machine_current_role")
+  for user in "${users[@]}"; do
+    machine_check_engine "$user"
+  done
+  [[ "$machine_current_role" != dev ]] || machine_check_isolation
+}
+
+# machine_check_engine <user>: the three rows of one service user's engine. The engine and its drop-in
+# are asked of the user itself (the home is closed to the admin), through sudo without a password.
+machine_check_engine() {
+  local user=$1 uid security override held
+  uid=$(passwd_field "$user" 3)
+  if [[ -z "$uid" ]]; then
+    row missing "engine $user" "no $user user yet: install creates it, then its engine"
+    machine_need engines
+    return 0
+  fi
+  override=$(machine_override_path "$user")
+
+  if ! machine_can_read_as_users; then
+    row warn "engine $user" "asking it needs sudo without a password: not checked (run check with sudo)"
+  # DOCKER_HOST: the user's own engine is asked, whichever engine the docker CLI would pick.
+  elif security=$(read_as_user "$user" env "DOCKER_HOST=unix://$(machine_engine_socket "$user")" docker info --format '{{json .SecurityOptions}}' 2>/dev/null); then
+    if [[ "$security" == *name=rootless* ]]; then
+      row ok "engine $user" "rootless, on $(machine_engine_socket "$user")"
+    else
+      row warn "engine $user" "answers, but not rootless ($security): the platform runs on rootless Docker only"
+      machine_need engines
+    fi
+  else
+    row missing "engine $user" "does not answer on $(machine_engine_socket "$user"): install sets it up"
+    machine_need engines
+  fi
+
+  if [[ -e "$(machine_linger_path "$user")" ]]; then
+    row ok "linger $user" "on: the engine starts at boot, with nobody logged in"
+  else
+    row missing "linger $user" "off: the engine would stop with the user's last session"
+    machine_need engines
+  fi
+
+  if ! machine_can_read_as_users; then
+    row warn "client addresses $user" "the home is closed to you and sudo would ask for a password: not checked"
+  elif ! held=$(read_as_user "$user" cat "$override" 2>/dev/null); then
+    row missing "client addresses $user" "$override: install writes it (slirp4netns, so containers see their clients' addresses)"
+    machine_need engines
+  elif machine_override_has "$held"; then
+    row ok "client addresses $user" "slirp4netns network and port driver ($override)"
+  else
+    row warn "client addresses $user" "$override lacks the slirp4netns settings: install rewrites it"
+    machine_need engines
+  fi
+}
+
+# machine_check_isolation: the users that run other people's code (ci) and the release agent must not be
+# able to reach what ygg has: its engine (that is root over the platform) and its secrets. What a check
+# finds here, install can't repair: it is for the admin to look at.
+machine_check_isolation() {
+  user_exists ygg || return 0
+  machine_check_cannot_read "ci → ygg engine" ci "$(machine_engine_socket ygg)"
+  machine_check_cannot_read "release → ygg engine" release "$(machine_engine_socket ygg)"
+  machine_check_cannot_read "ci → ygg secrets" ci "$(secrets_dir_of ygg)/platform.env"
+}
+
+# machine_check_cannot_read <row name> <user> <path>
+machine_check_cannot_read() {
+  local name=$1 user=$2 path=$3
+  if ! user_exists "$user"; then
+    row missing "$name" "no $user user yet"
+  elif ! machine_can_read_as_users; then
+    row warn "$name" "asking needs sudo without a password: not checked (run check with sudo)"
+  elif read_as_user "$user" test -r "$path"; then
+    row warn "$name" "$user can read $path: that breaks the isolation of the users (look at the permissions on it and on the run directory)"
+  else
+    row ok "$name" "$user can't read $path"
+  fi
+}
+
 machine_check_role_file() {
   title "Role"
   local file="${YGG_SYSROOT:-}/etc/yggdrasil-role" written=""
@@ -751,6 +934,7 @@ machine_step_text() {
         echo "Firewall: ssh, HTTP, HTTPS and Forgejo's ssh port (22, 80, 443, 2222) in, then ufw is turned on."
       fi
       ;;
+    engines) echo "Give each service user ($(role_users "$machine_current_role" | paste -sd' ' -)) its own rootless Docker engine: linger on, slirp4netns network and port driver, started now and at boot, and DOCKER_HOST in its .profile." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
   esac
 }
@@ -989,6 +1173,42 @@ step_firewall() {
   # What the workstation's firewall opens (80 and 443 to everyone) doesn't belong on this machine.
   for spec in $(machine_ufw_open_web "$rules"); do
     ! machine_plain_web "$spec" || as_root ufw delete allow "$spec"
+  done
+}
+
+# Each service user runs its own rootless engine under its own systemd (linger keeps that running with
+# nobody logged in): dockerd-rootless-setuptool.sh makes the user unit, the drop-in makes it use
+# slirp4netns, and DOCKER_HOST in the .profile points the CLI of a login shell at the user's socket. All of
+# it is done as the user: the homes are closed to the admin, and the files are the user's own.
+step_engines() {
+  local users user home override held restart profile current wanted
+  mapfile -t users < <(role_users "$machine_current_role")
+  for user in "${users[@]}"; do
+    if ! user_exists "$user"; then
+      warn "there is no $user user yet: its engine is left for the next install."
+      continue
+    fi
+    home=$(passwd_field "$user" 6)
+    as_root loginctl enable-linger "$user"
+    machine_wait_for_user_manager "$user"
+
+    override=$(machine_override_path "$user")
+    restart=""
+    held=$(user_file_read "$user" "$override") || held=""
+    if ! machine_override_has "$held"; then
+      # An engine that is running only takes the new addresses when it restarts.
+      [[ -z "$held" ]] || restart=1
+      user_file_write "$user" "$override" "$(machine_override_content)"
+    fi
+    run_as_user "$user" dockerd-rootless-setuptool.sh install
+    run_as_user "$user" systemctl --user daemon-reload
+    run_as_user "$user" systemctl --user enable --now docker
+    [[ -z "$restart" ]] || run_as_user "$user" systemctl --user restart docker
+
+    profile="$home/.profile"
+    current=$(user_file_read "$user" "$profile") || current=""
+    wanted=$(profile_with_block "$user" "$current")
+    [[ "$current" == "$wanted" ]] || user_file_write "$user" "$profile" "$wanted"
   done
 }
 
