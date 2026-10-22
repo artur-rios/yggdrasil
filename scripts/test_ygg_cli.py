@@ -102,6 +102,106 @@ class HostShTests(unittest.TestCase):
         self.assertIn("ygg help", result.stderr)
 
 
+class Exec(Exception):
+    """Stands for the process image replaced by os.execvpe: carries the argv that would have run."""
+
+
+class MachineCommandTests(unittest.TestCase):
+    """`ygg check|install --role`, `ygg agent` and `ygg backup`: what each hands to host.sh."""
+
+    def handed_over(self, *arguments):
+        from unittest import mock
+        from yggcli import main
+        with mock.patch.object(main, "_exec", side_effect=lambda argv, env=None: (_ for _ in ()).throw(Exec(argv))):
+            with self.assertRaises(Exec) as caught:
+                main.run(list(arguments))
+        return caught.exception.args[0]
+
+    def host_sh(self, *arguments):
+        return ["bash", str(SCRIPTS / "host.sh"), *arguments]
+
+    def test_given_install_with_a_role_when_parsed_then_host_sh_gets_install_and_the_role(self):
+        self.assertEqual(self.handed_over("install", "--role", "dev"), self.host_sh("install", "--role", "dev"))
+        self.assertEqual(self.handed_over("check", "--role", "apps"), self.host_sh("check", "--role", "apps"))
+
+    def test_given_check_without_a_role_when_parsed_then_host_sh_gets_check_alone(self):
+        self.assertEqual(self.handed_over("check"), self.host_sh("check"))
+        self.assertEqual(self.handed_over("install"), self.host_sh("install"))
+
+    def test_given_an_unknown_role_when_parsed_then_it_is_refused(self):
+        result = ygg("install", "--role", "laptop")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid choice", result.stderr)
+
+    def test_given_agent_up_for_ci_when_parsed_then_host_sh_gets_agent_up_ci(self):
+        self.assertEqual(self.handed_over("agent", "up", "--user", "ci"), self.host_sh("agent", "up", "ci"))
+        self.assertEqual(self.handed_over("agent", "logs", "--user", "release"),
+                         self.host_sh("agent", "logs", "release"))
+
+    def test_given_an_agent_for_another_user_or_none_then_it_is_a_usage_error(self):
+        for arguments in (("agent", "up", "--user", "ygg"), ("agent", "up"), ("agent", "--user", "ci")):
+            self.assertEqual(ygg(*arguments).returncode, 2, arguments)
+
+    def test_given_backup_run_when_parsed_then_host_sh_gets_backup_run(self):
+        self.assertEqual(self.handed_over("backup", "run"), self.host_sh("backup", "run"))
+        self.assertEqual(self.handed_over("backup", "list"), self.host_sh("backup", "list"))
+
+    def test_given_backup_with_another_action_then_it_is_a_usage_error(self):
+        self.assertEqual(ygg("backup", "restore").returncode, 2)
+
+    def test_given_the_ygg_sh_fallback_without_python_then_check_and_install_keep_their_role(self):
+        text = (SCRIPTS / "ygg.sh").read_text()
+        self.assertIn('exec bash "$here/host.sh" "$@"', text)
+
+
+@unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
+class MachineOperationTests(unittest.TestCase):
+    """host.sh's agent and backup operations, with a fake sudo and getent."""
+
+    def setUp(self):
+        self.temp = pathlib.Path(tempfile.mkdtemp(prefix="ygg-machine-"))
+        self.addCleanup(shutil.rmtree, self.temp, ignore_errors=True)
+        bin_dir = self.temp / "bin"
+        bin_dir.mkdir()
+        self.calls = self.temp / "calls"
+        for name, body in (("sudo", f'printf "%s\\n" "$*" >>"{self.calls}"'),
+                           ("getent", 'echo "$2:x:1001:1001::/home/$2:/usr/sbin/nologin"')):
+            (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n")
+            (bin_dir / name).chmod(0o755)
+        self.home = self.temp / "home"
+        self.home.mkdir()
+        self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", HOME=str(self.home),
+                        YGG_SECRETS_DIR=str(self.temp / "secrets"))
+
+    def host_sh(self, *arguments):
+        return subprocess.run(["bash", str(SCRIPTS / "host.sh"), *arguments], capture_output=True, text=True,
+                              env=self.env, stdin=subprocess.DEVNULL)
+
+    def test_given_agent_up_for_ci_then_the_checkouts_agent_sh_runs_as_ci(self):
+        result = self.host_sh("agent", "up", "ci")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        line = self.calls.read_text().strip()
+        self.assertTrue(line.startswith("-u ci env XDG_RUNTIME_DIR=/run/user/1001 "), line)
+        self.assertTrue(line.endswith(f" {SCRIPTS.parent}/scripts/agent.sh up"), line)
+
+    def test_given_an_agent_command_or_user_it_does_not_know_then_host_sh_refuses_it(self):
+        for arguments in (("agent", "restart", "ci"), ("agent", "up", "ygg"), ("agent", "up")):
+            result = self.host_sh(*arguments)
+            self.assertEqual(result.returncode, 1, arguments)
+            self.assertIn("usage:", result.stderr, arguments)
+        self.assertFalse(self.calls.exists())
+
+    def test_given_backup_list_then_backup_sh_answers_as_the_caller(self):
+        result = self.host_sh("backup", "list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.calls.exists())
+
+    def test_given_an_unknown_backup_command_then_backup_sh_refuses_it(self):
+        result = self.host_sh("backup", "restore")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("usage: backup.sh", result.stderr)
+
+
 class VersionTests(unittest.TestCase):
     def test_given_version_then_it_names_version_commit_and_checkout(self):
         for arguments in (("--version",), ("version",)):

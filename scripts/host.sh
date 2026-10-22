@@ -3,7 +3,9 @@
 # application, the status, an application's configuration, deploys and the environments. ygg.py owns
 # the command line, the menu and the help (`ygg help`, docs/cli.md); it runs these as
 #
-#     scripts/host.sh check | install | add | status
+#     scripts/host.sh check | install [<role> | --role <role>] | add | status
+#     scripts/host.sh agent up | down | ps | logs ci | release
+#     scripts/host.sh backup run | list
 #     scripts/host.sh config [<app>] [<environment>]
 #     scripts/host.sh env [status | start <environment> | stop <environment> [--force]]
 #     scripts/host.sh deploy-app <environment> <app> [<app-dir>] [<version>] [--leave-running]
@@ -625,6 +627,20 @@ install_for_role() {
   title "Install"
   install_machine "$role"
   check_machine "$role"
+}
+
+# agent <up|down|ps|logs> <ci|release>: this checkout's agent.sh, run as the service user whose Jenkins
+# build agent it is (on that user's own engine). The admin runs this, so it is `run_as_user`.
+agent_command() {
+  [[ $# -eq 2 && "$1" =~ ^(up|down|ps|logs)$ && "$2" =~ ^(ci|release)$ ]] \
+    || die "usage: scripts/host.sh agent up | down | ps | logs ci | release"
+  run_as_user "$2" "$root/scripts/agent.sh" "$1"
+}
+
+# backup <run|list>: this checkout's backup.sh, as whoever runs this (ygg: the data and the engine are
+# its own; the nightly timer runs backup.sh itself).
+backup_command() {
+  "$root/scripts/backup.sh" "$@"
 }
 
 # ---- Stack and env files ------------------------------------------------------------------------
@@ -1464,6 +1480,8 @@ run() {
 case ${1:-} in
   check) shift; check_for_role "$@" ;;
   install) shift; install_for_role "$@" ;;
+  agent) shift; agent_command "$@" ;;
+  backup) shift; backup_command "$@" ;;
   add) add_application ;;
   status) show_status ;;
   config) configure_app "${2:-}" "${3:-}" ;;
