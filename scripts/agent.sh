@@ -28,7 +28,7 @@ env_file="$secrets/agent.env"
 # agent that never connects, a workdir mounted from nowhere), so each is checked here.
 for name in JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET YGG_AGENT_WORKDIR; do
   # shellcheck source=/dev/null
-  value=$(set -a; . "$env_file"; eval "echo \"\${$name:-}\"")
+  value=$(set -a; . "$env_file"; eval "echo \"\${$name:-}\"")     || die "cannot read $env_file: it must be shell-style NAME=value lines (template: env/agent.env.example)"
   [[ -n "$value" ]] || die "$name must be set in $env_file (template: env/agent.env.example)"
   printf -v "$name" '%s' "$value"
 done

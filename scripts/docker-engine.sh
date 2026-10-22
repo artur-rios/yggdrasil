@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The Docker engine a yggdrasil script talks to: the invoking user's own rootless one. Sourced (not run)
 # by scripts/platform.sh and scripts/agent.sh, which define die() -- it prefixes the message with the
 # script's name.

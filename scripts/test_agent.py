@@ -101,6 +101,22 @@ class AgentTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f"{self.secrets}/agent.env", result.stderr)
 
+    def test_given_an_unreadable_agent_env_when_up_then_it_is_refused_naming_the_file(self):
+        (self.secrets / "agent.env").write_text("JENKINS_URL=https://x\nJENKINS_AGENT_NAME=(\n")
+        result = self.run_agent("up")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot read", result.stderr)
+        self.assertIn(f"{self.secrets}/agent.env", result.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+    def test_given_the_env_template_when_copied_unedited_then_up_is_refused(self):
+        template = COMPOSE_FILE.parent.parent / "env" / "agent.env.example"
+        shutil.copy(template, self.secrets / "agent.env")
+        result = self.run_agent("up")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be set", result.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
     def test_given_a_relative_workdir_when_up_then_it_is_refused(self):
         self.agent_env(YGG_AGENT_WORKDIR="agent")
         result = self.run_agent("up")
