@@ -1,13 +1,16 @@
 """Tests for the machine roles of scripts/host.sh (scripts/machine.sh): packages, rootful Docker off,
-the system settings and the role file.
+the system settings, the service users, ssh, the checkout, the secrets and the role file.
 
     python3 -m unittest discover -s scripts -p "test_machine.py"
 
 Everything that needs root or changes the system is a fake on PATH: `sudo` (logs, then runs the
 command, which only ever touches the temporary $YGG_SYSROOT), `apt-get`, `dpkg-query`, `dpkg`, `curl`,
-`systemctl`, `sysctl`, `apparmor_parser`, `gpasswd`, `getent`, `id` and `docker`. The fakes keep their
-state in $FAKE_STATE (packages installed, active units, the docker group), so a second run sees what
-the first one did, and log every call to $FAKE_STATE/calls.
+`systemctl`, `sysctl`, `apparmor_parser`, `gpasswd`, `getent`, `id`, `docker`, `useradd`, `usermod`,
+`chown`, `chmod`, `install`, `stat` and `sshd`. The fakes keep their state in $FAKE_STATE (packages
+installed, active units, the docker group, who owns what) and in a fake $YGG_SYSROOT/etc/passwd, so a
+second run sees what the first one did, and log every call to $FAKE_STATE/calls. None of them changes
+an owner: `chown` only records it (the checkout step chowns the real checkout, which must stay as it
+is), and `chmod` only touches what is under the test's temporary directory.
 """
 
 import os
@@ -22,8 +25,16 @@ HOST = pathlib.Path(__file__).resolve().parent / "host.sh"
 
 # Each fake is a bash script. State lives in plain files under $FAKE_STATE.
 FAKES = {
+    # `sudo -l -U <user>` lists $FAKE_STATE/sudo-<user> when there is one, as sudo would a rule, and
+    # otherwise says the user may not run sudo.
     "sudo": r"""
         echo "sudo $*" >>"$FAKE_STATE/calls"
+        [[ "$1" == -n ]] && shift
+        if [[ "$1" == -l ]]; then
+          if [[ -s "$FAKE_STATE/sudo-$3" ]]; then cat "$FAKE_STATE/sudo-$3"
+          else echo "User $3 is not allowed to run sudo on this host."; exit 1; fi
+          exit 0
+        fi
         exec "$@"
     """,
     # `apt-get install` records the packages, so dpkg-query then reports them installed.
@@ -106,21 +117,88 @@ FAKES = {
         fi
     """,
     "getent": r"""
-        if [[ "$1" == group && "$2" == docker && -s "$FAKE_STATE/group" ]]; then
+        if [[ "$1" == passwd ]]; then
+          grep -- "^$2:" "$YGG_SYSROOT/etc/passwd" || exit 2
+        elif [[ "$1" == group && "$2" == docker && -s "$FAKE_STATE/group" ]]; then
           IFS=: read -r gid members <"$FAKE_STATE/group"
           echo "docker:x:$gid:$members"
         else
           exit 2
         fi
     """,
-    # The admin is "admin" (uid 1000, or $FAKE_UID); it is in no group but its own.
+    # The admin is "admin" (uid 1000, or $FAKE_UID); it is in no group but its own. Another user is in
+    # its own group and those listed in $FAKE_STATE/groups-<user>.
     "id": r"""
         case "$*" in
           -un) echo admin ;;
           -u) echo "${FAKE_UID:-1000}" ;;
           -nG | "-nG admin") echo admin ;;
+          "-nG "*) echo "$2 $(cat "$FAKE_STATE/groups-$2" 2>/dev/null)" ;;
           *) echo "fake id: unexpected call: $*" >&2; exit 64 ;;
         esac
+    """,
+    # A new user gets the next uid, a home under $FAKE_HOMES (as open as mkdir leaves it) and a line in
+    # the fake passwd.
+    "useradd": r"""
+        echo "useradd $*" >>"$FAKE_STATE/calls"
+        shell=""
+        while (($#)); do
+          case "$1" in
+            --shell) shell=$2; shift ;;
+            --*) ;;
+            *) name=$1 ;;
+          esac
+          shift
+        done
+        uid=$((1000 + $(wc -l <"$YGG_SYSROOT/etc/passwd")))
+        mkdir -p "$FAKE_HOMES/$name"
+        echo "$name:x:$uid:$uid::$FAKE_HOMES/$name:$shell" >>"$YGG_SYSROOT/etc/passwd"
+    """,
+    "usermod": r"""
+        echo "usermod $*" >>"$FAKE_STATE/calls"
+        if [[ "$1" == --shell ]]; then
+          sed -i "s|^\($3:.*:\)[^:]*\$|\1$2|" "$YGG_SYSROOT/etc/passwd"
+        fi
+    """,
+    # Nothing is chowned: the owner is written down for `stat` below to give back.
+    "chown": r"""
+        echo "chown $*" >>"$FAKE_STATE/calls"
+        [[ "$1" == -R ]] && shift
+        printf '%s\t%s\n' "${@: -1}" "$1" >>"$FAKE_STATE/owners"
+    """,
+    "chmod": r"""
+        echo "chmod $*" >>"$FAKE_STATE/calls"
+        case "${@: -1}" in "$FAKE_SANDBOX"/*) /usr/bin/chmod "$@" ;; esac
+    """,
+    # `install -o <user> -g <group>` records the owner instead of setting it.
+    "install": r"""
+        arguments=() owner="" group=""
+        while (($#)); do
+          case "$1" in
+            -o) owner=$2; shift 2 ;;
+            -g) group=$2; shift 2 ;;
+            *) arguments+=("$1"); shift ;;
+          esac
+        done
+        /usr/bin/install "${arguments[@]}" || exit $?
+        if [[ -n "$owner" ]]; then
+          printf '%s\t%s:%s\n' "${arguments[-1]}" "$owner" "${group:-$owner}" >>"$FAKE_STATE/owners"
+        fi
+    """,
+    "stat": r"""
+        if [[ "$1 $2" == "-c %U:%G" ]]; then
+          owner=$(awk -F'\t' -v path="$3" '$1 == path { found = $2 } END { print found }' "$FAKE_STATE/owners")
+          if [[ -n "$owner" ]]; then echo "$owner"; exit 0; fi
+        fi
+        exec /usr/bin/stat "$@"
+    """,
+    # FAKE_SSHD_STATUS=1 is a configuration sshd rejects.
+    "sshd": r"""
+        echo "sshd $*" >>"$FAKE_STATE/calls"
+        if [[ "${FAKE_SSHD_STATUS:-0}" != 0 ]]; then
+          echo "fake sshd: bad configuration" >&2
+          exit "$FAKE_SSHD_STATUS"
+        fi
     """,
     # An engine that is installed but whose daemon the admin can't reach: what a workstation
     # without docker-group membership looks like.
@@ -158,6 +236,13 @@ APPARMOR = textwrap.dedent("""\
 """)
 DELEGATE = "[Service]\nDelegate=cpu cpuset io memory pids\n"
 
+KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA admin@laptop\n"
+UPGRADES = 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n'
+LIMITS = "[Slice]\nCPUQuota=600%\nMemoryMax=20G\n"
+SSH_DEV = "PermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAllowUsers admin ygg dev\n"
+DEV_USERS = ["ygg", "ci", "release", "renovate", "dev"]
+CHECKOUT = str(HOST.parent.parent)
+
 UBUNTU = 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nUBUNTU_CODENAME=noble\nPRETTY_NAME="Ubuntu 24.04 LTS"\n'
 DEBIAN = 'ID=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\nPRETTY_NAME="Debian GNU/Linux 12"\n'
 
@@ -183,11 +268,24 @@ class MachineRoleTests(unittest.TestCase):
         (self.state / "masked").write_text("")
         (self.state / "group").write_text("")
         (self.state / "calls").write_text("")
+        (self.state / "owners").write_text("")
+        # The admin has a home with a key in it, as the owner of a machine does: the ssh step refuses
+        # to switch passwords off without one.
+        self.admin_home = self.temp / "home"
+        self.admin_keys = self.admin_home / ".ssh" / "authorized_keys"
+        self.admin_keys.parent.mkdir()
+        self.admin_keys.write_text(KEY)
+        self.homes = self.temp / "homes"
+        self.homes.mkdir()
+        self.passwd = self.sysroot / "etc" / "passwd"
+        self.passwd.write_text(f"admin:x:1000:1000::{self.admin_home}:/bin/bash\n")
         self.env = {
             **os.environ,
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(self.temp / "home"),
             "FAKE_STATE": str(self.state),
+            "FAKE_HOMES": str(self.homes),
+            "FAKE_SANDBOX": str(self.temp),
             "YGG_SYSROOT": str(self.sysroot),
             "YGG_ASSUME_YES": "1",
             "YGG_SECRETS_DIR": str(self.temp / "secrets"),
@@ -218,6 +316,27 @@ class MachineRoleTests(unittest.TestCase):
 
     def set_docker_group(self, members):
         (self.state / "group").write_text("999:" + ",".join(members) + "\n")
+
+    def users(self):
+        """name -> passwd fields, for every user but the admin."""
+        entries = [line.split(":") for line in self.passwd.read_text().splitlines()]
+        return {fields[0]: fields for fields in entries if fields[0] != "admin"}
+
+    def owners(self):
+        """path -> the owner last recorded by the fake chown / install -o."""
+        recorded = {}
+        for line in (self.state / "owners").read_text().splitlines():
+            path, owner = line.split("	")
+            recorded[path] = owner
+        return recorded
+
+    def rows(self, *arguments):
+        result = self.host("check", *arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout, [line for line in result.stdout.splitlines() if line.startswith("  ")]
+
+    def row(self, rows, name):
+        return next((line for line in rows if line[6:].startswith(name + " ")), None)
 
     def install(self, role, **env):
         result = self.host("install", role, **env)
@@ -365,7 +484,8 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(first, second)
         writes = [call for call in self.calls() if call.startswith("sudo tee ")]
         self.assertEqual(len(writes), len(set(writes)), writes)
-        for name in ("90-yggdrasil.conf", "usr.bin.rootlesskit", "delegate.conf", "yggdrasil-role"):
+        for name in ("sysctl.d/90-yggdrasil.conf", "usr.bin.rootlesskit", "delegate.conf", "20auto-upgrades",
+                     "sshd_config.d/90-yggdrasil.conf", "yggdrasil-role"):
             self.assertEqual(sum(call.endswith(name) for call in writes), 1, (name, writes))
 
     def test_given_a_changed_system_file_when_installed_then_it_is_written_again(self):
@@ -414,7 +534,7 @@ class MachineRoleTests(unittest.TestCase):
         self.set_packages([*EVERY_PACKAGE, "docker.io"])
         env = {k: v for k, v in self.env.items() if k != "YGG_ASSUME_YES"}
         result = subprocess.run(
-            ["bash", str(HOST), "install", "dev"], env=env, capture_output=True, text=True, input="y\nn\ny\ny\n"
+            ["bash", str(HOST), "install", "dev"], env=env, capture_output=True, text=True, input="y\nn\n" + "y\n" * 30
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("left as they are", result.stderr)
@@ -455,11 +575,238 @@ class MachineRoleTests(unittest.TestCase):
     def test_given_assume_yes_unset_when_installing_then_nothing_is_changed_without_an_answer(self):
         env = {k: v for k, v in self.env.items() if k != "YGG_ASSUME_YES"}
         result = subprocess.run(
-            ["bash", str(HOST), "install", "apps"], env=env, capture_output=True, text=True, input="n\nn\nn\nn\n"
+            ["bash", str(HOST), "install", "apps"], env=env, capture_output=True, text=True, input="n\n" * 30
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(self.etc("yggdrasil-role").exists())
         self.assertEqual([c for c in self.calls() if c.startswith("sudo tee")], [])
+
+    # ---- Service users, ssh, checkout and secrets ----------------------------------------------
+
+    def test_given_role_dev_when_installed_then_the_five_users_exist_without_sudo(self):
+        self.install("dev")
+        users = self.users()
+        self.assertEqual(list(users), DEV_USERS)
+        calls = self.calls()
+        self.assertIn("useradd --create-home --user-group --shell /bin/bash ygg", calls)
+        self.assertIn("useradd --create-home --user-group --shell /usr/sbin/nologin ci", calls)
+        for user in DEV_USERS:
+            self.assertEqual(users[user][5] and (pathlib.Path(users[user][5]).stat().st_mode & 0o777), 0o750, user)
+        # Nobody is added to a group: that is how sudo and docker would be given.
+        self.assertFalse([call for call in calls if call.startswith(("usermod", "gpasswd -a", "adduser"))], calls)
+        stdout, rows = self.rows("dev")
+        for user in DEV_USERS:
+            line = self.row(rows, f"user {user}")
+            self.assertTrue(line.startswith("  ok "), line)
+            self.assertIn("no sudo", line)
+
+    def test_given_role_apps_when_installed_then_only_ygg_is_created(self):
+        self.install("apps")
+        self.assertEqual(list(self.users()), ["ygg"])
+        self.assertEqual(self.users()["ygg"][6], "/bin/bash")
+        self.assertEqual(len([call for call in self.calls() if call.startswith("useradd")]), 1)
+        self.assertFalse(self.etc("yggdrasil-ci").exists())
+        self.assertEqual(list(self.etc("systemd/system").glob("user-*.slice.d")), [])
+
+    def test_given_role_dev_when_installed_then_ci_release_and_renovate_cannot_log_in(self):
+        self.install("dev")
+        users = self.users()
+        for user in ("ci", "release", "renovate"):
+            self.assertEqual(users[user][6], "/usr/sbin/nologin", user)
+        for user in ("ygg", "dev"):
+            self.assertEqual(users[user][6], "/bin/bash", user)
+
+    def test_given_a_user_with_the_wrong_shell_when_installed_then_it_is_put_right_without_a_new_user(self):
+        self.install("dev")
+        self.passwd.write_text(self.passwd.read_text().replace(
+            f"{self.homes / 'ci'}:/usr/sbin/nologin", f"{self.homes / 'ci'}:/bin/bash"))
+        stdout, rows = self.rows("dev")
+        self.assertFalse(self.row(rows, "user ci").startswith("  ok "))
+        self.install("dev")
+        self.assertEqual(self.users()["ci"][6], "/usr/sbin/nologin")
+        self.assertEqual(len([call for call in self.calls() if call.startswith("useradd")]), 5)
+
+    def test_given_role_dev_when_installed_then_ci_is_capped_at_six_cpus_and_20g(self):
+        self.install("dev")
+        uid = self.users()["ci"][2]
+        path = self.etc(f"systemd/system/user-{uid}.slice.d/limits.conf")
+        self.assertEqual(path.read_text(), LIMITS)
+        calls = self.calls()
+        self.assertGreater(len(calls) - 1 - calls[::-1].index("systemctl daemon-reload"), calls.index(f"sudo tee {path}"))
+
+    def test_given_an_admin_without_authorized_keys_when_ssh_is_hardened_then_it_is_refused_and_nothing_written(self):
+        for keys in ("missing", "empty"):
+            with self.subTest(keys=keys):
+                if keys == "missing":
+                    self.admin_keys.unlink(missing_ok=True)
+                else:
+                    self.admin_keys.write_text("")
+                result = self.host("install", "dev")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("authorized_keys", result.stderr)
+                self.assertFalse(self.etc("ssh/sshd_config.d/90-yggdrasil.conf").exists())
+                calls = self.calls()
+                self.assertFalse([call for call in calls if "sshd" in call or "reload ssh" in call], calls)
+                self.assertFalse(list(self.homes.glob("*/.ssh")))
+                stdout, rows = self.rows("dev")
+                self.assertIn("refuses", self.row(rows, "ssh"))
+
+    def test_given_an_invalid_sshd_config_when_hardened_then_ssh_is_not_reloaded(self):
+        result = self.host("install", "dev", FAKE_SSHD_STATUS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sshd -t", result.stderr)
+        calls = self.calls()
+        self.assertIn("sshd -t", calls)
+        self.assertFalse([call for call in calls if "reload ssh" in call], calls)
+        # A configuration sshd rejects is not left to lock everyone out at the next restart.
+        self.assertFalse(self.etc("ssh/sshd_config.d/90-yggdrasil.conf").exists())
+
+    def test_given_a_previous_ssh_dropin_when_the_new_one_is_rejected_then_the_previous_one_is_back(self):
+        path = self.etc("ssh/sshd_config.d/90-yggdrasil.conf")
+        path.parent.mkdir(parents=True)
+        path.write_text("PermitRootLogin yes\n")
+        result = self.host("install", "dev", FAKE_SSHD_STATUS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(path.read_text(), "PermitRootLogin yes\n")
+
+    def test_given_role_dev_when_hardened_then_only_the_admin_ygg_and_dev_may_log_in(self):
+        self.install("dev")
+        path = self.etc("ssh/sshd_config.d/90-yggdrasil.conf")
+        self.assertEqual(path.read_text(), SSH_DEV)
+        calls = self.calls()
+        self.assertLess(calls.index("sshd -t"), calls.index("systemctl reload ssh"))
+        self.assertLess(calls.index(f"sudo tee {path}"), calls.index("sshd -t"))
+
+    def test_given_role_apps_when_hardened_then_only_the_admin_and_ygg_may_log_in(self):
+        self.install("apps")
+        self.assertIn("AllowUsers admin ygg\n", self.etc("ssh/sshd_config.d/90-yggdrasil.conf").read_text())
+
+    def test_given_role_dev_when_hardened_then_the_admins_key_goes_to_ygg_and_dev_only(self):
+        self.install("dev")
+        for user in ("ygg", "dev"):
+            keys = self.homes / user / ".ssh" / "authorized_keys"
+            self.assertEqual(keys.read_text(), KEY, user)
+            self.assertEqual(keys.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self.owners()[str(keys)], f"{user}:{user}")
+        for user in ("ci", "release", "renovate"):
+            self.assertFalse((self.homes / user / ".ssh").exists(), user)
+
+    def test_given_a_user_with_its_own_keys_when_hardened_then_they_are_kept(self):
+        mine = self.homes / "ygg" / ".ssh" / "authorized_keys"
+        mine.parent.mkdir(parents=True)
+        mine.write_text("ssh-ed25519 BBBB ygg@elsewhere\n")
+        self.passwd.write_text(self.passwd.read_text() + f"ygg:x:1001:1001::{self.homes / 'ygg'}:/bin/bash\n")
+        self.install("dev")
+        self.assertEqual(mine.read_text(), "ssh-ed25519 BBBB ygg@elsewhere\n")
+        # ygg was there already: only the other four are created.
+        self.assertEqual(len([call for call in self.calls() if call.startswith("useradd")]), 4)
+
+    def test_given_declined_key_copy_when_hardened_then_the_users_get_no_keys(self):
+        env = {k: v for k, v in self.env.items() if k != "YGG_ASSUME_YES"}
+        # Yes to the steps, no to every copy of the admin's key (and to the picker's other questions).
+        answers = "y\n" * 5 + "n\n" * 2 + "y\n" * 20
+        result = subprocess.run(["bash", str(HOST), "install", "dev"], env=env, capture_output=True, text=True, input=answers)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(list(self.homes.glob("*/.ssh/authorized_keys")), [])
+
+    def test_given_existing_users_when_installed_twice_then_useradd_is_not_called_again(self):
+        self.install("dev")
+        self.install("dev")
+        self.assertEqual(len([call for call in self.calls() if call.startswith("useradd")]), 5)
+        self.assertEqual(len(self.users()), 5)
+
+    def test_given_role_dev_when_installed_then_the_checkout_belongs_to_ygg(self):
+        self.install("dev")
+        calls = self.calls()
+        self.assertIn(f"chown -R ygg:ygg {CHECKOUT}", calls)
+        self.assertIn(f"chmod 755 {CHECKOUT}", calls)
+        self.assertEqual(self.owners()[CHECKOUT], "ygg:ygg")
+        stdout, rows = self.rows("dev")
+        self.assertIn("ygg:ygg", self.row(rows, "checkout owner"))
+
+    def test_given_role_dev_when_installed_then_every_secrets_directory_is_closed_to_its_user(self):
+        self.install("dev")
+        owners = self.owners()
+        env = pathlib.Path(__file__).resolve().parent.parent / "env"
+        expected = {
+            "ygg": {"platform.env": "platform.env.example", "acme.env": "acme.env.example"},
+            "ci": {"agent.env": "agent.env.example"},
+            "release": {"agent.env": "agent.env.example"},
+            "renovate": {},
+            "dev": {},
+        }
+        for user, files in expected.items():
+            directory = self.etc("yggdrasil" if user == "ygg" else f"yggdrasil-{user}")
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o750, directory)
+            self.assertEqual(owners[str(directory)], f"{user}:{user}")
+            self.assertEqual(sorted(p.name for p in directory.iterdir()), sorted(files), user)
+            for name, template in files.items():
+                self.assertEqual((directory / name).read_text(), (env / template).read_text())
+                self.assertEqual((directory / name).stat().st_mode & 0o777, 0o600)
+                self.assertEqual(owners[str(directory / name)], f"{user}:{user}")
+
+    def test_given_a_secrets_file_already_there_when_installed_then_it_is_kept(self):
+        mine = self.etc("yggdrasil/platform.env")
+        mine.parent.mkdir(parents=True)
+        mine.write_text("DOMAIN=mine.example.com\n")
+        self.install("dev")
+        self.assertEqual(mine.read_text(), "DOMAIN=mine.example.com\n")
+        self.assertTrue(self.etc("yggdrasil/acme.env").exists())
+        self.assertNotIn(str(mine), self.owners())
+
+    def test_given_role_apps_when_installed_then_only_yggs_secrets_are_made(self):
+        self.install("apps")
+        self.assertEqual(sorted(p.name for p in self.etc("yggdrasil").iterdir()), ["acme.env", "platform.env"])
+        self.assertEqual(sorted(p.name for p in self.sysroot.joinpath("etc").glob("yggdrasil-*")), ["yggdrasil-role"])
+
+    def test_given_role_apps_when_installed_then_security_updates_are_automatic(self):
+        self.install("apps")
+        self.assertEqual(self.etc("apt/apt.conf.d/20auto-upgrades").read_text(), UPGRADES)
+
+    def test_given_role_dev_when_checked_then_a_service_user_in_the_sudo_group_is_reported(self):
+        self.install("dev")
+        (self.state / "groups-ci").write_text("sudo\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "user ci")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("sudo", line)
+        self.assertTrue(self.row(rows, "user release").startswith("  ok "))
+
+    def test_given_role_dev_when_checked_then_a_service_user_in_the_docker_group_is_reported(self):
+        self.install("dev")
+        (self.state / "groups-renovate").write_text("docker\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "user renovate")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("docker", line)
+
+    def test_given_a_sudo_rule_for_a_service_user_when_checked_then_it_is_reported(self):
+        self.install("dev")
+        (self.state / "sudo-release").write_text(
+            "User release may run the following commands on host:\n    (ALL) NOPASSWD: ALL\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "user release")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("sudo", line)
+
+    def test_given_a_machine_set_up_when_checked_then_every_row_is_ok(self):
+        for role in ("dev", "apps"):
+            with self.subTest(role=role):
+                self.install(role)
+                stdout, rows = self.rows(role)
+                bad = [line for line in rows if not line.startswith("  ok ")]
+                self.assertEqual(bad, [], stdout)
+                for name in ("ssh", "checkout owner", "unattended upgrades", "secrets ygg", "user ygg"):
+                    self.assertIsNotNone(self.row(rows, name), f"no row {name!r} in:\n{stdout}")
+                self.assertEqual(self.row(rows, "ci limits") is not None, role == "dev")
+                self.assertIn("== Users ==", stdout)
+
+    def test_given_an_unset_up_machine_when_checked_then_nothing_is_written_or_run_as_root(self):
+        result = self.host("check", "dev")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [call for call in self.calls() if call.startswith(("sudo tee", "useradd", "chown", "chmod"))], [])
+        self.assertEqual(list(self.users()), [])
 
 
 if __name__ == "__main__":

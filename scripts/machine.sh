@@ -19,7 +19,7 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
-MACHINE_STEPS=(packages rootful-docker-off system-settings role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -62,6 +62,38 @@ role_users() {
   esac
 }
 
+# role_ssh_users <role>: the service users that may log in over ssh (the admin may too), in order.
+# The others (ci, release, renovate) have no shell: they only ever run as a service.
+role_ssh_users() {
+  case $1 in
+    dev) printf '%s\n' ygg dev ;;
+    apps) printf '%s\n' ygg ;;
+  esac
+}
+
+# machine_user_shell <user>: the shell a service user of the role being checked or installed gets.
+machine_user_shell() {
+  local ssh_user
+  for ssh_user in $(role_ssh_users "$machine_current_role"); do
+    if [[ "$ssh_user" == "$1" ]]; then
+      echo /bin/bash
+      return 0
+    fi
+  done
+  echo /usr/sbin/nologin
+}
+
+# passwd_field <user> <n>: field n of the user's passwd entry (3 uid, 6 home, 7 shell); nothing when
+# there is no such user. Uids and homes are asked of the system, never assumed.
+passwd_field() {
+  local entry
+  entry=$(getent passwd "$1" 2>/dev/null) || return 0
+  cut -d: -f"$2" <<<"$entry"
+}
+
+# user_exists <user>
+user_exists() { getent passwd "$1" >/dev/null 2>&1; }
+
 # secrets_dir_of <user>: the user's secrets directory under $YGG_SYSROOT: ygg keeps /etc/yggdrasil,
 # every other service user has /etc/yggdrasil-<user>.
 secrets_dir_of() {
@@ -102,6 +134,49 @@ file_holds() { [[ -f "$1" && "$(<"$1")" == "$2" ]]; }
 machine_sysctl_path() { echo "${YGG_SYSROOT:-}/etc/sysctl.d/90-yggdrasil.conf"; }
 machine_apparmor_path() { echo "${YGG_SYSROOT:-}/etc/apparmor.d/usr.bin.rootlesskit"; }
 machine_delegate_path() { echo "${YGG_SYSROOT:-}/etc/systemd/system/user@.service.d/delegate.conf"; }
+machine_upgrades_path() { echo "${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades"; }
+machine_ssh_path() { echo "${YGG_SYSROOT:-}/etc/ssh/sshd_config.d/90-yggdrasil.conf"; }
+
+# Security updates install themselves: nobody logs in to a CI or apps machine to run them.
+machine_upgrades_content() {
+  printf '%s\n' 'APT::Periodic::Update-Package-Lists "1";' 'APT::Periodic::Unattended-Upgrade "1";'
+}
+
+# The ci user's share of the machine, so a build can't starve Forgejo or the release agent: six cores
+# and 20G. The limits go on the user's slice, which is named by uid.
+machine_ci_limits_path() {
+  local uid
+  uid=$(passwd_field ci 3)
+  [[ -z "$uid" ]] || echo "${YGG_SYSROOT:-}/etc/systemd/system/user-$uid.slice.d/limits.conf"
+}
+machine_ci_limits_content() { printf '%s\n' "[Slice]" "CPUQuota=600%" "MemoryMax=20G"; }
+
+# The admin is whoever runs install (it refuses root). Only the admin and the role's ssh users may log
+# in, and only with a key.
+machine_admin() { id -un; }
+machine_admin_keys() {
+  local home
+  home=$(passwd_field "$(machine_admin)" 6)
+  echo "${home:-$HOME}/.ssh/authorized_keys"
+}
+machine_ssh_content() {
+  local admin ssh_user allowed=()
+  admin=$(machine_admin)
+  allowed=("$admin")
+  for ssh_user in $(role_ssh_users "$machine_current_role"); do
+    [[ "$ssh_user" == "$admin" ]] || allowed+=("$ssh_user")
+  done
+  printf '%s\n' "PermitRootLogin no" "PasswordAuthentication no" "KbdInteractiveAuthentication no" "AllowUsers ${allowed[*]}"
+}
+
+# machine_secret_files <user>: the templates copied into the user's secrets directory, as
+# "<template in env/>:<file>".
+machine_secret_files() {
+  case $1 in
+    ygg) printf '%s\n' platform.env.example:platform.env acme.env.example:acme.env ;;
+    ci | release) printf '%s\n' agent.env.example:agent.env ;;
+  esac
+}
 
 # Rootless engines publish ports below 1024 (80 and 443) without a privileged helper.
 machine_sysctl_content() { echo "net.ipv4.ip_unprivileged_port_start=80"; }
@@ -230,7 +305,125 @@ machine_check_system_settings() {
   machine_check_file "cgroup delegation" "$(machine_delegate_path)" "$(machine_delegate_content)" system-settings
 }
 
+machine_check_unattended_upgrades() {
+  machine_check_file "unattended upgrades" "$(machine_upgrades_path)" "$(machine_upgrades_content)" unattended-upgrades
+}
+
+# user_privilege_problem <user>: how the user has root's powers (the sudo or docker group, sudo rules),
+# nothing when it has none. A service user must not: ci runs other people's code.
+user_privilege_problem() {
+  local user=$1 group out reasons=""
+  for group in $(id -nG "$user" 2>/dev/null || true); do
+    case $group in
+      sudo | docker) reasons+="${reasons:+, }in the $group group" ;;
+    esac
+  done
+  if has sudo; then
+    # -n: a check never waits for a password, and what it can't read it doesn't count.
+    out=$(sudo -n -l -U "$user" 2>&1) || true
+    case $out in
+      *"may run the following"*) reasons+="${reasons:+, }has sudo rules" ;;
+    esac
+  fi
+  echo "$reasons"
+}
+
+machine_check_users() {
+  title "Users"
+  local users user want shell home mode problems=() fixable problem
+  mapfile -t users < <(role_users "$machine_current_role")
+  for user in "${users[@]}"; do
+    want=$(machine_user_shell "$user")
+    if ! user_exists "$user"; then
+      row missing "user $user" "not there: install creates it (shell $want)"
+      machine_need users
+      continue
+    fi
+    shell=$(passwd_field "$user" 7)
+    home=$(passwd_field "$user" 6)
+    mode=$(stat -c %a "$home" 2>/dev/null) || mode=missing
+    problems=()
+    [[ "$shell" == "$want" ]] || problems+=("shell is $shell, not $want")
+    [[ "$mode" == 750 ]] || problems+=("home $home is $mode, not 750")
+    # Install puts the shell and the home right; sudo and docker are the admin's to take away.
+    fixable=${#problems[@]}
+    problem=$(user_privilege_problem "$user")
+    [[ -z "$problem" ]] || problems+=("$problem: install leaves that to you")
+    ((fixable == 0)) || machine_need users
+    if ((${#problems[@]})); then
+      row warn "user $user" "$(printf '%s; ' "${problems[@]}" | sed 's/; $//')"
+    else
+      row ok "user $user" "shell $shell, home $mode, no sudo"
+    fi
+  done
+}
+
+machine_check_ci_limits() {
+  [[ "$machine_current_role" == dev ]] || return 0
+  local path
+  path=$(machine_ci_limits_path)
+  if [[ -z "$path" ]]; then
+    row missing "ci limits" "no ci user yet: install caps it at six CPUs and 20G once it exists"
+    machine_need ci-limits
+  else
+    machine_check_file "ci limits" "$path" "$(machine_ci_limits_content)" ci-limits
+  fi
+}
+
+machine_check_ssh() {
+  local path keys
+  path=$(machine_ssh_path)
+  keys=$(machine_admin_keys)
+  if file_holds "$path" "$(machine_ssh_content)"; then
+    row ok "ssh" "keys only, no root login ($path)"
+  elif [[ ! -s "$keys" ]]; then
+    # Install refuses rather than lock the admin out: passwords would be switched off.
+    row warn "ssh" "$keys is missing or empty: install refuses to harden ssh until your key is in it"
+    machine_need ssh
+  elif [[ -f "$path" ]]; then
+    row warn "ssh" "$path differs: install rewrites it"
+    machine_need ssh
+  else
+    row missing "ssh" "$path: install makes it keys only, no root login"
+    machine_need ssh
+  fi
+}
+
+machine_check_checkout() {
+  local owner
+  owner=$(stat -c %U:%G "$root" 2>/dev/null) || owner=unknown
+  if [[ "$owner" == ygg:ygg ]]; then
+    row ok "checkout owner" "$owner ($root)"
+  else
+    row warn "checkout owner" "$owner ($root): install gives it to ygg"
+    machine_need checkout
+  fi
+}
+
+machine_check_secrets() {
+  local users user dir owner mode
+  mapfile -t users < <(role_users "$machine_current_role")
+  for user in "${users[@]}"; do
+    dir=$(secrets_dir_of "$user")
+    if [[ ! -d "$dir" ]]; then
+      row missing "secrets $user" "$dir: install creates it ($user:$user 750)"
+      machine_need secrets
+      continue
+    fi
+    # The directory is closed to the admin, so what is in it is the step's business, not a check's.
+    owner=$(stat -c %U:%G "$dir")
+    mode=$(stat -c %a "$dir")
+    if [[ "$owner" == "$user:$user" && "$mode" == 750 ]]; then
+      row ok "secrets $user" "$dir ($owner $mode)"
+    else
+      row warn "secrets $user" "$dir is $owner $mode, not $user:$user 750: install puts it right"
+      machine_need secrets
+    fi
+  done
+}
+
 machine_check_role_file() {
+  title "Role"
   local file="${YGG_SYSROOT:-}/etc/yggdrasil-role" written=""
   if [[ -r "$file" ]]; then
     read -r written _ <"$file" || true
@@ -254,6 +447,12 @@ machine_step_text() {
     packages) echo "Packages: ${machine_missing[*]:-the distribution's Docker packages are replaced by Docker's}, with Docker's from its apt repository (download.docker.com)." ;;
     rootful-docker-off) echo "Turn off the machine's own Docker (docker.service, docker.socket, containerd.service) and empty the docker group." ;;
     system-settings) echo "Unprivileged ports from 80, an AppArmor profile for rootlesskit and cgroup delegation to users' units." ;;
+    unattended-upgrades) echo "Install security updates by themselves (${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades)." ;;
+    users) echo "Create the service users of the $machine_current_role role ($(role_users "$machine_current_role" | paste -sd' ' -)) without sudo or docker access, and close their home directories (750)." ;;
+    ci-limits) echo "Cap the ci user at six CPUs and 20G of memory." ;;
+    ssh) echo "Harden ssh: keys only, no root login, and only $(machine_admin) and the role's ssh users may log in. Your key is offered to the ones without one." ;;
+    checkout) echo "Give the checkout, $root, to the ygg user." ;;
+    secrets) echo "Create the users' secrets directories (750, each its user's) with the env templates copied in, never over a file that is there." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
   esac
 }
@@ -319,6 +518,108 @@ step_system_settings() {
   as_root sysctl --system >/dev/null
   as_root systemctl restart apparmor.service
   as_root systemctl daemon-reload
+}
+
+step_unattended_upgrades() {
+  write_system_file "$(machine_upgrades_path)" 0644 "$(machine_upgrades_content)"
+}
+
+# The service users get no sudo and no docker group: nothing here adds anyone to any group. Their homes
+# are closed to everyone else.
+step_users() {
+  local users user shell home
+  mapfile -t users < <(role_users "$machine_current_role")
+  for user in "${users[@]}"; do
+    shell=$(machine_user_shell "$user")
+    if ! user_exists "$user"; then
+      as_root useradd --create-home --user-group --shell "$shell" "$user"
+    elif [[ "$(passwd_field "$user" 7)" != "$shell" ]]; then
+      as_root usermod --shell "$shell" "$user"
+    fi
+    home=$(passwd_field "$user" 6)
+    as_root chmod 750 "$home"
+  done
+}
+
+step_ci_limits() {
+  local path
+  path=$(machine_ci_limits_path)
+  if [[ -z "$path" ]]; then
+    warn "there is no ci user yet: its limits are left for the next install."
+    return 0
+  fi
+  write_system_file "$path" 0644 "$(machine_ci_limits_content)"
+  as_root systemctl daemon-reload
+}
+
+# Passwords off is only safe when a key gets the admin in: without one this refuses, before anything is
+# written. A configuration sshd rejects is taken back out and ssh is not reloaded: it would lock
+# everyone out at the next restart.
+step_ssh() {
+  local path keys admin ssh_user home previous="" had=""
+  path=$(machine_ssh_path)
+  keys=$(machine_admin_keys)
+  [[ -s "$keys" ]] || die "$keys is missing or empty: switching passwords off would lock you out. Put your public key in it (ssh-copy-id from your own machine) and run install again."
+  admin=$(machine_admin)
+  for ssh_user in $(role_ssh_users "$machine_current_role"); do
+    [[ "$ssh_user" != "$admin" ]] || continue
+    home=$(passwd_field "$ssh_user" 6)
+    if [[ -z "$home" ]]; then
+      warn "there is no $ssh_user user yet: its keys are left for the next install."
+      continue
+    fi
+    # The home is closed to the admin, so only root can say whether the user has keys; keys that are
+    # there are never overwritten.
+    as_root test -s "$home/.ssh/authorized_keys" && continue
+    confirm "$ssh_user has no authorized_keys: copy yours ($keys) to it?" y || continue
+    as_root install -d -m 700 -o "$ssh_user" -g "$ssh_user" "$home/.ssh"
+    as_root install -m 600 -o "$ssh_user" -g "$ssh_user" "$keys" "$home/.ssh/authorized_keys"
+  done
+  if [[ -f "$path" ]]; then
+    had=1
+    previous=$(<"$path")
+  fi
+  write_system_file "$path" 0644 "$(machine_ssh_content)"
+  if ! as_root sshd -t; then
+    if [[ -n "$had" ]]; then
+      write_system_file "$path" 0644 "$previous"
+    else
+      as_root rm -f "$path"
+    fi
+    die "sshd -t rejects the configuration: $path is back as it was and ssh was not reloaded"
+  fi
+  as_root systemctl reload ssh
+}
+
+# ygg deploys from this checkout, so it owns it.
+step_checkout() {
+  if ! user_exists ygg; then
+    warn "there is no ygg user yet: the checkout stays as it is until the next install."
+    return 0
+  fi
+  as_root chown -R ygg:ygg "$root"
+  as_root chmod 755 "$root"
+}
+
+# Each user's secrets directory, closed to everyone else, with the env templates copied in as they are
+# for the user to fill; a file that is already there is never touched.
+step_secrets() {
+  local users user dir pair template file
+  mapfile -t users < <(role_users "$machine_current_role")
+  for user in "${users[@]}"; do
+    if ! user_exists "$user"; then
+      warn "there is no $user user yet: its secrets directory is left for the next install."
+      continue
+    fi
+    dir=$(secrets_dir_of "$user")
+    as_root install -d -m 750 -o "$user" -g "$user" "$dir"
+    for pair in $(machine_secret_files "$user"); do
+      template="$root/env/${pair%%:*}"
+      file="$dir/${pair##*:}"
+      [[ -f "$template" ]] || die "$template is missing from the checkout"
+      as_root test -e "$file" || as_root install -m 600 -o "$user" -g "$user" "$template" "$file"
+    done
+  done
 }
 
 step_role_file() {
