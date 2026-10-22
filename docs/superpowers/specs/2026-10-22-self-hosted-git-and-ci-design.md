@@ -1,4 +1,4 @@
-# Self-hosted git and CI: Forgejo and Jenkins, GitHub as a mirror
+# Self-hosted git, CI and sites: Forgejo and Jenkins on two machines, GitHub as a mirror
 
 Status: design, 2026-10-22, awaiting the owner's approval. Replaces the earlier draft
 `2026-10-22-jenkins-ci-design.md` (CI only), which this design absorbs.
@@ -6,13 +6,19 @@ Status: design, 2026-10-22, awaiting the owner's approval. Replaces the earlier 
 ## Intent
 
 yggdrasil depends on GitHub for almost everything around a deploy: hosting the repositories, pull requests,
-the branch rules, every test and build (GitHub Actions), the merge, the tag and the release. The owner
-doesn't want to depend on GitHub anymore.
+the branch rules, every test and build (GitHub Actions), the merge, the tag and the release. The owner's
+sites also live on GitHub Pages and Vercel. The owner doesn't want to depend on GitHub anymore, and moves
+**all 60 repositories** and **every site** to two self-hosted machines, on two domains: `techcraftsmen.net` for applications and APIs, `artur-rios.tech` for static and docs sites.
 
-After this change:
+yggdrasil is also a product others use with GitHub, so it **keeps supporting GitHub** as the git server.
+Forgejo becomes the **default**, and the owner's choice.
+
+After this change, for the owner's installation:
 
 - **Forgejo**, self-hosted, is where the repositories live and where pull requests, branch rules, check
   results, merges, tags and releases happen.
+- **Every site** (docs, the personal and company pages, the blog) runs on the apps machine, deployed by
+  yggdrasil like any application.
 - **Jenkins** runs the branch policy, every test and build that can run on Linux, and the deploys it
   already does.
 - **GitHub** stays for two things only: a **backup copy** of every repository (Forgejo pushes to it
@@ -25,22 +31,33 @@ credential lives where.
 
 ## Goals
 
-1. Forgejo is the primary git server for every repository yggdrasil deploys, and for yggdrasil itself.
-2. Forgejo pushes every change (branches, tags, Jenkins' merges) to the matching GitHub repository.
-3. Branch policy and every Linux check run in Jenkins, on the dev machine, and report to Forgejo under
-   today's check names.
-4. Windows and macOS jobs keep running on GitHub Actions, on the mirrored commits. Jenkins copies their
+1. **yggdrasil supports two git servers**, Forgejo (the default) and GitHub (today's behavior, kept). An
+   installation picks one in the catalog.
+2. Forgejo is the primary git server for all 60 of the owner's repositories.
+3. Forgejo pushes every change (branches, tags, Jenkins' merges) to the matching GitHub repository.
+4. Branch policy and every Linux check run in Jenkins, on the dev machine, and report to Forgejo under
+   today's check names, for **every repository that has CI today**, deployed by yggdrasil or not.
+5. Windows and macOS jobs keep running on GitHub Actions, on the mirrored commits. Jenkins copies their
    results to Forgejo, and waits for them before a release, with a manual skip if GitHub doesn't answer.
-5. Releases (merge, tag, release notes, release files) happen on Forgejo. Release files that need Windows
-   are built on GitHub and attached to the Forgejo release by Jenkins.
-6. Renovate replaces Dependabot; heimdall-api's docs site moves off GitHub Pages.
-7. Two machines, with the user plan below. No service runs as root on either.
-8. Everything above is documented for an operator: a new `docs/hosts.md`, and a rewrite of `docs/setup.md`.
+6. Releases (merge, tag, release notes, release files) happen on Forgejo, with a copy on GitHub. Release
+   files that need Windows are built on GitHub and attached to both releases by Jenkins.
+7. **Every site moves to the apps machine**: the 19 GitHub Pages sites and the 5 Vercel projects, on
+   `artur-rios.tech` (static and docs sites) and `techcraftsmen.net` (applications and APIs).
+8. **Libraries** (the `dotnet-*` packages) are tested by Jenkins and published to nuget.org by Jenkins.
+9. Renovate replaces Dependabot.
+10. Two machines, with the user plan below. No service runs as root on either.
+11. Everything above is documented for an operator: a new `docs/hosts.md`, and a rewrite of `docs/setup.md`.
 
 ## Non-goals
 
-- **GitHub as a primary git server** (designer's call). yggdrasil supports Forgejo as its git server and
-  GitHub only as a mirror. Keeping both as primaries would double every GitHub-touching path and its tests.
+- **Redirects from the old addresses** (owner's decision). `artur-rios.github.io/<repo>` and the `vercel.app`
+  addresses stop working; links to them in the repositories are updated, links elsewhere break.
+- **Deploying the applications that aren't deployed today** (alexandria, cerberus, maestro, orpheus,
+  user-management-api). They get CI and releases; deploying one later is a catalog entry.
+- **Vercel's preview deployments per pull request.** Sites that use the release flow get development and
+  homologation environments like the applications instead.
+- **GitHub Packages.** Libraries publish to nuget.org only (designer's call): no repository's NuGet
+  configuration reads the GitHub Packages feed, and publishing to it needs a classic GitHub token.
 - New checks, or changes to what any check verifies (like for like).
 - Checks on plain feature-branch pushes. Checks run on pull requests, as today.
 - **Pull requests from forks** (owner's decision): Jenkins doesn't build them, so they get no checks. The
@@ -88,6 +105,10 @@ credential lives where.
   merge by the owner, and pull requests by anyone else are built with the target branch's Jenkinsfile.
   `claude` keeps everything else.
 - **The apps machine is a new VPS.** Production can be off during the move.
+- **yggdrasil keeps supporting GitHub** as a git server for those who want it; Forgejo is the default.
+- **All 60 repositories move** to Forgejo, and **every GitHub Pages and Vercel site** moves to the apps
+  machine.
+- **Two domains, both behind Cloudflare**: `techcraftsmen.net` for applications and APIs, `artur-rios.tech` for static and docs sites. No redirect pages at the old GitHub Pages and Vercel addresses.
 
 ## The two machines
 
@@ -116,22 +137,47 @@ flowchart LR
 |---|---|---|
 | Purpose | Git server, CI/CD, AI development | Every environment of every application |
 | Runs | Traefik, Forgejo, Jenkins controller, monitoring, the CI agent and its checks, Renovate, AI sessions | Traefik, status API, console, monitoring, the applications, the deploy agent |
-| Public names | `git.DOMAIN`, `jenkins.DOMAIN`, `grafana-dev.DOMAIN` (builder's call on the last) | `*.DOMAIN` as today (the applications, `yggdrasil.DOMAIN`, `traefik.DOMAIN`, `grafana.DOMAIN`) |
-| Inbound ports | 22 (SSH), 80, 443, 2222 (Forgejo's git over SSH) | 22, 80, 443 |
-| Jenkins agent | `ci` | the apps machine's deploy agent (`vps` today) |
+| Public names | `git.techcraftsmen.net`, `jenkins.techcraftsmen.net`, `grafana-dev.techcraftsmen.net` (builder's call on the last) | **`techcraftsmen.net`**: the applications and APIs, `yggdrasil.`, `traefik.`, `grafana.`, and the bare domain (the company page). **`artur-rios.tech`**: the static and docs sites, and the bare domain (redirecting to `www.`) |
+| Cloudflare | DNS only (not proxied): git over SSH can't pass Cloudflare's proxy, and large git pushes over HTTPS would hit its request size limit | Proxied |
+| Inbound ports | 22 (SSH), 80, 443, 2222 (Forgejo's git over SSH) | 22; 80 and 443 **from Cloudflare's address ranges only** |
+| Jenkins agents | `ci`, `release` | the apps machine's deploy agent (`vps` today) |
 
-- **DNS.** The apps machine keeps the `*.DOMAIN` wildcard record. The dev machine's names get their own `A`
-  records, which take precedence over the wildcard. Each machine's Traefik gets its own certificates by
-  DNS-01, as today.
-- **How they talk.** Both Jenkins agents (CI on the dev machine, deploy on the apps machine) dial out to
-  `https://jenkins.DOMAIN` over WebSocket, as the deploy agent does today; no agent port is opened. The deploy
-  agent calls Forgejo's API over HTTPS for merges, tags and releases.
+- **Two domains** (owner's decision): `techcraftsmen.net` for applications and APIs, `artur-rios.tech` for
+  static and docs sites. Both are DNS zones on Cloudflare.
+- **DNS.** On each domain, the apps machine gets a wildcard record and the bare-domain record, proxied. The
+  dev machine's names get their own records, DNS only, which take precedence over the wildcard.
+- **Certificates.** Each machine's Traefik gets Let's Encrypt certificates by DNS-01 through Cloudflare's API,
+  as today but now for two domains: `techcraftsmen.net` and `*.techcraftsmen.net`, `artur-rios.tech` and
+  `*.artur-rios.tech` (new: today one domain and only its wildcard). One Cloudflare API token, limited to DNS
+  edits on the two zones, in `acme.env`. Cloudflare's SSL mode is **Full (strict)**, so the connection from
+  Cloudflare to the apps machine is verified too (designer's call, rather than Cloudflare origin
+  certificates, which would tie the origin to Cloudflare).
+- **Client IPs behind Cloudflare.** Traefik trusts `X-Forwarded-For` and `CF-Connecting-IP` only from
+  Cloudflare's address ranges (`forwardedHeaders.trustedIPs`), so heimdall-api's sign-in rate limit counts real
+  clients, not Cloudflare. That trust check needs the TCP source address, which rootless Docker must keep
+  (System settings).
+- **Origin locked to Cloudflare.** The apps machine's firewall accepts 80 and 443 only from Cloudflare's
+  published ranges, so nobody bypasses Cloudflare by connecting to the machine's address. The ranges change
+  rarely; `ygg check` compares the firewall with Cloudflare's current list.
+- **Caching.** Cloudflare caches what it caches by default (static file extensions). The builder sets a cache
+  rule so the APIs and the status API are never cached, and checks that a new site deploy is visible (a purge
+  after deploys, if needed).
+- **How they talk.** Every Jenkins agent (CI and release on the dev machine, deploy on the apps machine) dials
+  out to `https://jenkins.techcraftsmen.net` over WebSocket, as the deploy agent does today; no agent port is
+  opened. The deploy agent calls Forgejo's API over HTTPS for merges, tags and releases. Forgejo's webhooks
+  reach Jenkins over the dev machine's internal Docker network.
 - **The Jenkins controller moves** from the apps machine to the dev machine. The apps machine no longer runs
   the `jenkins` Compose profile.
 - **Monitoring.** Each machine runs its own Prometheus, Loki, Alloy and Grafana for its own engine, as
   every host does today. The dev machine's monitors the `ygg` engine (Forgejo, Jenkins, Traefik).
 - **The firewall works now.** Rootful Docker writes its own iptables rules and bypasses `ufw`; rootless
   Docker publishes ports as ordinary listening processes, so `ufw` rules apply to them. setup.md says so.
+
+### Sizing on the apps machine
+
+The five applications in three environments, plus 24 sites (most of them a static web server using a few
+megabytes; personal-page and github-readme-stats are Node processes of 100–200 MB), plus the platform, fit
+well within 32 GB. Sites deploy to production only unless their table row says otherwise.
 
 ### Sizing on the dev machine
 
@@ -178,7 +224,7 @@ whole engine, not one container.
 | `Delegate=cpu cpuset io memory pids` for `user@.service` | Lets rootless engines apply CPU and memory limits (cgroup v2). |
 | Slice limits for `ci` (dev machine): `CPUQuota=600%`, `MemoryMax=20G` | The CI cap above. |
 | A rootless network mode that **keeps client IPs** (slirp4netns or pasta port driver, configured in the user's `dockerd-rootless` environment) | heimdall-api's sign-in rate limit counts requests per client IP; the default rootless port driver shows every client as one internal address. The builder verifies with Traefik's access log. |
-| `ufw`: the inbound ports in the table above | Firewall. |
+| `ufw`: the inbound ports in the table above; on the apps machine, 80 and 443 only from Cloudflare's ranges | Firewall; nobody reaches the apps machine without going through Cloudflare. |
 
 ### Apps machine
 
@@ -200,6 +246,14 @@ engine's `edge` network, and the deploy agent drives the engine they run in.
 | `ygg` | SSH key | No | Traefik, Forgejo, Jenkins controller, Prometheus, Loki, Alloy, Grafana, socket proxies | Forgejo's data and its GitHub mirror token; Jenkins' home with every Jenkins credential; `/opt/yggdrasil`, `/etc/yggdrasil` |
 | `ci` | None (service only) | No | the CI agent and every check container | the CI agent's secret, a read-only Forgejo token, the GitHub read token |
 | `renovate` | None (service only) | No | Renovate, on a systemd user timer | the `renovate` Forgejo token |
+| `release` | None (service only) | No | the **release agent** (`release`, 1 executor) and its build containers: release files, signing, package publishing | the signing keys and the nuget.org key, a read-only Forgejo token |
+
+**Why a separate release agent** (designer's call). Release files ship through Chimera's and Maestro's
+built-in updaters and to nuget.org. If they were built in the `ci` engine, a check from a pull request by
+`claude` or Renovate running at the same moment could reach the build's containers and change the output
+before it is validated. The release agent only runs builds the owner started (a release pull request into
+`main`, or an owner-pushed tag), so the code it builds was merged by the owner or by Jenkins after the
+owner's release flow. Signing happens here, never on the controller or on the apps machine.
 | `dev` | SSH key | No | AI development sessions and the containers they run | its own Forgejo account's token |
 
 ### What each user may do
@@ -219,7 +273,7 @@ Where every secret lives. This table goes into `docs/hosts.md`.
 | Credential | Lives with | Can |
 |---|---|---|
 | Forgejo `jenkins` bot token | Jenkins controller (`ygg`, dev); deploy agent (`ygg`, apps) | Write every repository; the only account allowed to merge into an application's `main` and create its `v*` tags; post statuses |
-| Forgejo `jenkins-ci` bot token | CI agent (`ci`) | Read every repository |
+| Forgejo `jenkins-ci` bot token | CI agent (`ci`) and release agent (`release`) | Read every repository |
 | Forgejo `renovate` bot token | The `renovate` user (dev) | Push branches not protected (in practice `renovate/*`) and open pull requests |
 | Forgejo `claude` account | `dev` user | Push `feature/`/`fix/`, open pull requests, merge into `develop` |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override |
@@ -227,8 +281,48 @@ Where every secret lives. This table goes into `docs/hosts.md`.
 | GitHub App `yggdrasil`, reduced to Actions read and write, Checks read, Contents read and write, Metadata read | Jenkins controller, and the deploy agent for the release step | Read Actions results, download Actions artifacts, dispatch workflows, create releases and upload their files. Contents write is needed for releases; it could also push to the GitHub copy, which the next mirror push would overwrite. It can no longer write statuses or pull requests. |
 | GitHub read token (same App, or a fine-grained read-only token, builder's call) | CI agent, when a wait runs there | Read Actions results |
 | Jenkins agent secrets | Each agent's env file | Connect as that agent |
-| Application secrets, ACME DNS token, platform passwords | `/etc/yggdrasil` of the machine that uses them | As today |
+| Application secrets, platform passwords | `/etc/yggdrasil` of the machine that uses them | As today |
+| Cloudflare API token (DNS edit on the `techcraftsmen.net` and `artur-rios.tech` zones only) | `acme.env` on each machine | Prove domain control for certificates; edit those two zones' DNS records |
 | ReportGenerator license | Jenkins credential, bound into the `test` checks that use it | Never bound on `renovate/*` builds |
+| nuget.org API key | Jenkins credential, allowed only for the library repositories, bound only on the publish step, on the release agent | Publish the owner's packages |
+| Maestro's update-manifest signing key (Ed25519, `MAESTRO_RELEASE_SECRET_KEY_BASE64` today) | Jenkins credential, allowed only for maestro, bound only on its release build, on the release agent | Sign what installed copies of Maestro trust |
+| Orpheus' Android keystore and passwords (`ANDROID_KEYSTORE_*` today) | Jenkins credential, allowed only for orpheus, bound only on its release build, on the release agent | Sign Orpheus' Android builds |
+| Any other secret a release workflow uses today | Same rule: a Jenkins credential, allowed per repository in the catalog, bound only on the release agent | The builder lists them from every `release*.yml` |
+| GitHub read-only token for github-readme-stats | `/etc/yggdrasil` on the apps machine, as an application secret | Read public GitHub data |
+
+## Git server: Forgejo or GitHub
+
+yggdrasil keeps working with GitHub as the git server (owner's decision); Forgejo is the default and what
+the owner uses. The catalog's `forge.type` picks one per installation.
+
+| | `forgejo` (default) | `github` |
+|---|---|---|
+| Repositories, pull requests, merges, tags, releases | Forgejo | GitHub, as today |
+| Branch rules | Forgejo protection rules (the rules script's Forgejo side) | Rulesets, as today (`rulesets.py`'s behavior) |
+| Jenkins source | Gitea plugin | `github-branch-source` + GitHub App, as today |
+| Jenkins checks (`checks:` in a Jenkinsfile) | Yes, statuses on Forgejo | Yes, statuses on GitHub |
+| CI on GitHub Actions | Only Windows/macOS jobs, results copied to Forgejo | Any workflow, waited for as today; an application can keep all its CI there (a Jenkinsfile without `checks` behaves exactly as today) |
+| Mirror to GitHub, release copies on GitHub | Optional (`mirror`) | n/a |
+| Forgejo service on the dev machine | Yes (`forge` profile) | No |
+
+- **One interface, two implementations.** The pipeline and the scripts talk to "the git server" through
+  `scripts/forge.sh` (set-status, merge, tag, release, upload, delete-branch, the read commands), which
+  dispatches to a Forgejo or a GitHub implementation by `forge.type`. Each feature in this design is written
+  once against that interface. `scripts/github.sh` keeps the GitHub Actions commands (wait, dispatch, run
+  artifacts), used by both types.
+- **Rules**: one rules script with a Forgejo and a GitHub side, applying the same model (the tables in
+  Branch and tag rules for Forgejo; today's rulesets, extended with Jenkins checks and `actionsChecks`, for
+  GitHub). On GitHub, `actionsChecks` stay bound to GitHub Actions as today, and Jenkins' contexts are not
+  bound.
+- **The rest of this design is described for Forgejo.** On GitHub, the same features apply wherever they make
+  sense without Forgejo: the two machines and the user plan, rootless Docker, the CI agent and its isolation,
+  Jenkins checks, the skip, sites, libraries, Renovate. The CI agent's read-only identity on GitHub is a second
+  GitHub App with Contents read and Commit statuses write (statuses are still posted from the controller
+  side, as on Forgejo; builder's call on whether the CI side needs its own app at all).
+- **Tests run against both.** Every `forge.sh` command and the rules script are tested for both types; the
+  owner's installation exercises Forgejo end to end, and setup.md keeps a GitHub path that the builder checks
+  with a scratch GitHub repository.
+- **Docs** describe both: setup.md asks which git server first, then branches where steps differ.
 
 ## Forgejo
 
@@ -272,7 +366,7 @@ API (idempotent, with `--dry-run`, like today's). Names are glob patterns.
 | `main` | No direct push, no force push, no deletion. Required: `branch-policy`, `checks`, `deploy/<environment>` for each release environment. Merge allowed only for `jenkins` (applications) or the owner (yggdrasil, which isn't deployed by Jenkins). Merge commit only (Jenkins merges with a merge commit; Forgejo's merge styles are per repository, so the rule is "only Jenkins merges"). |
 | Protected files, on `develop` and `main` | `Jenkinsfile`: a pull request that changes it can be merged only by the owner (owner's decision). Renovate's updates to check images in a Jenkinsfile therefore wait for the owner. |
 | `release/*` | Only the owner may push. A push deploys to the branch environments, so the bots and `claude` must not be able to create one. |
-| Tags `v*` | Protected: only `jenkins` (applications) or the owner (yggdrasil) may create them; nobody may move or delete them. |
+| Version tags | Protected: in applications, only `jenkins` may create `v*`; in owner-tagged repositories (yggdrasil, maestro, orpheus, alexandria-ui, personal-lab, the libraries), only the owner may create their version tags (`v*`, or `[0-9]*` for the libraries). Nobody may move or delete them. |
 | Repository settings | Default branch `develop`; delete the head branch after merge. |
 
 - **Admin override.** The owner (repository admin) must be able to merge a pull request whose checks haven't
@@ -479,13 +573,14 @@ Python helper tests, the vulnerability scan and the coverage minimum, as its wor
   Jenkins creates a GitHub release for it with the same name, notes and files, through the GitHub App. For
   releases with files, both are drafts until every file is uploaded to both and checked, then both are
   published, GitHub last. Chimera's release metadata and checksums keep naming the GitHub repository, as
-  today, since that's where its updater looks. The release notes are the version's section of the repository's `CHANGELOG.md` when there is one
+  today, since that's where its updater looks.
+- **Release notes** are the version's section of the repository's `CHANGELOG.md` when there is one
   (designer's call: Forgejo can't generate notes the way GitHub's `generate_release_notes` does); otherwise
   the merged pull request titles since the previous tag.
-- **Release files**, for applications that publish any, are declared in the Jenkinsfile (builder's call on
-  the shape): Linux, web and Android files built by Jenkins on the CI agent; Windows files from a GitHub
-  release workflow, started by Jenkins with `workflow_dispatch` once the tag has reached GitHub through the
-  mirror; an optional validation step run on the CI agent over the complete set. Then:
+- **Release files**, for repositories that publish any, are declared in the Jenkinsfile (builder's call on
+  the shape): Linux, web and Android files built and signed by Jenkins on the **release agent**; Windows files
+  from a GitHub release workflow, started by Jenkins with `workflow_dispatch` once the tag has reached GitHub
+  through the mirror; an optional validation step run on the release agent over the complete set. Then:
   1. The tag and a **draft** Forgejo release are created.
   2. The files are built and gathered; the validation runs.
   3. The files are uploaded to both drafts (by the controller or the deploy agent, never the CI agent),
@@ -496,11 +591,32 @@ Python helper tests, the vulnerability scan and the coverage minimum, as its wor
     Linux packaging and smoke test, the complete-bundle validation) and GitHub (`release-windows.yml`).
   - **heimdall-ui, fortuna-ui**: today's tag build (web, Linux, Android on Linux; Windows on GitHub) becomes
     release files attached to the Forgejo release (today they stay as Actions artifacts; designer's call).
-  - **yggdrasil**: not released by Jenkins. The owner merges the release pull request and creates the
-    Forgejo release by hand, as on GitHub today; the `v*` tag triggers its Jenkins job, which builds the APK,
-    gets the Windows installer from GitHub, attaches both, and creates the GitHub copy.
+  - **Repositories that release but aren't deployed** (yggdrasil, maestro, orpheus, alexandria-ui,
+    personal-lab): see Owner-tagged releases.
 - A command to attach Windows files to an already published release (`forge.sh`/`github.sh`, builder's
   call), for releases published after a skip.
+
+### Owner-tagged releases
+
+Repositories with no release environment can't go through `release()`, which deploys a release pull request
+before merging it. They keep releasing the way they do today (designer's call, like for like): **the owner
+pushes the version tag**, and Jenkins does the rest.
+
+- **Who tags**: the owner pushes a tag on `main` (`v1.2.3` for yggdrasil, maestro, orpheus and
+  alexandria-ui; the bare `1.2.3` for the libraries). For yggdrasil, the owner merges its release pull request
+  by hand first, as today. personal-lab today tags itself after a `main` deploy; it moves to the owner-tagged
+  path too, with its site deploying on `main` as before (builder confirms nothing else depends on its
+  automatic tags).
+- **What Jenkins does** on a tag (tag discovery for these repositories): checks the tag's commit is on `main`
+  (as their release workflows do today), builds and signs the release files on the release agent, gets any
+  Windows files from GitHub, validates, creates the Forgejo release and its GitHub copy, uploads, publishes.
+  For a library, it packs and pushes to nuget.org instead of creating release files.
+- **A second, small entry point** in the shared library for this tag-driven path, next to `release()`, sharing
+  the release-files steps with it, so there is still one copy of the release logic. The catalog's
+  `repositories` entry says which path a repository uses and its tag pattern.
+- **Tag rules**: in these repositories, only the owner may create tags matching their version pattern
+  (`v*`, or `[0-9]*` for the libraries); nobody may move or delete them. So `claude` or Renovate can't
+  trigger a release or a publish.
 
 ## Renovate
 
@@ -514,18 +630,109 @@ Python helper tests, the vulnerability scan and the coverage minimum, as its wor
   builder reads each `dependabot.yml`), plus the Jenkinsfile check images.
 - `branch-policy` accepts `renovate/*` into `develop`.
 
-## heimdall-api's docs
+## Every repository
 
-GitHub Pages goes away. The docs site (Hugo, with the coverage report) is built by Jenkins on pushes to
-`main` and served from the apps machine as a static site behind Traefik (designer's call: a small
-web-server image deployed by the same deploy flow, at `heimdall-docs.DOMAIN` or similar; builder's call on
-the catalog shape, since one repository then feeds two deployables). The coverage report comes from the
-same build's `test` check. GitHub Pages is turned off; links to it are updated.
+All 60 repositories on the owner's GitHub account move to Forgejo (all are public on GitHub today). What
+each needs depends on its kind:
+
+| Kind | Repositories | On Forgejo and Jenkins |
+|---|---|---|
+| **Deployed application** | heimdall-api, heimdall-ui, fortuna-api, fortuna-ui, chimera | Catalog applications, as designed above |
+| **Site** | the 19 GitHub Pages sites and 5 Vercel projects (Sites, below) | Catalog applications of a new kind, deployed to the apps machine |
+| **Library** | dotnet-configuration, dotnet-data, dotnet-extensions, dotnet-jwt, dotnet-logging, dotnet-mediator, dotnet-messaging, dotnet-output, dotnet-test-util, dotnet-util, dotnet-validation, dotnet-webapi-util | Checks; a version tag publishes to nuget.org (Libraries, below). Their docs sites are sites. |
+| **CI and releases, not deployed** | alexandria-api, alexandria-ui, cerberus-api, cerberus-ui, maestro, orpheus, personal-lab, ai-coding-skills, coding-challenge-library, dotnet-libraries, reveal.js | Checks (their workflows' Linux jobs), branch policy where they have one, and release files where they publish any (alexandria-ui, maestro, orpheus, personal-lab). Their Windows jobs stay on GitHub, under the same rules as the applications'. |
+| **Code only** | every other repository: no workflows today | Imported and mirrored; no Jenkins job |
+| **Archived** | dotnet-common, eocp-ecommerce-system-api, eocp-ecommerce-system-email-templates, eocp-ecommerce-system-ui | Imported as archived; **no push mirror** (GitHub rejects pushes to archived repositories, and nothing changes in them) |
+| **Forks** | file-tree-generator, github-readme-stats, gui-challenges, hugo-theme-nuno, hugo-theme-re-terminal, hugo-theme-rusty-typewriter, landing-page, reveal.js, under-construction-template | Plain repositories on Forgejo; the GitHub copies stay forks. Upstream changes are fetched by hand (`git remote add upstream …`). |
+
+A repository can be of more than one kind (orpheus has CI, releases and a docs site). The builder makes
+the per-repository table final, in `docs/hosts.md` or a migration checklist, by reading each repository's
+workflows; the kinds above are what the plan is built from.
+
+- **Jenkins jobs for repositories that aren't applications** come from a new catalog list, `repositories`
+  (below), so the Job DSL, the credentials allowlist and the rules script all read one place. Designer's call,
+  rather than a Forgejo organization scan, because each repository's allowed credentials must be listed by the
+  owner anyway.
+- **Branch rules** apply to every repository that has a `branch-policy` workflow today (the release model);
+  the others get `main`/`develop` protection against force pushes and deletion only.
+- **Links**: every repository's references to `github.com/artur-rios/<repo>` stay valid (the mirror). Its
+  references to `artur-rios.github.io/<repo>` and `*.vercel.app` change to the new addresses (owner's decision:
+  no redirects), including NuGet package metadata (`PackageProjectUrl`) and READMEs.
+
+## Sites
+
+Each site becomes a catalog application deployed to the apps machine behind Traefik, built into a small image
+by its repository's Dockerfile (a static web server for built sites; `next start` for server-rendered
+Next.js; Node for github-readme-stats), with the same deploy, health check, rollback and monitoring as any
+application.
+
+| Site | Today | Address (designer's call) | Deploys |
+|---|---|---|---|
+| tech-craftsmen-company-page (Next.js, static export) | Vercel | `techcraftsmen.net` and `www.techcraftsmen.net` | release flow: homologation, production |
+| personal-page (Next.js, server-rendered) | Vercel | `www.artur-rios.tech` (unchanged), with `artur-rios.tech` redirecting to it | release flow: development, homologation, production (it has branch policy and release tags today) |
+| personal-blog (Hugo) | Vercel | `blog.artur-rios.tech` (unchanged) | production, on pushes to `main` |
+| personal-lab (Hugo) | GitHub Pages | `lab.artur-rios.tech` | as today: production on `main`, release tags |
+| under-construction-template (Vite) | Vercel | `placeholder.artur-rios.tech` | production, on pushes to `main` |
+| github-readme-stats (Node) | Vercel | `readme-stats.techcraftsmen.net` (an API) | production, on pushes to `main` |
+| Docs: heimdall-docs, fortuna-docs, alexandria-docs, orpheus docs, heimdall-api docs, dotnet-libraries and the 12 library docs | GitHub Pages | `docs.artur-rios.tech/<repository>` | production, on pushes to `main` (as their Pages workflows do today) |
+
+- **Which domain** follows the owner's rule: static and docs sites on `artur-rios.tech`, applications and APIs
+  on `techcraftsmen.net`. Two designer's calls on the edges: the **company page** is static but goes on
+  `techcraftsmen.net`, since it's that domain's home page; **github-readme-stats** is an API, so it goes on
+  `techcraftsmen.net`. personal-page is server-rendered, but it's the owner's personal site and already lives
+  at `www.artur-rios.tech`, so it stays there.
+- **Addresses that already exist stay**: `www.artur-rios.tech` and `blog.artur-rios.tech` keep serving the same
+  sites, so the links in the LICENSE files, READMEs and profile don't change. The new addresses are the
+  designer's call, and the owner can rename any before the plan. They follow one pattern: a subdomain per
+  site, and one docs host with a path per repository, so the docs keep the `/<repository>/` layout they're
+  built for on GitHub Pages (only the host in their `baseURL` changes) and 18 docs sites don't take 18 names.
+- **One docs host, many applications**: each docs site is its own application whose Traefik router matches
+  `Host(docs.artur-rios.tech) && PathPrefix(/<repository>)`. Routing lives in each application's stack file
+  already, so this needs no change in Traefik's setup; the catalog needs a `path` next to `host` for the
+  console's links and the status API (builder's call on the shape). `docs.artur-rios.tech/` itself shows an
+  index of the docs sites (dotnet-libraries is already an index for the libraries; builder's call on whether it
+  becomes the root).
+- **More than one domain per machine** is new for yggdrasil. Today a host has one `DOMAIN` and every
+  application is `<host><hostSuffix>.DOMAIN`. After: the platform lists its domains (the first is the default,
+  used by the platform's own names), and an application says which domain it uses (default: the first). Its
+  host names, including each environment's `hostSuffix` variants, are formed under that domain. Builder's call
+  on the shape in `platform.env` and the catalog. Traefik requests a certificate per domain (above); the status
+  API and the console use the full host names.
+- **The bare domain** of either domain is new too: an application may claim it (`host` set to the domain
+  itself, builder's call on the syntax), and may redirect it to another of its names (personal-page's
+  `artur-rios.tech` → `www.`), with a Traefik redirect in its stack file.
+- **Docs with coverage reports** (the 12 libraries, heimdall-api) take the report from the same build's
+  `test` check: the pipeline passes archived check files into the image build (builder's call on how).
+- **Vercel-specific settings** go: `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV` in personal-page become the
+  commit and environment yggdrasil's deploy passes as build arguments; `vercel.json` files are deleted. The
+  Vercel projects are deleted after the new addresses work.
+- **github-readme-stats** reads GitHub's API with a read-only GitHub token (it reports GitHub statistics,
+  which the mirror keeps meaningful), stored like any application secret. The owner's profile README points
+  to the new address.
+- **Environments**: sites use the application `environments` overrides that exist today (for example,
+  production only, with `trigger: branch` and `branches: main`). Sites with no development or homologation
+  environment use none.
+
+## Libraries
+
+- Checks as for applications (Jenkinsfile `checks`: build, tests, coverage).
+- **Publishing**: today a bare version tag on `main` (`1.2.3`) runs `publish-package.yml`, which pushes to
+  nuget.org and GitHub Packages. After: the same tag, pushed to Forgejo by the owner, triggers the
+  repository's Jenkins job, which packs and pushes to nuget.org on the release agent (Owner-tagged releases).
+  The nuget.org API key is a Jenkins credential allowed only for the library repositories. GitHub Packages is
+  dropped (non-goals).
+- The libraries keep their versioning and tag conventions as they are.
 
 ## Catalog
 
-- `owner` becomes the Forgejo owner; a new `forge` block (`url`, e.g. `https://git.DOMAIN`) and a `mirror`
-  block (the GitHub owner) replace the implicit `github.com`. Builder's call on the exact shape.
+- A new `forge` block says which git server the installation uses: `type: forgejo` (the default) with its
+  `url`, or `type: github`. `owner` keeps its meaning on either. An optional `mirror` block (GitHub owner,
+  whether releases are copied) applies to Forgejo installations. Builder's call on the exact shape.
+- New `repositories`: the repositories Jenkins builds that aren't applications (libraries, CI-only
+  repositories, yggdrasil itself), each with its checks, `actionsChecks`, allowed credentials and whether it
+  publishes releases or packages.
+- Applications gain what the sites need: which of the platform's domains they use, a `path` beside `host`,
+  and a way to claim the bare domain.
 - `checks` now means the checks Jenkins reports. On a release, the pipeline fails early if a catalog check
   isn't declared in the Jenkinsfile (the rule would otherwise wait forever).
 - New `actionsChecks`: GitHub Actions job names required on `develop` and waited for on releases.
@@ -533,8 +740,8 @@ same build's `test` check. GitHub Pages is turned off; links to it are updated.
 - New per-application `credentials`: the Jenkins credential ids its checks may bind (heimdall-api:
   `reportgenerator-license`). The library refuses any other id, so a Jenkinsfile can never bind a deploy or
   merge credential. The catalog lives in yggdrasil, which only the owner merges.
-- yggdrasil's own repository gets its checks and `actionsChecks` at top level, so the Job DSL can create its
-  checks-only job and the rules script can apply its rules.
+- yggdrasil's own repository is an entry of `repositories`, so the Job DSL creates its checks-only job and the
+  rules script applies its rules.
 - `scripts/catalog.py` and the library's `resolve` stay in step; `catalog.py validate` checks the new fields.
 
 ## yggdrasil platform changes
@@ -543,15 +750,37 @@ same build's `test` check. GitHub Pages is turned off; links to it are updated.
   proxies) becomes a variable (`DOCKER_SOCKET`, default the running user's rootless socket); `DOCKER_GID`
   and `group_add` go away; the agents run as container root. `scripts/platform.sh` and `deploy.sh` use
   `DOCKER_HOST`.
-- **New profiles**: `forge` (Forgejo) and `ci` (the CI agent, for the `ci` user, with its own small env file).
-  The dev machine runs `forge`, `jenkins` and monitoring under `ygg`, and `ci` under `ci`; the apps machine
-  runs the platform and `agent` under `ygg`.
+- **New profiles**: `forge` (Forgejo), `ci` (the CI agent, for the `ci` user) and `release` (the release
+  agent, for the `release` user), each agent with its own small env file. The dev machine runs `forge`,
+  `jenkins` and monitoring under `ygg`, `ci` under `ci` and `release` under `release`; the apps machine runs
+  the platform and `agent` under `ygg`.
 - **`ygg install` / `ygg check`** set up a machine as the dev machine or the apps machine: the system settings
   and users above (as the admin, with `sudo`), then rootless Docker for each service user (as that user).
   `ygg check` verifies each item, including "no rootful Docker running", "no service user can sudo", and that
   the `ci` engine can't reach the `ygg` engine.
 - **The secrets directory** is owned by `ygg`, `750`, files `600`; the `docker` group explanation in
   setup.md goes.
+
+## Implementation plans
+
+Too big for one plan. It is planned and built as five, in this order:
+
+1. **Host foundation**: rootless Compose, the `forge`, `ci` and `release` profiles, `ygg install`/`ygg check`
+   for both machine roles, the system settings, backups, `docs/hosts.md` and the `docs/setup.md` rewrite.
+   Testable without any repository.
+2. **Git-server interface and catalog**: `forge.sh` for Forgejo and GitHub, the rules script for both,
+   webhooks, and the catalog fields with `catalog.py` and `resolve` kept in step.
+3. **Pipeline**: the CI and release agents, `checks`, `branch-policy.sh`, reuse by commit, waiting for and
+   copying GitHub Actions results, the skip, releases and their GitHub copy, owner-tagged releases and library
+   publishing, the Gitea plugin with the Job DSL and `casc.yaml`, the library pin, and what sites need from the
+   pipeline (paths, the bare domain, check files in image builds).
+4. **Machines and cutover runbook**: building both machines, moving the data, importing the 60 repositories,
+   mirrors, rules and webhooks.
+5. **Moving each repository, by kind**: the five applications and yggdrasil; the libraries (templated); the
+   other repositories with CI or releases; the 24 sites (templated Dockerfiles and catalog entries). Done in each
+   repository after the cutover, following the migration checklist.
+
+Plans 1 to 3 are rollout step 1; plan 4 covers rollout steps 2 to 5.
 
 ## Rollout
 
@@ -561,29 +790,40 @@ The system keeps deploying from GitHub until the cutover, which happens in one m
    library still able to run a Jenkinsfile without `checks`. **Before** that release merges, the current
    controller's library is pinned to the current yggdrasil release tag, so the live system keeps deploying
    from GitHub until the cutover.
-2. **Dev machine**: OS hardening, users, rootless engines, Traefik, Forgejo, monitoring, the new Jenkins
+2. **Cloudflare**: both zones on Cloudflare (moving `artur-rios.tech`'s name servers if it isn't there yet,
+   keeping its current records, so `www.` and `blog.` keep pointing at Vercel until their sites move), the API
+   token, SSL mode Full (strict).
+3. **Dev machine**: OS hardening, users, rootless engines, Traefik, Forgejo, monitoring, the new Jenkins
    controller, the CI agent. Forgejo accounts and bots created; Jenkins configured against Forgejo but no
    repositories yet.
-3. **Apps machine**, a new VPS (owner's decision): OS hardening, `ygg` user and rootless engine, the platform,
+4. **Apps machine**, a new VPS (owner's decision): OS hardening, `ygg` user and rootless engine, the platform,
    checked with no applications yet.
-4. **Cutover**, one maintenance window; production is off during it (owner's decision). The data move and the
+5. **Cutover**, one maintenance window; production is off during it (owner's decision). The data move and the
    repository move happen together, since the new apps machine's deploy agent can't use the new controller
    until the repositories are on Forgejo:
    - **Data**: every environment on the old VPS is stopped; its volumes (databases included) are exported,
-     copied to the new VPS and imported into `ygg`'s engine; DNS points `*.DOMAIN` at the new VPS; each
-     environment is started and checked. The old VPS stays untouched until the new one has run a release,
-     so it is the rollback.
+     copied to the new VPS and imported into `ygg`'s engine; DNS for both domains points at the new
+     VPS; each environment is started and checked. If the applications use another domain today, their
+     addresses move to `techcraftsmen.net` here: their env files (public host, API base URLs compiled into
+     the web bundles) are updated before the first deploy, and the builder lists every place a host name
+     appears. The old VPS stays untouched until the new one has run a release, so it is the rollback.
    - **Repositories**, with no merges or deploys meanwhile: open GitHub pull requests finished or closed;
      every repository imported into Forgejo; GitHub rulesets deleted and Dependabot turned off; push mirrors
      on; the rules script run against Forgejo; webhooks to Jenkins. From here, pushes go to Forgejo.
-5. **Per repository, one at a time** (heimdall-api, heimdall-ui, fortuna-api, fortuna-ui, chimera, then
-   yggdrasil): a pull request on Forgejo that adds `ci/` scripts and the Jenkinsfile `checks`, release files
-   and Renovate config, trims `.github/workflows` to the Windows/macOS jobs with their new triggers, and the
-   catalog entry (in yggdrasil). The first one can't satisfy both old and new rules: the owner merges it with
-   the override after checking Jenkins' results.
-6. **Each application's first release** after its cutover is the end-to-end test.
-7. **Clean up**: the old VPS (with the old Jenkins controller) shut down, GitHub Pages off, the GitHub App's
-   permissions reduced, local clones' `origin` pointed at Forgejo.
+6. **Per repository, one at a time**, deployed applications first (heimdall-api, heimdall-ui, fortuna-api,
+   fortuna-ui, chimera), then yggdrasil, then the libraries, the other CI repositories and the sites (order
+   within those is the builder's call): a pull request on Forgejo that adds `ci/` scripts and the Jenkinsfile
+   (`checks`, release files, publish step, site Dockerfile as the kind needs), the Renovate config, trims
+   `.github/workflows` to the Windows/macOS jobs with their new triggers, updates links to the new addresses,
+   and the catalog entry (in yggdrasil). The first pull request of each repository with rules can't satisfy
+   both old and new rules: the owner merges it with the override after checking Jenkins' results.
+   Repositories with no CI today need nothing beyond the import.
+7. **Each repository's first release, publish or site deploy** after its cutover is its end-to-end test.
+   A site is switched over when its new address serves it: its Pages workflow or Vercel project is then
+   removed.
+8. **Clean up**: the old VPS (with the old Jenkins controller) shut down; GitHub Pages off on every
+   repository; the Vercel projects deleted; the GitHub App's permissions reduced; local clones' `origin`
+   pointed at Forgejo.
 
 ## Testing
 
@@ -598,22 +838,38 @@ The system keeps deploying from GitHub until the cutover, which happens in one m
   exercise the skip, and a release with release files.
 - The mirror: a commit and a tag made on Forgejo appear on GitHub; GitHub Actions runs on them.
 - Backups: a restore of Forgejo from a dump, on a scratch engine.
+- **Both git servers**: `forge.sh` and the rules script tested for `forgejo` and `github`; a scratch GitHub
+  repository run through a pull request, checks and a release with `forge.type: github`.
+- Sites: each new address serves its site with a valid certificate (both domains, both bare domains), docs
+  paths resolve under `docs.artur-rios.tech`, and the docs' internal links work under the new host.
+- Cloudflare: the apps machine refuses connections that don't come from Cloudflare; heimdall-api sees real
+  client IPs behind Cloudflare; API responses aren't cached; Cloudflare's SSL mode is Full (strict).
+- Libraries: a publish to nuget.org of a pre-release version (or a dry run with `--skip-duplicate` against a
+  test feed; builder's call) before the first real one.
 
 ## Documentation
 
 "Document everything": every operator-facing change is written down, in the repository.
 
-- **New `docs/hosts.md`**: the two machines (diagram, what runs where, names, ports, firewall); the users on
+- **New `docs/hosts.md`**: the two machines (diagram, what runs where, names, ports, firewall); the two
+  domains and Cloudflare (DNS records, proxied or not and why, SSL mode, the origin lock, client IPs, caching); the users on
   each, with what each may do and why; the system settings and why each is needed; the credentials table;
   backups and restore; how to add a third machine (another apps host).
-- **`docs/setup.md`**, rewritten around the two machines: the order (dev machine first), installing and
-  configuring Forgejo, importing repositories, the push mirrors, the reduced GitHub App, the CI agent, rootless
-  Docker per user, and every step `ygg install` automates, as today's guide does for each command.
+- **`docs/setup.md`**, rewritten around the two machines: the choice of git server first (Forgejo, the
+  default, or GitHub), then the order (dev machine first), installing and configuring Forgejo, importing
+  repositories, the push mirrors, the reduced GitHub App, the CI agent, rootless Docker per user, and every
+  step `ygg install` automates, as today's guide does for each command. The GitHub path stays complete.
+- **New `docs/sites.md`** (or a section of catalog.md): how to add a site, static or server-rendered, on its
+  own subdomain, on the docs host with a path, or on the bare domain.
+- **New `docs/repositories.md`** (or a section of catalog.md): the `repositories` list, libraries and
+  publishing, CI-only repositories.
+- **A migration checklist** for the owner's 60 repositories (kind, what moves, new address, done), kept until
+  the migration ends.
 - **`README.md`**: the diagrams and the "what a release does" sequence (Forgejo, Jenkins checks, GitHub
   Actions only for Windows/macOS), the concepts table.
 - **`docs/catalog.md`**: `forge`, `mirror`, `checks`, `actionsChecks`, `checksTimeout`, the `release` trigger.
 - **`docs/cli.md`**: `ygg install` / `ygg check` for the two machine roles.
-- **`CONTRIBUTING.md`** in yggdrasil and each application: where the repository lives, how to run the `ci/`
+- **`CONTRIBUTING.md`** in yggdrasil and each repository with CI: where the repository lives, how to run the `ci/`
   scripts locally, that GitHub is a mirror, that fork pull requests get no checks.
 - Header comments of `yggdrasilPipeline.groovy`, `forge.sh`, `github.sh`, the rules script, and each
   application's Jenkinsfile.
