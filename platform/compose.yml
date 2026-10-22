@@ -16,9 +16,13 @@
 # and production on one VPS, say): one platform per host, never one per environment. What differs is
 # the env file (env/platform.env.example) and which profiles COMPOSE_PROFILES turns on:
 #
-#   jenkins,agent   the one host that runs the Jenkins controller, plus the host's own agent
-#   agent           every other host Jenkins deploys to: only an agent, dialling out to the controller
-#   (none)          a host with the platform but nothing deployed by Jenkins
+#   apps            the status API, its socket proxy and the console: a host that runs applications
+#   jenkins         the Jenkins controller, on the one host that runs it
+#   agent           the Jenkins agent that deploys to this host's engine, dialling out to the controller
+#   (none)          the proxy, the observability stack and nothing else
+#
+# The whole stack runs on the rootless Docker engine of the user who runs scripts/platform.sh, which
+# exports that engine's socket as DOCKER_SOCKET and refuses a rootful one.
 #
 # A ports environment (local, on a developer's Docker Desktop) does not run this stack; see the
 # README.
@@ -30,6 +34,8 @@ name: yggdrasil
 # Variables used only by a profile (Jenkins, agent) are not marked required here, because Compose
 # interpolates the whole file whatever the active profiles are: an agent-only host would otherwise have to
 # define the controller's GitHub App settings. scripts/platform.sh checks them per profile instead.
+# DOCKER_SOCKET, PROMETHEUS_CONFIG_FILE and YGG_TRAEFIK_CONFIG_FILE are exported by scripts/platform.sh,
+# not set in the env file.
 
 x-logging: &logging
   # Docker's default json-file driver never rotates. Alloy reads the same files, so rotation here is
@@ -39,12 +45,13 @@ x-logging: &logging
     max-size: 10m
     max-file: "5"
 
-# The Docker socket is root on the host: whoever can create a container can mount / into it. So no
-# service that faces the network holds it. Traefik, Alloy and the status API each reach Docker through
-# their own wollomatic/socket-proxy, on an internal network shared with that one client, and each proxy
-# lets through only the requests its client makes (-allowGET, -allowHEAD; every other method is
-# refused). The proxy anchors each pattern itself (^pattern$), so an alternation must stay inside a
-# group, and Compose would interpolate a $ in it. scripts/test_socket_proxies.py checks these lists.
+# The Docker socket is the service user's: whoever can create a container can mount into it anything
+# that user can reach (its home, its secrets). So no service that faces the network holds it. Traefik,
+# Alloy and the status API each reach Docker through their own wollomatic/socket-proxy, on an internal
+# network shared with that one client, and each proxy lets through only the requests its client makes
+# (-allowGET, -allowHEAD; every other method is refused). The proxy anchors each pattern itself
+# (^pattern$), so an alternation must stay inside a group, and Compose would interpolate a $ in it.
+# scripts/test_socket_proxies.py checks these lists.
 x-socket-proxy: &socket-proxy
   image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
   restart: unless-stopped
@@ -52,9 +59,10 @@ x-socket-proxy: &socket-proxy
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
-  # The image runs as nobody; the socket belongs to the host's docker group.
-  group_add:
-    - "${DOCKER_GID:?set DOCKER_GID in the env file to the docker group id (getent group docker)}"
+  # The image runs as nobody, which cannot open the socket. Root in a container of a rootless engine
+  # is the user who owns the socket on the host (and no one else), so this is not host root; the
+  # dropped capabilities and the read-only root still apply.
+  user: "0:0"
   environment:
     SP_LISTENIP: 0.0.0.0
     SP_LOGJSON: "true"
@@ -63,7 +71,7 @@ x-socket-proxy: &socket-proxy
     SP_WATCHDOGINTERVAL: "60"
     SP_STOPONWATCHDOG: "true"
   volumes:
-    - /var/run/docker.sock:/var/run/docker.sock:ro
+    - ${DOCKER_SOCKET:?run through scripts/platform.sh}:/var/run/docker.sock:ro
   healthcheck:
     test: ["CMD", "/healthcheck"]
     interval: 15s
@@ -133,6 +141,7 @@ services:
     # Not the inspect: it carries every container's environment, i.e. every application's secrets,
     # and the status API answers the internet. Nor logs, archives, exec or any write.
     <<: *socket-proxy
+    profiles: [apps]
     command:
       - -allowfrom=status
       - -allowGET=(/v1\.[0-9]+)?/containers/json
@@ -143,6 +152,7 @@ services:
     # Probes every catalog application of every environment of the host and serves the console
     # (/api/ under yggdrasil.DOMAIN) and Prometheus' target discovery (port 8081, internal).
     # Contract: docs/status-api.md.
+    profiles: [apps]
     build: ../status
     image: yggdrasil/status:local
     restart: unless-stopped
@@ -173,6 +183,7 @@ services:
 
   console:
     # The Flutter web console, at yggdrasil.DOMAIN. It calls the status API on its own origin.
+    profiles: [apps]
     build:
       context: ../console
       args:
@@ -201,7 +212,9 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # platform.sh picks the file: discovery through the status API with the apps profile, else the
+      # platform's own targets written out.
+      - ./prometheus/${PROMETHEUS_CONFIG_FILE:-prometheus.yml}:/etc/prometheus/prometheus.yml:ro
       - prometheus:/prometheus
     # Not routed and not published: only Grafana reads it, over the telemetry network.
     networks:
@@ -317,7 +330,7 @@ services:
       traefik.http.services.jenkins.loadbalancer.server.port: "8080"
 
   agent:
-    # The only thing on a host that deploys. It drives the host's Docker engine through the socket,
+    # The only thing on a host that deploys. It drives the user's Docker engine through the socket,
     # so the applications run as siblings of this container, not inside it.
     profiles: [agent]
     build: ./jenkins/agent
@@ -334,12 +347,11 @@ services:
       JENKINS_SECRET: ${JENKINS_AGENT_SECRET:-}
       JENKINS_AGENT_WORKDIR: /home/jenkins/agent
       YGG_SECRETS_DIR: /etc/yggdrasil
-    # The agent runs as the image's jenkins user; the socket belongs to the host's docker group.
-    # (Required on every host: the socket proxies need it too, see x-socket-proxy.)
-    group_add:
-      - ${DOCKER_GID}
+    # The image's jenkins user could not open the socket. Root here is the service user on the host
+    # (rootless Docker, see x-socket-proxy), so the agent can do what that user can and no more.
+    user: "0:0"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_SOCKET:?run through scripts/platform.sh}:/var/run/docker.sock
       # The application env files of every environment of the host (<environment>/<application>.env).
       # Secrets, so on the host only, never in git.
       - ${YGG_SECRETS_DIR:-/etc/yggdrasil}:/etc/yggdrasil:ro

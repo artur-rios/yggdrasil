@@ -4,7 +4,9 @@
 #     scripts/platform.sh up | down | ps | config [--last-good]
 #     scripts/platform.sh logs [--last-good] [service]
 #
-# One platform stack per host, whatever number of environments the host runs (ENVIRONMENTS). Reads
+# Runs on the invoking user's own rootless Docker engine and nothing else: the socket comes from
+# DOCKER_HOST, else the user's runtime directory, and a rootful engine is refused. One platform
+# stack per host, whatever number of environments the host runs (ENVIRONMENTS). Reads
 # the settings from the variables store (rendered, with a last-good copy kept; --last-good, right
 # after the command, reads that copy instead), or from <secrets>/platform.env and acme.env on a host
 # without a store, secrets being $YGG_SECRETS_DIR (default /etc/yggdrasil). Template:
@@ -97,6 +99,53 @@ export YGG_TRAEFIK_CONFIG_FILE="$traefik_file"
 
 compose() { docker compose --env-file "$env_file" -f "$root/platform/compose.yml" "$@"; }
 
+# The path of the invoking user's own Docker socket: DOCKER_HOST when it is unix://..., else the
+# socket in the user's runtime directory (XDG_RUNTIME_DIR, /run/user/<uid> by default). Never
+# /var/run/docker.sock: that is the root engine, which the platform does not run on. Prints the path;
+# dies, naming the fix, when there is no such socket.
+docker_socket() {
+  if [[ "${DOCKER_HOST:-}" == unix://* ]]; then
+    echo "${DOCKER_HOST#unix://}"
+    return
+  fi
+  local socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
+  [[ -S "$socket" ]] || die "no rootless Docker engine for $(id -un): run 'ygg install' (docs/hosts.md)"
+  echo "$socket"
+}
+
+# Dies unless the engine the docker CLI talks to (DOCKER_SOCKET) is a rootless one. Under rootless
+# Docker, root in a container is the service user on the host, which is what lets the socket proxies
+# and the agent run as root in their containers; on a rootful engine the same would be host root.
+require_rootless() {
+  local security
+  security=$(docker info --format '{{json .SecurityOptions}}') \
+    || die "cannot reach the Docker engine at $DOCKER_SOCKET (is it running? systemctl --user status docker)"
+  [[ "$security" == *name=rootless* ]] \
+    || die "the Docker engine at $DOCKER_SOCKET runs as root; the platform runs on rootless Docker only (docs/hosts.md)"
+}
+
+# Points the docker CLI and Compose (the socket compose.yml mounts into the proxies and the agent) at
+# the user's own engine, once it has been checked. Before any docker command.
+use_rootless_engine() {
+  DOCKER_SOCKET=$(docker_socket) || exit 1
+  # DOCKER_HOST too, so the CLI cannot reach for another engine than the one that was checked.
+  export DOCKER_SOCKET DOCKER_HOST="unix://$DOCKER_SOCKET"
+  require_rootless
+}
+
+# COMPOSE_PROFILES of the settings as ",a,b,", so that a profile is found as ",name,".
+# shellcheck source=/dev/null
+profiles=$(set -a; . "$env_file"; echo ",${COMPOSE_PROFILES:-},")
+
+# A host without the status API (no apps profile: the dev machine) has nothing to discover targets
+# from, so Prometheus reads the platform's own, written out.
+if [[ "$profiles" == *,apps,* ]]; then
+  PROMETHEUS_CONFIG_FILE=prometheus.yml
+else
+  PROMETHEUS_CONFIG_FILE=prometheus-static.yml
+fi
+export PROMETHEUS_CONFIG_FILE
+
 # Jenkins needs them and the catalog has them: no second copy in platform.env to drift.
 GITHUB_OWNER=$(python3 "$root/scripts/catalog.py" owner) || exit 1
 YGGDRASIL_REPOSITORY=$(python3 "$root/scripts/catalog.py" repository) || exit 1
@@ -104,12 +153,8 @@ export GITHUB_OWNER YGGDRASIL_REPOSITORY
 
 # The profile-only variables compose.yml cannot mark as required (see the note at its top).
 check_profile_variables() {
-  local profiles
-  # shellcheck source=/dev/null
-  profiles=$(set -a; . "$env_file"; echo ",${COMPOSE_PROFILES:-},")
   local required=()
   [[ "$profiles" == *,jenkins,* ]] && required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD GITHUB_APP_ID GITHUB_APP_KEY_FILE)
-  # DOCKER_GID too, but on every host: compose.yml requires it for the socket proxies.
   [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET)
   local name value
   for name in "${required[@]}"; do
@@ -137,18 +182,30 @@ check_environments() {
   done
 }
 
+# The environments are the apps profile's business (the status API and the console show them): checked
+# when it is on, and an ENVIRONMENTS without it is a platform.env from before the profile existed.
+check_apps_profile() {
+  if [[ "$profiles" == *,apps,* ]]; then
+    check_environments
+    return
+  fi
+  local environments
+  # shellcheck source=/dev/null
+  environments=$(set -a; . "$env_file"; echo "${ENVIRONMENTS:-${ENVIRONMENT:-}}")
+  [[ -z "${environments//[ ,]/}" ]] \
+    || die "ENVIRONMENTS is set but COMPOSE_PROFILES lacks apps: add apps to COMPOSE_PROFILES (the status API and console moved to that profile in this release)"
+}
+
 case "$command" in
   up)
-    check_environments
+    check_apps_profile
     check_profile_variables
+    use_rootless_engine
     for network in edge telemetry; do
       docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
     done
-    # The agent's deploy locks (scripts/deploy.sh): group docker may create and hold them.
-    install -d -m 2770 "$secrets/locks"
-    if getent group docker >/dev/null && ! chgrp docker "$secrets/locks" 2>/dev/null; then
-      echo "platform: could not give $secrets/locks to group docker; the Jenkins agent may deploy unlocked" >&2
-    fi
+    # The agent's deploy locks (scripts/deploy.sh): the agent's container root is this user.
+    install -d -m 700 "$secrets/locks"
     compose up --detach --build --remove-orphans --wait
     compose ps
     if [[ -n "$from_store" ]]; then
@@ -156,8 +213,8 @@ case "$command" in
       install -m 600 "$env_file" "$acme_file" "$traefik_file" "$secrets/last-good/"
     fi
     ;;
-  down) compose down ;;
-  ps) compose ps ;;
-  logs) compose logs --follow --tail 200 "$@" ;;
-  config) compose config ;;
+  down) use_rootless_engine; compose down ;;
+  ps) use_rootless_engine; compose ps ;;
+  logs) use_rootless_engine; compose logs --follow --tail 200 "$@" ;;
+  config) use_rootless_engine; compose config ;;
 esac

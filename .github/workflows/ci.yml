@@ -117,14 +117,17 @@ jobs:
           TRAEFIK_DASHBOARD_USERS='admin:x'
           GRAFANA_ADMIN_PASSWORD=x
           YGGDRASIL_STATUS_TOKEN=0000000000000000000000000000000000000000
-          DOCKER_GID=999
+          COMPOSE_PROFILES=apps
           YGG_SECRETS_DIR=$secrets
           ENV
           touch "$secrets/acme.env"
           # Traefik's configuration is a file compose.yml requires; platform.sh renders it from the
           # same settings.
           (set -a; . "$secrets/platform.env"; python3 scripts/traefik_config.py) > "$secrets/traefik.yml"
-          YGG_TRAEFIK_CONFIG_FILE="$secrets/traefik.yml" GITHUB_OWNER=$(python3 scripts/catalog.py owner) \
+          # DOCKER_SOCKET is the user's rootless socket, which platform.sh finds on a host; Compose
+          # only needs the path here, not an engine behind it.
+          DOCKER_SOCKET=/run/user/1000/docker.sock YGG_TRAEFIK_CONFIG_FILE="$secrets/traefik.yml" \
+            GITHUB_OWNER=$(python3 scripts/catalog.py owner) \
             docker compose --env-file "$secrets/platform.env" -f platform/compose.yml config --quiet
           # Every stack that has its service here, in both modes, with a dummy value for each
           # variable it requires. (Stacks based on the application's own docker-compose.yml are
