@@ -127,6 +127,9 @@ jobs:
           # DOCKER_SOCKET is the user's rootless socket, which platform.sh finds on a host; Compose
           # only needs the path here, not an engine behind it.
           export DOCKER_SOCKET=/run/user/1000/docker.sock YGG_TRAEFIK_CONFIG_FILE="$secrets/traefik.yml"
+          # platform.sh labels Traefik with the file's hash, so a changed file recreates it.
+          YGG_TRAEFIK_CONFIG_HASH=$(sha256sum "$secrets/traefik.yml" | cut -d' ' -f1)
+          export YGG_TRAEFIK_CONFIG_HASH
           GITHUB_OWNER=$(python3 scripts/catalog.py owner)
           export GITHUB_OWNER
           # The platform file once for each machine's profiles: the apps machine's, with its deploy

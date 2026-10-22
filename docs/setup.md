@@ -781,7 +781,9 @@ either way. Check the settings:
 ```
 
 It prints `platform.env OK`, or names the missing variable (it also renders Traefik's configuration,
-`traefik.yml`, from the settings, and stops if they are wrong). `platform.sh up` checks the rest (each of
+`/etc/yggdrasil/traefik.yml`, from the settings, and stops if they are wrong). That file stays: Traefik's
+container mounts it at every start, a reboot included. `platform.sh` writes it again at every run, and `up`
+recreates Traefik when its content has changed. `platform.sh up` checks the rest (each of
 `ENVIRONMENTS` against the catalog, the Jenkins variables) before starting anything.
 
 ### 9.3 Start it and check the certificate

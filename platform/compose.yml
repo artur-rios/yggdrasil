@@ -35,8 +35,8 @@ name: yggdrasil
 # Variables used only by a profile (Jenkins, agent) are not marked required here, because Compose
 # interpolates the whole file whatever the active profiles are: an agent-only host would otherwise have to
 # define the controller's GitHub App settings. scripts/platform.sh checks them per profile instead.
-# DOCKER_SOCKET, PROMETHEUS_CONFIG_FILE and YGG_TRAEFIK_CONFIG_FILE are exported by scripts/platform.sh,
-# not set in the env file.
+# DOCKER_SOCKET, PROMETHEUS_CONFIG_FILE, YGG_TRAEFIK_CONFIG_FILE and YGG_TRAEFIK_CONFIG_HASH are exported by
+# scripts/platform.sh, not set in the env file.
 
 x-logging: &logging
   # Docker's default json-file driver never rotates. Alloy reads the same files, so rotation here is
@@ -116,6 +116,9 @@ services:
       timeout: 5s
       retries: 5
     labels:
+      # The hash of traefik.yml (scripts/platform.sh): the file's path is the same at every run, so this
+      # is what changes the service's configuration, and makes `up` recreate Traefik, when the file does.
+      yggdrasil.traefik-config-hash: ${YGG_TRAEFIK_CONFIG_HASH:?run through scripts/platform.sh}
       traefik.enable: "true"
       traefik.http.routers.dashboard.rule: Host(`traefik${PLATFORM_HOST_SUFFIX:-}.${DOMAIN}`)
       traefik.http.routers.dashboard.entrypoints: websecure

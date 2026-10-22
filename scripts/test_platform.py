@@ -28,14 +28,15 @@ class PlatformTests(unittest.TestCase):
         bin_dir = self.temp / "bin"
         bin_dir.mkdir()
         docker = bin_dir / "docker"
-        # Logs what compose is given, Traefik's rendered configuration included: it only exists while
-        # platform.sh runs, so the log is the one place a test can read it. Also the engine socket
-        # platform.sh points Docker at and the Prometheus file it picks.
+        # Logs what compose is given, Traefik's rendered configuration (as it is when Compose runs) and
+        # its hash included. Also the engine socket platform.sh points Docker at and the Prometheus file
+        # it picks.
         docker.write_text('#!/usr/bin/env bash\n'
                           'echo "docker $*" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "DOCKER_SOCKET=${DOCKER_SOCKET:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "DOCKER_HOST=${DOCKER_HOST:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "PROMETHEUS_CONFIG_FILE=${PROMETHEUS_CONFIG_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "YGG_TRAEFIK_CONFIG_HASH=${YGG_TRAEFIK_CONFIG_HASH:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
                           '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
                           '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
@@ -186,18 +187,51 @@ class PlatformTests(unittest.TestCase):
         self.assertIn("is not an environment in catalog.yaml", result.stderr)
         self.assertEqual(self.docker_calls(), "")
 
+    def traefik_config_file(self):
+        return re.search(r"traefik-config-file: (\S+)", self.docker_calls()).group(1)
+
     def test_given_an_env_file_when_up_then_compose_gets_a_rendered_traefik_config(self):
         result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\nEXTRA_DOMAINS=artur-rios.tech\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.docker_calls()
-        # Exported to Compose, in a private run directory that exists while Compose runs...
-        self.assertRegex(calls, r"traefik-config-file: \S+/traefik\.yml")
+        # Exported to Compose, in the secrets directory...
+        self.assertIn(f"traefik-config-file: {self.secrets}/traefik.yml", calls)
         # ... and holding the rendered file, with the host's domain and the extra one.
         self.assertIn("main: techcraftsmen.net", calls)
         self.assertIn("main: artur-rios.tech", calls)
-        # Gone with the run directory afterwards.
-        path = re.search(r"traefik-config-file: (\S+)", calls).group(1)
-        self.assertFalse(pathlib.Path(path).exists())
+        # Still there afterwards: the running Traefik's bind mount needs it at every restart (a crash, the
+        # engine's restart, a reboot), long after platform.sh is gone. Readable by this user only.
+        path = pathlib.Path(self.traefik_config_file())
+        self.assertIn("main: artur-rios.tech", path.read_text())
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        # No temporary file of the atomic write is left next to it.
+        self.assertEqual(sorted(p.name for p in self.secrets.iterdir() if "traefik" in p.name), ["traefik.yml"])
+
+    def test_given_two_runs_when_up_then_the_traefik_config_path_is_the_same(self):
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n").returncode, 0)
+        first = self.traefik_config_file()
+        self.log.unlink()
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n").returncode, 0)
+        # The same path, so Compose sees the same mount and doesn't recreate Traefik for nothing.
+        self.assertEqual(self.traefik_config_file(), first)
+
+    def config_hash(self):
+        return re.search(r"YGG_TRAEFIK_CONFIG_HASH=(\S*)", self.docker_calls()).group(1)
+
+    def test_given_a_changed_traefik_config_when_up_then_its_hash_for_compose_changes(self):
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n").returncode, 0)
+        first = self.config_hash()
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        self.log.unlink()
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n").returncode, 0)
+        # Unchanged settings, unchanged hash: Traefik is left running.
+        self.assertEqual(self.config_hash(), first)
+        self.log.unlink()
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\nEXTRA_DOMAINS=artur-rios.tech\n").returncode, 0)
+        # The path stays, so only the hash (a label on the service) tells Compose to recreate Traefik.
+        self.assertNotEqual(self.config_hash(), first)
+        compose = (SCRIPT.parent.parent / "platform" / "compose.yml").read_text()
+        self.assertIn("yggdrasil.traefik-config-hash: ${YGG_TRAEFIK_CONFIG_HASH:?", compose)
 
     def test_given_every_command_when_run_then_compose_gets_the_traefik_config(self):
         (self.secrets / "platform.env").write_text(TRAEFIK_ENV + "ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n")

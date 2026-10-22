@@ -32,7 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Several domains on one machine** (`EXTRA_DOMAINS` in `platform.env`, each with its own wildcard certificate) and
   **Cloudflare in front** (`CLOUDFLARE_PROXIED`): Traefik trusts the forwarded client address from Cloudflare's ranges
   only, from `<secrets>/cloudflare-ips`, which `ygg install --role apps` writes. Traefik's static configuration is now a
-  file rendered by `scripts/traefik_config.py`; the settings are the same.
+  file rendered by `scripts/traefik_config.py` into `<secrets>/traefik.yml` (kept there, so Traefik starts again
+  after a reboot); the settings are the same.
 - **`PLATFORM_HOST_SUFFIX`** (optional, empty by default) in `platform.env`: put after `traefik` and `grafana` in
   the names of the Traefik dashboard and Grafana (and Grafana's root URL). The dev machine sets `-dev`, so it serves
   `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>` instead of claiming the apps machine's `traefik.` and `grafana.`

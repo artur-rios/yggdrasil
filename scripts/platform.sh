@@ -33,9 +33,10 @@ fi
 cleanup_paths=()
 trap 'rm -rf ${cleanup_paths[@]+"${cleanup_paths[@]}"}' EXIT
 
-# A private directory for what this run renders (the env files from the store, Traefik's
-# traefik.yml): /run/yggdrasil for root; else the user's own runtime directory (a tmpfs only they
-# read), else a directory of theirs under $TMPDIR. Removed on exit. Sets render_dir.
+# A private directory for the env files this run renders from the store: /run/yggdrasil for root;
+# else the user's own runtime directory (a tmpfs only they read), else a directory of theirs under
+# $TMPDIR. Removed on exit: Compose reads them only while this runs. (Traefik's traefik.yml is not
+# here: see render_traefik_config.) Sets render_dir.
 run_dir() {
   local run_base=/run/yggdrasil
   if ! { mkdir -p "$run_base" 2>/dev/null && [[ -w "$run_base" ]]; }; then
@@ -75,7 +76,6 @@ elif [[ -f "$secrets/vars.db" ]]; then
     && python3 "$root/scripts/vars.py" render-platform --acme >"$acme_file") \
     || die "could not render the platform's variables; 'platform.sh $command --last-good' reads the last copy that worked"
 else
-  run_dir
   env_file="$secrets/platform.env"
   acme_file="$secrets/acme.env"
   [[ -f "$env_file" ]] || die "missing $env_file (template: env/platform.env.example)"
@@ -88,17 +88,32 @@ export YGG_ACME_ENV_FILE="$acme_file"
 # interpolates the whole file), so every command renders one -- except --last-good, which reuses the
 # copy kept with the rest. Cloudflare's ranges (<secrets>/cloudflare-ips) are read only when
 # CLOUDFLARE_PROXIED=true.
+#
+# It lives in <secrets>/traefik.yml, not in the run directory: Compose bind-mounts it into Traefik,
+# and the engine mounts it again at every start of the container (a crash, `docker restart`, the
+# engine's own restart, every boot), long after this script and its run directory are gone. Mode 600
+# like the rest of the directory: Traefik runs as container root, which is this user. Written to a
+# temporary file next to it and renamed over it, so a failed render never leaves half a file there,
+# and the running Traefik keeps the one it started with (a bind mount holds on to the file it was
+# given) until Compose recreates it.
 render_traefik_config() {
-  traefik_file="$render_dir/traefik.yml"
-  local options=()
+  traefik_file="$secrets/traefik.yml"
+  local options=() partial
   [[ -f "$secrets/cloudflare-ips" ]] && options=(--cloudflare-ips "$secrets/cloudflare-ips")
+  partial=$(mktemp "$secrets/.traefik.yml.XXXXXX") || die "cannot write Traefik's configuration in $secrets (is it yours? run platform.sh as ygg)"
+  cleanup_paths+=("$partial")
   # The settings go in the renderer's environment, from the same file Compose reads.
   # shellcheck source=/dev/null
-  (set -a; . "$env_file"; python3 "$root/scripts/traefik_config.py" ${options[@]+"${options[@]}"} >"$traefik_file") \
-    || die "could not render Traefik's configuration from $env_file (see above)"
+  (set -a; . "$env_file"; python3 "$root/scripts/traefik_config.py" ${options[@]+"${options[@]}"} >"$partial")     || die "could not render Traefik's configuration from $env_file (see above)"
+  chmod 600 "$partial"
+  mv -f "$partial" "$traefik_file"
 }
 [[ -n "$last_good" ]] || render_traefik_config
 export YGG_TRAEFIK_CONFIG_FILE="$traefik_file"
+# The path is the same at every run, so Compose would not see a changed configuration: its hash is a
+# label on the Traefik service (compose.yml), and a new hash is what makes `up` recreate Traefik.
+YGG_TRAEFIK_CONFIG_HASH=$(sha256sum "$traefik_file" | cut -d' ' -f1) || die "cannot read $traefik_file"
+export YGG_TRAEFIK_CONFIG_HASH
 
 compose() { docker compose --env-file "$env_file" -f "$root/platform/compose.yml" "$@"; }
 
