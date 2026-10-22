@@ -63,6 +63,14 @@ def domains(settings: Mapping[str, str]) -> list[str]:
         if not DOMAIN.match(domain):
             raise SettingsError(f"EXTRA_DOMAINS has '{domain}', which is not a domain name "
                                 "(e.g. artur-rios.tech; no wildcard, no scheme)")
+    # Each domain is a certificate order of its own: one listed twice is two orders for the same names,
+    # and Let's Encrypt allows only a few duplicate certificates a week.
+    seen = {main}
+    for domain in extra:
+        if domain in seen:
+            raise SettingsError(f"EXTRA_DOMAINS has '{domain}' more than once (DOMAIN and EXTRA_DOMAINS together): "
+                                "list each domain once")
+        seen.add(domain)
     return [main, *extra]
 
 

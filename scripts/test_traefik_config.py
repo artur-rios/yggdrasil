@@ -65,6 +65,14 @@ class RenderTests(unittest.TestCase):
         with self.assertRaisesRegex(SettingsError, "EXTRA_DOMAINS"):
             render({**SETTINGS, "EXTRA_DOMAINS": "*.bad"}, None)
 
+    def test_given_a_domain_twice_when_rendered_then_it_is_refused_naming_it(self):
+        # Each entry is a certificate order: a repeated one counts twice against Let's Encrypt's limit on
+        # duplicate certificates.
+        for extra in ("techcraftsmen.net", "artur-rios.tech, artur-rios.tech", "artur-rios.tech,techcraftsmen.net"):
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(SettingsError, r"EXTRA_DOMAINS.*(techcraftsmen\.net|artur-rios\.tech).*more than once"):
+                    render({**SETTINGS, "EXTRA_DOMAINS": extra}, None)
+
     def test_given_a_main_domain_that_is_not_a_hostname_when_rendered_then_it_is_refused(self):
         with self.assertRaisesRegex(SettingsError, "DOMAIN"):
             render({**SETTINGS, "DOMAIN": "localhost"}, None)
