@@ -3,6 +3,10 @@
 # next to it. What to back up and where to is in $YGG_SECRETS_DIR/backup.conf (env/backup.conf.example).
 [Unit]
 Description=Back up yggdrasil to the other machine
+# The dumps are taken through ygg's rootless engine, which is the user unit docker.service: a catch-up run
+# at boot (the timer is Persistent) must wait for it.
+After=docker.service
+Wants=docker.service
 
 [Service]
 Type=oneshot

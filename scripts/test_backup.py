@@ -13,9 +13,12 @@ import gzip
 import os
 import pathlib
 import shutil
+import signal
+import stat
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
@@ -210,7 +213,8 @@ class BackupTests(unittest.TestCase):
         sends = [call for call in self.calls() if call.startswith("rsync ")]
         self.assertEqual(
             sends,
-            [f"rsync -a --delete -e ssh -i {self.home}/.ssh/yggdrasil-backup {self.backups}/ backup@other:from-here"],
+            [f"rsync -a --delete -e ssh -i {self.home}/.ssh/yggdrasil-backup -o BatchMode=yes "
+             f"{self.backups}/ backup@other:from-here"],
         )
 
     def test_given_a_configured_key_when_run_then_rsync_uses_it(self):
@@ -218,7 +222,17 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.backup("run").returncode, 0)
         sends = [call for call in self.calls() if call.startswith("rsync ")]
         self.assertEqual(len(sends), 1)
-        self.assertIn(f"-e ssh -i {self.home}/.ssh/other-key ", sends[0])
+        self.assertIn(f"-e ssh -i {self.home}/.ssh/other-key -o BatchMode=yes ", sends[0])
+
+    def test_given_a_key_path_with_a_blank_when_run_then_rsync_gets_it_quoted(self):
+        self.conf(extra="BACKUP_KEY=/keys/my key\n")
+        self.assertEqual(self.backup("run").returncode, 0)
+        send = next(call for call in self.calls() if call.startswith("rsync "))
+        self.assertIn("-e ssh -i '/keys/my key' -o BatchMode=yes ", send)
+        self.conf(extra="BACKUP_KEY=/keys/it's\n")
+        result = self.backup("run")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("BACKUP_KEY", result.stderr)
 
     def test_given_rsync_failing_when_run_then_the_exit_says_so_after_the_dumps_were_made(self):
         self.conf()
@@ -291,6 +305,52 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("No backups yet", result.stdout)
 
+    def test_given_a_target_and_no_items_when_run_then_it_is_refused_before_dumping_or_sending(self):
+        # The template with its target filled in: every item is still a comment.
+        text = TEMPLATE.read_text().replace("BACKUP_TARGET=\n", "BACKUP_TARGET=backup@other:here\n")
+        (self.secrets / "backup.conf").write_text(text)
+        result = self.backup("run")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no items", result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.backups.exists())
+
+    def test_given_a_run_when_done_then_the_backups_are_private(self):
+        self.conf()
+        self.assertEqual(self.backup("run").returncode, 0)
+        day = self.backups / self.today
+        self.assertEqual(stat.S_IMODE(self.backups.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(day.stat().st_mode), 0o700)
+        for name in self.today_files():
+            self.assertEqual(stat.S_IMODE((day / name).stat().st_mode), 0o600, name)
+
+    @staticmethod
+    def kill_group(process):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def test_given_a_run_in_progress_when_another_starts_then_it_exits_without_dumping(self):
+        self.conf()
+        self.backups.mkdir()
+        holder = subprocess.Popen(["flock", str(self.backups), "sleep", "30"], start_new_session=True)
+        # The whole group: whatever flock started holds the lock too.
+        self.addCleanup(self.kill_group, holder)
+        # Wait for the holder to have the lock.
+        for _ in range(100):
+            if subprocess.run(["flock", "-n", str(self.backups), "true"]).returncode != 0:
+                break
+            time.sleep(0.05)
+        result = self.backup("run")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("another backup is running", result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.kill_group(holder)
+        holder.wait()
+        # The lock goes with the process that held it.
+        self.assertEqual(self.backup("run").returncode, 0)
+
     def test_given_the_template_when_run_then_it_is_refused_for_want_of_a_target_only(self):
         # The copy nobody edited: BACKUP_TARGET is empty on purpose, and every item is a comment.
         shutil.copy(TEMPLATE, self.secrets / "backup.conf")
@@ -309,6 +369,9 @@ class UnitTests(unittest.TestCase):
         # A user unit doesn't read .profile: %t is the user's runtime directory.
         self.assertIn("Environment=DOCKER_HOST=unix://%t/docker.sock", text)
         self.assertIn("Type=oneshot", text)
+        # The engine is the user unit docker.service: a catch-up run at boot waits for it.
+        self.assertIn("After=docker.service", text)
+        self.assertIn("Wants=docker.service", text)
 
     def test_given_the_timer_when_read_then_it_fires_nightly_and_catches_up(self):
         text = self.read("yggdrasil-backup.timer")

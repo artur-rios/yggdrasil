@@ -9,6 +9,8 @@
 # BACKUP_KEEP and rsyncs ~/backups to BACKUP_TARGET; one item failing doesn't stop the others, but the
 # exit status says so. list shows the days and files that are in ~/backups.
 set -euo pipefail
+# The dumps hold the databases and Forgejo's repositories: the directories and files are the user's alone.
+umask 077
 
 die() { echo "backup: $*" >&2; exit 1; }
 
@@ -97,6 +99,18 @@ done <"$conf"
 
 [[ -n "$BACKUP_TARGET" ]] || die "BACKUP_TARGET is not set in $conf (<user>@<host>:<path>)"
 [[ "$BACKUP_KEEP" =~ ^[1-9][0-9]*$ ]] || die "BACKUP_KEEP in $conf must be a number of days, 1 or more, not '$BACKUP_KEEP'"
+# The template ships its items commented out: a copy nobody finished would otherwise "back up" nothing
+# every night and report success.
+((${#items[@]})) || die "no items in $conf: uncomment or add forgejo, volume <name> or postgres <container> <user> lines (template: env/backup.conf.example)"
+
+# rsync splits -e on spaces and honours quotes, not backslashes: a key path with a blank is single-quoted.
+if [[ "$BACKUP_KEY" =~ ^[A-Za-z0-9_./+@:-]+$ ]]; then
+  ssh_command="ssh -i $BACKUP_KEY -o BatchMode=yes"
+elif [[ "$BACKUP_KEY" == *"'"* ]]; then
+  die "BACKUP_KEY in $conf must not contain a single quote: $BACKUP_KEY"
+else
+  ssh_command="ssh -i '$BACKUP_KEY' -o BatchMode=yes"
+fi
 
 # ---- The items ----------------------------------------------------------------------------------
 
@@ -152,6 +166,13 @@ run_item() {
 
 # ---- run ----------------------------------------------------------------------------------------
 
+# One run at a time: two overlapping ones (a slow night and the next timer, or a run by hand) would dump
+# into the same files and prune under each other. The lock is on ~/backups itself and goes away with the
+# process.
+mkdir -p "$backups"
+exec 9<"$backups"
+flock -n 9 || die "another backup is running"
+
 use_rootless_engine
 
 day="$backups/$(date +%F)"
@@ -182,7 +203,7 @@ if ((${#days[@]} > BACKUP_KEEP)); then
 fi
 
 # --delete: the other machine's copy has the same days as this one, not every day there ever was.
-if ! rsync -a --delete -e "ssh -i $BACKUP_KEY" "$backups/" "$BACKUP_TARGET"; then
+if ! rsync -a --delete -e "$ssh_command" "$backups/" "$BACKUP_TARGET"; then
   echo "backup: FAILED: sending $backups to $BACKUP_TARGET" >&2
   failed+=("rsync to $BACKUP_TARGET")
 fi
