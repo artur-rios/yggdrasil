@@ -130,7 +130,7 @@ FAKES = {
     # its own group and those listed in $FAKE_STATE/groups-<user>.
     "id": r"""
         case "$*" in
-          -un) echo admin ;;
+          -un) echo "${FAKE_ADMIN:-admin}" ;;
           -u) echo "${FAKE_UID:-1000}" ;;
           -nG | "-nG admin") echo admin ;;
           "-nG "*) echo "$2 $(cat "$FAKE_STATE/groups-$2" 2>/dev/null)" ;;
@@ -192,12 +192,32 @@ FAKES = {
         fi
         exec /usr/bin/stat "$@"
     """,
-    # FAKE_SSHD_STATUS=1 is a configuration sshd rejects.
+    # Like a fresh host's sshd, it wants /run/sshd. -t: FAKE_SSHD_STATUS=1 is a configuration it
+    # rejects. -T: the effective configuration, as the real one reads it: every *.conf of sshd_config.d
+    # in lexical order, the FIRST value of a key wins (the defaults are the permissive ones).
     "sshd": r"""
         echo "sshd $*" >>"$FAKE_STATE/calls"
-        if [[ "${FAKE_SSHD_STATUS:-0}" != 0 ]]; then
+        if [[ ! -d "$YGG_SYSROOT/run/sshd" ]]; then
+          echo "Missing privilege separation directory: /run/sshd" >&2
+          exit 255
+        fi
+        if [[ "$1" == -t && "${FAKE_SSHD_STATUS:-0}" != 0 ]]; then
           echo "fake sshd: bad configuration" >&2
           exit "$FAKE_SSHD_STATUS"
+        fi
+        if [[ "$1" == -T ]]; then
+          declare -A seen
+          for file in $(ls "$YGG_SYSROOT"/etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort); do
+            while read -r key value; do
+              [[ -z "$key" || "$key" == \#* ]] && continue
+              key=${key,,}
+              [[ -n "${seen[$key]:-}" ]] || seen[$key]=$value
+            done <"$file"
+          done
+          echo "permitrootlogin ${seen[permitrootlogin]:-without-password}"
+          echo "passwordauthentication ${seen[passwordauthentication]:-yes}"
+          echo "kbdinteractiveauthentication ${seen[kbdinteractiveauthentication]:-yes}"
+          for user in ${seen[allowusers]:-}; do echo "allowusers $user"; done
         fi
     """,
     # An engine that is installed but whose daemon the admin can't reach: what a workstation
@@ -330,8 +350,8 @@ class MachineRoleTests(unittest.TestCase):
             recorded[path] = owner
         return recorded
 
-    def rows(self, *arguments):
-        result = self.host("check", *arguments)
+    def rows(self, *arguments, **env):
+        result = self.host("check", *arguments, **env)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout, [line for line in result.stdout.splitlines() if line.startswith("  ")]
 
@@ -485,7 +505,7 @@ class MachineRoleTests(unittest.TestCase):
         writes = [call for call in self.calls() if call.startswith("sudo tee ")]
         self.assertEqual(len(writes), len(set(writes)), writes)
         for name in ("sysctl.d/90-yggdrasil.conf", "usr.bin.rootlesskit", "delegate.conf", "20auto-upgrades",
-                     "sshd_config.d/90-yggdrasil.conf", "yggdrasil-role"):
+                     "sshd_config.d/00-yggdrasil.conf", "yggdrasil-role"):
             self.assertEqual(sum(call.endswith(name) for call in writes), 1, (name, writes))
 
     def test_given_a_changed_system_file_when_installed_then_it_is_written_again(self):
@@ -644,9 +664,12 @@ class MachineRoleTests(unittest.TestCase):
                 result = self.host("install", "dev")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("authorized_keys", result.stderr)
-                self.assertFalse(self.etc("ssh/sshd_config.d/90-yggdrasil.conf").exists())
+                self.assertFalse(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").exists())
                 calls = self.calls()
-                self.assertFalse([call for call in calls if "sshd" in call or "reload ssh" in call], calls)
+                self.assertFalse([call for call in calls if "sshd" in call or "try-reload-or-restart ssh" in call], calls)
+                # Refused up front: no step ran, so nothing at all was done as root.
+                self.assertEqual([call for call in calls if call.startswith("sudo")], [])
+                self.assertEqual(self.users(), {})
                 self.assertFalse(list(self.homes.glob("*/.ssh")))
                 stdout, rows = self.rows("dev")
                 self.assertIn("refuses", self.row(rows, "ssh"))
@@ -657,12 +680,12 @@ class MachineRoleTests(unittest.TestCase):
         self.assertIn("sshd -t", result.stderr)
         calls = self.calls()
         self.assertIn("sshd -t", calls)
-        self.assertFalse([call for call in calls if "reload ssh" in call], calls)
+        self.assertFalse([call for call in calls if "try-reload-or-restart ssh" in call], calls)
         # A configuration sshd rejects is not left to lock everyone out at the next restart.
-        self.assertFalse(self.etc("ssh/sshd_config.d/90-yggdrasil.conf").exists())
+        self.assertFalse(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").exists())
 
     def test_given_a_previous_ssh_dropin_when_the_new_one_is_rejected_then_the_previous_one_is_back(self):
-        path = self.etc("ssh/sshd_config.d/90-yggdrasil.conf")
+        path = self.etc("ssh/sshd_config.d/00-yggdrasil.conf")
         path.parent.mkdir(parents=True)
         path.write_text("PermitRootLogin yes\n")
         result = self.host("install", "dev", FAKE_SSHD_STATUS="1")
@@ -671,15 +694,15 @@ class MachineRoleTests(unittest.TestCase):
 
     def test_given_role_dev_when_hardened_then_only_the_admin_ygg_and_dev_may_log_in(self):
         self.install("dev")
-        path = self.etc("ssh/sshd_config.d/90-yggdrasil.conf")
+        path = self.etc("ssh/sshd_config.d/00-yggdrasil.conf")
         self.assertEqual(path.read_text(), SSH_DEV)
         calls = self.calls()
-        self.assertLess(calls.index("sshd -t"), calls.index("systemctl reload ssh"))
+        self.assertLess(calls.index("sshd -t"), calls.index("systemctl try-reload-or-restart ssh"))
         self.assertLess(calls.index(f"sudo tee {path}"), calls.index("sshd -t"))
 
     def test_given_role_apps_when_hardened_then_only_the_admin_and_ygg_may_log_in(self):
         self.install("apps")
-        self.assertIn("AllowUsers admin ygg\n", self.etc("ssh/sshd_config.d/90-yggdrasil.conf").read_text())
+        self.assertIn("AllowUsers admin ygg\n", self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text())
 
     def test_given_role_dev_when_hardened_then_the_admins_key_goes_to_ygg_and_dev_only(self):
         self.install("dev")
@@ -807,6 +830,93 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(
             [call for call in self.calls() if call.startswith(("sudo tee", "useradd", "chown", "chmod"))], [])
         self.assertEqual(list(self.users()), [])
+
+    # ---- The ssh hardening has to take effect ----------------------------------------------------
+
+    def cloud_init(self):
+        path = self.etc("ssh/sshd_config.d/50-cloud-init.conf")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("PasswordAuthentication yes\n")
+        return path
+
+    def test_given_a_cloud_init_file_setting_passwords_on_when_hardened_then_the_dropin_still_wins(self):
+        cloud = self.cloud_init()
+        self.install("dev")
+        # 00- sorts before 50-: sshd takes the first value it finds.
+        self.assertEqual(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text(), SSH_DEV)
+        self.assertEqual(cloud.read_text(), "PasswordAuthentication yes\n")
+        calls = self.calls()
+        self.assertIn("sshd -T", calls)
+        self.assertLess(calls.index("sshd -T"), calls.index("systemctl try-reload-or-restart ssh"))
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.row(rows, "ssh").startswith("  ok "), stdout)
+        self.assertIn("sshd -T", self.calls())
+
+    def test_given_another_file_setting_a_value_first_when_hardened_then_it_is_rolled_back_and_refused(self):
+        first = self.etc("ssh/sshd_config.d/00-aaa-first.conf")
+        first.parent.mkdir(parents=True)
+        first.write_text("PasswordAuthentication yes\n")
+        result = self.host("install", "dev")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("passwordauthentication is yes", result.stderr)
+        self.assertFalse(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").exists())
+        self.assertFalse([call for call in self.calls() if "try-reload-or-restart ssh" in call])
+
+    def test_given_another_file_setting_allowusers_first_when_hardened_then_it_is_refused(self):
+        first = self.etc("ssh/sshd_config.d/00-aaa-first.conf")
+        first.parent.mkdir(parents=True)
+        first.write_text("AllowUsers admin ygg dev mallory\n")
+        result = self.host("install", "dev")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("allowusers", result.stderr)
+        self.assertFalse(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").exists())
+
+    def test_given_a_dropin_that_is_overridden_when_checked_then_the_ssh_row_names_the_setting(self):
+        self.install("dev")
+        override = self.etc("ssh/sshd_config.d/00-aaa-first.conf")
+        override.write_text("PasswordAuthentication yes\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "ssh")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("passwordauthentication is yes", line)
+
+    def test_given_the_dropin_of_an_earlier_install_when_hardened_then_it_is_removed(self):
+        legacy = self.etc("ssh/sshd_config.d/90-yggdrasil.conf")
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(SSH_DEV)
+        stdout, rows = self.rows("dev")
+        self.assertFalse(self.row(rows, "ssh").startswith("  ok "))
+        self.install("dev")
+        self.assertFalse(legacy.exists())
+        self.assertTrue(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").exists())
+
+    def test_given_a_fresh_host_when_hardened_then_sshds_runtime_directory_is_made_and_ssh_restarted_if_needed(self):
+        self.assertFalse((self.sysroot / "run" / "sshd").exists())
+        self.install("apps")
+        self.assertTrue((self.sysroot / "run" / "sshd").is_dir())
+        self.assertIn(f"sudo install -d -m 755 {self.sysroot}/run/sshd", self.calls())
+        self.assertIn("systemctl try-reload-or-restart ssh", self.calls())
+
+    def test_given_no_admin_key_but_ssh_already_hardened_when_installed_then_the_rest_still_runs(self):
+        self.install("apps")
+        self.admin_keys.unlink()
+        self.etc("yggdrasil-role").unlink()
+        self.install("apps")
+        self.assertTrue(self.etc("yggdrasil-role").exists())
+
+    def test_given_an_admin_named_like_a_role_user_when_installed_then_it_is_left_alone(self):
+        self.passwd.write_text(f"dev:x:1000:1000::{self.admin_home}:/bin/bash\n")
+        self.install("dev", FAKE_ADMIN="dev")
+        calls = self.calls()
+        self.assertEqual(
+            [call.split()[-1] for call in calls if call.startswith("useradd")], ["ygg", "ci", "release", "renovate"])
+        self.assertFalse([call for call in calls if call.startswith(("usermod", "sudo chmod 750")) and "dev" in call.split()[-1:]], calls)
+        self.assertNotIn(f"chmod 750 {self.admin_home}", calls)
+        self.assertEqual(
+            self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text().splitlines()[-1], "AllowUsers dev ygg")
+        stdout, rows = self.rows("dev", FAKE_ADMIN="dev")
+        self.assertIn("admin", self.row(rows, "user dev"))
+        self.assertEqual([line for line in rows if not line.startswith("  ok ")], [], stdout)
 
 
 if __name__ == "__main__":

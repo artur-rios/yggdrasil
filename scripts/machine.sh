@@ -135,7 +135,12 @@ machine_sysctl_path() { echo "${YGG_SYSROOT:-}/etc/sysctl.d/90-yggdrasil.conf"; 
 machine_apparmor_path() { echo "${YGG_SYSROOT:-}/etc/apparmor.d/usr.bin.rootlesskit"; }
 machine_delegate_path() { echo "${YGG_SYSROOT:-}/etc/systemd/system/user@.service.d/delegate.conf"; }
 machine_upgrades_path() { echo "${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades"; }
-machine_ssh_path() { echo "${YGG_SYSROOT:-}/etc/ssh/sshd_config.d/90-yggdrasil.conf"; }
+# sshd takes the FIRST value it finds across sshd_config.d in lexical order, and cloud images ship
+# 50-cloud-init.conf (PasswordAuthentication yes) and 60-cloudimg-settings.conf: the drop-in must sort
+# before them, or the hardening does nothing.
+machine_ssh_path() { echo "${YGG_SYSROOT:-}/etc/ssh/sshd_config.d/00-yggdrasil.conf"; }
+# What an earlier install called it: removed once the new one is in force.
+machine_ssh_legacy_path() { echo "${YGG_SYSROOT:-}/etc/ssh/sshd_config.d/90-yggdrasil.conf"; }
 
 # Security updates install themselves: nobody logs in to a CI or apps machine to run them.
 machine_upgrades_content() {
@@ -159,14 +164,59 @@ machine_admin_keys() {
   home=$(passwd_field "$(machine_admin)" 6)
   echo "${home:-$HOME}/.ssh/authorized_keys"
 }
-machine_ssh_content() {
-  local admin ssh_user allowed=()
+# machine_ssh_allowed: the users who may log in, one per line: the admin, then the role's ssh users.
+machine_ssh_allowed() {
+  local admin ssh_user
   admin=$(machine_admin)
-  allowed=("$admin")
+  echo "$admin"
   for ssh_user in $(role_ssh_users "$machine_current_role"); do
-    [[ "$ssh_user" == "$admin" ]] || allowed+=("$ssh_user")
+    [[ "$ssh_user" == "$admin" ]] || echo "$ssh_user"
   done
-  printf '%s\n' "PermitRootLogin no" "PasswordAuthentication no" "KbdInteractiveAuthentication no" "AllowUsers ${allowed[*]}"
+}
+machine_ssh_content() {
+  printf '%s\n' "PermitRootLogin no" "PasswordAuthentication no" "KbdInteractiveAuthentication no" \
+    "AllowUsers $(machine_ssh_allowed | paste -sd' ' -)"
+}
+
+# machine_ssh_effective: what sshd would run with (`sshd -T`: every file, first value wins), as root;
+# fails when it can't be read (no sudo without a password, sshd missing).
+machine_ssh_effective() {
+  if ((EUID == 0)); then
+    sshd -T 2>/dev/null
+  elif has sudo; then
+    sudo -n sshd -T 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+# machine_ssh_conflict <sshd -T output>: the first setting that isn't what the hardening wants, said
+# for a person; nothing when they all are. A different value here means another file (or sshd_config
+# itself) sets it first.
+machine_ssh_conflict() {
+  local pair key want value users expected
+  for pair in "permitrootlogin no" "passwordauthentication no" "kbdinteractiveauthentication no"; do
+    key=${pair% *}
+    want=${pair#* }
+    value=$(awk -v key="$key" '$1 == key { print $2; exit }' <<<"$1")
+    if [[ "$value" != "$want" ]]; then
+      echo "$key is ${value:-unset}, not $want"
+      return 0
+    fi
+  done
+  users=$(awk '$1 == "allowusers" { for (i = 2; i <= NF; i++) print $i }' <<<"$1" | sort | paste -sd' ' -)
+  expected=$(machine_ssh_allowed | sort | paste -sd' ' -)
+  if [[ "$users" != "$expected" ]]; then
+    echo "allowusers is '${users:-unset}', not '$expected'"
+  fi
+}
+
+# machine_ssh_keys_refusal: dies, with nothing changed, when the admin has no key: hardening switches
+# passwords off, so it would lock the admin out.
+machine_ssh_keys_refusal() {
+  local keys
+  keys=$(machine_admin_keys)
+  [[ -s "$keys" ]] || die "$keys is missing or empty: switching passwords off would lock you out. Put your public key in it (ssh-copy-id from your own machine) and run install again."
 }
 
 # machine_secret_files <user>: the templates copied into the user's secrets directory, as
@@ -333,6 +383,11 @@ machine_check_users() {
   local users user want shell home mode problems=() fixable problem
   mapfile -t users < <(role_users "$machine_current_role")
   for user in "${users[@]}"; do
+    # The admin is never managed by install, whatever it is called.
+    if [[ "$user" == "$(machine_admin)" ]]; then
+      row ok "user $user" "is the admin (you): install leaves it alone"
+      continue
+    fi
     want=$(machine_user_shell "$user")
     if ! user_exists "$user"; then
       row missing "user $user" "not there: install creates it (shell $want)"
@@ -371,11 +426,26 @@ machine_check_ci_limits() {
 }
 
 machine_check_ssh() {
-  local path keys
+  local path legacy keys effective conflict
   path=$(machine_ssh_path)
+  legacy=$(machine_ssh_legacy_path)
   keys=$(machine_admin_keys)
-  if file_holds "$path" "$(machine_ssh_content)"; then
-    row ok "ssh" "keys only, no root login ($path)"
+  if [[ -e "$legacy" ]]; then
+    row warn "ssh" "$legacy is from an earlier install: install replaces it with $path"
+    machine_need ssh
+  elif file_holds "$path" "$(machine_ssh_content)"; then
+    # The file being right isn't enough: another file may set a value before it.
+    if effective=$(machine_ssh_effective); then
+      conflict=$(machine_ssh_conflict "$effective")
+      if [[ -z "$conflict" ]]; then
+        row ok "ssh" "keys only, no root login, only the role's users ($path)"
+      else
+        row warn "ssh" "$path is there but sshd runs with $conflict: another setting comes first"
+        machine_need ssh
+      fi
+    else
+      row ok "ssh" "$path (what sshd runs with needs sudo to read: not checked)"
+    fi
   elif [[ ! -s "$keys" ]]; then
     # Install refuses rather than lock the admin out: passwords would be switched off.
     row warn "ssh" "$keys is missing or empty: install refuses to harden ssh until your key is in it"
@@ -450,7 +520,7 @@ machine_step_text() {
     unattended-upgrades) echo "Install security updates by themselves (${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades)." ;;
     users) echo "Create the service users of the $machine_current_role role ($(role_users "$machine_current_role" | paste -sd' ' -)) without sudo or docker access, and close their home directories (750)." ;;
     ci-limits) echo "Cap the ci user at six CPUs and 20G of memory." ;;
-    ssh) echo "Harden ssh: keys only, no root login, and only $(machine_admin) and the role's ssh users may log in. Your key is offered to the ones without one." ;;
+    ssh) echo "Harden ssh (00-yggdrasil.conf, ahead of the cloud image's own files): keys only, no root login, and only $(machine_admin) and the role's ssh users may log in. Your key is offered to the ones without one." ;;
     checkout) echo "Give the checkout, $root, to the ygg user." ;;
     secrets) echo "Create the users' secrets directories (750, each its user's) with the env templates copied in, never over a file that is there." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
@@ -463,6 +533,8 @@ machine_step_text() {
 install_machine() {
   local step did=""
   machine_current_role=$1
+  # Refused before anything is changed: dying at the ssh step would leave the machine half set up.
+  ! machine_needs ssh || machine_ssh_keys_refusal
   for step in "${MACHINE_STEPS[@]}"; do
     machine_needs "$step" || continue
     say "$(machine_step_text "$step")"
@@ -530,6 +602,8 @@ step_users() {
   local users user shell home
   mapfile -t users < <(role_users "$machine_current_role")
   for user in "${users[@]}"; do
+    # The admin is never managed by install, whatever it is called.
+    [[ "$user" != "$(machine_admin)" ]] || continue
     shell=$(machine_user_shell "$user")
     if ! user_exists "$user"; then
       as_root useradd --create-home --user-group --shell "$shell" "$user"
@@ -553,13 +627,15 @@ step_ci_limits() {
 }
 
 # Passwords off is only safe when a key gets the admin in: without one this refuses, before anything is
-# written. A configuration sshd rejects is taken back out and ssh is not reloaded: it would lock
-# everyone out at the next restart.
+# written. Then the drop-in is written and tried: sshd -t must pass and sshd -T (what sshd would really
+# run with, first value wins across the files) must show the hardening in force. If either fails the
+# drop-in is taken back out and ssh is not reloaded: a bad file would lock everyone out at the next
+# restart, and one that another file overrides would leave passwords on.
 step_ssh() {
-  local path keys admin ssh_user home previous="" had=""
+  local path keys admin ssh_user home previous="" had="" effective conflict
   path=$(machine_ssh_path)
   keys=$(machine_admin_keys)
-  [[ -s "$keys" ]] || die "$keys is missing or empty: switching passwords off would lock you out. Put your public key in it (ssh-copy-id from your own machine) and run install again."
+  machine_ssh_keys_refusal
   admin=$(machine_admin)
   for ssh_user in $(role_ssh_users "$machine_current_role"); do
     [[ "$ssh_user" != "$admin" ]] || continue
@@ -580,15 +656,33 @@ step_ssh() {
     previous=$(<"$path")
   fi
   write_system_file "$path" 0644 "$(machine_ssh_content)"
+  # On a fresh host sshd's privilege separation directory doesn't exist until sshd first starts.
+  as_root install -d -m 755 "${YGG_SYSROOT:-}/run/sshd"
   if ! as_root sshd -t; then
-    if [[ -n "$had" ]]; then
-      write_system_file "$path" 0644 "$previous"
-    else
-      as_root rm -f "$path"
-    fi
+    machine_ssh_rollback "$path" "$had" "$previous"
     die "sshd -t rejects the configuration: $path is back as it was and ssh was not reloaded"
   fi
-  as_root systemctl reload ssh
+  if ! effective=$(as_root sshd -T); then
+    machine_ssh_rollback "$path" "$had" "$previous"
+    die "sshd -T could not show the effective configuration: $path is back as it was and ssh was not reloaded"
+  fi
+  conflict=$(machine_ssh_conflict "$effective")
+  if [[ -n "$conflict" ]]; then
+    machine_ssh_rollback "$path" "$had" "$previous"
+    die "sshd would run with $conflict: another setting comes first (sshd_config or a file ahead of $path). $path is back as it was and ssh was not reloaded"
+  fi
+  as_root rm -f "$(machine_ssh_legacy_path)"
+  # ssh may be socket-activated (Ubuntu 24.04), where a plain reload can find nothing to reload.
+  as_root systemctl try-reload-or-restart ssh
+}
+
+# machine_ssh_rollback <path> <had> <previous content>: the drop-in as it was before step_ssh.
+machine_ssh_rollback() {
+  if [[ -n "$2" ]]; then
+    write_system_file "$1" 0644 "$3"
+  else
+    as_root rm -f "$1"
+  fi
 }
 
 # ygg deploys from this checkout, so it owns it.
