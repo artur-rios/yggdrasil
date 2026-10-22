@@ -1,0 +1,12 @@
+# The nightly backup of this machine to the other one (scripts/backup.sh), a user unit of ygg: it is
+# installed into ~ygg/.config/systemd/user/ by `ygg install` (step backup-timer) and started by the timer
+# next to it. What to back up and where to is in $YGG_SECRETS_DIR/backup.conf (env/backup.conf.example).
+[Unit]
+Description=Back up yggdrasil to the other machine
+
+[Service]
+Type=oneshot
+# A user unit doesn't read ygg's .profile, which is where its shells get DOCKER_HOST: %t is the user's
+# runtime directory, where its rootless engine keeps the socket.
+Environment=DOCKER_HOST=unix://%t/docker.sock
+ExecStart=/opt/yggdrasil/scripts/backup.sh run

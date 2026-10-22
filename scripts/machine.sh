@@ -19,7 +19,7 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets firewall engines role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets firewall engines backup-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -355,6 +355,13 @@ machine_wait_for_user_manager() {
   done
   die "the systemd user manager of $1 did not start (loginctl enable-linger $1 and journalctl -u user@$(passwd_field "$1" 3))"
 }
+
+# ---- The backup timer ---------------------------------------------------------------------------
+
+# The user units of the nightly backup (scripts/backup.sh), kept in the checkout and copied into ygg's
+# own systemd directory, which is where its manager looks.
+MACHINE_BACKUP_UNITS=(yggdrasil-backup.service yggdrasil-backup.timer)
+machine_backup_unit_dir() { echo "$(passwd_field ygg 6)/.config/systemd/user"; }
 
 # ---- Firewall -----------------------------------------------------------------------------------
 
@@ -905,6 +912,37 @@ machine_check_cannot_read() {
   fi
 }
 
+# machine_check_backup_timer: ygg's two units are the checkout's copies, and its timer is enabled. Both
+# are asked of ygg itself (its home is closed to the admin), through sudo without a password.
+machine_check_backup_timer() {
+  title "Backups"
+  local dir unit held stale=() unit_state
+  if ! user_exists ygg; then
+    row missing "backup timer" "no ygg user yet: install creates it, then the timer of its nightly backup"
+    machine_need backup-timer
+    return 0
+  fi
+  if ! machine_can_read_as_users; then
+    row warn "backup timer" "the home of ygg is closed to you and sudo would ask for a password: not checked (run check with sudo)"
+    return 0
+  fi
+  dir=$(machine_backup_unit_dir)
+  for unit in "${MACHINE_BACKUP_UNITS[@]}"; do
+    if ! held=$(read_as_user ygg cat "$dir/$unit" 2>/dev/null) || [[ "$held" != "$(<"$root/platform/systemd/$unit")" ]]; then
+      stale+=("$unit")
+    fi
+  done
+  if ((${#stale[@]})); then
+    row missing "backup timer" "$dir: ${stale[*]} not there or not the checkout's copy: install writes them"
+    machine_need backup-timer
+  elif ! unit_state=$(read_as_user ygg systemctl --user is-enabled yggdrasil-backup.timer 2>/dev/null); then
+    row missing "backup timer" "yggdrasil-backup.timer is ${unit_state:-not enabled}: install enables it (every night at 03:30)"
+    machine_need backup-timer
+  else
+    row ok "backup timer" "yggdrasil-backup.timer enabled for ygg, every night at 03:30 ($dir)"
+  fi
+}
+
 machine_check_role_file() {
   title "Role"
   local file="${YGG_SYSROOT:-}/etc/yggdrasil-role" written=""
@@ -944,6 +982,7 @@ machine_step_text() {
       fi
       ;;
     engines) echo "Give each service user ($(role_users "$machine_current_role" | paste -sd' ' -)) its own rootless Docker engine: linger on, slirp4netns network and port driver, started now and at boot, and DOCKER_HOST in its .profile." ;;
+    backup-timer) echo "Install the nightly backup for ygg: the units yggdrasil-backup.service and .timer into $(machine_backup_unit_dir) (as ygg), and enable the timer (03:30). What is backed up, and where to, is in $(secrets_dir_of ygg)/backup.conf (env/backup.conf.example)." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
   esac
 }
@@ -1221,6 +1260,27 @@ step_engines() {
     wanted=$(profile_with_block "$user" "$current")
     [[ "$current" == "$wanted" ]] || user_file_write "$user" "$profile" "$wanted"
   done
+}
+
+# The units are copied by ygg itself, into its own home, from the checkout: the files are its own and the
+# copy is what the check compares with. The timer is enabled now and at boot (linger keeps ygg's manager
+# up), and runs the backup whether or not backup.conf is filled in yet: a night without a target fails
+# loudly in the journal instead of being silently missing.
+step_backup_timer() {
+  if ! user_exists ygg; then
+    warn "there is no ygg user yet: its backup timer is left for the next install."
+    return 0
+  fi
+  local dir unit
+  dir=$(machine_backup_unit_dir)
+  machine_wait_for_user_manager ygg
+  run_as_user ygg mkdir -p "$dir"
+  for unit in "${MACHINE_BACKUP_UNITS[@]}"; do
+    [[ -f "$root/platform/systemd/$unit" ]] || die "$root/platform/systemd/$unit is missing from the checkout"
+    run_as_user ygg tee "$dir/$unit" <"$root/platform/systemd/$unit" >/dev/null
+  done
+  run_as_user ygg systemctl --user daemon-reload
+  run_as_user ygg systemctl --user enable --now yggdrasil-backup.timer
 }
 
 step_role_file() {

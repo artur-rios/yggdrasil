@@ -1,6 +1,6 @@
 """Tests for the machine roles of scripts/host.sh (scripts/machine.sh): packages, rootful Docker off,
 the system settings, the service users, ssh, the checkout, the secrets, the firewall, the rootless
-engines and the role file.
+engines, the backup timer and the role file.
 
     python3 -m unittest discover -s scripts -p "test_machine.py"
 
@@ -97,12 +97,17 @@ FAKES = {
     "systemctl": r"""
         echo "systemctl $*" >>"$FAKE_STATE/calls"
         case "$1" in
-          # A user's engine is running from `enable`/`restart` on, until $FAKE_STATE/user-active-<user>
-          # is removed.
+          # A user's engine is running from `enable`/`restart` of docker on, until
+          # $FAKE_STATE/user-active-<user> is removed. Any unit `enable`d is listed in
+          # $FAKE_STATE/user-enabled-<user>, which is what `is-enabled` reads.
           --user)
             case "$2" in
               is-active) [[ -e "$FAKE_STATE/user-active-${FAKE_AS_USER:-}" ]]; exit $? ;;
-              enable | restart | start) touch "$FAKE_STATE/user-active-${FAKE_AS_USER:-}" ;;
+              is-enabled) grep -qxF -- "$3" "$FAKE_STATE/user-enabled-${FAKE_AS_USER:-}" 2>/dev/null; exit $? ;;
+              enable | restart | start)
+                [[ "${@: -1}" != docker ]] || touch "$FAKE_STATE/user-active-${FAKE_AS_USER:-}"
+                [[ "$2" != enable ]] || echo "${@: -1}" >>"$FAKE_STATE/user-enabled-${FAKE_AS_USER:-}"
+                ;;
             esac
             ;;
           is-active)
@@ -1626,6 +1631,88 @@ class MachineRoleTests(unittest.TestCase):
         self.assertFalse(self.row(rows, "client addresses ygg").startswith("  ok "), stdout)
         self.install("apps")
         self.assertEqual(self.override_of("ygg").read_text(), OVERRIDE)
+
+    # ---- The backup timer ------------------------------------------------------------------------
+
+    def unit_dir(self, user="ygg"):
+        return self.home_of(user) / ".config" / "systemd" / "user"
+
+    def repo_unit(self, name):
+        return (HOST.parent.parent / "platform" / "systemd" / name).read_text()
+
+    def timer_row(self, rows):
+        return self.row(rows, "backup timer")
+
+    def test_given_role_dev_when_installed_then_ygg_has_the_backup_timer_enabled(self):
+        self.install("dev")
+        for name in ("yggdrasil-backup.service", "yggdrasil-backup.timer"):
+            self.assertEqual((self.unit_dir() / name).read_text(), self.repo_unit(name))
+        calls = self.calls()
+        # Written by ygg itself (its home is closed to the admin), as a user unit of its own manager.
+        self.assertIn(self.as_user("ygg", "tee", str(self.unit_dir() / "yggdrasil-backup.timer")), calls)
+        reload_call = calls.index(self.as_user("ygg", "systemctl --user daemon-reload"),
+                                  calls.index(self.as_user("ygg", "tee", str(self.unit_dir() / "yggdrasil-backup.timer"))))
+        enable = self.as_user("ygg", "systemctl --user enable --now yggdrasil-backup.timer")
+        self.assertIn(enable, calls)
+        self.assertLess(reload_call, calls.index(enable))
+        # After the engine it backs up, and only for ygg.
+        self.assertLess(calls.index(self.as_user("ygg", "systemctl --user enable --now docker")), calls.index(enable))
+        for user in DEV_USERS[1:]:
+            self.assertFalse((self.unit_dir(user) / "yggdrasil-backup.timer").exists(), user)
+        self.assertEqual([c for c in calls if c.startswith("sudo") and c.endswith("yggdrasil-backup.timer") and " enable " in c], [enable])
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.timer_row(rows).startswith("  ok "), stdout)
+
+    def test_given_role_apps_when_installed_then_ygg_has_the_backup_timer_enabled(self):
+        self.install("apps")
+        self.assertEqual((self.unit_dir() / "yggdrasil-backup.timer").read_text(),
+                         self.repo_unit("yggdrasil-backup.timer"))
+        self.assertIn(self.as_user("ygg", "systemctl --user enable --now yggdrasil-backup.timer"), self.calls())
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.timer_row(rows).startswith("  ok "), stdout)
+
+    def test_given_the_timer_installed_when_installed_again_then_nothing_is_written_or_enabled(self):
+        self.install("dev")
+        # The checks read the units (sudo -n); only a step writes or enables them.
+        def changes():
+            return [c for c in self.calls() if "yggdrasil-backup" in c and c.startswith("sudo -u")]
+        before = changes()
+        self.assertTrue(before)
+        self.install("dev")
+        self.assertEqual(changes(), before)
+
+    def test_given_a_changed_unit_when_checked_then_it_is_not_ok_and_install_writes_the_checkouts_copy(self):
+        self.install("apps")
+        service = self.unit_dir() / "yggdrasil-backup.service"
+        service.write_text("[Service]\nExecStart=/bin/true\n")
+        stdout, rows = self.rows("apps")
+        self.assertFalse(self.timer_row(rows).startswith("  ok "), stdout)
+        self.assertIn("yggdrasil-backup.service", self.timer_row(rows))
+        self.install("apps")
+        self.assertEqual(service.read_text(), self.repo_unit("yggdrasil-backup.service"))
+
+    def test_given_a_timer_that_is_not_enabled_when_checked_then_it_is_missing_and_install_enables_it(self):
+        self.install("apps")
+        (self.state / "user-enabled-ygg").write_text("")
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.timer_row(rows).startswith("  -- "), stdout)
+        self.install("apps")
+        self.assertTrue(self.timer_row(self.rows("apps")[1]).startswith("  ok "))
+
+    def test_given_no_ygg_user_yet_when_checked_then_the_timer_is_missing_and_nothing_runs_as_a_user(self):
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.timer_row(rows).startswith("  -- "), stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith(("sudo -u", "sudo -n -u"))], [])
+
+    def test_given_sudo_asking_for_a_password_when_checked_then_the_timer_is_not_checked(self):
+        self.install("apps")
+        (self.state / "sudo-denied").write_text("")
+        calls_before = len(self.calls())
+        stdout, rows = self.rows("apps")
+        line = self.timer_row(rows)
+        self.assertTrue(line.startswith("  !! "), stdout)
+        self.assertIn("not checked", line)
+        self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,29 @@
+# What scripts/backup.sh backs up and where it sends it (the nightly timer of ygg runs it). Copy to
+# $YGG_SECRETS_DIR/backup.conf (default /etc/yggdrasil/backup.conf), chmod 600, owned by ygg, and fill in.
+# Never commit the copy. Not read by Compose: NAME=value lines, then one item per line. Comments and
+# empty lines are fine, but only on their own lines.
+
+# Where the backups go, as rsync writes it: <user>@<host>:<path>. Required. The other machine keeps what
+# it receives under the path (see docs/hosts.md for its authorized_keys line, restricted to rrsync).
+BACKUP_TARGET=
+
+# The ssh key that logs in there. Default: ~/.ssh/yggdrasil-backup
+# BACKUP_KEY=~/.ssh/yggdrasil-backup
+
+# How many days are kept in ~/backups on this machine (the other machine's copy follows). Default: 7
+# BACKUP_KEEP=7
+
+# The items, one per line. Each becomes one file in ~/backups/<YYYY-MM-DD>/.
+#
+#   forgejo                       Forgejo's own dump (repositories, database, settings), from the
+#                                 `forgejo` service of the yggdrasil Compose project -> forgejo.zip
+#   volume <name>                 a Docker volume, read-only, as a tar -> volume-<name>.tar.gz
+#   postgres <container> <user>   pg_dumpall in that container as that database user
+#                                 -> postgres-<container>.sql.gz
+#
+# On the dev machine (Forgejo, Jenkins, the registry):
+# forgejo
+# volume yggdrasil_jenkins_home
+#
+# On the apps machine (an app's database):
+# postgres myapp-db-1 postgres

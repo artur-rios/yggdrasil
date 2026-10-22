@@ -1,0 +1,13 @@
+# Starts yggdrasil-backup.service every night. Persistent: a machine that was off at 03:30 backs up when
+# it is next on. The random delay keeps the two machines (and any others) from calling each other at the
+# same second.
+[Unit]
+Description=Back up yggdrasil every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
