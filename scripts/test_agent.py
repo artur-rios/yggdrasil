@@ -115,6 +115,9 @@ class AgentTests(unittest.TestCase):
         result = self.run_agent("up")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must be set", result.stderr)
+        # The controller's address too is left empty, like the name and the workdir: an unedited copy
+        # must not dial an example host.
+        self.assertIn("JENKINS_URL", result.stderr)
         self.assertNotIn("compose", self.docker_calls())
 
     def test_given_a_relative_workdir_when_up_then_it_is_refused(self):

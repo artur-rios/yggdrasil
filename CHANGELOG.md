@@ -55,8 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   file that is already there, so a host moved from the earlier layout must hand its files to `ygg` (see Upgrading).
 - The Jenkins controller's GitHub App key is mounted into a container whose user is not `ygg`: keep
   `/etc/yggdrasil/github-app.pem` at mode `644` (setup.md 9.1), not owned by uid 1000.
-- Two example env files changed: `env/agent.env.example` leaves `JENKINS_AGENT_NAME` and `YGG_AGENT_WORKDIR` empty on
-  purpose (`ci` and `/home/ci/agent`, or `release` and `/home/release/agent`), and `env/backup.conf.example` names the
+- Two example env files changed: `env/agent.env.example` leaves `JENKINS_URL`, `JENKINS_AGENT_NAME` and
+  `YGG_AGENT_WORKDIR` empty on purpose (`https://jenkins.<DOMAIN>/`; `ci` and `/home/ci/agent`, or `release` and
+  `/home/release/agent`); edit the copies with `sudoedit` as the admin, and `env/backup.conf.example` names the
   Jenkins volume `yggdrasil_jenkins`. `env/platform.env.example` gives the first-account command that finds Forgejo by
   its labels.
 - [docs/setup.md](docs/setup.md) is organized around the two machines: step 0 plans the roles (one machine with role
