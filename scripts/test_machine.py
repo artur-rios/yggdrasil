@@ -7,8 +7,7 @@ engines and the role file.
 Everything that needs root or changes the system is a fake on PATH: `sudo` (logs, then runs the
 command, which only ever touches the temporary $YGG_SYSROOT), `apt-get`, `dpkg-query`, `dpkg`, `curl`,
 `systemctl`, `sysctl`, `apparmor_parser`, `gpasswd`, `getent`, `id`, `docker`, `useradd`, `usermod`,
-`chown`, `chmod`, `install`, `stat`, `sshd`, `ufw`, `loginctl`, `dockerd-rootless-setuptool.sh` and
-`test`. The fakes keep their state in $FAKE_STATE
+`chown`, `chmod`, `install`, `stat`, `sshd`, `ufw`, `loginctl`, `dockerd-rootless-setuptool.sh`, `test` and `cat`. The fakes keep their state in $FAKE_STATE
 (packages installed, active units, the docker group, who owns what, ufw's rules) and in a fake $YGG_SYSROOT/etc/passwd, so a
 second run sees what the first one did, and log every call to $FAKE_STATE/calls. None of them changes
 an owner: `chown` only records it (the checkout step chowns the real checkout, which must stay as it
@@ -30,7 +29,8 @@ FAKES = {
     # `sudo -l -U <user>` lists $FAKE_STATE/sudo-<user> when there is one, as sudo would a rule, and
     # otherwise says the user may not run sudo. `sudo -n` fails while $FAKE_STATE/sudo-denied exists
     # (a password would be asked for). `sudo -u <user> <command>` writes down who it runs as and from
-    # where, and tells the fakes below (FAKE_AS_USER) so they can answer for that user.
+    # where, and tells the fakes below (FAKE_AS_USER) so they can answer for that user; it fails for
+    # a user with $FAKE_STATE/sudo-u-denied-<user> (sudo not allowed to run as them).
     "sudo": r"""
         echo "sudo $*" >>"$FAKE_STATE/calls"
         if [[ "$1" == -n ]]; then
@@ -43,6 +43,7 @@ FAKES = {
           exit 0
         fi
         if [[ "$1" == -u ]]; then
+          [[ ! -e "$FAKE_STATE/sudo-u-denied-$2" ]] || exit 1
           export FAKE_AS_USER=$2
           echo "as $2 in $PWD" >>"$FAKE_STATE/calls"
           shift 2
@@ -96,6 +97,14 @@ FAKES = {
     "systemctl": r"""
         echo "systemctl $*" >>"$FAKE_STATE/calls"
         case "$1" in
+          # A user's engine is running from `enable`/`restart` on, until $FAKE_STATE/user-active-<user>
+          # is removed.
+          --user)
+            case "$2" in
+              is-active) [[ -e "$FAKE_STATE/user-active-${FAKE_AS_USER:-}" ]]; exit $? ;;
+              enable | restart | start) touch "$FAKE_STATE/user-active-${FAKE_AS_USER:-}" ;;
+            esac
+            ;;
           is-active)
             shift
             status=0
@@ -300,12 +309,28 @@ FAKES = {
           touch "$YGG_SYSROOT/var/lib/systemd/linger/$2"
         fi
     """,
+    # A file listed in $FAKE_STATE/unreadable can't be read.
+    "cat": r"""
+        for argument in "$@"; do
+          if grep -qxF -- "$argument" "$FAKE_STATE/unreadable" 2>/dev/null; then
+            echo "cat: $argument: Permission denied" >&2
+            exit 1
+          fi
+        done
+        exec /usr/bin/cat "$@"
+    """,
     "dockerd-rootless-setuptool.sh": r"""
         echo "dockerd-rootless-setuptool.sh $* [as ${FAKE_AS_USER:-nobody}]" >>"$FAKE_STATE/calls"
+        echo "$XDG_RUNTIME_DIR/docker.sock" >>"$FAKE_STATE/exists"
     """,
     # Run as a service user, `test -r <path>` is true for the paths listed in
-    # $FAKE_STATE/readable-<user> and false for all others; for anyone else it is the real one.
+    # $FAKE_STATE/readable-<user> and false for all others; for anyone else it is the real one, except
+    # that a path of /run/user (a real directory of the host) exists when $FAKE_STATE/exists says so.
     "test": r"""
+        if [[ "$1" == -e && "$2" == /run/user/* ]]; then
+          grep -qxF -- "$2" "$FAKE_STATE/exists" 2>/dev/null
+          exit $?
+        fi
         if [[ -n "${FAKE_AS_USER:-}" && "$1" == -r ]]; then
           grep -qxF -- "$2" "$FAKE_STATE/readable-$FAKE_AS_USER" 2>/dev/null
           exit $?
@@ -1510,6 +1535,97 @@ class MachineRoleTests(unittest.TestCase):
         self.assertTrue(self.row(rows, "linger ci").startswith("  ok "), stdout)
         # A check never asks sudo for a password: every call as a user has -n.
         self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
+
+    # ---- Fixes: isolation proofs, the profile and the drop-in ------------------------------------
+
+    def test_given_sudo_refusing_to_run_as_ci_when_checked_then_its_isolation_rows_are_not_ok(self):
+        self.install("dev")
+        (self.state / "sudo-u-denied-ci").write_text("")
+        stdout, rows = self.rows("dev")
+        for name in ("ci \u2192 ygg engine", "ci \u2192 ygg secrets"):
+            line = self.row(rows, name)
+            self.assertFalse(line.startswith("  ok "), line)
+            self.assertIn("not checked", line)
+        self.assertTrue(self.row(rows, "release \u2192 ygg engine").startswith("  ok "), stdout)
+
+    def test_given_no_ygg_socket_when_checked_then_the_engine_isolation_rows_are_not_ok(self):
+        self.install("dev")
+        (self.state / "exists").write_text("")
+        stdout, rows = self.rows("dev")
+        for name in ("ci \u2192 ygg engine", "release \u2192 ygg engine"):
+            line = self.row(rows, name)
+            self.assertFalse(line.startswith("  ok "), line)
+            self.assertIn("not checked", line)
+            self.assertIn(f"/run/user/{self.uid_of('ygg')}/docker.sock", line)
+        self.assertTrue(self.row(rows, "ci \u2192 ygg secrets").startswith("  ok "), stdout)
+
+    def test_given_no_ygg_platform_env_when_checked_then_the_secrets_isolation_row_is_not_ok(self):
+        self.install("dev")
+        self.etc("yggdrasil/platform.env").unlink()
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "ci \u2192 ygg secrets")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("not checked", line)
+
+    def test_given_a_proven_isolation_when_checked_then_the_row_asked_for_the_path_as_root_and_ci(self):
+        self.install("dev")
+        self.rows("dev")
+        calls = self.calls()
+        self.assertIn(f"sudo -n test -e /run/user/{self.uid_of('ygg')}/docker.sock", calls)
+        self.assertIn(f"sudo -n test -e {self.etc('yggdrasil')}/platform.env", calls)
+        self.assertTrue([c for c in calls if c.startswith("sudo -n -u ci ") and c.endswith(" true")])
+
+    def test_given_a_profile_that_cannot_be_read_when_installed_then_install_stops_and_it_is_kept(self):
+        self.install("apps")
+        profile = self.home_of("ygg") / ".profile"
+        profile.write_text("export MINE=1\n")
+        (self.state / "unreadable").write_text(f"{profile}\n")
+        self.linger_file("ygg").unlink()
+        result = self.host("install", "apps")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(profile), result.stderr)
+        self.assertEqual(profile.read_text(), "export MINE=1\n")
+
+    def test_given_a_stray_begin_mark_when_installed_twice_then_nothing_of_the_profile_is_lost(self):
+        self.install("apps")
+        profile = self.home_of("ygg") / ".profile"
+        profile.write_text("export A=1\n# >>> yggdrasil >>>\nexport B=2\n")
+        self.linger_file("ygg").unlink()
+        self.install("apps")
+        first = profile.read_text()
+        self.linger_file("ygg").unlink()
+        self.install("apps")
+        self.assertEqual(profile.read_text(), first)
+        for kept in ("export A=1", "export B=2"):
+            self.assertIn(kept, first)
+        self.assertEqual(first.count("export DOCKER_HOST="), 1, first)
+        self.assertTrue(first.endswith(self.profile_block("ygg")), first)
+
+    def test_given_a_running_engine_and_no_dropin_when_installed_then_the_engine_restarts(self):
+        self.install("apps")
+        self.override_of("ygg").unlink()
+        self.install("apps")
+        self.assertEqual(self.override_of("ygg").read_text(), OVERRIDE)
+        self.assertIn(self.as_user("ygg", "systemctl --user restart docker"), self.calls())
+
+    def test_given_a_fresh_engine_when_installed_then_it_is_not_restarted(self):
+        self.install("dev")
+        self.assertFalse([c for c in self.calls() if "systemctl --user restart" in c], self.calls())
+
+    def test_given_a_stopped_engine_and_no_dropin_when_installed_then_it_is_not_restarted(self):
+        self.install("apps")
+        self.override_of("ygg").unlink()
+        (self.state / "user-active-ygg").unlink()
+        self.install("apps")
+        self.assertFalse([c for c in self.calls() if "systemctl --user restart" in c], self.calls())
+
+    def test_given_a_dropin_with_more_than_the_two_lines_when_checked_then_it_is_not_ok_and_install_rewrites_it(self):
+        self.install("apps")
+        self.override_of("ygg").write_text(OVERRIDE + 'Environment="OTHER=1"\n')
+        stdout, rows = self.rows("apps")
+        self.assertFalse(self.row(rows, "client addresses ygg").startswith("  ok "), stdout)
+        self.install("apps")
+        self.assertEqual(self.override_of("ygg").read_text(), OVERRIDE)
 
 
 if __name__ == "__main__":

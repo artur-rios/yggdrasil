@@ -310,8 +310,13 @@ machine_can_read_as_users() {
 }
 
 # user_file_read <user> <path>: the file's content, read as the user (homes are closed to the admin);
-# fails when it isn't there.
-user_file_read() { run_as_user "$1" cat "$2" 2>/dev/null; }
+# nothing when it isn't there, and dies when it is there and can't be read: that must not look like an
+# empty file, which would be written over.
+user_file_read() {
+  if run_as_user "$1" test -e "$2"; then
+    run_as_user "$1" cat "$2" || die "$2 is there but can't be read as $1: it is left as it is"
+  fi
+}
 
 # user_file_write <user> <path> <content>: the content plus a newline in the user's file, made by the user
 # so that it is theirs.
@@ -321,25 +326,22 @@ user_file_write() {
 }
 
 # profile_with_block <user> <profile content>: the profile without any block of ours, then the block
-# with the user's socket. A begin mark without its end is not a block: it is kept as it is.
+# with the user's socket. Only a complete block (a begin mark, then its end mark with no other begin
+# mark between) is taken out: a begin mark without its end is not a block, and it and everything after
+# it stay as they are.
 profile_with_block() {
   local stripped
   stripped=$(awk -v begin="$PROFILE_BEGIN" -v end="$PROFILE_END" '
-    $0 == begin { inside = 1; held = $0; next }
+    $0 == begin { if (inside) print held; inside = 1; held = $0; next }
     inside { held = held ORS $0; if ($0 == end) { inside = 0; held = "" }; next }
     { print }
     END { if (inside) print held }' <<<"$2")
   printf '%s%s\n' "${stripped:+$stripped$'\n\n'}" "$(machine_profile_block "$1")"
 }
 
-# machine_override_has <content>: the content has every line of the drop-in (what else it holds is the
-# user's business).
-machine_override_has() {
-  local line
-  while IFS= read -r line; do
-    grep -qxF -- "$line" <<<"$1" || return 1
-  done < <(machine_override_content)
-}
+# machine_override_is <content>: the content is the drop-in, exactly: install writes exactly that, so a
+# check that accepted more would leave a file that install rewrites looking right.
+machine_override_is() { [[ "$1" == "$(machine_override_content)" ]]; }
 
 # machine_wait_for_user_manager <user>: enabling linger starts the user's systemd, which takes a moment,
 # and the engine's setup needs it (and its bus) to be there.
@@ -864,10 +866,10 @@ machine_check_engine() {
   elif ! held=$(read_as_user "$user" cat "$override" 2>/dev/null); then
     row missing "client addresses $user" "$override: install writes it (slirp4netns, so containers see their clients' addresses)"
     machine_need engines
-  elif machine_override_has "$held"; then
+  elif machine_override_is "$held"; then
     row ok "client addresses $user" "slirp4netns network and port driver ($override)"
   else
-    row warn "client addresses $user" "$override lacks the slirp4netns settings: install rewrites it"
+    row warn "client addresses $user" "$override is not the slirp4netns settings alone: install rewrites it"
     machine_need engines
   fi
 }
@@ -882,13 +884,20 @@ machine_check_isolation() {
   machine_check_cannot_read "ci → ygg secrets" ci "$(secrets_dir_of ygg)/platform.env"
 }
 
-# machine_check_cannot_read <row name> <user> <path>
+# machine_check_cannot_read <row name> <user> <path>: ok only when the user's failing to read the path
+# means something. A refusal of sudo, or a path that isn't there, would fail the same way, so the row
+# first proves that commands do run as the user (`true`) and that the path exists (asked of root), and
+# otherwise says it did not check.
 machine_check_cannot_read() {
   local name=$1 user=$2 path=$3
   if ! user_exists "$user"; then
     row missing "$name" "no $user user yet"
   elif ! machine_can_read_as_users; then
     row warn "$name" "asking needs sudo without a password: not checked (run check with sudo)"
+  elif ! read_as_user "$user" true 2>/dev/null; then
+    row warn "$name" "sudo does not run commands as $user: not checked"
+  elif ! machine_root_read test -e "$path" 2>/dev/null; then
+    row warn "$name" "$path is not there (its engine is not running, or the file is missing): not checked"
   elif read_as_user "$user" test -r "$path"; then
     row warn "$name" "$user can read $path: that breaks the isolation of the users (look at the permissions on it and on the run directory)"
   else
@@ -1181,7 +1190,7 @@ step_firewall() {
 # slirp4netns, and DOCKER_HOST in the .profile points the CLI of a login shell at the user's socket. All of
 # it is done as the user: the homes are closed to the admin, and the files are the user's own.
 step_engines() {
-  local users user home override held restart profile current wanted
+  local users user home override held active restart profile current wanted
   mapfile -t users < <(role_users "$machine_current_role")
   for user in "${users[@]}"; do
     if ! user_exists "$user"; then
@@ -1194,11 +1203,13 @@ step_engines() {
 
     override=$(machine_override_path "$user")
     restart=""
-    held=$(user_file_read "$user" "$override") || held=""
-    if ! machine_override_has "$held"; then
-      # An engine that is running only takes the new addresses when it restarts.
-      [[ -z "$held" ]] || restart=1
+    # An engine that is running only takes the new addresses when it restarts.
+    active=""
+    if run_as_user "$user" systemctl --user is-active --quiet docker; then active=1; fi
+    held=$(user_file_read "$user" "$override")
+    if ! machine_override_is "$held"; then
       user_file_write "$user" "$override" "$(machine_override_content)"
+      restart=$active
     fi
     run_as_user "$user" dockerd-rootless-setuptool.sh install
     run_as_user "$user" systemctl --user daemon-reload
@@ -1206,7 +1217,7 @@ step_engines() {
     [[ -z "$restart" ]] || run_as_user "$user" systemctl --user restart docker
 
     profile="$home/.profile"
-    current=$(user_file_read "$user" "$profile") || current=""
+    current=$(user_file_read "$user" "$profile")
     wanted=$(profile_with_block "$user" "$current")
     [[ "$current" == "$wanted" ]] || user_file_write "$user" "$profile" "$wanted"
   done
