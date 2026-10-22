@@ -500,7 +500,8 @@ install_docker() {
   as_root systemctl enable --now docker 2>/dev/null || as_root service docker start 2>/dev/null || true
 }
 
-# Removes the distribution's packages that clash with Docker's, after asking. False when declined.
+# Removes the distribution's packages that clash with Docker's, after asking. False when declined;
+# a failing apt-get ends the operation.
 remove_conflicting() {
   local conflicting=() name
   for name in "${CONFLICTING[@]}"; do installed "$name" && conflicting+=("$name"); done
@@ -508,7 +509,7 @@ remove_conflicting() {
     warn "These packages clash with Docker's and are removed first: ${conflicting[*]}"
     note "Images, containers and volumes in /var/lib/docker stay."
     confirm "Remove them?" || return 1
-    apt_get remove -y "${conflicting[@]}"
+    apt_get remove -y "${conflicting[@]}" || die "apt-get could not remove ${conflicting[*]}"
   fi
 }
 

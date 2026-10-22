@@ -58,7 +58,9 @@ FAKES = {
           shift
         done
     """,
-    # is-active answers from $FAKE_STATE/active (one unit per line); disable --now stops the units.
+    # $FAKE_STATE/active lists the running units, one per line ("<unit>=<state>" for a state other than
+    # active); /enabled the enabled ones and /masked the masked ones. disable --now stops and disables,
+    # mask masks.
     "systemctl": r"""
         echo "systemctl $*" >>"$FAKE_STATE/calls"
         case "$1" in
@@ -66,12 +68,26 @@ FAKES = {
             shift
             status=0
             for unit in "$@"; do
-              if grep -qx -- "$unit" "$FAKE_STATE/active"; then echo active; else echo inactive; status=3; fi
+              line=$(grep -E -- "^${unit//./\.}(=|\$)" "$FAKE_STATE/active" | head -n1 || true)
+              if [[ -z "$line" ]]; then echo inactive; status=3
+              elif [[ "$line" == *=* ]]; then echo "${line#*=}"; status=3
+              else echo active; fi
             done
             exit "$status"
             ;;
+          is-enabled)
+            if grep -qx -- "$2" "$FAKE_STATE/masked"; then echo masked; exit 1
+            elif grep -qx -- "$2" "$FAKE_STATE/enabled"; then echo enabled
+            else echo disabled; exit 1; fi
+            ;;
           disable)
-            for unit in "${@:3}"; do sed -i "/^$unit\$/d" "$FAKE_STATE/active"; done
+            for unit in "${@:3}"; do
+              sed -i "/^$unit\(=.*\)\?\$/d" "$FAKE_STATE/active"
+              sed -i "/^$unit\$/d" "$FAKE_STATE/enabled"
+            done
+            ;;
+          mask)
+            for unit in "${@:2}"; do echo "$unit" >>"$FAKE_STATE/masked"; done
             ;;
         esac
     """,
@@ -163,6 +179,8 @@ class MachineRoleTests(unittest.TestCase):
         (self.sysroot / "etc" / "os-release").write_text(UBUNTU)
         (self.state / "installed").write_text("\n".join(EVERY_PACKAGE) + "\n")
         (self.state / "active").write_text("")
+        (self.state / "enabled").write_text("")
+        (self.state / "masked").write_text("")
         (self.state / "group").write_text("")
         (self.state / "calls").write_text("")
         self.env = {
@@ -194,6 +212,9 @@ class MachineRoleTests(unittest.TestCase):
 
     def set_active(self, units):
         (self.state / "active").write_text("".join(unit + "\n" for unit in units))
+
+    def set_enabled(self, units):
+        (self.state / "enabled").write_text("".join(unit + "\n" for unit in units))
 
     def set_docker_group(self, members):
         (self.state / "group").write_text("999:" + ",".join(members) + "\n")
@@ -257,6 +278,27 @@ class MachineRoleTests(unittest.TestCase):
         self.assertIn("docker.socket", line)
         self.assertNotIn("containerd.service", line)
 
+    def test_given_stopped_but_enabled_docker_units_when_checked_then_they_are_listed_to_turn_off(self):
+        self.set_enabled(["docker.socket"])
+        result = self.host("check", "apps")
+        line = next(line for line in result.stdout.splitlines() if "rootful docker" in line)
+        self.assertNotIn("ok", line.split("rootful docker")[0])
+        self.assertIn("enabled: docker.socket", line)
+        self.assertNotIn("running", line)
+
+    def test_given_a_failed_docker_unit_when_checked_then_it_is_not_off(self):
+        self.set_active(["docker.service=failed"])
+        result = self.host("check", "apps")
+        line = next(line for line in result.stdout.splitlines() if "rootful docker" in line)
+        self.assertNotIn("ok", line.split("rootful docker")[0])
+        self.assertIn("docker.service (failed)", line)
+
+    def test_given_masked_and_stopped_docker_units_when_checked_then_the_row_is_ok(self):
+        (self.state / "masked").write_text("".join(unit + "\n" for unit in DOCKER_UNITS))
+        result = self.host("check", "apps")
+        line = next(line for line in result.stdout.splitlines() if "rootful docker" in line)
+        self.assertIn("ok", line.split("rootful docker")[0])
+
     def test_given_a_docker_socket_when_checked_then_the_rootful_engine_is_not_off(self):
         sock = self.sysroot / "var" / "run" / "docker.sock"
         sock.parent.mkdir(parents=True)
@@ -282,6 +324,19 @@ class MachineRoleTests(unittest.TestCase):
         self.set_active(DOCKER_UNITS)
         self.install("apps")
         self.assertIn("systemctl disable --now docker.service docker.socket containerd.service", self.calls())
+
+    def test_given_role_apps_when_installed_then_the_three_docker_units_are_masked_after_disabling(self):
+        self.set_active(DOCKER_UNITS)
+        self.set_enabled(DOCKER_UNITS)
+        self.install("apps")
+        calls = self.calls()
+        disable = "systemctl disable --now docker.service docker.socket containerd.service"
+        mask = "systemctl mask docker.service docker.socket containerd.service"
+        self.assertLess(calls.index(disable), calls.index(mask))
+        self.assertEqual((self.state / "masked").read_text().split(), DOCKER_UNITS)
+        result = self.host("check", "apps")
+        line = next(line for line in result.stdout.splitlines() if "rootful docker" in line)
+        self.assertIn("ok", line.split("rootful docker")[0])
 
     def test_given_role_apps_when_installed_then_unprivileged_ports_start_at_80(self):
         self.install("apps")
@@ -346,6 +401,24 @@ class MachineRoleTests(unittest.TestCase):
         self.set_packages([*EVERY_PACKAGE, "docker.io"])
         self.install("dev")
         self.assertIn("apt-get -q remove -y docker.io", self.calls())
+
+    def test_given_a_failing_removal_of_distribution_packages_when_installed_then_it_stops_with_its_message(self):
+        self.set_packages([*EVERY_PACKAGE, "docker.io"])
+        fake = pathlib.Path(self.env["PATH"].split(os.pathsep)[0]) / "apt-get"
+        fake.write_text("#!/usr/bin/env bash\n[[ \"$*\" == *remove* ]] && exit 100\nexit 0\n")
+        result = self.host("install", "dev")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not remove docker.io", result.stderr)
+
+    def test_given_declined_removal_of_distribution_packages_when_installed_then_they_are_left_alone(self):
+        self.set_packages([*EVERY_PACKAGE, "docker.io"])
+        env = {k: v for k, v in self.env.items() if k != "YGG_ASSUME_YES"}
+        result = subprocess.run(
+            ["bash", str(HOST), "install", "dev"], env=env, capture_output=True, text=True, input="y\nn\ny\ny\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("left as they are", result.stderr)
+        self.assertFalse(any("remove" in call for call in self.calls()))
 
     def test_given_role_workstation_when_checked_then_the_report_is_todays(self):
         bare = self.host("check")

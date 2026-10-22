@@ -182,17 +182,23 @@ machine_check_packages() {
 }
 
 machine_check_rootful_docker_off() {
-  local unit state running=() sock="${YGG_SYSROOT:-}/var/run/docker.sock" members=""
+  local unit state running=() enabled=() sock="${YGG_SYSROOT:-}/var/run/docker.sock" members=""
   for unit in "${ROOTFUL_DOCKER_UNITS[@]}"; do
+    # Off is inactive now (not failed, reloading or deactivating either) and not coming back at boot.
     state=$(systemctl is-active "$unit" 2>/dev/null || true)
-    [[ "$state" == active || "$state" == activating ]] && running+=("$unit")
+    [[ "$state" == inactive ]] || running+=("$unit${state:+ ($state)}")
+    state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+    case $state in
+      "" | disabled | masked | static | not-found) ;;
+      *) enabled+=("$unit ($state)") ;;
+    esac
   done
   [[ -e "$sock" ]] && running+=("$sock")
-  if ((${#running[@]})); then
-    row warn "rootful docker" "running: ${running[*]}: install turns it off (the service users' engines are rootless)"
+  if ((${#running[@]} || ${#enabled[@]})); then
+    row warn "rootful docker" "${running[*]:+running: ${running[*]}; }${enabled[*]:+enabled: ${enabled[*]}; }install turns it off (the service users' engines are rootless)"
     machine_need rootful-docker-off
   else
-    row ok "rootful docker" "off"
+    row ok "rootful docker" "off, and off after a reboot"
   fi
 
   members=$(getent group docker 2>/dev/null | cut -d: -f4 | tr ',' ' ') || members=""
@@ -270,12 +276,17 @@ install_machine() {
 }
 
 step_packages() {
+  # Declining leaves things as they are; a failing apt-get dies in remove_conflicting.
   remove_conflicting || {
     warn "Docker's packages can't be installed next to the distribution's: left as they are."
     return 0
   }
+  # Removing the clashing packages can take Docker's with them, so what is missing is counted now.
   local package needs_docker=""
-  for package in "${machine_missing[@]}"; do
+  machine_missing=()
+  for package in "${MACHINE_PACKAGES[@]}"; do
+    installed "$package" && continue
+    machine_missing+=("$package")
     [[ " ${MACHINE_DOCKER_PACKAGES[*]} " == *" $package "* ]] && needs_docker=1
   done
   if [[ -n "$needs_docker" ]]; then
@@ -283,11 +294,6 @@ step_packages() {
   else
     apt_get update
   fi
-  # Removing the clashing packages can take Docker's with them, so the missing ones are counted again.
-  machine_missing=()
-  for package in "${MACHINE_PACKAGES[@]}"; do
-    installed "$package" || machine_missing+=("$package")
-  done
   if ((${#machine_missing[@]})); then
     apt_get install -y "${machine_missing[@]}"
   fi
@@ -297,8 +303,11 @@ step_packages() {
 # /var/run/docker.sock to anyone in the docker group, which is root.
 step_rootful_docker_off() {
   as_root systemctl disable --now "${ROOTFUL_DOCKER_UNITS[@]}"
-  local member
-  for member in $(getent group docker 2>/dev/null | cut -d: -f4 | tr ',' ' '); do
+  # Masked, a docker-ce upgrade can't enable or start them again.
+  as_root systemctl mask "${ROOTFUL_DOCKER_UNITS[@]}"
+  local members=() member
+  IFS=, read -r -a members < <(getent group docker 2>/dev/null | cut -d: -f4 || true) || true
+  for member in "${members[@]}"; do
     as_root gpasswd -d "$member" docker
   done
 }
