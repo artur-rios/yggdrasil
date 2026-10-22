@@ -236,14 +236,16 @@ are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine 
 | **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a dev machine: `ci` and `release` cannot read `ygg`'s socket or secrets |
 | **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled |
 
-Rows that ask another user's engine or read a closed directory use `sudo` without a password; without that they say
-"not checked", and `sudo -v` first (or running `check` with `sudo`) fixes it.
+Rows that ask another user's engine or read a closed directory need `sudo`. `check` runs `sudo -v` first, which asks
+for your password once; if that fails it says so and goes on, and those rows say "not checked".
 
 `install` works on Ubuntu 24.04 only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
 part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci`
 limits, SSH, the checkout, secrets directories, the firewall, each user's engine, the backup timer and the role
-file. It refuses up front, changing nothing, when the admin has no `~/.ssh/authorized_keys`, and puts its SSH file back
-if sshd would not run with it. Each part, and what you would type by hand, is in
+file. It refuses up front, changing nothing: when it doesn't run from `/opt/yggdrasil` (clone yggdrasil there), when
+`sudo -v` fails (a check that can't run as root would find nothing to do), and when the admin has no
+`~/.ssh/authorized_keys`. It writes the role file before the first part it does, so an install that stops halfway
+is still a dev or apps machine to the next `ygg install`. It puts its SSH file back if sshd would not run with it. Each part, and what you would type by hand, is in
 [setup.md step 8](setup.md#83-install); the files and why, in [hosts.md](hosts.md#4-system-settings).
 
 `install` does not write `backup.conf`: copy `env/backup.conf.example` yourself

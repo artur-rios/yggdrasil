@@ -30,9 +30,14 @@ FAKES = {
     # otherwise says the user may not run sudo. `sudo -n` fails while $FAKE_STATE/sudo-denied exists
     # (a password would be asked for). `sudo -u <user> <command>` writes down who it runs as and from
     # where, and tells the fakes below (FAKE_AS_USER) so they can answer for that user; it fails for
-    # a user with $FAKE_STATE/sudo-u-denied-<user> (sudo not allowed to run as them).
+    # a user with $FAKE_STATE/sudo-u-denied-<user> (sudo not allowed to run as them). `sudo -v` (asking for
+    # the password up front) succeeds unless $FAKE_STATE/sudo-v-fails exists (a wrong password, no tty).
     "sudo": r"""
         echo "sudo $*" >>"$FAKE_STATE/calls"
+        if [[ "$1" == -v ]]; then
+          [[ ! -e "$FAKE_STATE/sudo-v-fails" ]]
+          exit $?
+        fi
         if [[ "$1" == -n ]]; then
           shift
           [[ ! -e "$FAKE_STATE/sudo-denied" ]] || exit 1
@@ -441,6 +446,11 @@ class MachineRoleTests(unittest.TestCase):
         self.serve_cloudflare(CLOUDFLARE_V4, CLOUDFLARE_V6)
         self.passwd = self.sysroot / "etc" / "passwd"
         self.passwd.write_text(f"admin:x:1000:1000::{self.admin_home}:/bin/bash\n")
+        # Install refuses a checkout that isn't /opt/yggdrasil: in the tests that is $YGG_SYSROOT/opt/yggdrasil,
+        # which is this checkout.
+        self.opt_checkout = self.sysroot / "opt" / "yggdrasil"
+        self.opt_checkout.parent.mkdir()
+        self.opt_checkout.symlink_to(CHECKOUT)
         self.env = {
             **os.environ,
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -742,6 +752,77 @@ class MachineRoleTests(unittest.TestCase):
         self.assertNotIn("rootful docker", bare.stdout)
         self.assertNotIn("== System ==", bare.stdout)
 
+    # ---- Before any step: sudo, the checkout and the role file ----------------------------------
+
+    def test_given_role_dev_when_installed_then_sudo_is_asked_for_before_anything_else(self):
+        self.install("dev")
+        sudo_calls = [call for call in self.calls() if call.startswith("sudo ")]
+        # Asked once, up front: without a ticket the check rows that need root say "not checked" and
+        # queue nothing, and install would trust them.
+        self.assertEqual(sudo_calls[0], "sudo -v")
+        self.assertEqual(sudo_calls.count("sudo -v"), 1)
+
+    def test_given_sudo_refusing_the_admin_when_installing_then_it_stops_with_nothing_changed(self):
+        (self.state / "sudo-v-fails").write_text("")
+        result = self.host("install", "apps")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sudo", result.stderr)
+        self.assertEqual(self.calls(), ["sudo -v"])
+        self.assertFalse(self.etc("yggdrasil-role").exists())
+
+    def test_given_role_dev_when_checked_then_sudo_is_asked_for_once_up_front(self):
+        self.rows("dev")
+        self.assertEqual(self.calls()[0], "sudo -v")
+        self.assertEqual(self.calls().count("sudo -v"), 1)
+
+    def test_given_sudo_refusing_the_admin_when_checked_then_it_says_so_once_and_reports(self):
+        self.install("dev")
+        (self.state / "sudo-v-fails").write_text("")
+        (self.state / "sudo-denied").write_text("")
+        result = self.host("check", "dev")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count("sudo -v failed"), 1, result.stderr)
+        self.assertIn("not checked", result.stdout)
+        self.assertIn("== Rootless Docker ==", result.stdout)
+
+    def test_given_role_workstation_when_checked_then_sudo_is_not_asked_up_front(self):
+        self.host("check")
+        self.host("check", "workstation")
+        self.assertNotIn("sudo -v", self.calls())
+
+    def test_given_a_checkout_that_is_not_opt_yggdrasil_when_installing_then_it_is_refused(self):
+        elsewhere = self.temp / "elsewhere"
+        elsewhere.mkdir()
+        for target in ("missing", "another directory"):
+            with self.subTest(target):
+                self.opt_checkout.unlink(missing_ok=True)
+                if target == "another directory":
+                    self.opt_checkout.symlink_to(elsewhere)
+                (self.state / "calls").write_text("")
+                result = self.host("install", "dev")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("/opt/yggdrasil", result.stderr)
+                self.assertIn("clone", result.stderr)
+                # Nothing is asked or changed: the checkout step would chown whatever checkout this is.
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.etc("yggdrasil-role").exists())
+
+    def test_given_a_checkout_that_is_not_opt_yggdrasil_when_checked_then_its_row_says_so(self):
+        self.opt_checkout.unlink()
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "checkout owner")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("/opt/yggdrasil", line)
+
+    def test_given_a_step_that_fails_when_installing_then_the_role_file_is_already_written(self):
+        result = self.host("install", "apps", FAKE_SSHD_STATUS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sshd -t", result.stderr)
+        # A bare `ygg install` afterwards must not fall back to workstation (rootful Docker, 80/443 open).
+        self.assertEqual(self.etc("yggdrasil-role").read_text().split(), ["apps"])
+        calls = self.calls()
+        self.assertLess(calls.index(f"sudo tee {self.etc('yggdrasil-role')}"), calls.index("sshd -t"))
+
     def test_given_debian_when_installing_role_dev_then_it_is_refused(self):
         self.etc("os-release").write_text(DEBIAN)
         result = self.host("install", "dev")
@@ -836,9 +917,10 @@ class MachineRoleTests(unittest.TestCase):
                 self.assertFalse(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").exists())
                 calls = self.calls()
                 self.assertFalse([call for call in calls if "sshd" in call or "try-reload-or-restart ssh" in call], calls)
-                # Refused up front: no step ran, so nothing was done as root (the checks only read, with
-                # `sudo -n`).
-                self.assertEqual([call for call in calls if call.startswith("sudo") and not call.startswith("sudo -n")], [])
+                # Refused up front: no step ran, so nothing was done as root (sudo -v only asks for the
+                # password, and the checks only read, with `sudo -n`).
+                self.assertEqual(
+                    [call for call in calls if call.startswith("sudo") and not call.startswith(("sudo -n", "sudo -v"))], [])
                 self.assertEqual(self.users(), {})
                 self.assertFalse(list(self.homes.glob("*/.ssh")))
                 stdout, rows = self.rows("dev")

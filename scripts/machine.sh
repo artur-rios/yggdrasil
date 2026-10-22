@@ -113,6 +113,25 @@ machine_preflight() {
   has sudo || die "installing needs sudo: install it first"
 }
 
+# The checkout install sets up: the backup unit runs /opt/yggdrasil/scripts/backup.sh, and the checkout
+# step gives the checkout to ygg. Under $YGG_SYSROOT in the tests (a link to the checkout under test).
+machine_checkout_path() { echo "${YGG_SYSROOT:-}/opt/yggdrasil"; }
+
+# machine_checkout_at_home: this checkout ($root) is /opt/yggdrasil, both resolved (readlink -f).
+machine_checkout_at_home() {
+  local here there
+  here=$(readlink -f "$root") || return 1
+  there=$(readlink -f "$(machine_checkout_path)" 2>/dev/null) || return 1
+  [[ -n "$there" && -d "$there" && "$here" == "$there" ]]
+}
+
+# machine_checkout_refusal: dies, with nothing changed, when install runs from another checkout: its
+# checkout step would hand that one (a clone in the admin's home, say) to ygg, and the backup timer
+# would run a copy that isn't there.
+machine_checkout_refusal() {
+  machine_checkout_at_home     || die "this checkout is $root, not $(machine_checkout_path): clone yggdrasil there (setup.md step 8) and run install from it"
+}
+
 # ---- System files -------------------------------------------------------------------------------
 
 # write_system_file <path> <mode> <content>: the content plus a newline, as root; nothing is written
@@ -720,7 +739,9 @@ machine_check_ssh() {
 machine_check_checkout() {
   local owner
   owner=$(stat -c %U:%G "$root" 2>/dev/null) || owner=unknown
-  if [[ "$owner" == ygg:ygg ]]; then
+  if ! machine_checkout_at_home; then
+    row warn "checkout owner" "$root is not $(machine_checkout_path): install refuses to run from it (clone yggdrasil there)"
+  elif [[ "$owner" == ygg:ygg ]]; then
     row ok "checkout owner" "$owner ($root)"
   else
     row warn "checkout owner" "$owner ($root): install gives it to ygg"
@@ -999,6 +1020,10 @@ install_machine() {
     machine_needs "$step" || continue
     say "$(machine_step_text "$step")"
     confirm "Do this?" y || continue
+    # The role goes down before the first change, not last: an install that dies halfway would otherwise
+    # leave a machine whose bare `ygg install` falls back to workstation (rootful Docker, the docker
+    # group, 80 and 443 open to everyone). The role-file step stays for check and repair.
+    [[ -n "$did" ]] || step_role_file
     "step_${step//-/_}"
     did=1
     check_machine "$1" quiet

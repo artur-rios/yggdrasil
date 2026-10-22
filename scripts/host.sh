@@ -603,18 +603,25 @@ requested_role() {
   esac
 }
 
-# check [<role>]: a workstation is checked as before; dev and apps by their steps.
+# check [<role>]: a workstation is checked as before; dev and apps by their steps. Those ask sudo for
+# the password once, up front: the rows that need root (the firewall, the engines, ssh, the isolation)
+# otherwise say "not checked", and the report is incomplete. Without it the check still runs.
 check_for_role() {
   local role
   role=$(requested_role "$@")
   if [[ "$role" == workstation ]]; then
     check_host
   else
+    if ((EUID != 0)) && has sudo && ! sudo -v; then
+      warn "sudo -v failed: the rows that need root say \"not checked\""
+    fi
     check_machine "$role"
   fi
 }
 
-# install [<role>]: likewise. A machine role is installed by the admin, who runs this with sudo.
+# install [<role>]: likewise. A machine role is installed by the admin, who runs this with sudo: the
+# password is asked for before anything is checked, since a check row that needs root and can't run
+# queues nothing, and install would then trust it ("Nothing installed." with ufw off).
 install_for_role() {
   local role
   role=$(requested_role "$@")
@@ -623,6 +630,8 @@ install_for_role() {
     return
   fi
   machine_preflight "$role"
+  machine_checkout_refusal
+  sudo -v || die "install needs sudo for the admin ($(id -un)): sudo -v failed, nothing was changed"
   check_machine "$role" quiet
   title "Install"
   install_machine "$role"

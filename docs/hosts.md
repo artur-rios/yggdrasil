@@ -422,8 +422,8 @@ WantedBy=timers.target
 
 | What | Content |
 |---|---|
-| `/etc/yggdrasil-role` | The role: `dev` or `apps`. `ygg check` and `ygg install` without `--role` use it. |
-| `/opt/yggdrasil` | Owned by `ygg`, mode `755`: `ygg` deploys from this checkout. |
+| `/etc/yggdrasil-role` | The role: `dev` or `apps`. `ygg check` and `ygg install` without `--role` use it. Written before the first step that changes anything, so an install that stops halfway keeps its role. |
+| `/opt/yggdrasil` | Owned by `ygg`, mode `755`: `ygg` deploys from this checkout, and the backup unit runs its `scripts/backup.sh`. `ygg install` refuses to run from a checkout anywhere else. |
 | `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`. Files `600`. A file that is already there is never touched. |
 | `/etc/yggdrasil/cloudflare-ips` (apps machine) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
 | `/etc/yggdrasil/traefik.yml` | Not written by `ygg install`: `platform.sh` renders Traefik's static configuration there (as `ygg`, mode `600`) at every run, and Traefik's container mounts it. It stays there so that Traefik starts again after a crash or a reboot; deleting it takes ingress down at the next restart of the container, until the next `platform.sh up`. |
