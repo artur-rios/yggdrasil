@@ -1,4 +1,9 @@
 # shellcheck shell=bash
+# root, the checkout, is host.sh's: it sets it before it sources this file (SC2154 on its own, which
+# CI runs without host.sh). The step_* and machine_check_* functions are called by name, built from
+# MACHINE_STEPS (check_machine, install_machine), never directly.
+# shellcheck disable=SC2154
+#
 # The machine roles of scripts/host.sh: what `check` and `install` do for `dev` and `apps` (Ubuntu
 # 24.04 hosts that run every engine rootless), as opposed to `workstation`, which keeps today's
 # check_host / install_host. Sourced by host.sh: functions and tables only, nothing runs here, and it
@@ -605,7 +610,8 @@ machine_check_packages() {
   for package in "${MACHINE_PACKAGES[@]}"; do
     installed "$package" || machine_missing+=("$package")
   done
-  # The distribution's docker.io and friends clash with Docker's packages.
+  # The distribution's docker.io and friends clash with Docker's packages (CONFLICTING is host.sh's).
+  # shellcheck disable=SC2153
   for name in "${CONFLICTING[@]}"; do installed "$name" && conflicting+=("$name"); done
   if ((${#conflicting[@]})); then
     row warn "packages" "the distribution's (${conflicting[*]}): install replaces them with Docker's${machine_missing[*]:+; missing: ${machine_missing[*]}}"
@@ -1121,7 +1127,11 @@ machine_check_role_file() {
 # machine_step_text <step>: what the step is about to do, said before asking.
 machine_step_text() {
   case $1 in
-    packages) echo "Packages: ${machine_missing[*]:-the distribution's Docker packages are replaced by Docker's}, with Docker's from its apt repository (download.docker.com)." ;;
+    packages)
+      local packages_text=${machine_missing[*]:-}
+      [[ -n "$packages_text" ]] || packages_text="the distribution's Docker packages are replaced by Docker's"
+      echo "Packages: $packages_text, with Docker's from its apt repository (download.docker.com)."
+      ;;
     rootful-docker-off) echo "Turn off the machine's own Docker (docker.service, docker.socket, containerd.service) and empty the docker group." ;;
     system-settings) echo "Unprivileged ports from 80, an AppArmor profile for rootlesskit and cgroup delegation to users' units." ;;
     unattended-upgrades) echo "Install security updates by themselves (${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades)." ;;
@@ -1197,9 +1207,9 @@ step_rootful_docker_off() {
   as_root systemctl disable --now "${ROOTFUL_DOCKER_UNITS[@]}"
   # Masked, a docker-ce upgrade can't enable or start them again.
   as_root systemctl mask "${ROOTFUL_DOCKER_UNITS[@]}"
-  local members=() member
-  IFS=, read -r -a members < <(getent group docker 2>/dev/null | cut -d: -f4 || true) || true
-  for member in "${members[@]}"; do
+  local group_members=() member
+  IFS=, read -r -a group_members < <(getent group docker 2>/dev/null | cut -d: -f4 || true) || true
+  for member in "${group_members[@]}"; do
     as_root gpasswd -d "$member" docker
   done
 }

@@ -1,0 +1,4 @@
+# CI runs `shellcheck scripts/*.sh scripts/ygg` from the repository root, without -x: follow the files
+# the scripts source (machine.sh, docker-engine.sh), found next to the script that sources them.
+external-sources=true
+source-path=SCRIPTDIR
