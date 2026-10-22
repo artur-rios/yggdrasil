@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   sshd really runs (`00-yggdrasil.conf`), the firewall, unattended upgrades and the nightly backup timer. The apps
   machine's firewall opens 80 and 443 to Cloudflare's address ranges only, and `ygg check` compares it with
   Cloudflare's current list. `workstation`, the default on a machine with no role file, keeps the earlier behavior.
+  The firewall fails closed (SSH in, incoming denied by default, even when Cloudflare's list can't be fetched), and
+  `check` reports any rule that lets everyone in that `install` didn't make. On the dev machine `ci`, `release`,
+  `renovate` and `dev` cannot bind ports below 1024, and `check` proves that no service user reaches `ygg`'s engine or
+  secrets (nor `ci` the release agent's). `install` asks for the sudo password first, runs only from
+  `/opt/yggdrasil`, and writes the role file before its first change. `check` shows whether backups work:
+  `backup.conf`, the last run's result and the newest day's age. dns.md and hosts.md add a `CAA` record per zone
+  (Let's Encrypt, DNS-01 only).
   [docs/hosts.md](docs/hosts.md) (new) explains the two machines, their users, every file the installer writes, the
   credentials and the backups; [docs/setup.md](docs/setup.md) step 8 explains each part of the install and the
   commands to do it by hand.
@@ -27,7 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (`env/agent.env.example`).
 - **Backups**: `ygg backup run|list` and a systemd user timer (03:30) dump Forgejo, volumes and PostgreSQL databases
   into `~/backups` and send them to the other machine over SSH with a key restricted to `rrsync`. Configured in
-  `backup.conf` (`env/backup.conf.example`); `ygg install` does not write it. Restore steps are in
+  `backup.conf` (`env/backup.conf.example`); `ygg install` does not write it. Each item's newest good dump is kept
+  even beyond `BACKUP_KEEP`, and `ygg backup list` says whether the newest day is complete. Restore steps are in
   [docs/hosts.md](docs/hosts.md#7-backups-and-restore).
 - **Several domains on one machine** (`EXTRA_DOMAINS` in `platform.env`, each with its own wildcard certificate) and
   **Cloudflare in front** (`CLOUDFLARE_PROXIED`): Traefik trusts the forwarded client address from Cloudflare's ranges
