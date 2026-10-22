@@ -7,7 +7,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Two machine roles.** `ygg check` and `ygg install` take `--role dev|apps|workstation`. `dev` and `apps` set up an
+  Ubuntu 24.04 server: the service users (`ygg` on both; `ci`, `release`, `renovate` and `dev` on the dev machine),
+  a rootless Docker engine for each, the system settings they need, SSH hardening that is verified against what
+  sshd really runs (`00-yggdrasil.conf`), the firewall, unattended upgrades and the nightly backup timer. The apps
+  machine's firewall opens 80 and 443 to Cloudflare's address ranges only, and `ygg check` compares it with
+  Cloudflare's current list. `workstation`, the default on a machine with no role file, keeps the earlier behavior.
+  [docs/hosts.md](docs/hosts.md) (new) explains the two machines, their users, every file the installer writes, the
+  credentials and the backups; [docs/setup.md](docs/setup.md) step 8 explains each part of the install and the
+  commands to do it by hand.
+- **Forgejo** as a platform service, on its own profile (`forge`): `codeberg.org/forgejo/forgejo:16.0.6-rootless`,
+  pinned by digest, at `git.<DOMAIN>`, git over SSH on port `FORGEJO_SSH_PORT` (2222), SQLite in the
+  `yggdrasil_forgejo-data` volume, registration closed and sign-in required to view anything. The first account is
+  made from the command line (setup.md 9.6).
+- **Build agents** for the `ci` and `release` users: `platform/build-agent.yml` and `ygg agent up|down|ps|logs --user
+  ci|release`, each on its user's own engine, configured by `/etc/yggdrasil-<user>/agent.env`
+  (`env/agent.env.example`).
+- **Backups**: `ygg backup run|list` and a systemd user timer (03:30) dump Forgejo, volumes and PostgreSQL databases
+  into `~/backups` and send them to the other machine over SSH with a key restricted to `rrsync`. Configured in
+  `backup.conf` (`env/backup.conf.example`); `ygg install` does not write it. Restore steps are in
+  [docs/hosts.md](docs/hosts.md#7-backups-and-restore).
+- **Several domains on one machine** (`EXTRA_DOMAINS` in `platform.env`, each with its own wildcard certificate) and
+  **Cloudflare in front** (`CLOUDFLARE_PROXIED`): Traefik trusts the forwarded client address from Cloudflare's ranges
+  only, from `<secrets>/cloudflare-ips`, which `ygg install --role apps` writes. Traefik's static configuration is now a
+  file rendered by `scripts/traefik_config.py`; the settings are the same.
+- A machine without the `apps` profile (the dev machine) has Prometheus read a written-out list of the platform's own
+  targets (`platform/prometheus/prometheus-static.yml`).
+
 ### Changed
+
+- **Breaking: the platform runs on rootless Docker only.** `platform.sh`, `agent.sh` and `backup.sh` use the Docker
+  engine of the user who runs them (the socket from `DOCKER_HOST`, else `/run/user/<uid>/docker.sock`) and refuse a
+  rootful one. Run them as `ygg`. Root inside a container is that user on the host, so the socket proxies and the
+  agents run as container root. The `ufw` rules now apply to published ports, which rootful Docker bypassed.
+- **Breaking: the `apps` profile.** The status API, its socket proxy and the console moved from the base platform to
+  profile `apps`. A host that runs environments must have `apps` in `COMPOSE_PROFILES` (`apps,agent`, `apps,jenkins`,
+  ...); `ENVIRONMENTS` without it is refused with that instruction.
+- **Breaking: the secrets directories belong to the service users.** `/etc/yggdrasil` is owned by `ygg`, mode `750`,
+  files `600`, with no `docker` group; other service users have `/etc/yggdrasil-<user>`. `ygg install` never touches a
+  file that is already there, so a host moved from the earlier layout must hand its files to `ygg` (see Upgrading).
+- The Jenkins controller's GitHub App key is mounted into a container whose user is not `ygg`: keep
+  `/etc/yggdrasil/github-app.pem` at mode `644` (setup.md 9.1), not owned by uid 1000.
+- Two example env files changed: `env/agent.env.example` leaves `JENKINS_AGENT_NAME` and `YGG_AGENT_WORKDIR` empty on
+  purpose (`ci` and `/home/ci/agent`, or `release` and `/home/release/agent`), and `env/backup.conf.example` names the
+  Jenkins volume `yggdrasil_jenkins`. `env/platform.env.example` gives the first-account command that finds Forgejo by
+  its labels.
+- [docs/setup.md](docs/setup.md) is organized around the two machines: step 0 plans the roles (one machine with role
+  `apps` running the `jenkins` profile too is still supported), steps 6 and 8 to 11 and Troubleshooting follow the
+  new layout, and [docs/dns.md](docs/dns.md) covers two zones, the proxy and the token's scope. [docs/cli.md](docs/cli.md)
+  documents `check`/`install --role`, `agent` and `backup`.
 
 - Chimera production releases now require an explicit Jenkins approval. After a successful deploy,
   Jenkins creates an immutable tag and private draft, dispatches Chimera's release-artifact
@@ -18,6 +68,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `scripts/sql/new-deployment.sql`: an owner role that migrates and a runtime login that owns nothing, with a
   `pg_hba.conf` line for each, and `HEIMDALL_MIGRATIONS_CONNECTIONSTRING` in the store. A database the API's own
   login owns is moved with heimdall-api's `separate-owner.sql` runbook.
+
+### Removed
+
+- `DOCKER_GID` and the `docker` group setup of the platform: nothing reads them. Delete `DOCKER_GID` from
+  `platform.env`.
+- The machine's own Docker engine on a `dev` or `apps` machine: its units are disabled and masked, and the `docker`
+  group is emptied.
+
+### Upgrading a host from rootful Docker
+
+For a VPS set up with the earlier guide, on the same server: stop the platform and applications with the old checkout,
+back up the volumes, pull and run `ygg install --role apps`, hand `/etc/yggdrasil` to `ygg`, restore the volumes into
+`ygg`'s engine, add `apps` to `COMPOSE_PROFILES`, start. Step by step:
+[docs/hosts.md](docs/hosts.md#9-upgrading-a-host-from-rootful-docker). Plan for downtime.
 
 ## [0.7.5] - 2026-10-20
 

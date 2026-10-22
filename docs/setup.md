@@ -2,10 +2,12 @@
 
 This guide takes you from nothing to a first release deployed by yggdrasil. Follow the steps in
 order: each one only needs what the previous ones produced. The path it follows is this
-repository's default setup: development, homologation and production on **one VPS**, which also
-runs the Jenkins controller, plus a `local` environment on your workstation. Other layouts (one
-host per environment, or anything in between) change only a few answers of step 0. The default
-installation, complete with every file, is in
+repository's default setup: **two machines**, a dev machine (the Jenkins controller and the git
+server) and an apps machine (development, homologation and production), plus a `local` environment
+on your workstation. Other layouts (everything on one machine, one host per environment, or
+anything in between) change only a few answers of step 0. What the two machines are, who the users
+on them are and why the installer does what it does is in [hosts.md](hosts.md). An older example
+installation, with the controller on the same VPS as the environments, is in
 [examples/docker-desktop-and-vps](examples/docker-desktop-and-vps/README.md).
 
 ```mermaid
@@ -17,7 +19,7 @@ flowchart TB
         S6[6 · Domain and DNS] --> S7[7 · GitHub App]
     end
     subgraph hosts [Hosts]
-        S8[8 · Prepare every host] --> S9[9 · Controller host] --> S10[10 · Other hosts] --> S11[11 · Application env files]
+        S8[8 · Prepare each machine] --> S9[9 · Dev machine] --> S10[10 · Apps machine] --> S11[11 · Application env files]
     end
     subgraph finish [Finish]
         S12[12 · GitHub rules] --> S13[13 · Check everything] --> S14[14 · First release]
@@ -35,9 +37,9 @@ flowchart TB
 | [5. Prepare each application repository](#5-prepare-each-application-repository) | Each application repository | 10 min per application |
 | [6. Domain and DNS](#6-domain-and-dns) | DNS provider | 15 min, plus propagation |
 | [7. Create the GitHub App](#7-create-the-github-app) | GitHub | 10 min |
-| [8. Prepare every host](#8-prepare-every-host) | Each host | 15 min per host |
-| [9. Bring up the controller host](#9-bring-up-the-controller-host) | Controller host | 30 min |
-| [10. Bring up the other hosts](#10-bring-up-the-other-environment-hosts) | Each other host | 15 min per host |
+| [8. Prepare each machine](#8-prepare-each-machine) | Each machine | 20 min per machine |
+| [9. The dev machine](#9-the-dev-machine) | Dev machine | 30 min |
+| [10. The apps machine](#10-the-apps-machine) | Apps machine, and other hosts | 15 min per host |
 | [11. Application env files](#11-application-env-files) | Each host | 5 min per application |
 | [12. Apply the GitHub rules](#12-apply-the-github-rules) | Your machine | 5 min |
 | [13. Check everything](#13-check-everything) | Browser | 10 min |
@@ -51,21 +53,24 @@ Decide these before touching anything, and write the answers down: every later s
 |---|---|---|
 | **GitHub owner** | `acme` | The user or organisation that owns the application repositories. Your fork of yggdrasil goes there too. |
 | **Environments**, in promotion order | `local`, `development`, `homologation`, `production` | For each: its `trigger` (`manual`, `branch` or `release`), its `mode` (`proxy`, or `ports` for a workstation), and whether it runs only while used (`onDemand`). See [catalog.md](catalog.md#environments). |
-| **Hosts**, and the environments each runs | one VPS: `development`, `homologation`, `production`; `local` on your workstation | A host is anything with its own Docker engine: a VPS, a VM. It runs one environment or several: environments sharing a host share its platform stack, its Jenkins agent and its domain. A `ports` environment (a workstation) needs no host setup. See [Planning the hosts](#planning-the-hosts). |
-| **The controller host** | the VPS | The one host that also runs the Jenkins controller. It must be reachable from the internet on 443, for GitHub's webhooks. |
-| **Domain per host** | `example.com` | Every public name is one label under it: `heimdall.example.com`, and in an environment with a `hostSuffix`, `heimdall-dev.example.com`. Your own domain on Cloudflare, or a free DuckDNS subdomain: [dns.md](dns.md). |
+| **Machines**, their roles and the environments each runs | a **dev** machine (the Jenkins controller and Forgejo) and an **apps** machine (`development`, `homologation`, `production`); `local` on your workstation | Each machine is an Ubuntu 24.04 server with a role: `dev` or `apps` ([The two machines](hosts.md#1-two-machines)). It runs one environment or several: environments sharing a host share its platform stack, its Jenkins agent and its domain. A `ports` environment (a workstation) needs no host setup. See [Planning the hosts](#planning-the-hosts). |
+| **The controller host** | the dev machine | The one host that runs the Jenkins controller. It must be reachable from the internet on 443, for GitHub's webhooks, and from the other hosts' agents. |
+| **Domain per machine** | `example.com` | Every public name is one label under it: `heimdall.example.com`, and in an environment with a `hostSuffix`, `heimdall-dev.example.com`. A machine can serve more than one domain (`EXTRA_DOMAINS`). Your own domain on Cloudflare, or a free DuckDNS subdomain: [dns.md](dns.md). |
 | **Systems and applications** | `shop` = `shop-api` + `shop-web` | Each application is one repository with a Dockerfile and a `/health`-style endpoint. |
 
-A minimal installation is **one** environment (`production`, `trigger: release`) on **one** host
-that also runs the controller. Start there if you are trying yggdrasil out: adding an environment
-to that host later is a catalog entry and one line of its `platform.env`
-([Adding things](#an-environment)).
+A minimal installation is **one** environment (`production`, `trigger: release`) on **one** machine
+that also runs the controller. Start there if you are trying yggdrasil out: it is a machine with
+role `apps` whose `COMPOSE_PROFILES` also has `jenkins` (and, once the controller has made the
+agent's secret, `agent`), as step 9.5 describes. Adding an environment to that host later is a
+catalog entry and one line of its `platform.env` ([Adding things](#an-environment)).
 
 ### Planning the hosts
 
 | Layout | Catalog | Each host |
 |---|---|---|
-| **Several environments on one host** (the default) | The environments of the host set the same `agent` (`vps`) and each a distinct `hostSuffix` (`-dev`, `-hml`; production can keep none). `onDemand: true` on those used only now and then | One platform stack; `ENVIRONMENTS` in its `platform.env` lists them all; one `DOMAIN`, one `*.DOMAIN` DNS record and certificate for all of them |
+| **Two machines** (the default) | As in the next row, for the apps machine. The dev machine runs no environment | Dev machine: `--role dev`, profiles `forge,jenkins`, no `ENVIRONMENTS`. Apps machine: `--role apps`, profiles `apps,agent`. [hosts.md](hosts.md) |
+| **One machine for everything** | As in the next row | `--role apps`, profiles `apps,jenkins` and then `apps,jenkins,agent`: the controller and the environments share one machine and one engine. Still supported, behind Cloudflare's proxy (the `apps` role opens 80 and 443 to Cloudflare only). It has none of the dev-machine users; the `forge` profile also works there if you want Forgejo. A host without Cloudflare in front is not covered by `ygg install`: set it up by hand ([step 8](#8-prepare-each-machine) lists what to do) and open 80 and 443 in `ufw` yourself |
+| **Several environments on one host** | The environments of the host set the same `agent` (`vps`) and each a distinct `hostSuffix` (`-dev`, `-hml`; production can keep none). `onDemand: true` on those used only now and then | One platform stack; `ENVIRONMENTS` in its `platform.env` lists them all; one `DOMAIN`, one `*.DOMAIN` DNS record and certificate for all of them |
 | **One environment per host** | `hostSuffix` empty; `agent` left out (it defaults to the environment's id) | One platform stack each, with `ENVIRONMENTS` naming its one environment, and its own `DOMAIN` (`example.com`, `staging.example.com`), each with its own `*.DOMAIN` record |
 | **Mixed** | Production on a host of its own; development and homologation sharing another, with their own `agent` and suffixes | As above, per host |
 
@@ -76,14 +81,17 @@ workstation would publish the same ports, though: keep one per machine.
 
 ### What each host needs
 
-- Linux with **Docker Engine** and the **Compose plugin** (v2.24 or later, for `!reset` in the
-  overlays): a VPS or a VM.
+- **Ubuntu 24.04 LTS** for the `dev` and `apps` roles (the installer refuses another version): a
+  VPS or a VM, with an admin user that has `sudo` and logs in with an SSH key. Docker Engine, the
+  Compose plugin (v2.24 or later, for `!reset` in the overlays) and the rest come from
+  `ygg install` ([step 8](#8-prepare-each-machine)).
 - Roughly **2 GB of RAM** for the platform, **4 GB** on the host that also runs the Jenkins
   controller, plus what your applications need in every environment that runs at the same time. A
-  stopped on-demand environment uses no memory.
-- `git`, `bash`, `openssl`, and `python3` with PyYAML.
-- Inbound **443** (and 80, for the HTTP→HTTPS redirect) from wherever the applications are used.
-  Nothing else inbound.
+  stopped on-demand environment uses no memory. The dev machine also runs Forgejo and the checks:
+  see [hosts.md](hosts.md#1-two-machines) for its sizing.
+- `git`, `bash`, `openssl`, and `python3` with PyYAML (the installer adds them).
+- Inbound ports, set by the installer: **dev** 22, 80, 443 and 2222 (Forgejo's git over SSH);
+  **apps** 22, and 80 and 443 only from Cloudflare's address ranges. Nothing else inbound.
 
 ## 1. Install the tools on your machine
 
@@ -242,23 +250,31 @@ For every application in the catalog:
 
 ## 6. Domain and DNS
 
-Follow [dns.md](dns.md) up to and including **A4** (Cloudflare) or **B1** (DuckDNS). By the end
-you have:
+Follow [dns.md](dns.md) up to and including **A4** (Cloudflare) or **B1** (DuckDNS). With the default
+two machines you end up with **two domains on Cloudflare** (the applications' and the sites'; one
+domain also works) and:
 
-- a `*.<DOMAIN>` record (or DuckDNS subdomain) per host, pointing at its public IP. One covers
-  every environment of the host: `heimdall-dev.<DOMAIN>`, `heimdall-hml.<DOMAIN>` and
-  `heimdall.<DOMAIN>` are all one label under it;
-- your DNS provider's API credential, which goes into each host's `acme.env` at step 9.2 or 10.
+- on each domain, a `*.<DOMAIN>` record and the bare-domain record for the **apps machine**'s public
+  IP, **proxied** (orange cloud). One wildcard covers every environment of the machine:
+  `heimdall-dev.<DOMAIN>`, `heimdall-hml.<DOMAIN>` and `heimdall.<DOMAIN>` are all one label under it;
+- on the application domain, records of their own for the **dev machine**'s names, `git` and
+  `jenkins`, pointing at its IP and **DNS only** (grey cloud): git over SSH cannot pass Cloudflare's
+  proxy. A specific record wins over the wildcard ([hosts.md, Domains and Cloudflare](hosts.md#2-domains-and-cloudflare));
+- SSL/TLS mode **Full (strict)** on both zones;
+- one API token, with **Zone Read** and **DNS Edit** on both zones, which goes into each machine's
+  `acme.env` at step 9.2 or 10. For DuckDNS: its token.
 
-Check each one resolves, from any machine:
+Check each name resolves, from any machine:
 
 ```bash
 nslookup yggdrasil.<DOMAIN> 1.1.1.1
+nslookup jenkins.<DOMAIN> 1.1.1.1
 ```
 
-It must print the host's IP. Test a name **under** the domain: the bare `<DOMAIN>` has no record.
+The first prints a Cloudflare address while the record is proxied (the proxy hides the machine's
+IP); the second prints the dev machine's own. Test a name **under** the domain.
 
-The controller's address will be `https://jenkins.<DOMAIN>`, with the `DOMAIN` of the host that
+The controller's address will be `https://jenkins.<DOMAIN>`, with the `DOMAIN` of the machine that
 runs it. Note it down: steps 7 and 9 need it.
 
 ## 7. Create the GitHub App
@@ -378,177 +394,315 @@ To change the repositories later (when you add an application, say), go to the o
 **GitHub Apps**) → **Configure** next to the app → **Repository access**. A repository the app
 isn't installed on gets no Jenkins job branches and never deploys.
 
-## 8. Prepare every host
+## 8. Prepare each machine
 
-On **each** host that runs `proxy` environments, the controller host included: in the default layout, the VPS. The commands are for
-Ubuntu or Debian, over SSH.
+On **each** machine: the dev machine and the apps machine, or the one machine of a single-machine
+setup. What you get, and why each piece exists, is in [hosts.md](hosts.md): read its
+[Users](hosts.md#3-users) and [System settings](hosts.md#4-system-settings) once.
 
-On Ubuntu, once 4.1 and 4.2 have cloned your fork, `scripts/ygg.sh install` in it does 1 to 3 and
-the rest of 4, asking before each one, and `scripts/ygg.sh check` covers 5
-([cli.md](cli.md#check-and-install)). The steps below are what it runs. It also installs the `ygg`
-command; from then on `ygg` works from any directory ([cli.md](cli.md#install)). If you did this step by hand,
-`scripts/ygg.sh self-install` installs it; until then, `scripts/ygg.sh` works in place of `ygg` in the
-steps below.
+You need, before you start:
 
-1. **Docker Engine and the Compose plugin.** Follow
-   [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) for your distribution:
-   add Docker's `apt` repository, then install the packages `docker-ce`, `docker-ce-cli`,
-   `containerd.io`, `docker-buildx-plugin` and `docker-compose-plugin`. Don't use the distribution's
-   own `docker.io` package: its Compose is often too old.
+- A fresh **Ubuntu 24.04 LTS** server.
+- An **admin user** on it (this guide calls it `artur`) with `sudo`, which you log in as over SSH **with a
+  key**. Your public key must be in the admin's `~/.ssh/authorized_keys`. Test it from your own
+  computer: `ssh artur@<host>` must not ask for a password. The installer switches passwords off, and
+  refuses to start if there is no key to let you back in.
+- A **second SSH session** open while you install, in case something locks you out.
 
-   Then let your user run Docker without `sudo`:
+### 8.1 Get the checkout
+
+As the admin:
+
+```bash
+sudo apt update && sudo apt install -y git python3 python3-yaml
+sudo install -d -o "$USER" /opt/yggdrasil
+git clone -b main https://github.com/<owner>/<repository>.git /opt/yggdrasil
+```
+
+- `apt install git python3 python3-yaml`: the little the installer itself needs to start. It installs the
+  rest.
+- `install -d -o "$USER" /opt/yggdrasil`: creates the directory, owned by you for now (`$USER` is filled
+  in by the shell; type it as is). The installer hands it to `ygg`. Keep the path: the rest of this guide
+  uses it, and so do the systemd units of the backup.
+- `git clone -b main …`: your fork's `main` branch, where your catalog is. `<owner>` is the `owner` of
+  `catalog.yaml` and `<repository>` your fork's name (`yggdrasil` unless you renamed it). For example:
+  `git clone -b main https://github.com/acme/yggdrasil.git /opt/yggdrasil`.
+
+A **private** fork needs a credential. Create a read-only
+[deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+for this machine and clone over SSH instead:
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "yggdrasil@$(hostname)" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+```
+
+- `-t ed25519`: the key type. `-N ""`: no passphrase, so `git pull` works unattended.
+- `-C "yggdrasil@$(hostname)"`: a label that tells you, on GitHub, which machine the key belongs to.
+- `-f ~/.ssh/id_ed25519`: where the key is written. That is SSH's default key, so `git` uses it
+  without further configuration. If the file already exists, skip `ssh-keygen` and use it.
+
+Paste the printed public key in your fork → **Settings → Deploy keys → Add deploy key**, with
+*Allow write access* unchecked. Then clone with the SSH URL:
+`git clone -b main git@github.com:<owner>/<repository>.git /opt/yggdrasil`. After the install the checkout
+belongs to `ygg`, who pulls from then on: repeat the key steps as `ygg`, and add that key to the fork too.
+
+### 8.2 Look first
+
+```bash
+cd /opt/yggdrasil
+scripts/ygg.sh check --role dev        # or: --role apps
+```
+
+- `scripts/ygg.sh`: the `ygg` command, run from the checkout. Once step 8.4 has installed it, `ygg` works from
+  any directory.
+- `check`: reads the machine and prints one row per piece, `ok`, `warn` or `missing`, and changes
+  nothing. A new machine has mostly `missing` rows.
+- `--role dev` or `--role apps`: the role to check against. Without it, `check` uses the role the install
+  wrote to `/etc/yggdrasil-role`, and `workstation` (today's checks for a laptop or an older host) if
+  there is none.
+
+### 8.3 Install
+
+```bash
+scripts/ygg.sh install --role dev      # or: --role apps
+```
+
+Run it as the admin, not as `root` (it refuses root) and not with `sudo`: it asks `sudo` itself for each
+thing that needs it. It checks the machine, then goes through the parts below **in this order**, saying
+what it is about to do and asking `Do this?` before each. It skips what is already right, checks the
+machine again after each part, and is safe to run again. If you say no to a part, it moves on to the next.
+The files it writes, with their content, are in [hosts.md, System settings](hosts.md#4-system-settings).
+
+Next to each part is what you would type to do it by hand. Every command is run as the admin with `sudo`.
+
+1. **Packages.** Docker's `apt` repository ([docs.docker.com/engine/install](https://docs.docker.com/engine/install/ubuntu/)),
+   then:
    ```bash
-   sudo usermod -aG docker "$USER"
+   sudo apt install -y git curl openssl python3 apache2-utils ca-certificates python3-yaml python3-cryptography \
+     uidmap dbus-user-session slirp4netns ufw rsync unattended-upgrades \
+     docker-ce docker-ce-cli containerd.io docker-ce-rootless-extras docker-buildx-plugin docker-compose-plugin
    ```
-   - `usermod -aG docker`: adds (`-a`) your user to the group (`-G`) `docker`, whose members may use
-     the Docker socket.
-   - The change applies to new sessions only: `exit` your SSH session and connect again. Then
-     `id -nG` must list `docker`. Until then, Docker commands fail with
-     `permission denied ... docker.sock`.
-
-2. **The other tools**:
+   - `uidmap`, `slirp4netns`, `dbus-user-session` and `docker-ce-rootless-extras`: what rootless Docker needs.
+   - `apache2-utils`: `htpasswd`, for the Traefik dashboard password. `python3-yaml`: PyYAML, which
+     `scripts/catalog.py` needs. `python3-cryptography`: for the [variables store](variables.md).
+   - `rsync`: the nightly backup. `ufw`: the firewall. `unattended-upgrades`: part 4.
+   - Ubuntu's own `docker.io`, `docker-compose` and `containerd`/`runc` packages clash with Docker's.
+     The installer removes them if you agree. By hand:
+     `sudo apt remove docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc`.
+     Images, containers and volumes stay.
+2. **Turn off the machine's own Docker.**
    ```bash
-   sudo apt update && sudo apt install -y git python3 python3-yaml python3-cryptography openssl apache2-utils
+   sudo systemctl disable --now docker.service docker.socket containerd.service
+   sudo systemctl mask docker.service docker.socket containerd.service
+   sudo gpasswd -d <user> docker        # once for each member of: getent group docker
    ```
-   - `python3-yaml`: PyYAML, which `scripts/catalog.py` needs to read the catalog.
-   - `python3-cryptography`: for the [variables store](variables.md), when you use it.
-   - `apache2-utils`: provides `htpasswd`, for the Traefik dashboard password.
-
-3. **The firewall**, on the host and in the provider's panel if it has its own firewall or security
-   group:
+   - `disable --now`: stops them and keeps them from starting at boot.
+   - `mask`: makes them impossible to start, even by an upgrade of `docker-ce`. The Docker packages start the
+     rootful engine; it would answer on `/var/run/docker.sock` to anyone in the `docker` group, which is root.
+   - `gpasswd -d <user> docker`: removes a user from the group. Nobody should be in it.
+3. **System settings.** The sysctl, AppArmor and systemd files of
+   [hosts.md](hosts.md#4-system-settings) (`/etc/sysctl.d/90-yggdrasil.conf`,
+   `/etc/apparmor.d/usr.bin.rootlesskit`, `/etc/systemd/system/user@.service.d/delegate.conf`), then:
    ```bash
-   sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
-   sudo ufw status
+   sudo sysctl --system
+   sudo systemctl restart apparmor.service
+   sudo systemctl daemon-reload
    ```
-   OpenSSH is allowed first, so enabling the firewall doesn't cut your SSH session. `ufw status`
-   should list 22 (OpenSSH), 80 and 443 as `ALLOW`.
-
-4. **Your fork and the secrets directory.** Every host gets two directories:
-
-   | Directory | Holds | In git? |
-   |---|---|---|
-   | `/opt/yggdrasil` | A checkout of your fork: the catalog, the stack files, the scripts, the platform | Yes |
-   | `/etc/yggdrasil` | This host's secrets: `platform.env`, `acme.env`, the GitHub App key, the application env files of each of its environments | **Never** |
-
-   Run these as your own user, one at a time:
-
-   1. **Create the checkout's directory**, owned by you, so you can clone, `git pull` and run the
-      scripts without `sudo`:
-      ```bash
-      sudo install -d -o "$USER" /opt/yggdrasil
-      ```
-      - `install -d`: creates the directory (and any missing parent).
-      - `-o "$USER"`: makes you its owner. `$USER` is filled in by the shell with your user name;
-        type it as is.
-      - `/opt/yggdrasil`: where the checkout goes. Keep this path: the rest of this guide uses it.
-        Any other path works, since the scripts find the repository from their own location.
-
-   2. **Clone your fork** into it:
-      ```bash
-      git clone -b main https://github.com/<owner>/<repository>.git /opt/yggdrasil
-      ```
-      - `-b main`: checks out the `main` branch, where your catalog is.
-      - `<owner>`: the GitHub user or organisation of your fork, the `owner` in `catalog.yaml`
-        (e.g. `acme`).
-      - `<repository>`: your fork's name, the `repository` in `catalog.yaml` (`yggdrasil` unless you
-        renamed it).
-      - `/opt/yggdrasil`: the directory from the previous command.
-
-      For example: `git clone -b main https://github.com/acme/yggdrasil.git /opt/yggdrasil`.
-
-      A **private** fork needs a credential. Create a read-only
-      [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
-      for this host and clone over SSH instead:
-      ```bash
-      ssh-keygen -t ed25519 -N "" -C "yggdrasil@$(hostname)" -f ~/.ssh/id_ed25519
-      cat ~/.ssh/id_ed25519.pub
-      ```
-      - `-t ed25519`: the key type. `-N ""`: no passphrase, so `git pull` works unattended.
-      - `-C "yggdrasil@$(hostname)"`: a label that tells you, on GitHub, which host the key belongs to.
-      - `-f ~/.ssh/id_ed25519`: where the key is written. That is SSH's default key, so `git` uses it
-        without further configuration. If the file already exists, skip `ssh-keygen` and use it.
-
-      Paste the printed public key in your fork → **Settings → Deploy keys → Add deploy key**, with
-      *Allow write access* unchecked. Then clone with the SSH URL:
-      `git clone -b main git@github.com:<owner>/<repository>.git /opt/yggdrasil`.
-
-   3. **Create the secrets directory**:
-      ```bash
-      sudo install -d -m 2750 -o "$USER" -g docker /etc/yggdrasil
-      ```
-      - `-o "$USER"`: you own it, so you can edit its files without `sudo`.
-      - `-g docker`: its group is `docker`. The Jenkins agent reads the application env files from
-        here, and it runs in a container as the user `jenkins` (uid 1000), a member of the host's
-        `docker` group. Through the group it can read them whatever your own user id is. Members of
-        `docker` can already do anything on the host, so this exposes nothing new.
-      - `-m 2750`: you read and write (`7`), the `docker` group reads (`5`), nobody else gets in
-        (`0`). The leading `2` makes every file and subdirectory created inside belong to the
-        `docker` group too.
-      - `/etc/yggdrasil`: the default secrets directory, where `platform.sh` and `deploy.sh` look, and
-        what the agent container mounts. To use another path, export `YGG_SECRETS_DIR=<path>` in your
-        shell profile **and** set `YGG_SECRETS_DIR=<path>` in `platform.env`.
-
-   4. **Copy the two platform env templates** into it:
-      ```bash
-      cp /opt/yggdrasil/env/platform.env.example /etc/yggdrasil/platform.env
-      cp /opt/yggdrasil/env/acme.env.example /etc/yggdrasil/acme.env
-      ```
-      - `platform.env`: the platform's settings for this host (its environments, domain, passwords,
-        Jenkins). You fill it in at step 9.2 or 10.
-      - `acme.env`: the DNS provider's credential, which Traefik uses to get certificates. You fill
-        it in at step 9.2 or 10 too.
-      - Type both lines as they are: the names are fixed, and the templates document every variable.
-
-   5. **Lock the files down**:
-      ```bash
-      chmod 640 /etc/yggdrasil/*.env
-      ```
-      - `640`: you read and write them, the `docker` group reads them, nobody else can. They will
-        hold passwords and API tokens.
-      - `/etc/yggdrasil/*.env`: every env file in the directory, both files above.
-
-5. **Check it**:
+   - `sysctl --system`: loads the new setting, which lets a non-root process bind ports 80 and 443.
+   - `restart apparmor.service`: loads the profile that allows rootless Docker's user namespaces on
+     Ubuntu 24.04.
+4. **Unattended upgrades.** The file `/etc/apt/apt.conf.d/20auto-upgrades` of hosts.md: security updates
+   install themselves.
+5. **Service users.** `ygg` on an apps machine; `ygg`, `ci`, `release`, `renovate` and `dev` on a dev machine:
    ```bash
-   docker run --rm hello-world && docker compose version && python3 /opt/yggdrasil/scripts/catalog.py validate
+   sudo useradd --create-home --user-group --shell /bin/bash ygg
+   sudo useradd --create-home --user-group --shell /usr/sbin/nologin ci
+   sudo chmod 750 /home/ygg /home/ci
    ```
-   - `docker run --rm hello-world`: runs a test container, which prints `Hello from Docker!`.
-   - `docker compose version`: prints the Compose plugin's version: v2.24 or later.
-   - `catalog.py validate`: reads the catalog and prints how many environments, systems and
-     applications it has.
+   - `--create-home --user-group`: a home directory and a group of the same name. `useradd` also gives the user
+     its own range in `/etc/subuid` and `/etc/subgid`, which its rootless engine needs.
+   - `--shell /bin/bash` for the users that log in over SSH (`ygg`, and `dev`); `/usr/sbin/nologin` for
+     `ci`, `release` and `renovate`, which only run services.
+   - `chmod 750`: closes each home to the other users. The users have no password, no `sudo` and are in no
+     privileged group. If the admin user has the same name as one of them, it is left alone.
+6. **The `ci` limits** (dev machine): `/etc/systemd/system/user-<uid>.slice.d/limits.conf` with six CPUs and
+   20 GB (`CPUQuota=600%`, `MemoryMax=20G`), where `<uid>` is `id -u ci`, then `sudo systemctl daemon-reload`.
+7. **SSH.** First your key goes to the SSH users that have none:
+   ```bash
+   sudo install -d -m 700 -o ygg -g ygg /home/ygg/.ssh
+   sudo install -m 600 -o ygg -g ygg ~/.ssh/authorized_keys /home/ygg/.ssh/authorized_keys
+   ```
+   - `install -d -m 700 -o ygg -g ygg`: creates `.ssh`, readable by `ygg` only.
+   - `install -m 600 -o ygg -g ygg <from> <to>`: copies your keys to `ygg`, who owns them, readable by it
+     alone. The installer asks first, and never replaces keys that are there.
 
-## 9. Bring up the controller host
+   Then the drop-in `/etc/ssh/sshd_config.d/00-yggdrasil.conf` of hosts.md (no root login, no passwords,
+   `AllowUsers` the admin and the role's SSH users), and:
+   ```bash
+   sudo sshd -t
+   sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers) '
+   sudo systemctl try-reload-or-restart ssh
+   ```
+   - `sshd -t`: the file's syntax is valid.
+   - `sshd -T`: what SSH will really run with. The four lines must show `no`, `no`, `no` and your users. If
+     another file sets one of them first (cloud images ship `50-cloud-init.conf`), the name `00-…` is
+     what wins; if something still does, remove the drop-in again and find what sets it.
+   - `try-reload-or-restart ssh`: applies it. Open a **new** SSH session to test before you close the old one.
 
-The controller comes up in two passes: first the controller alone, because each agent's secret only
-exists once the controller has created the agent; then with its agent.
+   The installer does the checks itself and puts the file back if they fail.
+8. **The checkout** goes to `ygg`: `sudo chown -R ygg:ygg /opt/yggdrasil && sudo chmod 755 /opt/yggdrasil`.
+   `-R`: everything in it. `755`: others can read it, so `ci` and `release` can run the agent script.
+9. **The secrets directories.**
+   ```bash
+   sudo install -d -m 750 -o ygg -g ygg /etc/yggdrasil
+   sudo install -m 600 -o ygg -g ygg /opt/yggdrasil/env/platform.env.example /etc/yggdrasil/platform.env
+   sudo install -m 600 -o ygg -g ygg /opt/yggdrasil/env/acme.env.example /etc/yggdrasil/acme.env
+   sudo install -d -m 750 -o ci -g ci /etc/yggdrasil-ci
+   sudo install -m 600 -o ci -g ci /opt/yggdrasil/env/agent.env.example /etc/yggdrasil-ci/agent.env
+   ```
+   - `/etc/yggdrasil` is `ygg`'s; every other service user has `/etc/yggdrasil-<user>` (`ci` and `release` get an
+     `agent.env`, the others an empty directory).
+   - `-m 750`: the owner reads and writes, its group reads, nobody else gets in. Files are `600`: the owner only.
+     They hold passwords and tokens.
+   - A file that is already there is never replaced.
+10. **The firewall.** Dev machine:
+    ```bash
+    sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw allow 2222/tcp && sudo ufw enable
+    ```
+    Apps machine: SSH, and 80 and 443 only from Cloudflare's published ranges:
+    ```bash
+    sudo ufw allow OpenSSH
+    { curl -fsS https://www.cloudflare.com/ips-v4; echo; curl -fsS https://www.cloudflare.com/ips-v6; echo; } > ~/cloudflare-ips
+    for range in $(cat ~/cloudflare-ips); do
+      sudo ufw allow proto tcp from "$range" to any port 80,443 comment yggdrasil-cloudflare
+    done
+    sudo install -m 644 -o ygg -g ygg ~/cloudflare-ips /etc/yggdrasil/cloudflare-ips
+    sudo ufw enable
+    ```
+    - `ufw allow OpenSSH` comes first, so turning the firewall on does not cut your session.
+    - `2222/tcp`: Forgejo's git over SSH (the dev machine only).
+    - `from "$range" … comment yggdrasil-cloudflare`: lets one Cloudflare range in on the two web ports and
+      labels the rule, so that a later `ygg install` knows it is its own and can update it.
+    - `cloudflare-ips`: the same ranges, which Traefik trusts for the visitor's address
+      ([hosts.md](hosts.md#client-addresses)). Rootless Docker publishes ports as ordinary
+      processes, so these rules apply to them: Docker no longer goes around `ufw`.
+    - If Cloudflare's list cannot be downloaded, the installer changes nothing about the firewall.
+      It never opens 80 and 443 to everyone to make up for it.
+11. **Rootless Docker for each service user.** For `ygg` (and the same for each of the others):
+    ```bash
+    sudo loginctl enable-linger ygg
+    ```
+    then, **as that user** (`ssh ygg@<host>`; for a user that cannot log in, run each command through
+    `sudo -u ci env XDG_RUNTIME_DIR=/run/user/$(id -u ci) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u ci)/bus <command>`):
+    ```bash
+    mkdir -p ~/.config/systemd/user/docker.service.d
+    nano ~/.config/systemd/user/docker.service.d/override.conf      # the lines of hosts.md
+    dockerd-rootless-setuptool.sh install
+    systemctl --user daemon-reload
+    systemctl --user enable --now docker
+    echo "export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> ~/.profile
+    ```
+    - `loginctl enable-linger`: starts the user's systemd at boot and keeps it running with nobody logged in.
+      Without it the engine stops with the user's last session.
+    - `override.conf`: switches the engine's network and port driver to `slirp4netns`, so that Traefik sees
+      the real address of each visitor ([hosts.md, Rootless Docker](hosts.md#5-rootless-docker)).
+    - `dockerd-rootless-setuptool.sh install`: Docker's own tool; it makes the user's `docker.service`.
+    - `systemctl --user enable --now docker`: starts the engine now and at every boot.
+    - The `~/.profile` line points the user's `docker` command at its own engine. (The installer keeps it
+      between marker comments, so running it again replaces the line instead of adding another.)
+12. **The nightly backup**, as `ygg`:
+    ```bash
+    mkdir -p ~/.config/systemd/user
+    cp /opt/yggdrasil/platform/systemd/yggdrasil-backup.service /opt/yggdrasil/platform/systemd/yggdrasil-backup.timer ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now yggdrasil-backup.timer
+    ```
+    The timer fires at 03:30. It fails, loudly, until you write `backup.conf`: see
+    [hosts.md, Backups](hosts.md#7-backups-and-restore).
+13. **The role**: `echo dev | sudo tee /etc/yggdrasil-role` (or `apps`). Later `ygg check` and `ygg install`
+    without `--role` use it.
+
+When it finishes it prints the check again. Every row should be `ok`. The rows about the engines and the
+isolation of `ci` and `release` need `sudo` without a password prompt; run `sudo -v` first so they are
+checked.
+
+### 8.4 The `ygg` command
+
+```bash
+scripts/ygg.sh self-install
+```
+
+This links `/usr/local/bin/ygg` to the checkout and installs tab completion, so `ygg` works from any
+directory ([cli.md](cli.md#install)). Until then, `scripts/ygg.sh` works in its place in the steps below.
+
+### 8.5 Check it
+
+From your own computer, log in as `ygg` (the install copied your key) and test its engine:
+
+```bash
+ssh ygg@<host>
+docker info --format '{{.SecurityOptions}}' && docker run --rm hello-world && docker compose version
+python3 /opt/yggdrasil/scripts/catalog.py validate
+```
+
+- `docker info --format '{{.SecurityOptions}}'`: must list `name=rootless`. If it fails with
+  `permission denied` or cannot connect, see [Troubleshooting](#troubleshooting).
+- `docker run --rm hello-world`: runs a test container, which prints `Hello from Docker!`.
+- `docker compose version`: prints the Compose plugin's version: v2.24 or later.
+- `catalog.py validate`: reads the catalog and prints how many environments, systems and applications it has.
+
+**From here, you work as `ygg`** (`ssh ygg@<host>`) for everything about the platform: the env files,
+`platform.sh`, `ygg vars`, `ygg deploy`, `ygg backup`. You work as the admin (`ssh artur@<host>`) for
+`sudo`, `ygg check`, `ygg install` and `ygg agent`.
+
+### 8.6 Not on Ubuntu 24.04, or not behind Cloudflare
+
+`ygg install --role dev|apps` refuses another system. A host like that has to do the same by hand: a
+rootless Docker engine for the user that will run `platform.sh` (parts 1, 2, 3 and 11 above, with your
+own user), `net.ipv4.ip_unprivileged_port_start=80`, and your own firewall. `platform.sh` needs only that
+user's engine; it finds the socket from `DOCKER_HOST`, else `/run/user/<uid>/docker.sock`, and refuses a
+rootful one.
+
+## 9. The dev machine
+
+Everything in this step, and in step 10, is done as `ygg` (`ssh ygg@<host>`), in `/opt/yggdrasil`. The
+dev machine runs Traefik, the monitoring, **Forgejo** (profile `forge`) and the **Jenkins controller**
+(profile `jenkins`). It is the controller host. The controller comes up in two passes: first the
+controller alone, because each agent's secret only exists once the controller has created the agent;
+then the agents. On the default two machines the agent that deploys runs on the apps machine
+([step 10](#10-the-apps-machine)); the `ci` and `release` build agents on this machine are started with
+`ygg agent` ([cli.md](cli.md#build-agents)). In a single-machine setup the deploy agent runs here, as
+9.5 says.
 
 ### 9.1 The GitHub App key
 
-Copy the `.pem` from [step 7.4](#74-generate-the-private-key) to the host. From your machine, in the
-folder it was downloaded to (PowerShell on Windows works too):
+Copy the `.pem` from [step 7.4](#74-generate-the-private-key) to the machine, to `ygg`. From your
+computer, in the folder it was downloaded to (PowerShell on Windows works too):
 
 ```bash
-scp <app>.private-key.pem <user>@<controller-host>:~/
+scp <app>.private-key.pem ygg@<controller-host>:~/
 ```
 
 - `<app>.private-key.pem`: the downloaded file's name, e.g. `acme-yggdrasil.2026-09-25.private-key.pem`.
-- `<user>@<controller-host>`: your SSH login on the host, e.g. `ubuntu@203.0.113.10`.
-- `:~/`: puts it in your home directory on the host.
+- `ygg@<controller-host>`: the `ygg` user on the dev machine, e.g. `ygg@203.0.113.10`.
+- `:~/`: puts it in `ygg`'s home directory.
 
-Then, on the host, in your home directory, convert it and delete the original:
+Then, as `ygg` on the machine, in its home directory, convert it and delete the original:
 
 ```bash
 cd ~
 openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in <app>.private-key.pem -out /etc/yggdrasil/github-app.pem
-chmod 600 /etc/yggdrasil/github-app.pem
-[ "$(id -u)" = 1000 ] || sudo chown 1000 /etc/yggdrasil/github-app.pem
+chmod 644 /etc/yggdrasil/github-app.pem
 rm <app>.private-key.pem
 ```
 
 - `openssl pkcs8 -topk8 -nocrypt`: rewrites the key as an unencrypted PKCS#8 key, the only format
   Jenkins' GitHub App credential accepts. GitHub's download is PKCS#1.
-- `chmod 600`: only the owner reads it.
-- The `chown` line: the Jenkins controller runs as uid 1000 and must be able to read the key. If
-  your own uid (`id -u`) is 1000, you already own it and the line does nothing.
+- `chmod 644`: the Jenkins controller runs as uid 1000 *inside its container*, which in a rootless
+  engine is not `ygg` (that is container root) but an id from `ygg`'s subordinate range. It reads the
+  file as "other", so "other" needs the read bit. Nobody else on the machine can reach it: the
+  directory `/etc/yggdrasil` is `750`, owned by `ygg`.
 
 ### 9.2 The env files, first pass
 
@@ -561,16 +715,17 @@ rm <app>.private-key.pem
 
 | Variable | Value |
 |---|---|
-| `ENVIRONMENTS` | The ids of the environments this host runs, comma-separated, no spaces, exactly as in `catalog.yaml`: `development,homologation,production` on the default VPS. One platform serves them all |
-| `COMPOSE_PROFILES` | `jenkins` (**not** `jenkins,agent` yet) |
-| `DOMAIN` | This host's domain, e.g. `example.com`. Every environment of the host is under it, told apart by `hostSuffix` |
+| `ENVIRONMENTS` | **Empty** on a dev machine, which runs no environment (`platform.sh` refuses it without the `apps` profile). On a single machine: the ids of the environments it runs, comma-separated, no spaces, exactly as in `catalog.yaml`: `development,homologation,production` |
+| `COMPOSE_PROFILES` | `forge,jenkins` (**not** `agent`). A single machine: `apps,jenkins` (**not** `apps,jenkins,agent` yet) |
+| `DOMAIN` | This machine's domain, e.g. `example.com`. `git.` and `jenkins.` are under it |
+| `EXTRA_DOMAINS` | Empty on the dev machine |
+| `CLOUDFLARE_PROXIED` | `false`: the dev machine's names are DNS only. On a single machine behind Cloudflare, `true` ([hosts.md](hosts.md#client-addresses)) |
 | `ACME_EMAIL` | Your e-mail address: the Let's Encrypt account's contact. Not an `@example.com` one |
 | `ACME_DNS_PROVIDER` | `cloudflare`, `duckdns`, ... |
 | `ACME_CA_SERVER` | **Uncomment** it (remove the `#`): the staging CA, for this first run |
 | `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. See below |
 | `GRAFANA_ADMIN_PASSWORD` | A password for Grafana's `admin` user |
-| `YGGDRASIL_STATUS_TOKEN` | A random token, at least 32 characters. The console needs it: keep a copy in your password manager |
-| `DOCKER_GID` | The id of the host's `docker` group: the output of `getent group docker \| cut -d: -f3` |
+| `YGGDRASIL_STATUS_TOKEN` | A random token, at least 32 characters. Compose wants it on every machine, even one without the status API; the console needs it where there is one: keep a copy in your password manager |
 | `JENKINS_URL` | `https://jenkins.<DOMAIN>/` |
 | `JENKINS_ADMIN_PASSWORD` | A password for the Jenkins `admin` user |
 | `GITHUB_APP_ID` | The App ID from [step 7.3](#73-note-the-app-id) |
@@ -596,13 +751,12 @@ grep -E '^(GRAFANA_ADMIN_PASSWORD|YGGDRASIL_STATUS_TOKEN|JENKINS_ADMIN_PASSWORD)
   the parts because the hash contains `/`.
 - The last line prints the generated passwords and token: save them in your password manager.
 
-`DOCKER_GID` is the group that owns the Docker socket. Traefik, Alloy and the status API don't
-hold the socket: each one reads Docker through a socket proxy of its own, which allows only the
-read-only requests that client makes, and the proxies run in that group. With a wrong value they
-can't reach the socket: the console shows every application `unknown` or `down`, Traefik serves no
-routes, and the proxies' logs say `permission denied`.
+There is no Docker group or socket setting any more (`DOCKER_GID` is gone). `platform.sh` finds `ygg`'s
+own engine and mounts its socket. Traefik, Alloy and the status API don't hold the socket: each one
+reads Docker through a socket proxy of its own, which allows only the read-only requests that client
+makes, and the proxies run as container root, which is `ygg` on the host.
 
-Leave the agent section for 9.5.
+Leave the agent section for 9.5, and the first Forgejo account for 9.6.
 
 **With the variables store** ([variables.md](variables.md)), fill in both files as above, then
 move them into the encrypted store, which becomes their only source (skip this to keep the files):
@@ -620,8 +774,9 @@ either way. Check the settings:
 /opt/yggdrasil/scripts/platform.sh config > /dev/null && echo "platform.env OK"
 ```
 
-It prints `platform.env OK`, or names the missing variable. `platform.sh up` checks the rest
-(each of `ENVIRONMENTS` against the catalog, the Jenkins variables) before starting anything.
+It prints `platform.env OK`, or names the missing variable (it also renders Traefik's configuration,
+`traefik.yml`, from the settings, and stops if they are wrong). `platform.sh up` checks the rest (each of
+`ENVIRONMENTS` against the catalog, the Jenkins variables) before starting anything.
 
 ### 9.3 Start it and check the certificate
 
@@ -630,7 +785,7 @@ It prints `platform.env OK`, or names the missing variable. `platform.sh up` che
 ```
 
 The first start builds images and takes several minutes. It returns once the services are up, with a
-table of them. Then follow [dns.md, Bring it up](dns.md#3-start-the-platform-against-the-staging-ca)
+table of them: on the dev machine `forgejo`, `jenkins` and `traefik` are `(healthy)`. Then follow [dns.md, Bring it up](dns.md#3-start-the-platform-against-the-staging-ca)
 from step 3:
 
 1. Read Traefik's errors with `docker logs yggdrasil-traefik-1 2>&1 | grep -iE 'acme|error' | tail -20`.
@@ -645,7 +800,8 @@ from step 3:
    docker volume rm yggdrasil_letsencrypt
    /opt/yggdrasil/scripts/platform.sh up
    ```
-   From your computer, `curl -I https://jenkins.<DOMAIN>/login` now works without `-k`.
+   From your computer, `curl -I https://jenkins.<DOMAIN>/login` now works without `-k`, and
+   `https://git.<DOMAIN>` shows Forgejo's sign-in page.
 
 ### 9.4 Jenkins and the webhook
 
@@ -665,18 +821,21 @@ from step 3:
 
 ### 9.5 The env files, second pass: this host's agent
 
+Only for a single machine that runs the environments too. On two machines the deploy agent is on the
+apps machine: go to 9.6, then step 10.
+
 Under **Manage Jenkins → Nodes → \<this host's agent\>** (`vps`), copy the secret: the long
 hexadecimal string after `-secret` in the connection command. Then, in `platform.env`:
 
 | Variable | Value |
 |---|---|
-| `COMPOSE_PROFILES` | `jenkins,agent` |
+| `COMPOSE_PROFILES` | `apps,jenkins,agent` |
 | `JENKINS_AGENT_NAME` | The agent's name: the `agent` this host's environments set in the catalog (`vps`), or the environment's id when it sets none |
 | `JENKINS_AGENT_SECRET` | The secret |
 | `JENKINS_AGENT_URL` | `http://jenkins:8080/`: on this host, the agent reaches the controller over the Docker network |
 
-The agent runs Docker through the host's socket itself, in the `DOCKER_GID` group from 9.2. With a
-wrong value, deploys fail with `permission denied ... docker.sock`. Then:
+The agent drives `ygg`'s engine through its socket. It runs as container root, which is `ygg` on the host:
+it can do what `ygg` can, and no more. Then:
 
 ```bash
 /opt/yggdrasil/scripts/platform.sh up
@@ -686,14 +845,36 @@ The node now shows as connected in Jenkins.
 
 One agent deploys to every environment of the host, with two executors; deploys of one application
 never overlap. If this host's environments are all `trigger: manual` with no `agent`, Jenkins has
-no agent for them: leave `COMPOSE_PROFILES=jenkins`.
+no agent for them: leave `COMPOSE_PROFILES=apps,jenkins`.
 
-## 10. Bring up the other environment hosts
+### 9.6 The first Forgejo account
 
-For each other host, prepared as in step 8, once the controller is up (step 9). The default layout
-has none: its one VPS is the controller host, so skip to the `ports` environments below. Another
-host's env files are simpler, because the controller is elsewhere. Each host has its own variables
-store, if you use one: after filling in the files, `ygg vars init` and
+Forgejo (profile `forge`) is at `https://git.<DOMAIN>`: registration is closed and nothing is visible
+without signing in, so the first account is made from the command line, once, as `ygg`:
+
+```bash
+docker exec "$(docker ps -q --filter label=com.docker.compose.project=yggdrasil --filter label=com.docker.compose.service=forgejo)" \
+  forgejo admin user create --admin --username <name> --email <you@example.com> --random-password
+```
+
+- `docker ps -q --filter label=…`: prints the id of the running Forgejo container. Compose puts these two
+  labels on every container, so the command does not depend on its name, which varies with the Compose
+  version.
+- `docker exec <id> forgejo admin user create`: runs Forgejo's own command in that container.
+- `--admin`: a site administrator. `--username`, `--email`: yours.
+- `--random-password`: makes a password and prints it once (`generated random password is …`). Sign in with
+  it at `https://git.<DOMAIN>` and change it.
+
+Importing the repositories, the bot accounts and the webhooks come with the next parts of the move to
+Forgejo; until then Jenkins keeps building from GitHub.
+
+## 10. The apps machine
+
+For each apps machine (and any other host that runs environments), prepared as in step 8 with
+`--role apps`, once the controller is up (step 9). Everything here is done as `ygg`. In a
+single-machine setup the machine is the controller host, so skip to the `ports` environments below.
+This host's env files are simpler, because the controller is elsewhere. Each host has its own
+variables store, if you use one: after filling in the files, `ygg vars init` and
 `ygg vars import --all` there, as in [9.2](#92-the-env-files-first-pass).
 
 - `acme.env`: the DNS credential, as in 9.2.
@@ -701,15 +882,16 @@ store, if you use one: after filling in the files, `ygg vars init` and
 
   | Variable | Value |
   |---|---|
-  | `ENVIRONMENTS` | This host's environment ids, comma-separated, e.g. `staging` |
-  | `COMPOSE_PROFILES` | `agent` |
-  | `DOMAIN` | **This** host's domain, e.g. `staging.example.com` |
+  | `ENVIRONMENTS` | This host's environment ids, comma-separated, e.g. `development,homologation,production` |
+  | `COMPOSE_PROFILES` | `apps,agent` (**`apps`**: `ENVIRONMENTS` is refused without it) |
+  | `DOMAIN` | **This** machine's domain, e.g. `example.com` |
+  | `EXTRA_DOMAINS` | More domains it serves, e.g. `example.org` for the static sites. Each gets its own certificate |
+  | `CLOUDFLARE_PROXIED` | `true`: the machine is behind Cloudflare's proxy. Needs `/etc/yggdrasil/cloudflare-ips`, which `ygg install --role apps` wrote |
   | `ACME_*`, `TRAEFIK_DASHBOARD_USERS`, `GRAFANA_ADMIN_PASSWORD` | As in 9.2, `ACME_CA_SERVER` uncommented for the first run |
   | `YGGDRASIL_STATUS_TOKEN` | A new `openssl rand -hex 32`: one token per host, covering all its environments |
   | `JENKINS_URL` | The **controller's** URL: `https://jenkins.<controller's DOMAIN>/` |
   | `JENKINS_AGENT_NAME`, `JENKINS_AGENT_SECRET` | From **Manage Jenkins → Nodes → \<this host's agent\>** on the controller |
   | `JENKINS_AGENT_URL` | **Empty**: the agent then dials `JENKINS_URL` |
-  | `DOCKER_GID` | This host's `getent group docker \| cut -d: -f3`, as in 9.2 |
   | `JENKINS_ADMIN_PASSWORD`, `GITHUB_APP_*` | Not needed: leave them empty |
 
 Then, as on the controller host:
@@ -721,7 +903,7 @@ Then, as on the controller host:
 4. Put the `#` back in front of `ACME_CA_SERVER`, then
    `platform.sh down`, `docker volume rm yggdrasil_letsencrypt`, `platform.sh up`.
 
-The agent dials the controller out over a WebSocket on 443, so this host needs no inbound port for
+The agent dials the controller out over a WebSocket on 443, so this machine needs no inbound port for
 Jenkins. Its node turns connected in Jenkins.
 
 **`ports` environments** (`local`, on a developer's workstation) need no platform, agent or DNS: `deploy.sh` publishes
@@ -740,7 +922,11 @@ scripts/deploy.sh local shop-api ../shop-api dev
 
 ### Firewall
 
-Docker publishes ports around `ufw`/`firewalld`. In these stacks only Traefik publishes ports (80 and 443): no other service has a `ports:` entry in `proxy` mode. Metrics, the status API's internal port and Prometheus stay on the Docker networks. Keep it that way when writing stack files.
+A rootless engine publishes ports as ordinary listening processes, so the `ufw` rules of step 8 apply to
+them (rootful Docker went around `ufw`). In these stacks only Traefik publishes ports (80 and 443; and
+Forgejo's 2222 on the dev machine): no other service has a `ports:` entry in `proxy` mode. Metrics, the
+status API's internal port and Prometheus stay on the Docker networks. Keep it that way when writing stack
+files.
 
 ## 11. Application env files
 
@@ -769,16 +955,17 @@ step describes what goes in; the files below are for a host without a store.
 opens it ([cli.md](cli.md#on-a-machine-without-a-store)). By hand:
 
 ```bash
-install -d -m 2750 /etc/yggdrasil/<environment>
+install -d -m 750 /etc/yggdrasil/<environment>
 nano /etc/yggdrasil/<environment>/<application>.env
-chmod 640 /etc/yggdrasil/<environment>/<application>.env
+chmod 600 /etc/yggdrasil/<environment>/<application>.env
 ```
 
+- Run as `ygg`, who owns `/etc/yggdrasil`.
 - `<environment>`: one of this host's environment ids, e.g. `development`. `<application>`: the
   application's id, e.g. `shop-api`.
-- `install -d -m 2750`: creates the environment's directory, readable by the `docker` group like its
-  parent, so the Jenkins agent can read the files in it.
-- `chmod 640`: you read and write the file, the agent reads it through the group.
+- `install -d -m 750`: creates the environment's directory, for `ygg` alone.
+- `chmod 600`: only `ygg` reads and writes the file. The deploy agent reads it as container root, which
+  is `ygg` on the host, so it needs no group.
 
 What goes in it:
 
@@ -827,7 +1014,7 @@ change only through pull requests.
 
 | Check | Where | Expected |
 |---|---|---|
-| Platform containers | `/opt/yggdrasil/scripts/platform.sh ps` on each host | Every service `Up`; `traefik`, `status` and `console` also `(healthy)`. `jenkins` only on the controller host, `agent` where the profile is on |
+| Platform containers | `/opt/yggdrasil/scripts/platform.sh ps` on each host | Every service `Up`; `traefik`, `status` and `console` also `(healthy)`. `forgejo` and `jenkins` only on the dev machine (the controller host), `agent` where the profile is on. Run as `ygg` |
 | Certificates | `https://yggdrasil.<DOMAIN>` for each host | No browser warning |
 | Webhooks | GitHub App → Advanced → Recent Deliveries | Green checks |
 | Agents | Jenkins → Manage Jenkins → Nodes | Every agent connected |
@@ -883,7 +1070,7 @@ Day to day from here: [README.md#day-to-day](../README.md#day-to-day).
 | Each deploy: `scripts/deploy.sh` and `stacks/` | A fresh clone of your fork's `main`, made by the agent for the build |
 | `platform.sh`, the status API, Prometheus, hand deploys | That host's `/opt/yggdrasil` |
 
-So a change to the catalog or the stack files goes to `main` first, then to every host:
+So a change to the catalog or the stack files goes to `main` first, then to every host, as `ygg`:
 
 ```bash
 cd /opt/yggdrasil && git pull
@@ -958,10 +1145,10 @@ production on the VPS, say): no new platform, agent or DNS record.
 
 1. **Catalog:** add it to `environments`, in promotion order, with its options, and push to `main`.
 2. **DNS:** the host's `*.<DOMAIN>` record, as in [step 6](#6-domain-and-dns).
-3. **Host:** prepare it as in [step 8](#8-prepare-every-host).
+3. **Host:** prepare it as in [step 8](#8-prepare-each-machine).
 4. **Apply:**
    - On the controller host, pull and restart Jenkins as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog). Jenkins creates the new agent.
-   - Bring the new host up as in [step 10](#10-bring-up-the-other-environment-hosts), with the new agent's secret.
+   - Bring the new host up as in [step 10](#10-the-apps-machine), with the new agent's secret.
    - `python3 github/rulesets.py`, if it's a release environment: `main` now also requires its `deploy/<id>`.
 5. **Env files:** for each application on the new host, as in [step 11](#11-application-env-files).
 
@@ -977,23 +1164,32 @@ A system is only a grouping: add it with its applications to `catalog.yaml`, the
 
 ## Troubleshooting
 
-A service's log: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, e.g. `yggdrasil-jenkins-1`,
+A service's log, as `ygg`: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, e.g. `yggdrasil-jenkins-1`,
 `yggdrasil-agent-1`. (`platform.sh logs <service>` follows it live; Ctrl+C to stop.)
 
 | Symptom | Likely cause |
 |---|---|
 | `required variable ... is missing a value` | A variable of `platform.env` is empty: see [9.2](#92-the-env-files-first-pass) |
 | `platform: '...' (ENVIRONMENTS in ...) is not an environment in catalog.yaml` | A typo in `ENVIRONMENTS` (comma-separated, no spaces), or the host's checkout is behind: `git pull` in `/opt/yggdrasil` |
-| `platform: JENKINS_AGENT_NAME must be set ...` (or `JENKINS_AGENT_SECRET`) | `COMPOSE_PROFILES` includes `agent` before the agent exists: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) and [10](#10-bring-up-the-other-environment-hosts) |
-| `permission denied ... docker.sock` when you run `docker` | Your user isn't in the `docker` group, or you haven't reconnected since adding it ([8.1](#8-prepare-every-host)) |
-| `permission denied ... docker.sock` in a Jenkins build, or in the log of a `yggdrasil-*docker-proxy-1` | `DOCKER_GID` isn't the host's `docker` group id ([9.2](#92-the-env-files-first-pass)) |
+| `platform: JENKINS_AGENT_NAME must be set ...` (or `JENKINS_AGENT_SECRET`) | `COMPOSE_PROFILES` includes `agent` before the agent exists: see [9.5](#95-the-env-files-second-pass-this-hosts-agent) and [10](#10-the-apps-machine) |
+| `Cannot connect to the Docker daemon at unix:///var/run/docker.sock` | `docker` is using the machine's own engine, which is switched off and masked. There is no `docker` group and no rootful engine: Docker belongs to `ygg`. Log in as `ygg` (`ssh ygg@<host>`), whose login shell points `docker` at its own engine |
+| `permission denied` on `/run/user/<uid>/docker.sock` | You are another user than the socket's owner. A rootless socket is private to its user: the admin cannot use `ygg`'s engine, and `ci` cannot use `ygg`'s (`ygg check` makes sure of that). Run the command as the user the engine belongs to; `ygg agent …` does that for `ci` and `release` |
+| `no rootless Docker engine for <user>: run 'ygg install'` (from `platform.sh`, `agent.sh` or `backup.sh`) | The user has no running engine: `ygg install` was not run for this role, or its `docker.service` stopped (`systemctl --user status docker`, as that user). A `docker` run by `sudo -u` also needs `XDG_RUNTIME_DIR` set |
+| `the Docker engine at ... runs as root; the platform runs on rootless Docker only` | `DOCKER_HOST` or the socket points at a rootful engine. Use the user's own ([hosts.md](hosts.md#5-rootless-docker)) |
+| Traefik's access log, or heimdall-api's rate limit, sees one address (Cloudflare's, or an internal one) for everyone | Two different causes. **An internal address** for every client: the engine is not on `slirp4netns`. `ygg check` shows the "client addresses" row; `ygg install` writes `override.conf`, and the engine must restart after it (`systemctl --user restart docker`, as that user). **Cloudflare's address**, on the apps machine: `CLOUDFLARE_PROXIED` is `false`, so Traefik trusts no forwarded header. Set it `true`, make sure `/etc/yggdrasil/cloudflare-ips` exists (`ygg install --role apps`), and `platform.sh up`. A client that reaches the machine without Cloudflare is refused by the firewall |
+| The engine is not running after a reboot, or stops when you log out | Linger is off for that user: `loginctl enable-linger <user>` (`ygg install` does it; `ygg check` shows the "linger" row). Without it the user's systemd, and the engine under it, stop with its last session |
 | `blocked request` in the log of a `yggdrasil-*docker-proxy-1`; with it the status API logs `docker proxy answered 403`, Traefik loses its routes or Alloy stops shipping logs | That client asked Docker for something its proxy's allowlist in `platform/compose.yml` doesn't allow, typically after an upgrade of Traefik or Alloy. The log line names the request: check it against the client before adding it ([status-api.md, Docker access](status-api.md#docker-access)) |
 | `/etc/yggdrasil/github-app.pem` is a directory | `platform.sh up` ran with the `jenkins` profile before the key existed, and Docker created a directory in its place. `sudo rm -r` it, then do [9.1](#91-the-github-app-key) |
 | Jenkins starts, but with no jobs or credentials errors | `GITHUB_APP_ID` wrong, the key not converted to PKCS#8, or not readable by uid 1000 ([9.1](#91-the-github-app-key)). The Jenkins log says which |
 | A job's scan finds no branches | Expected before the first release (no `Jenkinsfile` on `main` yet). Otherwise, the GitHub App isn't installed on that repository |
 | An agent stays offline | Wrong `JENKINS_AGENT_SECRET` or `JENKINS_AGENT_NAME`, or `JENKINS_URL` not reachable from that host. The agent's log says which |
 | A new application or environment doesn't appear in Jenkins or the console | The containers still see the old catalog: restart them as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog) |
-| `deploy: missing or unreadable env file ...` | The application's env file isn't at `/etc/yggdrasil/<environment>/<application>.env`, or the agent can't read it: the directories must be group `docker` with mode `2750`, the file `640` ([8.4](#8-prepare-every-host), [11](#11-application-env-files)) |
+| `deploy: missing or unreadable env file ...` | The application's env file isn't at `/etc/yggdrasil/<environment>/<application>.env`, or the agent can't read it: `ygg` must own the directories (`750`) and the file (`600`) ([8.3, part 9](#83-install), [11](#11-application-env-files)). A host moved from the earlier guide still has the old owner and group: [hosts.md, Upgrading](hosts.md#9-upgrading-a-host-from-rootful-docker) |
+| `platform: ENVIRONMENTS is set but COMPOSE_PROFILES lacks apps` | Add `apps` to `COMPOSE_PROFILES`: the status API and the console moved to that profile |
+| `platform: no last-good copy ...` or `the last-good copy ... has no traefik.yml` | `--last-good` reads what the last successful `up` from the variables store kept. A copy from before Traefik's configuration became a file lacks `traefik.yml`: run one `platform.sh up` from the store first |
+| `CLOUDFLARE_PROXIED is true but there is no <secrets>/cloudflare-ips` | Run `ygg install --role apps` as the admin: it downloads Cloudflare's ranges |
+| `ygg check` says ssh `is there but sshd runs with ...` | Another file sets that SSH option before `00-yggdrasil.conf`: `sudo sshd -T` shows the winner, `grep -ri <option> /etc/ssh/sshd_config /etc/ssh/sshd_config.d`. See [hosts.md](hosts.md#etcsshsshd_configd00-yggdrasilconf) |
+| The nightly backup fails (`journalctl --user -u yggdrasil-backup`, as `ygg`) | `missing backup.conf`, `BACKUP_TARGET is not set`, `no items in …`: [hosts.md, Backups](hosts.md#7-backups-and-restore). `Host key verification failed` or `Permission denied (publickey)`: the receiving machine's host key was not accepted once by hand, or its `authorized_keys` line is wrong |
 | A **Build with Parameters → `DEPLOY_TO`** build waits forever | The `manual` environment has no `agent` in the catalog, so Jenkins has no node for it. Set `agent`, or deploy it by hand with `scripts/deploy.sh` |
 | An application is `stopped` right after a Jenkins deploy | Expected in an on-demand environment that was stopped: the deploy checked the new version and stopped it again. `ygg env start <environment>` ([On-demand environments](#on-demand-environments)) |
 | `YGG_ENVIRONMENT is set by scripts/deploy.sh` from `docker compose` | A stack's proxy overlay used without `deploy.sh`, which exports it. Deploy with `deploy.sh`, or export `YGG_ENVIRONMENT=<environment>` and `-p <application>-<environment>` |

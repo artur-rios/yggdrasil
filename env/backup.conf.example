@@ -3,8 +3,9 @@
 # Never commit the copy. Not read by Compose: NAME=value lines, then one item per line. Comments and
 # empty lines are fine, but only on their own lines.
 
-# Where the backups go, as rsync writes it: <user>@<host>:<path>. Required. The other machine keeps what
-# it receives under the path (see docs/hosts.md for its authorized_keys line, restricted to rrsync).
+# Where the backups go, as rsync writes it: <user>@<host>:<path>. Required. The other machine's
+# authorized_keys line for the key restricts it to rrsync in one directory (docs/hosts.md), and the path
+# is relative to that directory: <user>@<host>:. is the directory itself.
 BACKUP_TARGET=
 
 # The ssh key that logs in there. Default: ~/.ssh/yggdrasil-backup
@@ -23,7 +24,7 @@ BACKUP_TARGET=
 #
 # On the dev machine (Forgejo, Jenkins, the registry):
 # forgejo
-# volume yggdrasil_jenkins_home
+# volume yggdrasil_jenkins
 #
 # On the apps machine (an app's database):
 # postgres myapp-db-1 postgres

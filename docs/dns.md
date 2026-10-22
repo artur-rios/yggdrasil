@@ -11,6 +11,11 @@ DNS provider must:
 - let Traefik create TXT records through an API: the `_acme-challenge` record that proves you own
   the domain.
 
+A machine can serve **more than one domain**: `DOMAIN` and, in `EXTRA_DOMAINS`, others (the default
+setup has two Cloudflare zones, one for applications and APIs and one for static and docs sites).
+Traefik gets a certificate for each domain and its wildcard, and the DNS provider must manage all of
+them. [hosts.md](hosts.md#2-domains-and-cloudflare) explains the layout of the two machines.
+
 > **Coming from [setup.md](setup.md) step 6?** Do only **A1 to A4** (Cloudflare) or **B1**
 > (DuckDNS) now, then go back to setup.md. You write the host's files (A5 or B2) at setup step 9.2,
 > or 10 for a host without the controller, and you start the platform at 9.3. That step sends you
@@ -24,7 +29,7 @@ This guide covers two ways to do it:
 | Host names | `heimdall.example.dev` | `heimdall.yourname.duckdns.org` |
 | Hosts | Any number: `example.dev` for one, `staging.example.dev` for another, ... | One DuckDNS subdomain per host (5 free) |
 | Environments per host | Any number, told apart by `hostSuffix`: `heimdall-dev.example.dev`, `heimdall-hml.example.dev` | The same: `heimdall-dev.yourname.duckdns.org` |
-| Extras | Optional proxy: hides the host's IP, DDoS protection, caching | None |
+| Extras | Optional proxy: hides the host's IP, DDoS protection, caching. Several domains on one host (`EXTRA_DOMAINS`) | None, and one domain only |
 | Reliability | Production grade | A free, volunteer-run service. Fine for personal projects and trials |
 
 For anything other people depend on, prefer a domain of your own.
@@ -92,15 +97,22 @@ Your domain → **DNS → Records → Add record**, one record per host:
 |---|---|---|---|
 | `A` | `*` | The host's public IP (**not** the example `203.0.113.10`) | **DNS only** (grey cloud) to start |
 
-With the default layout, that one record is all: the VPS runs development, homologation and
-production under the one `DOMAIN`. Only another host, with a `DOMAIN` of its own, needs another
-record, named after it: `DOMAIN=staging.example.dev` → record `*.staging`.
+With one host, that one record is all: it runs development, homologation and production under the
+one `DOMAIN`. Only another host, with a `DOMAIN` of its own, needs another record, named after it:
+`DOMAIN=staging.example.dev` → record `*.staging`.
+
+**With two machines and two domains** (the default setup, [hosts.md](hosts.md#2-domains-and-cloudflare)),
+make the records on **each** zone for the **apps machine**: `*` and the bare domain (the apps machine's
+`DOMAIN` and `EXTRA_DOMAINS` are both served by it). Then on the zone of the machine's `DOMAIN` add the
+**dev machine**'s own names, `git` and `jenkins`, pointing at the dev machine's IP. A specific record
+wins over the wildcard. The dev machine's records stay **DNS only** for good: git over SSH cannot pass
+Cloudflare's proxy, and a large push over HTTPS would hit its request size limit.
 
 A private address (`192.168.x.x`) is fine for a host only used on a LAN, or behind NAT: Let's
 Encrypt never connects to the host, it only reads the TXT record.
 
 Start with **DNS only**: nothing sits between you and the host while you set things up. The proxy is
-[step A7](#a7-optional-the-cloudflare-proxy).
+[step A7](#a7-optional-the-cloudflare-proxy), for the apps machine only.
 
 Check it from any machine, a minute later:
 
@@ -128,7 +140,9 @@ Workers or Zero Trust: they only offer their own product's permissions.
   Pick **Zone** in the first drop-down first: only then does the second list *Zone* and *DNS*. In
   the newer screen, with a search box instead of drop-downs, search for **Zone Read** and
   **DNS Write** instead.
-- **Zone Resources**: Include · Specific zone · your domain.
+- **Zone Resources**: Include · Specific zone · your domain. With two domains, add a row for each, so one
+  token has **Zone Read and DNS Edit on both zones** and on nothing else; it goes in `acme.env` on every
+  machine.
 - **Client IP Address Filtering**: optional, the IPs of the hosts that use the token.
 - **TTL**: no end date. An expired token makes renewals fail, silently, weeks later.
 
@@ -152,7 +166,7 @@ those IPs.
 
 ### A5. Configure the host
 
-On the host, once [setup.md step 8](setup.md#8-prepare-every-host) has copied the templates to
+On the host, once [setup.md step 8](setup.md#8-prepare-each-machine) has copied the templates to
 `/etc/yggdrasil`.
 
 `/etc/yggdrasil/acme.env`: replace the template's `CF_DNS_API_TOKEN=` line with
@@ -165,12 +179,18 @@ CF_DNS_API_TOKEN=<token>
 
 ```
 DOMAIN=example.dev
+EXTRA_DOMAINS=example.tech
+CLOUDFLARE_PROXIED=true
 ACME_EMAIL=you@example.com
 ACME_DNS_PROVIDER=cloudflare
 ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
 JENKINS_URL=https://jenkins.example.dev/
 ```
 
+- `EXTRA_DOMAINS`: other domains the machine serves, comma-separated, each with its own wildcard
+  certificate; the same API token must manage them all. Empty if there is one domain.
+- `CLOUDFLARE_PROXIED`: `true` once the records are proxied ([A7](#a7-optional-the-cloudflare-proxy));
+  `false` for a machine whose records are DNS only, such as the dev machine.
 - `ACME_CA_SERVER` is commented out in the template: remove the `#` in front of it. It points
   Traefik at Let's Encrypt's staging service for the first run: see
   [Bring it up](#bring-it-up-either-option).
@@ -188,15 +208,16 @@ Coming from setup.md: go back to it. Otherwise, continue with
 
 ### A7. Optional: the Cloudflare proxy
 
-The proxy (orange cloud) hides the host's IP and adds DDoS protection and caching. Turn it on only
-once the real certificate works ([step 4](#4-switch-to-the-real-certificate)):
+The proxy (orange cloud) hides the host's IP and adds DDoS protection and caching. It is for the
+**apps machine**; the dev machine stays DNS only (A3). Turn it on only once the real certificate works
+([step 4](#4-switch-to-the-real-certificate)):
 
-1. **SSL/TLS → Overview**. Set the encryption mode to **Full (strict)**. On newer zones the mode is
-   *Automatic*: click **Configure → Custom SSL/TLS → Full (strict)**. Required: with *Flexible*,
+1. **SSL/TLS → Overview**. Set the encryption mode to **Full (strict)**, on every zone. On newer zones the
+   mode is *Automatic*: click **Configure → Custom SSL/TLS → Full (strict)**. Required: with *Flexible*,
    Cloudflare speaks HTTP to Traefik, Traefik redirects to HTTPS, and every page loops
-   (`ERR_TOO_MANY_REDIRECTS`).
-2. Edit the `*` record and switch it to **Proxied**. Renewals keep working: DNS-01 never goes
-   through the proxy.
+   (`ERR_TOO_MANY_REDIRECTS`). *Full* without *strict* would accept any certificate.
+2. Edit the `*` record and the bare-domain record and switch them to **Proxied**. Renewals keep working:
+   DNS-01 never goes through the proxy.
 3. Proxy **one level only**. The free certificate at Cloudflare's edge covers `example.dev` and
    `*.example.dev`, not `*.staging.example.dev`. `hostSuffix` keeps every environment of a host at
    one level (`heimdall-dev.example.dev`), so all of them can be proxied; keep deeper records, of
@@ -204,17 +225,25 @@ once the real certificate works ([step 4](#4-switch-to-the-real-certificate)):
 4. **Web UIs**: Cloudflare caches `.js` files by default, and Flutter's `main.dart.js` has no hash
    in its name, so after a deploy browsers can get the previous build. Add a Cache Rule (*Caching →
    Cache Rules*) that bypasses the cache for the UI host names, or purge the cache after a release.
+5. **APIs are never cached.** Add a Cache Rule that matches the APIs' host names and any path under
+   `/api/` (the status API, and the web UIs' same-origin API calls) with *Cache eligibility* set to
+   **Bypass cache**. JSON is not cached by default, but a rule makes sure of it.
+6. On the machine, set `CLOUDFLARE_PROXIED=true` in `platform.env` and run `platform.sh up` (below).
 
-API responses (JSON) aren't cached by default. GitHub's webhooks and the Jenkins agents' WebSockets
-work through the proxy.
+Behind the proxy the apps machine accepts 80 and 443 **only from Cloudflare's ranges**: its firewall
+(`ygg install --role apps`) enforces it, so the machine cannot be reached around Cloudflare
+([hosts.md, the origin lock](hosts.md#the-origin-lock)). GitHub's webhooks and the Jenkins agents'
+WebSockets work through the proxy.
 
-**Per-source limits see Cloudflare.** Heimdall's edge limit on its credential routes
-(`stacks/heimdall-api.proxy.yml`), like Heimdall's own, counts the client address Traefik sees.
-Traefik trusts no forwarded headers, so with the proxy on that address is a Cloudflare egress
-address, and every user behind one shares a bucket of 10 a minute. The same goes for IPv6 without
-the proxy: the `edge` network has no IPv6 (`scripts/platform.sh` creates it without), so with an
-AAAA record every IPv6 client reaches Traefik through Docker's port proxy as one gateway address,
-in one bucket.
+**Per-source limits and Cloudflare.** Heimdall's edge limit on its credential routes
+(`stacks/heimdall-api.proxy.yml`), like Heimdall's own, counts the client address Traefik sees. Behind the
+proxy every connection comes from a Cloudflare address, and the visitor's is in `X-Forwarded-For`. With
+`CLOUDFLARE_PROXIED=true`, Traefik trusts that header **from Cloudflare's ranges only**
+(`<secrets>/cloudflare-ips`, written by `ygg install`), so each visitor has a bucket of their own. With
+`false` on a proxied machine, every user behind one Cloudflare address shares a bucket of 10 a minute.
+On a machine reached directly, rootless Docker keeps the client's address when the engine uses
+`slirp4netns` (which `ygg install` sets). IPv6 clients through rootless Docker have not been checked:
+give such a machine an `A` record only.
 
 ## Option B: DuckDNS, free
 
@@ -235,7 +264,7 @@ Check it from any machine: `nslookup yggdrasil.yourname.duckdns.org 1.1.1.1` pri
 
 ### B2. Configure the host
 
-On the host, once [setup.md step 8](setup.md#8-prepare-every-host) has copied the templates to
+On the host, once [setup.md step 8](setup.md#8-prepare-each-machine) has copied the templates to
 `/etc/yggdrasil`.
 
 `/etc/yggdrasil/acme.env`: delete the template's `CF_DNS_API_TOKEN=` line and add
@@ -267,7 +296,7 @@ in too: see [the checklist](#2-fill-in-every-required-variable).
   but works. That's one more reason for the staging CA on the first run.
 - **Availability** is whatever the free service gives. When DuckDNS is down, new visitors can't
   resolve your names, and renewals retry until it's back.
-- **The token** can change every subdomain of your account: keep `acme.env` at `chmod 640`, readable by its owner and the `docker` group only.
+- **The token** can change every subdomain of your account: keep `acme.env` at mode `600`, readable by its owner (`ygg`) only. `ygg install` creates it that way.
 - **Some networks and filters** distrust dynamic-DNS domains.
 
 Moving to your own domain later only means changing `DOMAIN`, the DNS provider and the application
@@ -281,16 +310,17 @@ one.
 
 ### 1. Open the ports
 
-Already done if you followed [setup.md step 8](setup.md#8-prepare-every-host). On the host, and in
-the VPS provider's panel if it has its own firewall or security group:
+Already done if you followed [setup.md step 8](setup.md#8-prepare-each-machine) (`ygg install` sets the
+firewall). In the VPS provider's panel, if it has its own firewall or security group, allow the same
+ports. On the host, as the admin:
 
 ```bash
-sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
 sudo ufw status
 ```
 
-OpenSSH is allowed first, so enabling the firewall doesn't cut your SSH session. `ufw status` should
-list 22 (OpenSSH), 80 and 443 as `ALLOW`.
+It should list 22 (OpenSSH) as `ALLOW`, and 80 and 443: from anywhere on the dev machine (which also has
+2222), but only from Cloudflare's ranges on the apps machine, one rule per range. A rootless Docker
+engine publishes ports as ordinary processes, so these rules really apply to them.
 
 ### 2. Fill in every required variable
 
@@ -306,7 +336,8 @@ Otherwise `platform.sh` stops with `required variable ... is missing a value`.
 | `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. The template's `replace-me` placeholder passes the check but no password works with it |
 | `GRAFANA_ADMIN_PASSWORD` | Any password |
 | `YGGDRASIL_STATUS_TOKEN` | A random token of at least 32 characters. Keep a copy: the console asks for it |
-| `COMPOSE_PROFILES` | **Empty** to test DNS alone, on any host. On the controller host, `jenkins` once [setup.md step 9.2](setup.md#92-the-env-files-first-pass) is done: the GitHub App key must exist first. Not `agent` yet: it needs an agent secret that only exists later |
+| `COMPOSE_PROFILES` | **Empty** to test DNS alone, on any host (`apps` on a machine that has `ENVIRONMENTS`). On the controller host, `forge,jenkins` once [setup.md step 9.2](setup.md#92-the-env-files-first-pass) is done: the GitHub App key must exist first. Not `agent` yet: it needs an agent secret that only exists later |
+| `CLOUDFLARE_PROXIED`, `EXTRA_DOMAINS` | As in A5 |
 
 The secrets can be generated straight into the file:
 
@@ -319,7 +350,7 @@ sed -i "s|^YGGDRASIL_STATUS_TOKEN=.*|YGGDRASIL_STATUS_TOKEN=$(openssl rand -hex 
 ```
 
 - `htpasswd -nB admin` prints `admin:<bcrypt hash>` for the user `admin`. It comes with
-  `apache2-utils` ([setup.md step 8](setup.md#8-prepare-every-host)).
+  `apache2-utils` ([setup.md step 8](setup.md#8-prepare-each-machine)).
 - `openssl rand -hex 16` and `-hex 32` print 32 and 64 random hexadecimal characters.
 - `sed -i "s|^NAME=.*|NAME=value|" "$f"` replaces the whole `NAME=` line in the file. `|` separates
   the parts because the hash contains `/`.
@@ -337,13 +368,12 @@ grep -E '^(ENVIRONMENTS|COMPOSE_PROFILES|DOMAIN|ACME_)' /etc/yggdrasil/platform.
 check that `ENVIRONMENTS` exist in the catalog, nor the Jenkins variables: `platform.sh up` does,
 and stops with `platform: <NAME> must be set ...` before starting anything.
 
-Then lock the files down:
-
-```bash
-chmod 640 /etc/yggdrasil/*.env
-```
+The files are already locked down: `ygg install` created them with mode `600`, owned by `ygg`, who edits them.
+Check with `ls -l /etc/yggdrasil`.
 
 ### 3. Start the platform against the staging CA
+
+As `ygg`:
 
 ```bash
 /opt/yggdrasil/scripts/platform.sh up
