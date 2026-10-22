@@ -19,7 +19,7 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits ssh checkout secrets firewall role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -123,7 +123,9 @@ write_system_file() {
     [[ "$(stat -c %a "$path")" == "${mode#0}" ]] || as_root chmod "$mode" "$path"
     return 0
   fi
-  as_root install -d -m 0755 "$(dirname "$path")"
+  # Only a directory that isn't there is made: install -d -m would reset the mode of one that is (a
+  # secrets directory, 750, that holds a file of its own).
+  [[ -d "$(dirname "$path")" ]] || as_root install -d -m 0755 "$(dirname "$path")"
   printf '%s\n' "$content" | as_root tee "$path" >/dev/null
   as_root chmod "$mode" "$path"
 }
@@ -248,6 +250,151 @@ EOF
 # Users' units get the controllers a rootless engine's resource limits (CPUQuota, MemoryMax) need.
 machine_delegate_content() {
   printf '%s\n' "[Service]" "Delegate=cpu cpuset io memory pids"
+}
+
+# ---- Firewall -----------------------------------------------------------------------------------
+
+# Cloudflare publishes the addresses its proxies connect from, one CIDR per line: apps answers on 80 and
+# 443 to those only. The rules carry a comment, so a later install knows which ones are its own.
+CLOUDFLARE_URL=https://www.cloudflare.com
+CLOUDFLARE_COMMENT=yggdrasil-cloudflare
+
+# What Traefik reads: it lives in ygg's secrets directory, where ygg's containers get their files from.
+machine_cloudflare_ips_path() { echo "$(secrets_dir_of ygg)/cloudflare-ips"; }
+
+# cidr_v4 <text>: a.b.c.d/n, every octet up to 255 and n up to 32.
+cidr_v4() {
+  local octet
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+  for octet in "${BASH_REMATCH[@]:1:4}"; do
+    ((10#$octet <= 255)) || return 1
+  done
+  ((10#${BASH_REMATCH[5]} <= 32))
+}
+
+# cidr_v6 <text>: hex groups and colons (at most one "::"), then /n with n up to 128.
+cidr_v6() {
+  local address prefix head tail groups=() group
+  [[ "$1" =~ ^([0-9a-fA-F:]+)/([0-9]{1,3})$ ]] || return 1
+  address=${BASH_REMATCH[1]} prefix=${BASH_REMATCH[2]}
+  ((10#$prefix <= 128)) || return 1
+  [[ "$address" != *:::* && "$address" != *::*::* ]] || return 1
+  # A single colon can't start or end an address: only half of a "::" can.
+  [[ "$address" != :[!:]* && "$address" != *[!:]: ]] || return 1
+  if [[ "$address" == *::* ]]; then
+    head=${address%%::*} tail=${address#*::}
+    IFS=: read -r -a groups <<<"$head${head:+${tail:+:}}$tail"
+    # The "::" stands for at least one group of zeros.
+    ((${#groups[@]} <= 7)) || return 1
+  else
+    IFS=: read -r -a groups <<<"$address"
+    ((${#groups[@]} == 8)) || return 1
+  fi
+  for group in "${groups[@]}"; do
+    [[ "$group" =~ ^[0-9a-fA-F]{1,4}$ ]] || return 1
+  done
+}
+
+# cloudflare_ranges: Cloudflare's current ranges, one per line, IPv4 then IPv6. Fails, printing
+# nothing, when either list can't be downloaded, holds anything but CIDRs (an error page, say) or comes
+# back empty: a firewall built from half an answer would lock out real visitors or let in everyone.
+cloudflare_ranges() {
+  local family list line count ranges=()
+  for family in v4 v6; do
+    list=$(curl -fsSL --max-time 20 "$CLOUDFLARE_URL/ips-$family" 2>/dev/null) || return 1
+    count=0
+    while IFS= read -r line; do
+      line=${line%$'\r'}
+      [[ -n "$line" ]] || continue
+      "cidr_$family" "$line" || return 1
+      ranges+=("$line")
+      count=$((count + 1))
+    done <<<"$list"
+    ((count > 0)) || return 1
+  done
+  printf '%s\n' "${ranges[@]}"
+}
+
+# machine_firewall_allows <role>: the "ufw allow" arguments the role always has, one per line. (The
+# apps machine's web ports are the Cloudflare rules, which come from the download.)
+machine_firewall_allows() {
+  case $1 in
+    dev) printf '%s\n' OpenSSH 80,443/tcp 2222/tcp ;;
+    apps) printf '%s\n' OpenSSH ;;
+  esac
+}
+
+# machine_root_read <command...>: runs it as root without ever asking for a password (a check must not
+# wait for one); fails when it can't.
+machine_root_read() {
+  if ((EUID == 0)); then "$@"; else sudo -n "$@"; fi
+}
+
+# machine_ufw_rules <ufw status output>: the allow rules, one per line, as "<to><TAB><from><TAB><comment>",
+# the IPv6 twin of a rule folded into it. ufw's columns have spaces in them ("Anywhere (v6)",
+# "ALLOW IN") and a trailing "# comment", so the fields are found around ALLOW.
+machine_ufw_rules() {
+  awk '
+    {
+      comment = ""
+      if (match($0, / +# /)) {
+        comment = substr($0, RSTART + RLENGTH)
+        $0 = substr($0, 1, RSTART - 1)
+      }
+      for (i = 1; i <= NF; i++) if ($i == "ALLOW") break
+      if (i > NF || i == 1) next
+      to = $1
+      for (j = 2; j < i; j++) to = to " " $j
+      k = i + 1
+      if ($k == "IN") k++
+      from = $k
+      for (k++; k <= NF; k++) from = from " " $k
+      sub(/ \(v6\)$/, "", to)
+      sub(/ \(v6\)$/, "", from)
+      printf "%s\t%s\t%s\n", to, from, comment
+    }' <<<"$1" | sort -u
+}
+
+# machine_ufw_has <rules> <to> <from> <comment>
+machine_ufw_has() { grep -qxF -- "$2"$'\t'"$3"$'\t'"$4" <<<"$1"; }
+
+# machine_ufw_cloudflare <rules>: the ranges that the rules carrying our comment let in, one per line.
+machine_ufw_cloudflare() {
+  awk -F'\t' -v comment="$CLOUDFLARE_COMMENT" '$3 == comment { print $2 }' <<<"$1" | sort -u
+}
+
+# machine_ufw_open_web <rules>: the "to" of each rule that lets everyone in on port 80 or 443 (as one of
+# its ports or inside its range), one per line.
+machine_ufw_open_web() {
+  awk -F'\t' '
+    $2 == "Anywhere" && $1 !~ /\/udp$/ {
+      spec = $1
+      sub(/\/tcp$/, "", spec)
+      n = split(spec, parts, ",")
+      for (i = 1; i <= n; i++) {
+        if (parts[i] ~ /^[0-9]+$/) { low = high = parts[i] + 0 }
+        else if (parts[i] ~ /^[0-9]+:[0-9]+$/) { split(parts[i], bounds, ":"); low = bounds[1] + 0; high = bounds[2] + 0 }
+        else continue
+        if ((low <= 80 && 80 <= high) || (low <= 443 && 443 <= high)) { print $1; break }
+      }
+    }' <<<"$1" | sort -u
+}
+
+# machine_plain_web <to>: the rule is just 80 and/or 443 (what the workstation's firewall opens), which
+# install can delete without taking anything else with it.
+machine_plain_web() { [[ "$1" =~ ^(80|443)(,(80|443))?(/tcp)?$ ]]; }
+
+# machine_only_in_second <lines a> <lines b>: the lines of b that a doesn't have.
+machine_only_in_second() {
+  comm -13 <(sort -u <<<"$1" | sed '/^$/d') <(sort -u <<<"$2" | sed '/^$/d')
+}
+
+# machine_some: the lines on stdin as "a, b, c and N more", for a report row.
+machine_some() {
+  local items
+  mapfile -t items
+  printf '%s' "$(printf '%s, ' "${items[@]:0:3}" | sed 's/, $//')"
+  if ((${#items[@]} > 3)); then printf ' and %d more' $((${#items[@]} - 3)); fi
 }
 
 # ---- Check --------------------------------------------------------------------------------------
@@ -492,6 +639,80 @@ machine_check_secrets() {
   done
 }
 
+machine_check_firewall() {
+  title "Firewall"
+  local status rules spec missing=() open_plain=() open_left=()
+  if ! has ufw; then
+    row missing "ufw" "not installed: install adds it, then sets the firewall"
+    machine_need firewall
+    return 0
+  fi
+  if ! status=$(machine_root_read ufw status 2>/dev/null); then
+    row warn "ufw" "its status needs root to read: not checked (run check with sudo)"
+    return 0
+  fi
+  if [[ "$status" != *"Status: active"* ]]; then
+    row missing "ufw" "not enabled: install allows ssh and turns it on"
+    machine_need firewall
+    return 0
+  fi
+  row ok "ufw" "enabled"
+  rules=$(machine_ufw_rules "$status")
+
+  for spec in $(machine_firewall_allows "$machine_current_role"); do
+    machine_ufw_has "$rules" "$spec" Anywhere "" || missing+=("$spec")
+  done
+  # The apps machine's web ports are for Cloudflare alone: a rule opening them to everyone is wrong.
+  if [[ "$machine_current_role" == apps ]]; then
+    for spec in $(machine_ufw_open_web "$rules"); do
+      if machine_plain_web "$spec"; then open_plain+=("$spec"); else open_left+=("$spec"); fi
+    done
+  fi
+  if ((${#missing[@]})); then
+    row missing "ports" "not allowed: ${missing[*]}"
+    machine_need firewall
+  elif ((${#open_plain[@]})); then
+    row warn "ports" "80/443 are open to everyone (${open_plain[*]}${open_left[*]:+, ${open_left[*]}}): install closes them, Cloudflare gets in"
+    machine_need firewall
+  elif ((${#open_left[@]})); then
+    row warn "ports" "80/443 are open to everyone (${open_left[*]}): install can't take that rule out, ufw delete does"
+  elif [[ "$machine_current_role" == apps ]]; then
+    row ok "ports" "ssh; 80 and 443 only from Cloudflare"
+  else
+    row ok "ports" "22, 80, 443 and 2222"
+  fi
+
+  [[ "$machine_current_role" != apps ]] || machine_check_cloudflare_ranges "$rules"
+}
+
+# machine_check_cloudflare_ranges <rules>: the apps machine's rules and its cloudflare-ips file against
+# what Cloudflare publishes today.
+machine_check_cloudflare_ranges() {
+  local current path held in_ufw added stale differences=()
+  path=$(machine_cloudflare_ips_path)
+  if ! current=$(cloudflare_ranges); then
+    row warn "cloudflare ranges" "could not check: Cloudflare's list can't be fetched"
+    return 0
+  fi
+  in_ufw=$(machine_ufw_cloudflare "$1")
+  added=$(machine_only_in_second "$in_ufw" "$current")
+  stale=$(machine_only_in_second "$current" "$in_ufw")
+  [[ -z "$added" ]] || differences+=("ufw lacks $(machine_some <<<"$added")")
+  [[ -z "$stale" ]] || differences+=("ufw still has $(machine_some <<<"$stale")")
+  # The secrets directory is closed to the admin, so the file is read as root.
+  if ! held=$(machine_root_read cat "$path" 2>/dev/null); then
+    differences+=("$path can't be read or isn't there")
+  elif [[ "$held" != "$current" ]]; then
+    differences+=("$path differs")
+  fi
+  if ((${#differences[@]})); then
+    row warn "cloudflare ranges" "$(printf '%s; ' "${differences[@]}" | sed 's/; $//'): install updates them"
+    machine_need firewall
+  else
+    row ok "cloudflare ranges" "$(wc -l <<<"$current") ranges, in ufw and in $path"
+  fi
+}
+
 machine_check_role_file() {
   title "Role"
   local file="${YGG_SYSROOT:-}/etc/yggdrasil-role" written=""
@@ -523,6 +744,13 @@ machine_step_text() {
     ssh) echo "Harden ssh (00-yggdrasil.conf, ahead of the cloud image's own files): keys only, no root login, and only $(machine_admin) and the role's ssh users may log in. Your key is offered to the ones without one." ;;
     checkout) echo "Give the checkout, $root, to the ygg user." ;;
     secrets) echo "Create the users' secrets directories (750, each its user's) with the env templates copied in, never over a file that is there." ;;
+    firewall)
+      if [[ "$machine_current_role" == apps ]]; then
+        echo "Firewall: ssh in, and 80 and 443 only from Cloudflare's ranges (downloaded from www.cloudflare.com, kept in $(machine_cloudflare_ips_path) for Traefik); a rule opening them to everyone is deleted. Then ufw is turned on."
+      else
+        echo "Firewall: ssh, HTTP, HTTPS and Forgejo's ssh port (22, 80, 443, 2222) in, then ufw is turned on."
+      fi
+      ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
   esac
 }
@@ -713,6 +941,54 @@ step_secrets() {
       [[ -f "$template" ]] || die "$template is missing from the checkout"
       as_root test -e "$file" || as_root install -m 600 -o "$user" -g "$user" "$template" "$file"
     done
+  done
+}
+
+# The apps machine's rules come from Cloudflare's download, and the download comes first: when it fails
+# nothing is touched, so a working firewall is never replaced by a half-built one, and 80 and 443 are
+# never opened to everyone to make up for it. SSH is allowed before ufw is turned on, so the session
+# running this isn't cut. Rules that are there already are not added again, and the ranges Cloudflare
+# no longer lists are deleted once the new ones are in.
+step_firewall() {
+  local role=$machine_current_role ranges="" status rules spec cidr file have
+  if [[ "$role" == apps ]]; then
+    ranges=$(cloudflare_ranges) || {
+      warn "could not fetch Cloudflare's ranges: the firewall and cloudflare-ips are unchanged"
+      return 0
+    }
+  fi
+  status=$(as_root ufw status) || die "ufw status failed: the firewall was not changed"
+  rules=$(machine_ufw_rules "$status")
+  for spec in $(machine_firewall_allows "$role"); do
+    machine_ufw_has "$rules" "$spec" Anywhere "" || as_root ufw allow "$spec"
+  done
+  # ufw lists no rules while it is off, so it is turned on (ssh is allowed) before the rest is compared.
+  if [[ "$status" != *"Status: active"* ]]; then
+    as_root ufw --force enable
+    status=$(as_root ufw status) || die "ufw status failed after turning it on"
+    rules=$(machine_ufw_rules "$status")
+  fi
+  [[ "$role" == apps ]] || return 0
+
+  have=$(machine_ufw_cloudflare "$rules")
+  while IFS= read -r cidr; do
+    [[ -z "$cidr" ]] || as_root ufw allow proto tcp from "$cidr" to any port 80,443 comment "$CLOUDFLARE_COMMENT"
+  done < <(machine_only_in_second "$have" "$ranges")
+  while IFS= read -r cidr; do
+    [[ -z "$cidr" ]] || as_root ufw delete allow proto tcp from "$cidr" to any port 80,443
+  done < <(machine_only_in_second "$ranges" "$have")
+
+  file=$(machine_cloudflare_ips_path)
+  if [[ -d "$(dirname "$file")" ]]; then
+    write_system_file "$file" 0644 "$ranges"
+    as_root chown ygg:ygg "$file"
+  else
+    warn "$(dirname "$file") isn't there yet: cloudflare-ips is left for the next install."
+  fi
+
+  # What the workstation's firewall opens (80 and 443 to everyone) doesn't belong on this machine.
+  for spec in $(machine_ufw_open_web "$rules"); do
+    ! machine_plain_web "$spec" || as_root ufw delete allow "$spec"
   done
 }
 

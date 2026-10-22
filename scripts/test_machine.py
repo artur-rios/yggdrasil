@@ -1,13 +1,13 @@
 """Tests for the machine roles of scripts/host.sh (scripts/machine.sh): packages, rootful Docker off,
-the system settings, the service users, ssh, the checkout, the secrets and the role file.
+the system settings, the service users, ssh, the checkout, the secrets, the firewall and the role file.
 
     python3 -m unittest discover -s scripts -p "test_machine.py"
 
 Everything that needs root or changes the system is a fake on PATH: `sudo` (logs, then runs the
 command, which only ever touches the temporary $YGG_SYSROOT), `apt-get`, `dpkg-query`, `dpkg`, `curl`,
 `systemctl`, `sysctl`, `apparmor_parser`, `gpasswd`, `getent`, `id`, `docker`, `useradd`, `usermod`,
-`chown`, `chmod`, `install`, `stat` and `sshd`. The fakes keep their state in $FAKE_STATE (packages
-installed, active units, the docker group, who owns what) and in a fake $YGG_SYSROOT/etc/passwd, so a
+`chown`, `chmod`, `install`, `stat`, `sshd` and `ufw`. The fakes keep their state in $FAKE_STATE
+(packages installed, active units, the docker group, who owns what, ufw's rules) and in a fake $YGG_SYSROOT/etc/passwd, so a
 second run sees what the first one did, and log every call to $FAKE_STATE/calls. None of them changes
 an owner: `chown` only records it (the checkout step chowns the real checkout, which must stay as it
 is), and `chmod` only touches what is under the test's temporary directory.
@@ -61,9 +61,18 @@ FAKES = {
         [[ "$1" == --print-architecture ]] && echo amd64
         exit 0
     """,
-    # `curl ... -o <file>` creates the file, as downloading the repository key would.
+    # `curl ... -o <file>` creates the file, as downloading the repository key would. Cloudflare's lists
+    # come from $FAKE_CURL_DIR/<the url's basename> (ips-v4, ips-v6); curl -f fails (22) when the file
+    # isn't there, as it does for an unreachable host or an HTTP error.
     "curl": r"""
         echo "curl $*" >>"$FAKE_STATE/calls"
+        for argument in "$@"; do
+          if [[ "$argument" == https://www.cloudflare.com/ips-* ]]; then
+            [[ -f "$FAKE_CURL_DIR/${argument##*/}" ]] || exit 22
+            cat "$FAKE_CURL_DIR/${argument##*/}"
+            exit 0
+          fi
+        done
         while (($#)); do
           [[ "$1" == -o ]] && echo "key" >"$2"
           shift
@@ -220,6 +229,57 @@ FAKES = {
           for user in ${seen[allowusers]:-}; do echo "allowusers $user"; done
         fi
     """,
+    # The rules are lines of "<to><TAB><from><TAB><comment>" in $FAKE_STATE/ufw-rules, and
+    # $FAKE_STATE/ufw-on exists while the firewall is enabled. Like ufw, it skips a rule it already has,
+    # gives a rule for "Anywhere" an IPv6 twin, lists nothing while it is off, and deletes by what the
+    # rule says (not by its comment).
+    "ufw": r"""
+        echo "ufw $*" >>"$FAKE_STATE/calls"
+        rules="$FAKE_STATE/ufw-rules"
+        touch "$rules"
+        tab=$'\t'
+        add() {
+          if grep -qxF -- "$1$tab$2$tab$3" "$rules"; then echo "Skipping adding existing rule"
+          else printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$rules"; fi
+        }
+        remove() {
+          awk -F'\t' -v to="$1" -v from="$2" '
+            $1 == to && $2 == from { next }
+            from == "Anywhere" && $1 == to " (v6)" && $2 == "Anywhere (v6)" { next }
+            { print }' "$rules" >"$rules.new"
+          mv "$rules.new" "$rules"
+        }
+        case "$1" in
+          status)
+            if [[ ! -e "$FAKE_STATE/ufw-on" ]]; then echo "Status: inactive"; exit 0; fi
+            printf 'Status: active\n\nTo                         Action      From\n--                         ------      ----\n'
+            while IFS=$'\t' read -r to from comment; do
+              printf '%-26s %-11s %-26s' "$to" ALLOW "$from"
+              [[ -z "$comment" ]] || printf ' # %s' "$comment"
+              echo
+            done <"$rules"
+            ;;
+          --force)
+            [[ "$2" == enable ]] && touch "$FAKE_STATE/ufw-on"
+            ;;
+          allow)
+            shift
+            if [[ "$1" == proto ]]; then
+              # proto tcp from <cidr> to any port <ports> [comment <text>]
+              add "$8/$2" "$4" "${10:-}"
+            else
+              add "$1" Anywhere ""
+              add "$1 (v6)" "Anywhere (v6)" ""
+            fi
+            ;;
+          delete)
+            shift 2
+            if [[ "$1" == proto ]]; then remove "$8/$2" "$4"
+            else remove "$1" Anywhere; fi
+            ;;
+          *) echo "fake ufw: unexpected call: $*" >&2; exit 64 ;;
+        esac
+    """,
     # An engine that is installed but whose daemon the admin can't reach: what a workstation
     # without docker-group membership looks like.
     "docker": r"""
@@ -261,6 +321,8 @@ UPGRADES = 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-
 LIMITS = "[Slice]\nCPUQuota=600%\nMemoryMax=20G\n"
 SSH_DEV = "PermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAllowUsers admin ygg dev\n"
 DEV_USERS = ["ygg", "ci", "release", "renovate", "dev"]
+CLOUDFLARE_V4 = ["173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22"]
+CLOUDFLARE_V6 = ["2400:cb00::/32", "2606:4700::/32"]
 CHECKOUT = str(HOST.parent.parent)
 
 UBUNTU = 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nUBUNTU_CODENAME=noble\nPRETTY_NAME="Ubuntu 24.04 LTS"\n'
@@ -297,6 +359,10 @@ class MachineRoleTests(unittest.TestCase):
         self.admin_keys.write_text(KEY)
         self.homes = self.temp / "homes"
         self.homes.mkdir()
+        # Cloudflare answers with its lists.
+        self.cloudflare = self.temp / "cloudflare"
+        self.cloudflare.mkdir()
+        self.serve_cloudflare(CLOUDFLARE_V4, CLOUDFLARE_V6)
         self.passwd = self.sysroot / "etc" / "passwd"
         self.passwd.write_text(f"admin:x:1000:1000::{self.admin_home}:/bin/bash\n")
         self.env = {
@@ -306,6 +372,7 @@ class MachineRoleTests(unittest.TestCase):
             "FAKE_STATE": str(self.state),
             "FAKE_HOMES": str(self.homes),
             "FAKE_SANDBOX": str(self.temp),
+            "FAKE_CURL_DIR": str(self.cloudflare),
             "YGG_SYSROOT": str(self.sysroot),
             "YGG_ASSUME_YES": "1",
             "YGG_SECRETS_DIR": str(self.temp / "secrets"),
@@ -357,6 +424,32 @@ class MachineRoleTests(unittest.TestCase):
 
     def row(self, rows, name):
         return next((line for line in rows if line[6:].startswith(name + " ")), None)
+
+    def serve_cloudflare(self, v4, v6):
+        (self.cloudflare / "ips-v4").write_text("".join(line + "\n" for line in v4))
+        (self.cloudflare / "ips-v6").write_text("".join(line + "\n" for line in v6))
+
+    def ufw_rules(self):
+        """(to, from, comment) for every rule the fake ufw holds, the IPv6 twins left out."""
+        path = self.state / "ufw-rules"
+        lines = path.read_text().splitlines() if path.exists() else []
+        rules = [tuple(line.split("\t")) for line in lines]
+        return [rule for rule in rules if not rule[0].endswith(" (v6)")]
+
+    def set_ufw(self, rules):
+        """The fake ufw holds exactly these rules (and their IPv6 twins), enabled."""
+        twins = [(f"{to} (v6)", "Anywhere (v6)", comment) for to, source, comment in rules if source == "Anywhere"]
+        (self.state / "ufw-rules").write_text("".join("\t".join(rule) + "\n" for rule in rules + twins))
+        (self.state / "ufw-on").write_text("")
+
+    def ufw_enabled(self):
+        return (self.state / "ufw-on").exists()
+
+    def cloudflare_rules(self):
+        return sorted(source for to, source, comment in self.ufw_rules() if comment == "yggdrasil-cloudflare")
+
+    def ufw_calls(self, verb):
+        return [call for call in self.calls() if call.startswith(f"ufw {verb}")]
 
     def install(self, role, **env):
         result = self.host("install", role, **env)
@@ -667,8 +760,9 @@ class MachineRoleTests(unittest.TestCase):
                 self.assertFalse(self.etc("ssh/sshd_config.d/00-yggdrasil.conf").exists())
                 calls = self.calls()
                 self.assertFalse([call for call in calls if "sshd" in call or "try-reload-or-restart ssh" in call], calls)
-                # Refused up front: no step ran, so nothing at all was done as root.
-                self.assertEqual([call for call in calls if call.startswith("sudo")], [])
+                # Refused up front: no step ran, so nothing was done as root (the checks only read, with
+                # `sudo -n`).
+                self.assertEqual([call for call in calls if call.startswith("sudo") and not call.startswith("sudo -n")], [])
                 self.assertEqual(self.users(), {})
                 self.assertFalse(list(self.homes.glob("*/.ssh")))
                 stdout, rows = self.rows("dev")
@@ -779,7 +873,8 @@ class MachineRoleTests(unittest.TestCase):
 
     def test_given_role_apps_when_installed_then_only_yggs_secrets_are_made(self):
         self.install("apps")
-        self.assertEqual(sorted(p.name for p in self.etc("yggdrasil").iterdir()), ["acme.env", "platform.env"])
+        self.assertEqual(
+            sorted(p.name for p in self.etc("yggdrasil").iterdir()), ["acme.env", "cloudflare-ips", "platform.env"])
         self.assertEqual(sorted(p.name for p in self.sysroot.joinpath("etc").glob("yggdrasil-*")), ["yggdrasil-role"])
 
     def test_given_role_apps_when_installed_then_security_updates_are_automatic(self):
@@ -830,6 +925,255 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(
             [call for call in self.calls() if call.startswith(("sudo tee", "useradd", "chown", "chmod"))], [])
         self.assertEqual(list(self.users()), [])
+
+    # ---- The firewall ----------------------------------------------------------------------------
+
+    def test_given_role_dev_when_the_firewall_is_set_then_ssh_web_and_2222_are_open(self):
+        self.install("dev")
+        self.assertTrue(self.ufw_enabled())
+        self.assertEqual(
+            sorted(self.ufw_rules()),
+            [("2222/tcp", "Anywhere", ""), ("80,443/tcp", "Anywhere", ""), ("OpenSSH", "Anywhere", "")])
+        # SSH is allowed before the firewall is on, so the session running this isn't cut.
+        calls = self.calls()
+        self.assertLess(calls.index("ufw allow OpenSSH"), calls.index("ufw --force enable"))
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.row(rows, "ufw").startswith("  ok "), stdout)
+        self.assertTrue(self.row(rows, "ports").startswith("  ok "), stdout)
+        self.assertIsNone(self.row(rows, "cloudflare ranges"))
+
+    def test_given_role_apps_when_the_firewall_is_set_then_web_is_open_only_to_cloudflare(self):
+        self.install("apps")
+        self.assertTrue(self.ufw_enabled())
+        self.assertEqual(self.cloudflare_rules(), sorted(CLOUDFLARE_V4 + CLOUDFLARE_V6))
+        rules = self.ufw_rules()
+        self.assertIn(("OpenSSH", "Anywhere", ""), rules)
+        # Every other rule is a Cloudflare range's, for 80 and 443 only; nothing is open to everyone.
+        self.assertEqual(len(rules), 1 + len(CLOUDFLARE_V4 + CLOUDFLARE_V6))
+        for to, source, comment in rules:
+            if comment:
+                self.assertEqual(to, "80,443/tcp")
+        calls = self.calls()
+        self.assertIn(
+            "ufw allow proto tcp from 173.245.48.0/20 to any port 80,443 comment yggdrasil-cloudflare", calls)
+        self.assertLess(calls.index("ufw allow OpenSSH"), calls.index("ufw --force enable"))
+        stdout, rows = self.rows("apps")
+        self.assertIn("only from Cloudflare", self.row(rows, "ports"))
+        self.assertTrue(self.row(rows, "cloudflare ranges").startswith("  ok "), stdout)
+
+    def test_given_role_apps_when_the_firewall_is_set_then_cloudflare_ips_is_written_for_traefik(self):
+        self.install("apps")
+        path = self.etc("yggdrasil/cloudflare-ips")
+        self.assertEqual(path.read_text(), "".join(line + "\n" for line in CLOUDFLARE_V4 + CLOUDFLARE_V6))
+        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.owners()[str(path)], "ygg:ygg")
+        # The file's directory is ygg's secrets directory: writing the file doesn't open it up.
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o750)
+
+    def test_given_a_firewall_set_when_installed_again_then_no_rule_is_added_twice(self):
+        self.install("apps")
+        before = (self.state / "ufw-rules").read_text()
+        # Made to run again: its file is gone, but every rule is there already.
+        self.etc("yggdrasil/cloudflare-ips").unlink()
+        self.install("apps")
+        self.assertEqual((self.state / "ufw-rules").read_text(), before)
+        self.assertEqual(len(self.ufw_calls("allow proto")), len(CLOUDFLARE_V4 + CLOUDFLARE_V6))
+        self.assertEqual(len(self.ufw_calls("allow OpenSSH")), 1)
+        self.assertEqual(self.ufw_calls("delete"), [])
+        self.assertTrue(self.etc("yggdrasil/cloudflare-ips").exists())
+
+    def test_given_a_changed_cloudflare_list_when_set_again_then_old_ranges_are_removed(self):
+        self.install("apps")
+        self.serve_cloudflare(["173.245.48.0/20", "198.41.128.0/17"], ["2606:4700::/32", "2803:f800::/32"])
+        stdout, rows = self.rows("apps")
+        self.assertFalse(self.row(rows, "cloudflare ranges").startswith("  ok "), stdout)
+        self.install("apps")
+        self.assertEqual(
+            self.cloudflare_rules(), ["173.245.48.0/20", "198.41.128.0/17", "2606:4700::/32", "2803:f800::/32"])
+        self.assertEqual(
+            sorted(call.split()[6] for call in self.ufw_calls("delete")),
+            ["103.21.244.0/22", "103.22.200.0/22", "2400:cb00::/32"])
+        self.assertEqual(
+            self.etc("yggdrasil/cloudflare-ips").read_text(),
+            "173.245.48.0/20\n198.41.128.0/17\n2606:4700::/32\n2803:f800::/32\n")
+        # The ranges that stayed were not added again, and ssh was left alone.
+        self.assertEqual(len(self.ufw_calls("allow proto")), len(CLOUDFLARE_V4 + CLOUDFLARE_V6) + 2)
+        self.assertIn(("OpenSSH", "Anywhere", ""), self.ufw_rules())
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.row(rows, "cloudflare ranges").startswith("  ok "), stdout)
+
+    UNCHANGED = "could not fetch Cloudflare's ranges: the firewall and cloudflare-ips are unchanged"
+
+    def firewall_calls(self, since=0):
+        return [call for call in self.calls()[since:] if call.startswith(("ufw allow", "ufw delete", "ufw --force"))]
+
+    def test_given_cloudflare_unreachable_when_the_firewall_is_set_then_nothing_changes(self):
+        (self.cloudflare / "ips-v6").unlink()
+        result = self.install("apps")
+        self.assertIn(self.UNCHANGED, result.stderr)
+        self.assertEqual(self.firewall_calls(), [])
+        self.assertFalse(self.ufw_enabled())
+        self.assertFalse(self.etc("yggdrasil/cloudflare-ips").exists())
+        # The rest of the machine was set up all the same.
+        self.assertTrue(self.etc("yggdrasil-role").exists())
+
+    def test_given_cloudflare_unreachable_after_a_firewall_was_set_then_rules_and_file_are_kept(self):
+        self.install("apps")
+        rules = (self.state / "ufw-rules").read_text()
+        ips = self.etc("yggdrasil/cloudflare-ips").read_text()
+        # The firewall is off, so install tries to put it right: and the download fails.
+        (self.state / "ufw-on").unlink()
+        (self.cloudflare / "ips-v4").unlink()
+        (self.cloudflare / "ips-v6").unlink()
+        before = len(self.calls())
+        result = self.install("apps")
+        self.assertIn(self.UNCHANGED, result.stderr)
+        self.assertEqual((self.state / "ufw-rules").read_text(), rules)
+        self.assertEqual(self.etc("yggdrasil/cloudflare-ips").read_text(), ips)
+        self.assertFalse(self.ufw_enabled())
+        self.assertEqual(self.firewall_calls(before), [])
+
+    def test_given_a_range_that_is_not_a_cidr_when_fetched_then_nothing_changes(self):
+        (self.cloudflare / "ips-v4").write_text("<html><body>502 Bad Gateway</body></html>\n")
+        result = self.install("apps")
+        self.assertIn(self.UNCHANGED, result.stderr)
+        self.assertEqual(self.firewall_calls(), [])
+        self.assertFalse(self.ufw_enabled())
+        self.assertFalse(self.etc("yggdrasil/cloudflare-ips").exists())
+
+    def cloudflare_ranges(self):
+        return subprocess.run(
+            ["bash", "-c", f'source "{HOST.parent}/machine.sh"; cloudflare_ranges'],
+            env=self.env, capture_output=True, text=True,
+        )
+
+    def test_given_both_lists_when_ranges_are_read_then_ipv4_comes_first_then_ipv6(self):
+        result = self.cloudflare_ranges()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), CLOUDFLARE_V4 + CLOUDFLARE_V6)
+
+    def test_given_junk_in_a_list_when_ranges_are_read_then_they_fail_and_print_nothing(self):
+        junk = {
+            "an empty ipv4 file": ("", None),
+            "only blank lines": ("\n\n", None),
+            "an html page": ("<!DOCTYPE html>\n<html></html>\n", None),
+            "an ipv4 prefix over 32": ("10.0.0.0/33\n", None),
+            "an ipv4 octet over 255": ("256.1.1.1/24\n", None),
+            "an ipv4 address without a prefix": ("10.0.0.1\n", None),
+            "an ipv4 address with three octets": ("10.0.0/8\n", None),
+            "one bad line among good ones": ("173.245.48.0/20\nnot-a-range\n103.21.244.0/22\n", None),
+            "an ipv6 range in the ipv4 list": ("2400:cb00::/32\n", None),
+            "an ipv4 range in the ipv6 list": (None, "173.245.48.0/20\n"),
+            "an ipv6 prefix over 128": (None, "2400:cb00::/129\n"),
+            "an ipv6 group over four digits": (None, "2400:cb000::/32\n"),
+            "an ipv6 address with two ::": (None, "2400::cb00::/32\n"),
+            "an ipv6 address with too few groups": (None, "2400:cb00:1:2/32\n"),
+            "an ipv6 error page": (None, "<html>\n"),
+            "an empty ipv6 file": (None, ""),
+        }
+        for name, (v4, v6) in junk.items():
+            with self.subTest(name):
+                self.serve_cloudflare(CLOUDFLARE_V4, CLOUDFLARE_V6)
+                if v4 is not None:
+                    (self.cloudflare / "ips-v4").write_text(v4)
+                if v6 is not None:
+                    (self.cloudflare / "ips-v6").write_text(v6)
+                result = self.cloudflare_ranges()
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(result.stdout, "")
+
+    def test_given_valid_but_unusual_ranges_when_read_then_they_are_accepted(self):
+        v4 = ["173.245.48.0/20", "0.0.0.0/0", "10.0.0.1/32"]
+        v6 = ["2400:cb00::/32", "2c0f:f248::/32", "::/0", "2001:db8:0:0:0:0:0:0/64", "fe80::1/128"]
+        self.serve_cloudflare(v4, v6)
+        result = self.cloudflare_ranges()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), v4 + v6)
+
+    def test_given_drift_between_rules_and_cloudflare_when_checked_then_it_is_reported(self):
+        self.install("apps")
+        # Cloudflare adds a range and drops another; the file is stale as well.
+        self.serve_cloudflare(CLOUDFLARE_V4[:2] + ["198.41.128.0/17"], CLOUDFLARE_V6)
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "cloudflare ranges")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("198.41.128.0/17", line)
+        self.assertIn("103.22.200.0/22", line)
+        self.assertIn("cloudflare-ips differs", line)
+        # A range deleted from ufw by hand is reported too.
+        self.serve_cloudflare(CLOUDFLARE_V4, CLOUDFLARE_V6)
+        self.set_ufw([rule for rule in self.ufw_rules() if rule[1] != "2606:4700::/32"])
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "cloudflare ranges")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("2606:4700::/32", line)
+
+    def test_given_a_missing_cloudflare_ips_file_when_checked_then_it_is_reported(self):
+        self.install("apps")
+        self.etc("yggdrasil/cloudflare-ips").unlink()
+        stdout, rows = self.rows("apps")
+        self.assertFalse(self.row(rows, "cloudflare ranges").startswith("  ok "), stdout)
+
+    def test_given_cloudflare_unreachable_when_checked_then_it_says_it_could_not_check(self):
+        self.install("apps")
+        (self.cloudflare / "ips-v4").unlink()
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "cloudflare ranges")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("could not check", line)
+
+    def test_given_an_open_80_rule_on_apps_when_checked_then_it_is_reported(self):
+        self.install("apps")
+        rules = self.ufw_rules()
+        for rule in ("80/tcp", "443", "80,443/tcp", "1:1000/tcp"):
+            with self.subTest(rule):
+                self.set_ufw(rules + [(rule, "Anywhere", "")])
+                stdout, rows = self.rows("apps")
+                line = self.row(rows, "ports")
+                self.assertFalse(line.startswith("  ok "), line)
+                self.assertIn("open to everyone", line)
+                self.assertIn(rule, line)
+        # 80 for one address, or other ports for everyone, are fine.
+        self.set_ufw(rules + [("80/tcp", "10.0.0.5", ""), ("22/udp", "Anywhere", ""), ("2222/tcp", "Anywhere", "")])
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.row(rows, "ports").startswith("  ok "), stdout)
+
+    def test_given_an_open_web_rule_on_apps_when_installed_then_it_is_closed_and_cloudflare_kept(self):
+        self.install("apps")
+        self.set_ufw(self.ufw_rules() + [("80,443/tcp", "Anywhere", "")])
+        self.install("apps")
+        self.assertNotIn(("80,443/tcp", "Anywhere", ""), self.ufw_rules())
+        self.assertEqual(self.cloudflare_rules(), sorted(CLOUDFLARE_V4 + CLOUDFLARE_V6))
+        self.assertIn("ufw delete allow 80,443/tcp", self.calls())
+        stdout, rows = self.rows("apps")
+        self.assertTrue(self.row(rows, "ports").startswith("  ok "), stdout)
+
+    def test_given_a_wide_range_with_web_in_it_on_apps_when_installed_then_it_is_left_alone(self):
+        self.install("apps")
+        self.set_ufw(self.ufw_rules() + [("1:1000/tcp", "Anywhere", "")])
+        # Something else makes the firewall step run again.
+        self.etc("yggdrasil/cloudflare-ips").unlink()
+        self.install("apps")
+        self.assertIn(("1:1000/tcp", "Anywhere", ""), self.ufw_rules())
+        self.assertEqual(self.ufw_calls("delete"), [])
+
+    def test_given_role_dev_without_2222_when_checked_then_the_ports_row_names_it(self):
+        self.install("dev")
+        self.set_ufw([rule for rule in self.ufw_rules() if rule[0] != "2222/tcp"])
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "ports")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("2222/tcp", line)
+        self.install("dev")
+        self.assertIn(("2222/tcp", "Anywhere", ""), self.ufw_rules())
+
+    def test_given_a_disabled_ufw_when_checked_then_it_is_reported_and_install_turns_it_on(self):
+        self.install("dev")
+        (self.state / "ufw-on").unlink()
+        stdout, rows = self.rows("dev")
+        self.assertFalse(self.row(rows, "ufw").startswith("  ok "), stdout)
+        self.install("dev")
+        self.assertTrue(self.ufw_enabled())
 
     # ---- The ssh hardening has to take effect ----------------------------------------------------
 
