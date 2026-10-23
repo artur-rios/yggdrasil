@@ -276,12 +276,10 @@ class ChimeraCatalogTests(unittest.TestCase):
         pipeline = (root / "jenkins/library/vars/yggdrasilPipeline.groovy").read_text(encoding="utf-8")
         plugins = (root / "platform/jenkins/controller/plugins.txt").read_text(encoding="utf-8")
 
-        self.assertIn('lock(resource: "release-${app}")', pipeline)
-        self.assertIn("release(app, plan.findAll", pipeline)
-        self.assertLess(
-            pipeline.index('lock(resource: "release-${app}")'),
-            pipeline.index("release(app, plan.findAll"),
-        )
+        lock = pipeline.index('lock(resource: "release-${app}")')
+        # Both release paths (GitHub without yggdrasil.yml, and the rest) run under the lock.
+        self.assertLess(lock, pipeline.index("release(app, environments, releaseArtifacts, ctx.repo)"))
+        self.assertLess(lock, pipeline.index("releasePullRequest(ctx, state, environments)"))
         self.assertIn("lockable-resources", plugins.splitlines())
 
     def test_given_chimera_stacks_when_loaded_then_runtime_is_hardened_and_routable(self):
