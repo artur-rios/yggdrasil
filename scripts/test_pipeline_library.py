@@ -698,15 +698,23 @@ class ReleaseLibraryTests(unittest.TestCase):
         body = lib.code[start:end]
         self.assertIn("List globs = windows.files ? (windows.files as List) : ['**']", body)
         self.assertLess(body.index("refuseLinks(true"), body.index("stashGlob("))
-        # Gathered on the release agent from those stashes only, no link at all before and after the
-        # validation, then stashed as the set publish-release.sh gets.
+        # Gathered on the release agent from those stashes only, no link among them, and stashed as the set
+        # publish-release.sh gets BEFORE the validation runs: the validation (repository code, root, the
+        # whole workspace mounted) is pass or fail only and reads a copy, so nothing it adds or rewrites is
+        # uploaded.
         start, end = lib.functions["gatherReleaseFiles"]
         body = lib.code[start:end]
         first = body.index("refuseLinks(true, 'the release files')")
         self.assertLess(body.index("unstash name"), first)
-        self.assertLess(first, body.index("run-check.sh release-validate"))
-        self.assertLess(body.index("run-check.sh release-validate"), body.index("refuseLinks(true, 'the validated release files')"))
-        self.assertLess(body.index("refuseLinks(true, 'the validated release files')"), body.index("stash name: 'release-files'"))
+        stashed = body.index("stash name: 'release-files'")
+        self.assertEqual(body.count("stash name:"), 1)
+        self.assertLess(first, stashed)
+        validated = body.index("run-check.sh release-validate")
+        self.assertLess(stashed, validated)
+        self.assertLess(body.index("cp -R release-files release-check"), validated)
+        self.assertIn("printf 'RELEASE_FILES=%s\\\\n' \"$WORKSPACE/release-check\"", body)
+        self.assertNotIn("$WORKSPACE/release-files", body)
+        self.assertNotRegex(body[validated:], r"\bstash\b")
         # publish-release.sh gets a directory emptied first, holding only that stash, checked again.
         start, end = lib.functions["publishRelease"]
         body = lib.code[start:end]
@@ -761,10 +769,29 @@ class ReleaseLibraryTests(unittest.TestCase):
         self.assertRegex(handled, r"catch \(FlowInterruptedException interruption\) \{\s*echo resumeNote\(ctx, tag\)\s*"
                                   r"throw interruption")
         self.assertRegex(handled, r"catch \(Exception problem\) \{\s*error ")
-        self.assertIn('error "${problem.message}\\n${resumeNote(ctx, tag)}"', handled)
+        self.assertIn('error "${failureText(problem)}\\n${resumeNote(ctx, tag)}"', handled)
         start, end = lib.functions["resumeNote"]
         self.assertIn("the pull request is merged and tagged ${tag}; finish the release with the release-resume job "
                       "(REPOSITORY=${ctx.app}, TAG=${tag})", lib.code[start:end])
+
+    def test_given_a_failure_between_the_merge_and_the_tag_when_read_then_it_says_how_to_finish(self):
+        lib = self.lib
+        start, end = lib.functions["mergeAndTag"]
+        body = lib.code[start:end]
+        merged = body.index("'merge-pr'")
+        guarded = body.index("try {", merged)
+        self.assertLess(guarded, body.index("ensureTag(ctx, tag, commit)"))
+        self.assertRegex(body, r"catch \(FlowInterruptedException interruption\) \{\s*echo untaggedNote\(ctx, tag, commit\)\s*"
+                               r"throw interruption")
+        self.assertIn('error "${failureText(problem)}\\n${untaggedNote(ctx, tag, commit)}"', body)
+        start, end = lib.functions["untaggedNote"]
+        self.assertIn("the pull request is merged as ${merge}, but not tagged; tag ${tag} on the merge commit ${merge}, then "
+                      "finish the release with the release-resume job (REPOSITORY=${ctx.app}, TAG=${tag})", lib.code[start:end])
+        # A failure without a message (a NullPointerException) still says what it was.
+        start, end = lib.functions["failureText"]
+        self.assertIn("problem.message ?: problem.toString()", lib.code[start:end])
+        start, end = lib.functions["releasePullRequest"]
+        self.assertNotIn("problem.message", lib.code[start:end])
 
     def test_given_a_skip_with_release_copies_when_read_then_github_gets_none_and_it_is_pending(self):
         # After a skip GitHub may be down: the release is published on the git server only (no
@@ -780,7 +807,11 @@ class ReleaseLibraryTests(unittest.TestCase):
         self.assertNotIn("mirrorsReleases(", body)
         self.assertRegex(body, r"if \(mirrorReleases\) \{\s*arguments << '--mirror-releases'")
         start, end = lib.functions["releasePullRequest"]
-        self.assertIn("' (deployed without GitHub Actions checks; GitHub copy pending)'", lib.code[start:end])
+        body = lib.code[start:end]
+        self.assertIn("' (deployed without GitHub Actions checks; GitHub copy pending)'", body)
+        # The Windows files missing with the GitHub copy pending: release-resume, not actions-release.
+        self.assertRegex(body, r"String finish = published\.githubPending\s*\? \"The release-resume job "
+                               r"\(REPOSITORY=\$\{ctx\.app\}, TAG=\$\{tag\}\) makes the GitHub copy and adds them\.\"")
 
     def test_given_a_skip_when_read_then_it_is_recorded_and_missing_files_make_the_build_unstable(self):
         lib = self.lib
@@ -790,7 +821,7 @@ class ReleaseLibraryTests(unittest.TestCase):
         self.assertIn("deployTo(app, environment, version, state.sha, false, ctx.repo, [], null, note)", body)
         self.assertIn(": ' (deployed without GitHub Actions checks)'", body)
         self.assertIn("currentBuild.description = description", body)
-        self.assertRegex(body, r"if \(published\.missing\) \{\s*unstable ")
+        self.assertRegex(body, r"if \(published\.missing\) \{(\s*//[^\n]*)*\s*String finish = [^\n]*\n[^\n]*\n[^\n]*\n\s*unstable ")
         start, end = lib.functions["releaseFiles"]
         self.assertIn("skipped ? [stashes: null", lib.code[start:end])
         start, end = lib.functions["publishRelease"]

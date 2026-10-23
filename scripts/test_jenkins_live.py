@@ -167,7 +167,14 @@ DESKTOP_PIPELINE = {"release": {
     "windows": {"workflow": "release-windows.yml", "files": ["*/*.msi"]},
     "validate": {"image": "alpine:3",
                  "run": 'test -f "$RELEASE_FILES/windows/shop-desktop-windows/shop-desktop-setup.msi"'
-                        ' && echo "VALIDATED-$(find "$RELEASE_FILES" -type f | wc -l | tr -d " ")-FILES"'},
+                        ' && echo "VALIDATED-$(find "$RELEASE_FILES" -type f | wc -l | tr -d " ")-FILES"'
+                        # Then it tries to change what is released: a file added and one rewritten, in
+                        # its copy and in the gathered directory itself (the whole workspace is mounted).
+                        ' && echo extra >"$RELEASE_FILES/build/dist/extra.txt"'
+                        ' && echo tampered >"$RELEASE_FILES/build/dist/shop-desktop-$RELEASE_VERSION.tar.gz"'
+                        ' && echo extra >../release-files/build/dist/extra-direct.txt'
+                        ' && echo tampered >../release-files/build/dist/shop-desktop.sha256'
+                        ' && echo "TAMPERED-$((1 + 1))"'},
 }}
 TOOLS_PIPELINE = {"release": {
     "build": {"image": "alpine:3", "run": "mkdir -p dist && echo tools >dist/shop-tools.tar.gz",
@@ -1236,6 +1243,10 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(set(assets), {"shop-desktop-1.0.0.tar.gz", "shop-desktop.sha256", "shop-desktop-setup.msi"})
         self.assertEqual(assets["shop-desktop-1.0.0.tar.gz"], len("shop-desktop 1.0.0\n"))
         self.assertEqual(assets["shop-desktop-setup.msi"], len("desktop installer\n"))
+        # The validation is pass or fail only: what it added or rewrote after the files were gathered
+        # (TAMPERED-2: it did) is not in the release -- no extra file, the built files at their sizes.
+        self.assertIn("TAMPERED-2", build.console)
+        self.assertEqual(assets["shop-desktop.sha256"], len(f"{'0' * 64}  dist/shop-desktop-1.0.0.tar.gz\n"))
         # The validation ran on the release agent over the whole set (both files and the installer).
         self.assertIn("VALIDATED-3-FILES", build.console)
         # The allow-listed credential reached the release build (its digest; the log masks the value).

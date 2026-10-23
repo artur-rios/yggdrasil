@@ -906,7 +906,7 @@ void releasePullRequest(Map ctx, Map state, List environments) {
     echo resumeNote(ctx, tag)
     throw interruption
   } catch (Exception problem) {
-    error "${problem.message}\n${resumeNote(ctx, tag)}"
+    error "${failureText(problem)}\n${resumeNote(ctx, tag)}"
   }
   String description = tag
   if (skipped) {
@@ -916,9 +916,25 @@ void releasePullRequest(Map ctx, Map state, List environments) {
   currentBuild.description = description
   echo "Released ${tag}: ${published.urls.join(' ')}"
   if (published.missing) {
-    unstable "${tag} was published without its Windows files: ${published.missing.join(', ')} (${published.reason}). The actions-release job attaches them."
+    // With the GitHub copy pending, release-resume makes it and adds the Windows files; actions-release
+    // would fail on the missing GitHub copy.
+    String finish = published.githubPending
+      ? "The release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}) makes the GitHub copy and adds them."
+      : 'The actions-release job attaches them.'
+    unstable "${tag} was published without its Windows files: ${published.missing.join(', ')} (${published.reason}). ${finish}"
   }
   deleteReleaseBranch(ctx)
+}
+
+// What a release whose merge went through but whose tag did not tells the owner.
+String untaggedNote(Map ctx, String tag, String merge) {
+  return "Not released: the pull request is merged as ${merge}, but not tagged; tag ${tag} on the merge commit ${merge}, then finish the release with the release-resume job (REPOSITORY=${ctx.app}, TAG=${tag})."
+}
+
+// A failure's text for a message: its message, or the exception itself when it has none.
+@NonCPS
+String failureText(Throwable problem) {
+  return problem.message ?: problem.toString()
 }
 
 // What a release that failed after its merge tells the owner.
@@ -1017,7 +1033,15 @@ String mergeAndTag(Map ctx, String sha, String version, String tag) {
       if (!(commit ==~ COMMIT)) {
         error "forge.sh merge-pr answered '${printable(commit)}', not a commit"
       }
-      ensureTag(ctx, tag, commit)
+      // Merged, and not tagged yet: a failure from here says so, and how to finish.
+      try {
+        ensureTag(ctx, tag, commit)
+      } catch (FlowInterruptedException interruption) {
+        echo untaggedNote(ctx, tag, commit)
+        throw interruption
+      } catch (Exception problem) {
+        error "${failureText(problem)}\n${untaggedNote(ctx, tag, commit)}"
+      }
       return commit
     }
     echo "Merged as ${merged.take(7)}, tagged ${tag}."
@@ -1181,7 +1205,7 @@ Map windowsFiles(Map ctx, Map windows, String tag, int seconds) {
   } catch (FlowInterruptedException interruption) {
     throw interruption
   } catch (Exception problem) {
-    return [stashes: null, reason: "the files of ${workflow} run ${run} could not be had: ${safeText(problem.message, 300)}"]
+    return [stashes: null, reason: "the files of ${workflow} run ${run} could not be had: ${safeText(failureText(problem), 300)}"]
   }
 }
 
@@ -1193,13 +1217,14 @@ List windowsNames(Map windows) {
 }
 
 // On the release agent: the release's files in release-files/ (release.build's under build/, at their
-// paths in the checkout; the Windows ones under windows/<artifact>/), with no link among them, then
-// release.validate run over them -- in its image, from the application's root (the tag checked out), the
-// whole workspace mounted and RELEASE_FILES, RELEASE_TAG and RELEASE_VERSION in its environment -- and
-// what it leaves there (checked for links again: it ran as root) stashed as release-files: the set the
-// uploads are checked against. A validation that fails stops the release here: publish-release.sh, which
-// is what creates the drafts, is never called, so there is nothing to publish (and no draft at all).
-// Returns the stash's name.
+// paths in the checkout; the Windows ones under windows/<artifact>/), with no link among them, stashed as
+// release-files -- the set publish-release.sh uploads and checks, exactly the declared globs' matches --
+// before release.validate runs. The validation is pass or fail only: it runs over a copy (release-check/,
+// RELEASE_FILES in its environment), in its image, from the application's root (the tag checked out), the
+// whole workspace mounted, with RELEASE_TAG and RELEASE_VERSION; it runs as root and can write anywhere
+// there, but the stash is taken, so nothing it adds or changes reaches the release. A validation that fails
+// stops the release here: publish-release.sh, which is what creates the drafts, is never called, so there
+// is nothing to publish (and no draft at all). Returns the stash's name.
 String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, List built, List windows) {
   Map validate = releaseConfig.validate as Map
   node('release') {
@@ -1207,8 +1232,10 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
       if (validate) {
         checkoutTag(ctx, tag, sha)
       }
-      dir('release-files') {
-        deleteDir()
+      for (String directory : ['release-files', 'release-check']) {
+        dir(directory) {
+          deleteDir()
+        }
       }
       sh(script: 'mkdir -p release-files/build release-files/windows')
       dir('release-files/build') {
@@ -1223,6 +1250,8 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
       }
       dir('release-files') {
         refuseLinks(true, 'the release files')
+        // The upload set, before anything else runs here.
+        stash name: 'release-files', includes: '**', allowEmpty: true
       }
       if (validate) {
         withEnv(["YGG_IMAGE=${validate.image}", "YGG_RUN=${validate.run}", "YGG_TMP=${scratch()}", "YGG_TAG=${tag}",
@@ -1230,9 +1259,10 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
           int code = sh(script: '''
             umask 077
             mkdir -p "$YGG_TMP"
+            cp -R release-files release-check
             env_file="$YGG_TMP/release-validate.env"
             {
-              printf 'RELEASE_FILES=%s\\n' "$WORKSPACE/release-files"
+              printf 'RELEASE_FILES=%s\\n' "$WORKSPACE/release-check"
               printf 'RELEASE_TAG=%s\\n' "$YGG_TAG"
               printf 'RELEASE_VERSION=%s\\n' "$YGG_VERSION"
             } >"$env_file"
@@ -1243,12 +1273,6 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
             error "release.validate failed (exit ${code}): nothing is published, and no draft release was made."
           }
         }
-        dir('release-files') {
-          refuseLinks(true, 'the validated release files')
-        }
-      }
-      dir('release-files') {
-        stash name: 'release-files', includes: '**', allowEmpty: true
       }
     } finally {
       cleanScratch()
@@ -1354,7 +1378,7 @@ void stashGlob(String name, String glob, String field) {
   } catch (FlowInterruptedException interruption) {
     throw interruption
   } catch (Exception problem) {
-    error "${field}: '${printable(glob)}' matches no file (${safeText(problem.message, 200)})"
+    error "${field}: '${printable(glob)}' matches no file (${safeText(failureText(problem), 200)})"
   }
 }
 
