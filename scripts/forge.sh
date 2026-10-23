@@ -11,6 +11,9 @@
 #                                                                   -> "<id>\t<html_url>"
 #     scripts/forge.sh upload-release-file <repo> <release-id> <file> -> the file's download URL
 #     scripts/forge.sh publish-release <repo> <release-id>          -> the release's html_url
+#     scripts/forge.sh find-release   <repo> <tag>                  -> "<id>\t<html_url>\t<draft: true|false>"
+#     scripts/forge.sh release-files  <repo> <release-id>           -> "<name>\t<size>" per line
+#     scripts/forge.sh tag-sha        <repo> <tag>                  -> the commit the tag points to
 #     scripts/forge.sh delete-branch  <repo> <branch>
 #
 # state is pending, success, failure or error. get-statuses prints the latest state of each context
@@ -18,10 +21,15 @@
 # login that created it (empty when the server has none: a deleted user), which is how the pipeline
 # tells its own results from anyone else's. merge-pr makes a merge commit and fails if the pull
 # request's head is no longer <sha>. delete-branch succeeds, with a note on stderr, when the branch
-# is already gone.
+# is already gone. find-release finds a release, a draft too, by its tag (GitHub's own lookup by tag
+# does not return drafts, so the list of releases is searched); tag-sha peels an annotated tag to the
+# commit it points to. release-files lists the files attached to a release, which is how an upload is
+# checked.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
+# 4 (find-release and tag-sha only) that there is no such release or tag, which is an answer, not an
+# error: the caller creates it, or waits for it;
 # 2 that there was no command at all (it prints the list of commands).
 # On Forgejo merge-pr waits (every 3 s, up to 20 times) while the server answers "try again later": it
 # checks a pull request again in the background after a new commit status. The token reaches curl on
@@ -153,6 +161,18 @@ request() {
   [[ -z "$answer" ]] || printf '%s\n' "$answer"
 }
 
+# missing_or_failed <what>: after a send that failed, for the commands where "not found" is an answer:
+# prints the exit status to return, 4 for a 404, else 1 (explained on stderr like request does).
+missing_or_failed() {
+  if [[ "$http_status" == 404 ]]; then
+    echo "forge: $1: not found" >&2
+    echo 4
+  else
+    echo "forge: $1 failed${failure:+: $failure}" >&2
+    echo 1
+  fi
+}
+
 # The curl config with the request's headers.
 headers() {
   case "$forge_type" in
@@ -271,6 +291,54 @@ github_publish_release() {
   jq -er 'select(.draft == false) | .html_url' <<<"$out" || die "publish-release failed: the release is still a draft"
 }
 
+github_find_release() {
+  local repo=$1 tag=$2 out page=1 count found
+  # GET /releases/tags/<tag> leaves drafts out, and a draft is what an interrupted release leaves: the
+  # list (the newest first, 100 to a page at most, drafts included for a token that can push) is searched.
+  # 100 pages is far more releases than any repository has.
+  while ((page <= 100)); do
+    out=$(request "find-release $tag" GET "$(repo_url "$repo")/releases?per_page=100&page=$page") || return 1
+    found=$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag)][0] // empty
+      | [.id, .html_url, (.draft // false)] | @tsv' <<<"$out") || return 1
+    if [[ -n "$found" ]]; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || break
+    page=$((page + 1))
+  done
+  echo "forge: no release for $tag" >&2
+  return 4
+}
+
+github_release_files() {
+  local repo=$1 id=$2 out page=1 count
+  while ((page <= 100)); do
+    out=$(request "release-files of $id" GET "$(repo_url "$repo")/releases/$(encode "$id")/assets?per_page=100&page=$page") || return 1
+    jq -r '.[] | [.name, .size] | @tsv' <<<"$out" || return 1
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || return 0
+    page=$((page + 1))
+  done
+}
+
+github_tag_sha() {
+  local repo=$1 tag=$2 object type sha
+  # git/ref (singular) is the exact tag, not every ref that starts with its name. A lightweight tag
+  # points at the commit; an annotated one at a tag object, which points at the commit (or at another
+  # tag object): followed until a commit.
+  send GET "$(repo_url "$repo")/git/ref/tags/$(encode_path "$tag")" || return "$(missing_or_failed "tag-sha $tag")"
+  object=$(jq -er '.object | select(.type != null and .sha != null) | .type + " " + .sha' <<<"$answer") || die "tag-sha failed: the answer has no object"
+  read -r type sha <<<"$object"
+  while [[ "$type" == tag ]]; do
+    send GET "$(repo_url "$repo")/git/tags/$(encode "$sha")" || return "$(missing_or_failed "tag-sha $tag")"
+    object=$(jq -er '.object | select(.type != null and .sha != null) | .type + " " + .sha' <<<"$answer") || die "tag-sha failed: the answer has no object"
+    read -r type sha <<<"$object"
+  done
+  printf '%s\n' "$sha"
+}
+
 github_delete_branch() {
   local repo=$1 branch=$2 out
   # "delete head branches on merge" (github/rulesets.py turns it on) means GitHub has usually deleted
@@ -366,6 +434,40 @@ forgejo_publish_release() {
   jq -er 'select(.draft == false) | .html_url' <<<"$out" || die "publish-release failed: the release is still a draft"
 }
 
+forgejo_find_release() {
+  local repo=$1 tag=$2 out page=1 count found
+  # The list, not /releases/tags/<tag>: it answers 404 for a draft. Pages of at most 50 (Forgejo's
+  # largest), drafts included for a token that can write.
+  while ((page <= 100)); do
+    out=$(request "find-release $tag" GET "$(repo_url "$repo")/releases?limit=50&page=$page") || return 1
+    found=$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag)][0] // empty
+      | [.id, .html_url, (.draft // false)] | @tsv' <<<"$out") || return 1
+    if [[ -n "$found" ]]; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 50)) || break
+    page=$((page + 1))
+  done
+  echo "forge: no release for $tag" >&2
+  return 4
+}
+
+forgejo_release_files() {
+  local repo=$1 id=$2 out
+  # Forgejo lists a release's files in one answer.
+  out=$(request "release-files of $id" GET "$(repo_url "$repo")/releases/$(encode "$id")/assets") || return 1
+  jq -r '.[] | [.name, .size] | @tsv' <<<"$out"
+}
+
+forgejo_tag_sha() {
+  local repo=$1 tag=$2
+  # .commit is the commit the tag points to, also for an annotated tag (.id is the tag object).
+  send GET "$(repo_url "$repo")/tags/$(encode_path "$tag")" || return "$(missing_or_failed "tag-sha $tag")"
+  jq -er '.commit.sha | select(. != null and . != "")' <<<"$answer" || die "tag-sha failed: the answer has no commit"
+}
+
 forgejo_delete_branch() {
   local repo=$1 branch=$2 url refused
   url="$(repo_url "$repo")/branches/$(encode_path "$branch")"
@@ -403,6 +505,9 @@ usage: forge.sh <command> <arguments>
   create-release      <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]
   upload-release-file <repo> <release-id> <file>
   publish-release     <repo> <release-id>
+  find-release        <repo> <tag>
+  release-files       <repo> <release-id>
+  tag-sha             <repo> <tag>
   delete-branch       <repo> <branch>
 Reference: docs/setup.md, "The git server commands".
 EOF
@@ -419,6 +524,9 @@ case "$command" in
   create-release) usage="<repo> <tag> <sha> <title> [--draft] [--notes-file <file>]" min=4 max=7 ;;
   upload-release-file) usage="<repo> <release-id> <file>" min=3 max=3 ;;
   publish-release) usage="<repo> <release-id>" min=2 max=2 ;;
+  find-release) usage="<repo> <tag>" min=2 max=2 ;;
+  release-files) usage="<repo> <release-id>" min=2 max=2 ;;
+  tag-sha) usage="<repo> <tag>" min=2 max=2 ;;
   delete-branch) usage="<repo> <branch>" min=2 max=2 ;;
   *) die "unknown command '$command'" ;;
 esac

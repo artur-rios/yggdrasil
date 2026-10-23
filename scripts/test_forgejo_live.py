@@ -339,6 +339,24 @@ class ForgejoLiveTests(unittest.TestCase):
                          (True, "The first release.\n", "v1.0.0", "v1.0.0"))
         self.assertEqual(html_url, release["html_url"])
 
+        # find-release finds the draft by its tag (GitHub's lookup by tag would not), tag-sha the commit
+        # the tag points to, and a tag nobody made is exit 4, not an error.
+        result = self.forge(JENKINS, "find-release", APP, "v1.0.0")
+        self.assertEqual((result.returncode, result.stdout), (0, f"{release_id}\t{html_url}\ttrue\n"), result.stderr)
+        result = self.forge(JENKINS, "find-release", APP, "v9.9.9")
+        self.assertEqual((result.returncode, result.stdout), (4, ""), result.stderr)
+        result = self.forge(JENKINS, "tag-sha", APP, "v1.0.0")
+        self.assertEqual((result.returncode, result.stdout), (0, f"{sha}\n"), result.stderr)
+        result = self.forge(JENKINS, "tag-sha", APP, "v9.9.9")
+        self.assertEqual((result.returncode, result.stdout), (4, ""), result.stderr)
+        # An annotated tag is peeled to its commit.
+        self.api[JENKINS].request("POST", f"/repos/{OWNER}/{APP}/tags", {"tag_name": "v1.0.0-annotated", "target": sha,
+                                                                         "message": "an annotated tag"})
+        result = self.forge(JENKINS, "tag-sha", APP, "v1.0.0-annotated")
+        self.assertEqual((result.returncode, result.stdout), (0, f"{sha}\n"), result.stderr)
+        result = self.forge(JENKINS, "release-files", APP, release_id)
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
         artifact = self.temp / "shop-api 1.0.0.zip"
         artifact.write_bytes(b"the release's bytes")
         result = self.forge(JENKINS, "upload-release-file", APP, release_id, str(artifact))
@@ -351,10 +369,15 @@ class ForgejoLiveTests(unittest.TestCase):
         self.assertRegex(download, rf"^{re.escape(self.url)}/attachments/[0-9a-f-]+$")
         for url in (download, assets[0]["browser_download_url"]):
             self.assertEqual(self.download(url), artifact.read_bytes(), url)
+        result = self.forge(JENKINS, "release-files", APP, release_id)
+        self.assertEqual((result.returncode, result.stdout), (0, f"{artifact.name}\t{artifact.stat().st_size}\n"),
+                         result.stderr)
 
         result = self.forge(JENKINS, "publish-release", APP, release_id)
         self.assertEqual((result.returncode, result.stdout.strip()), (0, html_url), result.stderr)
         self.assertFalse(self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/{release_id}")["draft"])
+        result = self.forge(JENKINS, "find-release", APP, "v1.0.0")
+        self.assertEqual((result.returncode, result.stdout), (0, f"{release_id}\t{html_url}\tfalse\n"), result.stderr)
 
     def test_given_a_pull_request_when_jenkins_merges_it_then_the_merge_commit_is_printed(self):
         head = self.change_file(OWNER, APP, "CHANGELOG.md", "## 3.0.0\n", "develop", "release/3.0.0")

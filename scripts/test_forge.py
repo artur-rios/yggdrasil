@@ -295,6 +295,77 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertIn("/repos/someone/app/releases/17", request)
         self.assertEqual(self.body("17"), {"draft": False})
 
+    def test_given_github_when_finding_a_release_then_its_id_url_and_draft_flag_are_printed(self):
+        self.respond("releases", (0, [{"id": 5, "tag_name": "v1.1.0", "draft": False, "html_url": "https://example/r/5"},
+                                      {"id": 6, "tag_name": "v1.2.3", "draft": True, "html_url": "https://example/r/6"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "6\thttps://example/r/6\ttrue\n"), result.stderr)
+        self.assertIn("--request GET", self.request("releases"))
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?per_page=100&page=1"))
+
+    def test_given_github_and_a_release_on_the_second_page_when_finding_it_then_the_next_page_is_read(self):
+        first = [{"id": n, "tag_name": f"v0.0.{n}", "draft": False, "html_url": "https://example/r"} for n in range(100)]
+        self.respond("releases", (0, first), (0, [{"id": 200, "tag_name": "v1.2.3", "draft": False,
+                                                   "html_url": "https://example/r/200"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "200\thttps://example/r/200\tfalse\n"), result.stderr)
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?per_page=100&page=2"))
+
+    def test_given_github_and_no_release_for_the_tag_when_finding_it_then_it_exits_4(self):
+        self.respond("releases", (0, [{"id": 5, "tag_name": "v1.1.0", "draft": False, "html_url": "https://example/r/5"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("no release for v1.2.3", result.stderr)
+
+    def test_given_github_refuses_when_finding_a_release_then_it_fails_with_1(self):
+        self.respond("releases", (22, {"message": "Bad credentials"}, 401))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("forge: find-release v1.2.3 failed: Bad credentials", result.stderr)
+
+    def test_given_github_when_listing_release_files_then_name_and_size_are_printed_per_line(self):
+        self.respond("assets", (0, [{"name": "app.zip", "size": 10}, {"name": "my app.exe", "size": 2048}]))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual((result.returncode, result.stdout), (0, "app.zip\t10\nmy app.exe\t2048\n"), result.stderr)
+        self.assertTrue(self.request("assets").strip().endswith("/repos/someone/app/releases/17/assets?per_page=100&page=1"))
+
+    def test_given_github_and_no_files_when_listing_release_files_then_nothing_is_printed(self):
+        self.respond("assets", (0, []))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
+    def test_given_more_files_than_a_page_when_listing_release_files_on_github_then_every_page_is_read(self):
+        self.respond("assets", (0, [{"name": f"f{n}", "size": n} for n in range(100)]), (0, [{"name": "last", "size": 1}]))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 101)
+        self.assertEqual(result.stdout.splitlines()[-1], "last\t1")
+
+    def test_given_github_and_a_lightweight_tag_when_asking_its_commit_then_the_commit_is_printed(self):
+        self.respond("v1.2.3", (0, {"ref": "refs/tags/v1.2.3", "object": {"type": "commit", "sha": "abc123"}}))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "abc123\n"), result.stderr)
+        self.assertTrue(self.request("v1.2.3").strip().endswith("/repos/someone/app/git/ref/tags/v1.2.3"))
+
+    def test_given_github_and_an_annotated_tag_when_asking_its_commit_then_the_tag_object_is_peeled(self):
+        self.respond("v1.2.3", (0, {"object": {"type": "tag", "sha": "tagobject"}}))
+        self.respond("tagobject", (0, {"object": {"type": "commit", "sha": "abc123"}}))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "abc123\n"), result.stderr)
+        self.assertTrue(self.request("tagobject").strip().endswith("/repos/someone/app/git/tags/tagobject"))
+
+    def test_given_github_and_no_such_tag_when_asking_its_commit_then_it_exits_4(self):
+        self.respond("v1.2.3", (22, {"message": "Not Found"}, 404))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("not found", result.stderr)
+
+    def test_given_github_fails_when_asking_a_tags_commit_then_it_exits_1(self):
+        self.respond("v1.2.3", (22, {"message": "Server Error"}, 500))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("tag-sha v1.2.3 failed: Server Error", result.stderr)
+
     def test_given_a_branch_with_a_slash_when_deleting_on_github_then_the_ref_path_keeps_it(self):
         self.respond("1.0.0", (0, None))
         result = self.forge("delete-branch", "app", "release/1.0.0")
@@ -412,7 +483,8 @@ class ForgeGitHubTests(ForgeTestCase):
         result = self.forge()
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         for command in ("set-status", "get-statuses", "merge-pr", "create-tag", "create-release",
-                        "upload-release-file", "publish-release", "delete-branch"):
+                        "upload-release-file", "publish-release", "find-release", "release-files", "tag-sha",
+                        "delete-branch"):
             self.assertRegex(result.stderr, rf"(?m)^  {command} +<repo>", command)
         self.assertEqual(list(self.state.iterdir()), [])
 
@@ -657,6 +729,45 @@ class ForgeForgejoTests(ForgeTestCase):
         result = self.forge("publish-release", "app", "17")
         self.assertEqual(result.returncode, 1)
         self.assertIn("still a draft", result.stderr)
+
+    def test_given_forgejo_when_finding_a_release_then_its_id_url_and_draft_flag_are_printed(self):
+        self.respond("releases", (0, [{"id": 5, "tag_name": "v1.1.0", "draft": False, "html_url": "https://example/r/5"},
+                                      {"id": 6, "tag_name": "v1.2.3", "draft": True, "html_url": "https://example/r/6"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "6\thttps://example/r/6\ttrue\n"), result.stderr)
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?limit=50&page=1"))
+
+    def test_given_forgejo_and_a_release_on_the_second_page_when_finding_it_then_the_next_page_is_read(self):
+        first = [{"id": n, "tag_name": f"v0.0.{n}", "draft": False, "html_url": "https://example/r"} for n in range(50)]
+        self.respond("releases", (0, first), (0, [{"id": 200, "tag_name": "v1.2.3", "draft": False,
+                                                   "html_url": "https://example/r/200"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "200\thttps://example/r/200\tfalse\n"), result.stderr)
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?limit=50&page=2"))
+
+    def test_given_forgejo_and_no_release_for_the_tag_when_finding_it_then_it_exits_4(self):
+        self.respond("releases", (0, []))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("no release for v1.2.3", result.stderr)
+
+    def test_given_forgejo_when_listing_release_files_then_name_and_size_are_printed_per_line(self):
+        self.respond("assets", (0, [{"name": "app.zip", "size": 10}, {"name": "my app.exe", "size": 2048}]))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual((result.returncode, result.stdout), (0, "app.zip\t10\nmy app.exe\t2048\n"), result.stderr)
+        self.assertTrue(self.request("assets").strip().endswith("/repos/someone/app/releases/17/assets"))
+
+    def test_given_forgejo_when_asking_a_tags_commit_then_the_tags_commit_is_printed(self):
+        self.respond("v1.2.3", (0, {"name": "v1.2.3", "id": "tagobject", "commit": {"sha": "abc123"}}))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "abc123\n"), result.stderr)
+        self.assertTrue(self.request("v1.2.3").strip().endswith("/repos/someone/app/tags/v1.2.3"))
+
+    def test_given_forgejo_and_no_such_tag_when_asking_its_commit_then_it_exits_4(self):
+        self.respond("v1.2.3", (22, {"message": "The target couldn't be found."}, 404))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("not found", result.stderr)
 
     def test_given_a_branch_with_a_slash_when_deleting_on_forgejo_then_the_path_keeps_it(self):
         self.respond("1.0.0", (0, None, 204))
