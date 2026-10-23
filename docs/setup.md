@@ -1028,6 +1028,12 @@ now hands the agent `YGG_DOCKER_SOCKET`, the host path of the user's socket, whi
 `docker: true` needs. On the apps machine, `scripts/platform.sh up` recreates the deploy agent with
 `YGG_DOMAIN`, the platform's `DOMAIN`, which `deploy.sh` puts under a site's host.
 
+The `ci` engine keeps every image a check pulled and every build cache it made; nothing prunes them yet (a
+scheduled prune is planned with the next part of the move, plan 4). Until then, look at its disk now and then
+and prune it as that user, e.g.
+`sudo -u ci env XDG_RUNTIME_DIR=/run/user/$(id -u ci) docker system prune --filter until=168h` (and the same for
+`release`).
+
 ### 9.9 Renovate
 
 Dev machine, Forgejo only. The `renovate` user (made by `ygg install`) runs Renovate once a day from a
@@ -1547,6 +1553,16 @@ its `paths` is posted `success` with the reason. A check that already has a `suc
 created by anyone else is never trusted. On GitHub those statuses are created by the App's bot login
 (`<app-slug>[bot]`), so set `forge.jenkinsUser` to it to get reuse, or every check runs again. A push's changed
 files are counted from the last commit of that branch whose checks passed.
+
+**A pull request whose base branch is changed is not checked again by itself.** Jenkins builds a pull
+request's head (not its merge with the base) and ignores a change that touches only its target
+(`ignoreTargetOnlyChanges` in the Job DSL), so retargeting one, say from `develop` to `main`, starts no build.
+Its statuses, `branch-policy` among them, are still the ones checked against the old base, and since a status
+belongs to the commit, they can satisfy the new base's required checks. Recheck it by hand: in Jenkins, open
+the repository's job, **Scan Repository Now** (Jenkins learns the new base), then the pull request's `PR-<n>`
+job, **Build with Parameters** with `DEPLOY_TO` left empty; or push a new commit to its branch. Only
+`forge.jenkinsUser` merges into an application's `main`, and only a release pull request it built itself, so
+this matters for `develop` and for the `main` of an `owner-tag` repository, which you merge.
 
 ### GitHub Actions and the skip
 
