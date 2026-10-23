@@ -38,7 +38,7 @@ MENU = {("status",): "Status", ("config",): "Applications", ("deploy",): "Applic
 SOURCE_BY_DEST = {"scope": "scope", "key": "key", "keys": "key", "assignments": "assignment",
                   "application": "application", "environment": "environment", "id": "change",
                   "dir": "directory", "file": "file", "service": "service", "app_dir": "directory",
-                  "version": "version", "limit": "number", "topic": "command"}
+                  "version": "version", "limit": "number", "topic": "command", "domain": "domain"}
 SOURCE_OVERRIDES = {
     ("config", "application"): "host-application",
     ("config", "environment"): "app-host-environment",
@@ -50,6 +50,7 @@ SOURCE_OVERRIDES = {
     ("vars", "check", "environment"): "app-environment",
     ("catalog", "get", "environment"): "app-environment",
     ("catalog", "get", "option"): "app-option",
+    ("catalog", "public-host", "environment"): "app-environment",
     ("catalog", "environment", "option"): "environment-option",
     ("catalog", "repository-entry", "entry"): "repository",
 }
