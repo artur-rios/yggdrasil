@@ -115,13 +115,15 @@ socket. When Traefik or Alloy is upgraded, run it: a request the new version mak
 servers. `scripts/test_forgejo_live.py` checks that the fakes are right, against a real Forgejo: it starts the
 image `platform/compose.yml` pins in one `ygg-forgejo-test-*` container (SQLite, a free local port), makes the
 users and repositories, applies the rules and tries them (a developer cannot merge a `Jenkinsfile` change, push
-`release/*` or create a `v*` tag; the owner can still merge past failing checks). With Docker, bash, jq and git:
+`release/*` or create, move or delete a `v*` tag; a `rules: basic` repository refuses force pushes and deletions;
+the owner can still merge past failing checks). One test pins a known gap instead: the Jenkins user, which creates
+the `v*` tags, can also move and delete them (docs/setup.md, step 12). With Docker, bash, jq and git:
 
 ```bash
 YGG_FORGEJO_TESTS=1 python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
 ```
 
-It takes about 15 seconds and removes its container at the end, also when it fails. CI runs it (job `platform`).
+It takes about 20 seconds and removes its container at the end, also when it fails. CI runs it (job `platform`).
 When Forgejo is upgraded, run it: a changed answer of the API fails it.
 
 ## Branching and pull requests

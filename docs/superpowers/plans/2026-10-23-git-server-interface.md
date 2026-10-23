@@ -45,7 +45,8 @@ stays GitHub until then); sites' stack files and Traefik routing (plan 5).
     forced merge). Not on `main`, which receives only release snapshots of `develop` that Jenkins merges: a
     protected file there would stop every release that changes the Jenkinsfile.
   - Version tags: in applications only `forge.jenkinsUser` creates `v*`; in owner-tagged repositories only the
-    owner creates their pattern (`v*`, or `[0-9]*` for libraries); nobody moves or deletes them.
+    owner creates their pattern (`v*`, or `[0-9]*` for libraries); nobody moves or deletes them (on Forgejo a
+    known gap: the creator can, see the spec's Version tags row).
   - Repository settings: default branch `develop`; delete head branch after merge.
   - Repositories with `rules: basic`: `develop` and `main` without force push or deletion, nothing else.
 - On GitHub: Jenkins' contexts (`branch-policy`, `checks`, `deploy/…`) are **not** bound to an integration;
