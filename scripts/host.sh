@@ -949,6 +949,20 @@ clone() {
 
 # ---- Set up an application ----------------------------------------------------------------------
 
+# git_server_step <repository>: step 3 of the "Next" add_application prints, what the git server needs
+# before rules.py can protect the new repository. On GitHub, Jenkins' App must reach it; on Forgejo
+# the users the rules name must be collaborators with write access, or Forgejo drops them from the
+# protections (docs/setup.md, step 12).
+git_server_step() {
+  local repository=$1
+  if [[ "$(catalog forge type 2>/dev/null)" == forgejo ]]; then
+    say "3. On Forgejo, give $(catalog forge jenkins-user) and the forge.developers write access to $repository"
+    say "   (its Settings, Collaborators: docs/setup.md step 12), then: python3 scripts/rules.py $repository"
+  else
+    say "3. Install the GitHub App on $repository (step 7.5), then: python3 scripts/rules.py $repository"
+  fi
+}
+
 add_application() {
   need_catalog
   local id name kind system system_name="" system_description="" repository own service port path
@@ -1074,7 +1088,7 @@ print(json.dumps({"system": system, "application": app}))
   say "1. Publish it: Jenkins and every host read the main branch of this repository."
   say "     git add catalog.yaml stacks/$id.* && git commit -m \"feat: add $id\"   (then merge it into main)"
   say "2. In the $repository repository: the templates/application/ files and CI (docs/setup.md step 5)."
-  say "3. Install the GitHub App on $repository (step 7.5), then: python3 scripts/rules.py $repository"
+  git_server_step "$repository"
   say "4. On every host: cd /opt/yggdrasil && git pull && docker restart yggdrasil-status-1"
   say "   (and yggdrasil-jenkins-1 on the controller host), so they see the new catalog."
   say "5. In every other environment it deploys to, on this host or another: scripts/ygg.sh config $id <environment>,"
