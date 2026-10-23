@@ -71,6 +71,13 @@ class DispatchTests(unittest.TestCase):
         result = self.run_ygg("catalog", "public-host", "heimdall-api", "development", "example.com")
         self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
 
+    def test_given_catalog_repository_names_then_it_is_catalog_py_output(self):
+        expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "repository-names"],
+                                  capture_output=True, text=True)
+        result = self.run_ygg("catalog", "repository-names")
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
+
     def test_given_catalog_public_path_then_it_is_catalog_py_output(self):
         expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "public-path", "heimdall-api"],
                                   capture_output=True, text=True)

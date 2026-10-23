@@ -130,6 +130,7 @@ def parser():
     _command(actions, "repositories", "the repositories that are not applications: their ids")
     a = _command(actions, "repository-entry", "one such repository, defaults applied (JSON)")
     a.add_argument("entry", help="a repository id from `repositories`")
+    _command(actions, "repository-names", "every git repository under the owner, once each")
     _command(sub, "version", "the yggdrasil version, commit and checkout of this ygg")
     s = _command(sub, "help", "the commands, or one command's help")
     s.add_argument("topic", nargs="*", metavar="command", help="a command, e.g. `vars get` (all of them when left out)")
