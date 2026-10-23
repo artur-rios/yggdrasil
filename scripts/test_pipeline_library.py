@@ -423,6 +423,20 @@ class PipelineLibraryTests(unittest.TestCase):
         for match in re.finditer(r"\bcheckout\s+scm\b|\bcheckout\s*\(\s*scm\b", lib.masked):
             self.assertEqual(lib.function_at(match.start()), "checkoutBuild", f"line {lib.line(match.start())}")
 
+    def test_given_a_build_without_a_revision_action_when_its_commit_is_asked_then_the_source_is_asked_once(self):
+        # pipelineBranchDefaultsProjectFactory records no SCMRevisionAction (test_jenkins_live.py): the
+        # branch source is asked for the head's revision on the controller, and the answer is recorded
+        # on the build so every later step sees the same commit.
+        start, end = self.lib.functions["revisionHash"]
+        body = self.lib.code[start:end]
+        self.assertIn("run.getAction(jenkins.scm.api.SCMRevisionAction)", body)
+        for wanted in ("SCMHead.HeadByItem.findHead(run.parent)", "SCMSource.SourceByItem.findSource(run.parent)",
+                       "source.fetch(head, hudson.model.TaskListener.NULL)",
+                       "run.addAction(new jenkins.scm.api.SCMRevisionAction(source, revision))"):
+            self.assertIn(wanted, body)
+        self.assertLess(body.index("source.fetch("), body.index("run.addAction("))
+        self.assertRegex(self.lib.code[self.lib.functions["buildCommit"][0]:], r"^\{\s*String sha = revisionHash\(currentBuild\.rawBuild\)")
+
     def test_given_describe_when_read_then_a_failed_run_without_errors_fails_the_build(self):
         # describe exits 0 with a document, or 1 with the document's errors. A run that failed some other
         # way must not be read as "no yggdrasil.yml" (which turns every check off).

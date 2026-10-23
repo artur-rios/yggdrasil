@@ -890,11 +890,27 @@ String buildCommit() {
 // The hash of the build's revision: a pull request's head (GitHub's PullRequestSCMRevision.pullHash,
 // the Gitea plugin's PullRequestSCMRevision.origin.hash), else a branch's or tag's own hash. Duck-typed:
 // the two plugins' classes need not both be installed.
+//
+// The revision is the build's SCMRevisionAction when it has one. The job's factory
+// (pipelineBranchDefaultsProjectFactory, which runs the Jenkinsfile kept in Jenkins) never records one
+// -- unlike the factory that reads a repository's Jenkinsfile (proved by scripts/test_jenkins_live.py)
+// -- so the first call asks the branch source for the head's revision, on the controller with the job's
+// own read credential, as that factory would have, and records it on the build: every later call, and
+// the deploy agents' `checkout scm`, get the same commit.
 @NonCPS
 String revisionHash(def run) {
   def revision = run.getAction(jenkins.scm.api.SCMRevisionAction)?.revision
   if (revision == null) {
-    return null
+    def head = jenkins.scm.api.SCMHead.HeadByItem.findHead(run.parent)
+    def source = jenkins.scm.api.SCMSource.SourceByItem.findSource(run.parent)
+    if (head == null || source == null) {
+      return null
+    }
+    revision = source.fetch(head, hudson.model.TaskListener.NULL)
+    if (revision == null) {
+      return null
+    }
+    run.addAction(new jenkins.scm.api.SCMRevisionAction(source, revision))
   }
   if (revision.hasProperty('pullHash')) {
     return revision.pullHash as String
