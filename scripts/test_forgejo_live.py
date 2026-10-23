@@ -5,8 +5,10 @@
 test_forge.py and test_rules.py check what the two send against fakes; these check that the fakes are
 right: that Forgejo 16.0.6 (the image platform/compose.yml pins) takes those requests, answers the way
 the scripts read it, and that the protections rules.py applies really hold -- `claude` cannot merge a
-Jenkinsfile change, push a release branch or create a version tag, and the owner, an administrator,
-can still merge past failing checks.
+Jenkinsfile change, push a release branch or create, move or delete a version tag, a `rules: basic`
+repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
+failing checks. One test pins a known gap instead: jenkins, which creates the version tags, can also
+move and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
 container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
@@ -392,6 +394,13 @@ class ForgejoLiveTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (3, ""), result.stderr)
         self.assertIn("kept: release/2.0.0 is protected", result.stderr)
         self.assertTrue(self.branch_exists(APP, "release/2.0.0"))
+        # Nor can the owner delete it while the release/* protection exists (Forgejo refuses the
+        # deletion of any protected branch, administrators included): docs/setup.md says how.
+        self.assertEqual(self.refused(OWNER, "DELETE", f"/repos/{OWNER}/{APP}/branches/release%2F2.0.0").message,
+                         "branch protected")
+        pushed = self.git(OWNER, "push", "origin", ":refs/heads/release/2.0.0", cwd=self.clone(OWNER, APP))
+        self.assertIn("branch release/2.0.0 is protected from deletion", pushed.stderr)
+        self.assertTrue(self.branch_exists(APP, "release/2.0.0"))
 
     def test_given_a_repository_with_a_dot_when_the_commands_run_then_they_work(self):
         head = self.change_file(OWNER, DOTTED, "slides.md", "# Slides\n", "develop", "feature/slides")
@@ -524,6 +533,33 @@ class ForgejoLiveTests(unittest.TestCase):
         names = {p["rule_name"] for p in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/branch_protections")}
         self.assertEqual(names, {"develop", "main", "release/*"})
 
+    def test_given_a_release_repository_turned_basic_when_rules_are_applied_then_its_branch_rules_are_cleared(self):
+        repo = "turned-basic"
+        self.create_repository(repo)
+        rules.apply_forgejo(self.api[OWNER], OWNER, dataclasses.replace(self.rules[APP], repo=repo), None, False)
+        basic = dataclasses.replace(self.rules[DOTTED], repo=repo)
+        lines = rules.apply_forgejo(self.api[OWNER], OWNER, basic, None, False)
+
+        protections = {p["rule_name"]: p
+                       for p in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/branch_protections")}
+        for name in ("develop", "main"):
+            p = protections[name]
+            self.assertEqual((p["enable_push"], p["enable_merge_whitelist"], p["enable_status_check"],
+                              p["status_check_contexts"] or [], p["protected_file_patterns"]),
+                             (True, False, False, [], ""), name)
+        # Nothing is deleted: what the basic model has no place for stays, and the run says so.
+        self.assertIn("release/*", protections)
+        tags = self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/tag_protections")
+        self.assertEqual([t["name_pattern"] for t in tags], ["v*"])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 2, lines)
+        self.assertIn("branch protection 'release/*'", notes[0])
+        self.assertIn("tag protection 'v*'", notes[1])
+
+        api = RecordingApi(self.url + "/api/v1", self.tokens[OWNER], "token")
+        rules.apply_forgejo(api, OWNER, basic, None, False)
+        self.assertEqual(api.writes(), [])
+
     def test_given_the_rules_when_claude_merges_a_jenkinsfile_change_then_it_is_refused(self):
         checks = self.rules[APP].develop_checks
         changed = self.change_file(CLAUDE, APP, "Jenkinsfile", JENKINSFILE + "// claude was here\n", "develop",
@@ -604,6 +640,107 @@ class ForgejoLiveTests(unittest.TestCase):
         # Only the version tags are Jenkins': claude may tag otherwise.
         result = self.forge(CLAUDE, "create-tag", APP, "claude-experiment", sha)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    # --- Version tags once they exist: who can move or delete them -------------------------------
+
+    def tag_commit(self, repo, tag):
+        """The commit a tag names, or None when there is no such tag."""
+        try:
+            tag = self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/tags/{urllib.parse.quote(tag)}")
+            return tag["commit"]["sha"]
+        except rules.ApiError as error:
+            if error.status == 404:
+                return None
+            raise
+
+    def change_tags(self, user, version, release=False):
+        """What `user` can do to protected version tags that jenkins created on main: force-push
+        v<version>.0 onto another commit, delete v<version>.1 with a push, delete v<version>.2 through the
+        API (each with a published release when `release`). Returns main's commit, the other commit, the
+        three tags, the two pushes' results and the API's refusal (None when it deleted the tag)."""
+        main = self.head(APP, "main")
+        other = self.change_file(OWNER, APP, f"tags-{version}.txt", "another commit\n", "develop", f"test/tags-{version}")
+        tags = [f"v{version}.{n}" for n in range(3)]
+        for tag in tags:
+            result = self.forge(JENKINS, "create-tag", APP, tag, main)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            if release:
+                result = self.forge(JENKINS, "create-release", APP, tag, main, tag)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        clone = self.clone(user, APP)
+        self.assertEqual(self.git(user, "tag", "--force", tags[0], other, cwd=clone).returncode, 0)
+        moved = self.git(user, "push", "--force", "origin", f"refs/tags/{tags[0]}", cwd=clone)
+        deleted = self.git(user, "push", "origin", f":refs/tags/{tags[1]}", cwd=clone)
+        try:
+            self.api[user].request("DELETE", f"/repos/{OWNER}/{APP}/tags/{tags[2]}")
+            refused = None
+        except rules.ApiError as error:
+            refused = error
+        return main, other, tags, (moved, deleted), refused
+
+    def test_given_a_protected_v_tag_when_claude_or_the_owner_moves_or_deletes_it_then_it_is_refused(self):
+        # Only who is on the tag protection's list (jenkins, for an application) may change a v* tag
+        # at all: not claude, nor the owner, whom the list does not name (an administrator is bound by
+        # a tag protection, unlike by a branch protection with apply_to_admins false).
+        for user, version in ((CLAUDE, "6.0"), (OWNER, "6.1")):
+            main, _, tags, (moved, deleted), refused = self.change_tags(user, version)
+            for result in (moved, deleted):
+                self.assertNotEqual(result.returncode, 0, (user, result.stderr))
+                self.assertIn("pre-receive hook declined", result.stderr, user)
+            self.assertEqual((refused.status, refused.message), (422, "user not allowed to delete protected tag"), user)
+            self.assertEqual([self.tag_commit(APP, tag) for tag in tags], [main] * 3, user)
+
+    def test_given_a_protected_v_tag_when_jenkins_moves_or_deletes_it_then_forgejo_allows_it(self):
+        # The known gap docs/setup.md (step 12) states: Forgejo's tag protection is one list of who may
+        # change a matching tag in any way -- create, move, delete -- so the user who creates the
+        # version tags (jenkins here; the owner in an owner-tag repository) can also move and delete them.
+        main, other, tags, (moved, deleted), refused = self.change_tags(JENKINS, "6.2")
+        self.assertEqual((moved.returncode, deleted.returncode), (0, 0), moved.stderr + deleted.stderr)
+        self.assertIsNone(refused)
+        self.assertEqual([self.tag_commit(APP, tag) for tag in tags], [other, None, None])
+        self.assertNotEqual(main, other)
+
+        # A tag with a release cannot be deleted through the API (by anyone: Forgejo's own rule) -- but
+        # a push still deletes it, and a forced push still moves it.
+        main, other, tags, (moved, deleted), refused = self.change_tags(JENKINS, "6.3", release=True)
+        self.assertEqual((moved.returncode, deleted.returncode), (0, 0), moved.stderr + deleted.stderr)
+        self.assertEqual((refused.status, refused.message),
+                         (409, "a tag attached to a release cannot be deleted directly"))
+        self.assertEqual([self.tag_commit(APP, tag) for tag in tags], [other, None, main])
+        # The release of the deleted tag stays, published, naming a tag that is no longer there.
+        release = self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/tags/{tags[1]}")
+        self.assertEqual((release["tag_name"], release["draft"]), (tags[1], False))
+
+    def test_given_a_basic_repository_when_anyone_force_pushes_or_deletes_develop_or_main_then_it_is_refused(self):
+        # rules: basic sends develop and main protections with pushing allowed and nothing else: Forgejo
+        # refuses a force push and a deletion under any protection, even to the owner, whom the
+        # protection does not otherwise bind. Pushing on top is still allowed.
+        for user in (CLAUDE, JENKINS, OWNER):
+            for branch in ("develop", "main"):
+                before = self.head(DOTTED, branch)
+                clone = self.clone(user, DOTTED)
+                self.git(user, "checkout", "--quiet", "--orphan", "rewritten", cwd=clone)
+                self.assertEqual(self.git(user, "commit", "--quiet", "--allow-empty", "-m", "rewritten",
+                                          cwd=clone).returncode, 0)
+                forced = self.git(user, "push", "--force", "origin", f"HEAD:refs/heads/{branch}", cwd=clone)
+                self.assertNotEqual(forced.returncode, 0, (user, branch))
+                self.assertIn(f"branch {branch} is protected from force push", forced.stderr, (user, branch))
+                deleted = self.git(user, "push", "origin", f":refs/heads/{branch}", cwd=clone)
+                self.assertNotEqual(deleted.returncode, 0, (user, branch))
+                # develop is the default branch, which Forgejo refuses to delete before it asks the
+                # protection; main shows the protection's own refusal.
+                self.assertIn("is the default branch and cannot be deleted" if branch == "develop"
+                              else "branch main is protected from deletion", deleted.stderr, (user, branch))
+                error = self.refused(user, "DELETE", f"/repos/{OWNER}/{DOTTED}/branches/{branch}")
+                self.assertEqual((error.status, error.message),
+                                 (403, "can not delete default branch" if branch == "develop" else "branch protected"))
+                self.assertEqual(self.head(DOTTED, branch), before, (user, branch))
+
+        clone = self.clone(CLAUDE, DOTTED)
+        self.git(CLAUDE, "checkout", "--quiet", "develop", cwd=clone)
+        self.assertEqual(self.git(CLAUDE, "commit", "--quiet", "--allow-empty", "-m", "on top", cwd=clone).returncode, 0)
+        pushed = self.git(CLAUDE, "push", "origin", "HEAD:refs/heads/develop", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
 
     def test_given_the_rules_when_claude_pushes_a_release_branch_then_it_is_refused(self):
         clone = self.clone(CLAUDE, APP)
