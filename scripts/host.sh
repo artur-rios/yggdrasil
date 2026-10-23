@@ -1074,7 +1074,7 @@ print(json.dumps({"system": system, "application": app}))
   say "1. Publish it: Jenkins and every host read the main branch of this repository."
   say "     git add catalog.yaml stacks/$id.* && git commit -m \"feat: add $id\"   (then merge it into main)"
   say "2. In the $repository repository: the templates/application/ files and CI (docs/setup.md step 5)."
-  say "3. Install the GitHub App on $repository (step 7.5), then: python3 github/rulesets.py $repository"
+  say "3. Install the GitHub App on $repository (step 7.5), then: python3 scripts/rules.py $repository"
   say "4. On every host: cd /opt/yggdrasil && git pull && docker restart yggdrasil-status-1"
   say "   (and yggdrasil-jenkins-1 on the controller host), so they see the new catalog."
   say "5. In every other environment it deploys to, on this host or another: scripts/ygg.sh config $id <environment>,"

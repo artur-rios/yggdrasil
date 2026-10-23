@@ -27,7 +27,9 @@
 // to use the environment, so it runs deploy.sh with DEPLOY_START=1 and leaves it running.
 //
 // The work itself is scripts/deploy.sh and scripts/github.sh from this repository, checked out next
-// to the application, so a deploy by hand runs the same code.
+// to the application, so a deploy by hand runs the same code. github.sh keeps the GitHub Actions
+// commands (wait-checks, the release-artifacts workflow) and hands the rest -- statuses, merge, tag,
+// release, branch -- to scripts/forge.sh, the git server's interface for Forgejo and GitHub alike.
 
 import groovy.transform.Field
 
@@ -177,7 +179,7 @@ String checkoutAll() {
   return sh(script: 'git -C app rev-parse HEAD', returnStdout: true).trim()
 }
 
-// Runs scripts/github.sh with the GitHub App's installation token. The token only ever reaches the
+// Runs scripts/github.sh (the GitHub server's commands, through scripts/forge.sh) with the GitHub App's installation token. The token only ever reaches the
 // shell through its environment (GH_TOKEN), never the command line, so it cannot end up in the
 // script text Jenkins logs.
 String github(String arguments, boolean returnStdout = false) {

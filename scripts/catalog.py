@@ -20,7 +20,8 @@ add-application reads {"system": {"id", "name", "description"}, "application": {
 application goes at the end of that system, or of a new system (name and description only count
 then), inserted before the yggdrasil system if it is the last one.
 
-Used by scripts/deploy.sh, scripts/ygg.sh, github/rulesets.py, scripts/forge.sh and scripts/rules.py, and by CI to reject a broken catalog. The Jenkins
+Used by scripts/deploy.sh, scripts/ygg.sh, scripts/forge.sh and scripts/rules.py (github/rulesets.py runs it), and by CI to reject a broken
+catalog. The Jenkins
 shared library resolves the same options itself (it cannot run Python on the controller); keep
 resolve() and jenkins/library/vars/yggdrasilPipeline.groovy in step. Reference: docs/catalog.md.
 

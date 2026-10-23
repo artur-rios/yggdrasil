@@ -41,7 +41,12 @@ collaborator) and run again.
 
 GitHub cannot restrict who may merge a given file, so `protected_files` (the Jenkinsfile) is not
 applied there; Jenkins' trust rule (plan 3) covers it. Nor does GitHub get a release/* rule: there
-is none today.
+is none today. On GitHub only the actionsChecks are bound to GitHub Actions; Jenkins' contexts
+(branch-policy, checks, deploy/<environment>) are bound to nobody.
+
+On Forgejo the owner's emergency override is a forced merge (the web interface's "Merge anyway",
+`force_merge` in the API): the protections do not apply to administrators, but a plain merge is
+refused while a required check fails. Reference: docs/setup.md, step 12.
 """
 
 import dataclasses

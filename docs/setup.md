@@ -22,7 +22,7 @@ flowchart TB
         S8[8 · Prepare each machine] --> S9[9 · Dev machine] --> S10[10 · Apps machine] --> S11[11 · Application env files]
     end
     subgraph finish [Finish]
-        S12[12 · GitHub rules] --> S13[13 · Check everything] --> S14[14 · First release]
+        S12[12 · Branch rules] --> S13[13 · Check everything] --> S14[14 · First release]
     end
     prepare --> accounts --> hosts --> finish
 ```
@@ -41,7 +41,7 @@ flowchart TB
 | [9. The dev machine](#9-the-dev-machine) | Dev machine | 30 min |
 | [10. The apps machine](#10-the-apps-machine) | Apps machine, and other hosts | 15 min per host |
 | [11. Application env files](#11-application-env-files) | Each host | 5 min per application |
-| [12. Apply the GitHub rules](#12-apply-the-github-rules) | Your machine | 5 min |
+| [12. Apply the branch rules](#12-apply-the-branch-rules) | Your machine | 5 min |
 | [13. Check everything](#13-check-everything) | Browser | 10 min |
 | [14. The first release](#14-the-first-release) | An application repository | 10 min |
 
@@ -100,8 +100,8 @@ On the machine you work from (Linux, macOS, or Windows with Git Bash):
 | Tool | Why | Install |
 |---|---|---|
 | `git` | Everything | [git-scm.com](https://git-scm.com/downloads) |
-| `python3` + PyYAML | Validating the catalog, applying the GitHub rules | `pip install pyyaml` (Ubuntu: `sudo apt install python3-yaml`) |
-| GitHub CLI `gh` | Applying the GitHub rules | [cli.github.com](https://cli.github.com), then `gh auth login` as an admin of the repositories |
+| `python3` + PyYAML | Validating the catalog, applying the branch rules | `pip install pyyaml` (Ubuntu: `sudo apt install python3-yaml`) |
+| GitHub CLI `gh` | Applying the branch rules on GitHub (not needed with Forgejo: there a token does it, step 12) | [cli.github.com](https://cli.github.com), then `gh auth login` as an admin of the repositories |
 | `openssl` | Generating tokens, converting the GitHub App key | Included with Git Bash, macOS and most Linux distributions |
 | `ssh` | Reaching the hosts | Included |
 
@@ -1017,25 +1017,132 @@ or `stacks/<id>.yml` names it, in `environment:` (`DB_PASSWORD: ${DB_PASSWORD:?}
 application deploys to. [examples/docker-desktop-and-vps/env](examples/docker-desktop-and-vps/env)
 has examples for four applications in the four default environments.
 
-## 12. Apply the GitHub rules
+## 12. Apply the branch rules
 
-On your machine, in your fork, with `gh` authenticated as an admin of the repositories:
+On your machine, in your fork. One script applies the branching model to every repository of the catalog
+(the applications' repositories and the [`repositories`](catalog.md#repositories) entries), on whichever git
+server the catalog's [`forge.type`](catalog.md#git-server) names; no `forge` block means GitHub:
 
 ```bash
-python3 github/rulesets.py --dry-run     # what would change, per repository
-python3 github/rulesets.py               # apply
+python3 scripts/rules.py --dry-run     # what would change, per repository
+python3 scripts/rules.py               # apply
 ```
 
-For each application repository, this:
-- makes `develop` the default branch
-- deletes head branches on merge
-- creates the `develop`, `main` and `release tags` rulesets, with the checks from the catalog and one `deploy/<environment>` per release environment
+- `--dry-run` reads from the server and prints what it would write, without writing anything. It still needs
+  the token below.
+- Without it, the script applies the rules. It is safe to run again: on Forgejo it writes only what differs
+  from what the server already has (and prints `unchanged` for the rest); on GitHub it updates the rulesets in
+  place, by name.
+- Name repositories to apply to some only: `python3 scripts/rules.py shop-api shop-web` (the repository
+  names: an application's `repository`, or its `id`, or a `repositories` entry's `id`).
+- `python3 scripts/rules.py --help` lists the variables. `github/rulesets.py` still works, but it only
+  prints that it moved and runs this script with the same arguments.
 
-To apply to some repositories only, name them: `python3 github/rulesets.py shop-api shop-web` (the
-repository names: an application's `repository`, or its `id`).
+What the script needs, by server:
 
-Rulesets on **private** repositories need a paid GitHub plan. From now on, `develop` and `main`
-change only through pull requests.
+| Server | Needs |
+|---|---|
+| **Forgejo** (`forge.type: forgejo`) | `FORGE_TOKEN`: the owner's token, with the `write:repository` scope (Forgejo: **Settings → Applications → Generate New Token**, signed in as the owner). `JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, together, to create the webhooks that tell Jenkins about pushes, tags and pull requests; with neither, the script says `webhooks skipped` and sets no webhook; with only one, it refuses to start. |
+| **GitHub** (no `forge` block, or `github`) | An authenticated `gh` (`gh auth login`), or `GH_TOKEN`, with admin rights on the repositories. Rulesets on **private** repositories need a paid GitHub plan. |
+
+On Forgejo, set the variables for the one command, so they stay out of your shell history files and your
+environment afterwards:
+
+```bash
+read -rs FORGE_TOKEN && export FORGE_TOKEN          # paste the owner's token, then Enter
+read -rs FORGE_WEBHOOK_SECRET && export FORGE_WEBHOOK_SECRET
+export JENKINS_URL=https://jenkins.<DOMAIN>         # the controller's address (step 6)
+python3 scripts/rules.py --dry-run
+```
+
+- `read -rs <name>`: reads a line without showing it (`-s`) and without treating `\` specially (`-r`).
+- `export`: makes the variable visible to the script. The tokens and the secret are never printed by the
+  script, and never put on a command line.
+- `FORGE_WEBHOOK_SECRET` is the secret Jenkins is configured with (plan 3 of the move to Forgejo); choose a
+  long random one, for example `openssl rand -hex 32`, and keep it where [hosts.md](hosts.md#6-credentials)
+  says. Each repository gets one hook, `<JENKINS_URL>/gitea-webhook/post` (JSON, with that secret).
+
+### What each server gets
+
+Per repository, from the catalog (a `rules: basic` repository gets only the first row's `develop` and `main`
+without force push or deletion, plus the settings and, on Forgejo, the webhook):
+
+| Rule | Forgejo | GitHub |
+|---|---|---|
+| Default branch, merged branches | `develop` is the default; head branches are deleted after merge; merge commits and squashes allowed, rebasing not | `develop` is the default; head branches are deleted after merge |
+| `develop` | A protected branch: no direct push (force push and deletion are always refused), changes only through a pull request whose required checks pass: `branch-policy`, the application's `checks` and its `actionsChecks`. Merged by the owner and `forge.developers` | A `develop` ruleset: no deletion or force push, a pull request (squash or merge commit), the same required checks. `actionsChecks` are bound to GitHub Actions, so only that app can satisfy them; the other checks (Jenkins') are bound to nobody |
+| `main` | The same, with `branch-policy`, `checks` and one `deploy/<environment>` per release environment. Merged only by `forge.jenkinsUser` for an application, only by the owner for an `owner-tag` repository | A `main` ruleset: the same required checks, merge commit only. Who merges is not restricted: the checks are the gate |
+| `release/*` | Only the owner pushes | No rule (none today) |
+| Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner | A `release tags` ruleset: tags cannot be moved or deleted, and for an `owner-tag` repository only the owner creates them |
+| The owner | Not bound by the protections, for emergencies (see below) | A repository administrator bypasses all the rulesets |
+| `Jenkinsfile` | **Protected file** on `develop` and `main`: a pull request that changes it can be merged only by the owner: being on the list of who may merge is not enough (this includes `jenkinsUser` and `forge.developers`; a release that changes the `Jenkinsfile` is merged by the owner) | Not applied: GitHub cannot restrict who may merge a given file. Jenkins' own trust rule on the `Jenkinsfile` covers GitHub (plan 3) |
+
+### Forgejo details worth knowing
+
+- **Write access first.** A user named in a rule (`forge.jenkinsUser`, the `forge.developers`) is kept on
+  Forgejo's lists of who may merge, push or create tags only while they have **write access to the
+  repository**. Otherwise Forgejo leaves them off *without an error*. Add each of them as a collaborator with
+  write access (the repository's **Settings → Collaborators**) before the first run. If one is missing, the
+  script prints `warning: Forgejo left <user> off who may merge|push|create tags (…): give them write access to
+  the repository and run again`; do that and run it again.
+- **The owner's override is a forced merge.** The protections do not bind the owner (an administrator), for
+  emergencies, but a plain merge by the owner is still refused while a required check fails. In the web
+  interface use **Merge anyway** on the pull request; through the API, `force_merge: true` on the merge
+  call. Nobody else can.
+- **Changing the webhook secret.** Forgejo never returns a hook's secret, so the script cannot tell that
+  `FORGE_WEBHOOK_SECRET` changed. The hook is rewritten only when its address, events, content type, branch
+  filter or active flag differ. To use a new secret, delete the repository's hook (**Settings → Webhooks**)
+  and run the script again; it creates the hook with the new secret. (The same secret goes into Jenkins.)
+- **Users must exist.** The `jenkins` user, and any `forge.developers`, are created by you; the script does
+  not create accounts or collaborators.
+
+Run the script again after adding an application or a repository to the catalog (the full steps are in
+[Adding things](#adding-things)) and after adding a release environment: `main` then also requires its
+`deploy/<environment>`. From then on `develop` and `main` change only through pull requests.
+
+### The git server commands
+
+The pipeline and the scripts never talk to the git server themselves: they call `scripts/forge.sh`, one set of
+commands that does the same on Forgejo and on GitHub (`scripts/github.sh` keeps only what is GitHub Actions
+and hands the rest to it). You rarely run it by hand, but it is how to check a token or finish a release
+that stopped halfway. Every command takes the **repository name** (not `owner/name`; the owner comes from the
+catalog):
+
+| Command | Does | Prints |
+|---|---|---|
+| `set-status <repo> <sha> <state> <context> <description> [target-url]` | Sets a commit status; `state` is `pending`, `success`, `failure` or `error` | nothing |
+| `get-statuses <repo> <sha>` | Reads the commit's statuses | `<context>`, a tab, `<state>`, one line per context (the latest) |
+| `merge-pr <repo> <number> <sha> <title>` | Merges a pull request with a merge commit, and fails if its head is no longer `<sha>` | the merge commit |
+| `create-tag <repo> <tag> <sha>` | Creates a tag | nothing |
+| `create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]` | Creates a release (an unpublished draft with `--draft`) | the release id, a tab, its page address |
+| `upload-release-file <repo> <release-id> <file>` | Attaches a file to a release | the file's download address (on Forgejo `<server>/attachments/<uuid>`) |
+| `publish-release <repo> <release-id>` | Publishes a draft release | the release's page address |
+| `delete-branch <repo> <branch>` | Deletes a branch; a branch that is already gone is not an error | nothing |
+
+Run it with a command and its arguments: `bash scripts/forge.sh get-statuses shop-api <sha>`. Without a
+command it refuses (`forge: unknown command ''`); with the wrong arguments it prints that command's usage.
+The same table is in the header of the script.
+
+It reads its settings from the environment, and asks the catalog (`python3 scripts/catalog.py forge`) only for
+what the environment leaves out, so a Jenkins agent that sets them all needs no `catalog.yaml`:
+
+| Variable | Meaning |
+|---|---|
+| `FORGE_TYPE` | `forgejo` or `github` (else the catalog's `forge.type`) |
+| `FORGE_API_URL` | The REST API's base address (else, for GitHub, `GITHUB_API_URL`, else the catalog's `forge` API) |
+| `FORGE_OWNER` | The owner of the repositories (else `GITHUB_OWNER`, else the catalog's `owner`) |
+| `FORGE_TOKEN` | The access token, required (else, for GitHub, `GH_TOKEN`) |
+| `GITHUB_UPLOADS_URL` | Where GitHub takes release files (default `https://uploads.github.com`) |
+
+- The **token is passed to `curl` on its standard input**, never as an argument, so no other user of the
+  machine sees it in the process list, and it is never printed.
+- **Exit codes:** `0` done; `1` an error, explained on standard error as `forge: <what> failed: <the server's
+  message>`; `3` (`delete-branch` only) that the server **keeps** the branch because it is protected: the
+  owner's decision, not a reason to stop a release.
+- `merge-pr` on Forgejo waits when Forgejo answers "try again later": right after new commit statuses are
+  posted Forgejo checks the pull request again in the background and refuses to merge meanwhile, so the
+  command retries for about a minute (every 3 seconds, up to 20 times) before it fails. Any other refusal
+  fails at once.
 
 ## 13. Check everything
 
@@ -1147,7 +1254,7 @@ Details: [cli.md](cli.md#start-and-stop-environments).
 4. **Env files** on each host it deploys to, as in [step 11](#11-application-env-files).
 5. **Apply:**
    - push the catalog and stack files to `main` of your fork
-   - `python3 github/rulesets.py <repository>`
+   - `python3 scripts/rules.py <repository>`
    - on every host, pull and restart as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog): Jenkins creates the new job, the status APIs and Prometheus pick it up
 
 ### An environment
@@ -1165,7 +1272,7 @@ production on the VPS, say): no new platform, agent or DNS record.
    The DNS record and the certificate already cover `<host>-stg.<DOMAIN>`.
 3. **Env files:** for each application, as in [step 11](#11-application-env-files), with the
    suffixed host names (`PUBLIC_HOST=shop-api-stg.example.com`).
-4. `python3 github/rulesets.py`, if it's a release environment: `main` now also requires its
+4. `python3 scripts/rules.py`, if it's a release environment: `main` now also requires its
    `deploy/<id>`.
 
 **On a host of its own:**
@@ -1176,7 +1283,7 @@ production on the VPS, say): no new platform, agent or DNS record.
 4. **Apply:**
    - On the controller host, pull and restart Jenkins as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog). Jenkins creates the new agent.
    - Bring the new host up as in [step 10](#10-the-apps-machine), with the new agent's secret.
-   - `python3 github/rulesets.py`, if it's a release environment: `main` now also requires its `deploy/<id>`.
+   - `python3 scripts/rules.py`, if it's a release environment: `main` now also requires its `deploy/<id>`.
 5. **Env files:** for each application on the new host, as in [step 11](#11-application-env-files).
 
 ### A system

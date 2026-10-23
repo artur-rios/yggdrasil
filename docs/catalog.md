@@ -12,7 +12,8 @@ Every part of yggdrasil reads it:
 | `scripts/deploy.sh` | Whether the application deploys to that environment, its mode, timeouts, rollback depth and whether it runs on demand |
 | `scripts/platform.sh` | That every environment in the host's `ENVIRONMENTS` exists; the GitHub owner and repository for Jenkins |
 | `ygg` (`scripts/host.sh`) | The applications of each of the host's environments; which environments it may stop |
-| `github/rulesets.py` | Each repository's required checks, and the `deploy/<environment>` statuses on `main` |
+| `scripts/rules.py` (`github/rulesets.py` runs it) | The git server (`forge`), the `repositories`, each repository's required checks and the `deploy/<environment>` statuses on `main`, the users who may merge (`forge.jenkinsUser`, `forge.developers`) and the tag pattern. Applies them on GitHub or Forgejo ([setup.md, step 12](setup.md#12-apply-the-branch-rules)) |
+| `scripts/forge.sh` | The git server's type, API address and the owner, when the environment doesn't give them: the commands Jenkins and the scripts use to set statuses, merge, tag, release and delete branches ([setup.md](setup.md#the-git-server-commands)) |
 | Status API | Which applications run in each of its host's environments, how to probe them, how they group into systems |
 | Prometheus | Scrape targets, through the status API |
 | Console | Everything it shows, through the status API |
@@ -24,7 +25,7 @@ python3 scripts/catalog.py validate
 ```
 
 - `validate` prints `catalog.yaml: N environments, N systems, N applications`, or every problem it
-  found. CI runs it on every pull request. `deploy.sh`, `platform.sh` and `github/rulesets.py`
+  found. CI runs it on every pull request. `deploy.sh`, `platform.sh` and `scripts/rules.py`
   refuse a catalog it rejects.
 - The **status API** validates the catalog again when it starts. A catalog that fails its rules
   stops the status API: it lists every problem in its log (`docker logs yggdrasil-status-1`) and
@@ -284,7 +285,7 @@ An application's environment variables are not catalog fields: they come from th
 | `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. Starts with `/`, and needs `metrics` (*status API*). |
 | `host` | A lowercase host name: letters, digits and dashes (*status API*). The link the console shows: `https://<host><hostSuffix>.<DOMAIN>`, with the environment's `hostSuffix`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
 | `checks` | The checks Jenkins reports on the pull requests to `develop` and `main`, besides `branch-policy`. They are required there. Only list checks that run on **every** pull request: one that doesn't run would leave its required check pending forever. No empty entries (*status API*). With the GitHub git server and the current pipeline they are still the job part of `<workflow> / <job>` in a pull request's Checks tab. |
-| `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`: the job part of `<workflow> / <job>` in a pull request's Checks tab. Only checks from GitHub Actions satisfy them, and the same rule applies: only checks that run on **every** pull request. No empty entries. |
+| `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`: the job part of `<workflow> / <job>` in a pull request's Checks tab. On GitHub the required check is bound to GitHub Actions, so only checks from it satisfy them (`checks`, Jenkins', are bound to no app); on Forgejo they are required by name, like the others. The same rule applies: only checks that run on **every** pull request. No empty entries. |
 | `credentials` | Optional list, default `[]`. The only Jenkins credentials the application's checks may bind: Jenkins credential ids (letters, digits, `.`, `_` and `-`, starting with a letter or digit). Anything else is refused by the pipeline. |
 | `domain` | Optional. The domain a site is served on: a lowercase host name with at least one dot (`docs.example.com`). For applications that are published sites. Read by the site routing of plan 5; it does not route anything yet. |
 | `path` | Optional. Where under the domain the site lives: starts with `/`, does not end with one, no `..` (`/docs`). Read by plan 5. |

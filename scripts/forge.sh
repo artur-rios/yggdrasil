@@ -19,6 +19,10 @@
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for.
+# On Forgejo merge-pr waits (every 3 s, up to 20 times) while the server answers "try again later": it
+# checks a pull request again in the background after a new commit status. The token reaches curl on
+# stdin, never in an argument or a message. With no command, or an unknown one, it refuses; a known
+# command with the wrong arguments prints its usage. Reference: docs/setup.md, "The git server commands".
 #
 # <repo> is the repository name; the owner comes from the environment, else from the catalog:
 #   FORGE_TYPE         forgejo or github                  (else catalog.py forge type)

@@ -110,7 +110,7 @@ jobs:
           YGG_FORGEJO_TESTS: "1"
         run: python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
       - name: Check the catalog
-        # The same validation deploy.sh, platform.sh and rulesets.py run before using it.
+        # The same validation deploy.sh, platform.sh and rules.py run before using it.
         run: python3 scripts/catalog.py validate
       - name: Validate the Compose files
         run: |
