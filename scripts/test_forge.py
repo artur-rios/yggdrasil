@@ -25,7 +25,8 @@ FAKE_CURL = textwrap.dedent(r"""
     # <key> is the path's last segment without its query, and each holds "<exit code> <body>" or
     # "<exit code> <HTTP status> <body>" (the second field is a status when it is exactly three digits;
     # without one the status is 200 after exit code 0 and 400 after any other).
-    # What it was asked is kept: the arguments in <key>.request.<n>, the config on stdin in <key>.config.<n>.
+    # What it was asked is kept: the arguments in <key>.request.<n>, the config on stdin in <key>.config.<n>,
+    # and a copy of the file a --data-binary @<file> sends (the request's body) in <key>.body.<n>.
     # Like curl given --write-out '\n%{http_code}', it ends its output with a newline and the status.
     url=${*: -1}
     key=${url%%\?*}
@@ -35,6 +36,11 @@ FAKE_CURL = textwrap.dedent(r"""
     echo "$n" >"$count_file"
     printf '%s\n' "$*" >"$FAKE_CURL_DIR/$key.request.$n"
     cat >"$FAKE_CURL_DIR/$key.config.$n"
+    previous=""
+    for argument in "$@"; do
+      [[ "$previous" != --data-binary || "$argument" != @* ]] || cp "${argument#@}" "$FAKE_CURL_DIR/$key.body.$n"
+      previous=$argument
+    done
     response="$FAKE_CURL_DIR/$key.$n"
     [[ -f "$response" ]] || response="$FAKE_CURL_DIR/$key.last"
     read -r status rest <"$response"
@@ -117,8 +123,8 @@ class ForgeTestCase(unittest.TestCase):
         return (self.state / f"{key}.config.{number}").read_text()
 
     def body(self, key, number=1):
-        """The JSON body curl was given with --data."""
-        return json.loads(self.request(key, number).split("--data ", 1)[1].rsplit(" https://", 1)[0])
+        """The JSON body curl was sent (from the file given with --data-binary)."""
+        return json.loads((self.state / f"{key}.body.{number}").read_text())
 
 
 @needs_bash_and_jq
@@ -132,8 +138,7 @@ class ForgeGitHubTests(ForgeTestCase):
         request = self.request("abc123")
         self.assertIn("--request POST", request)
         self.assertTrue(request.strip().endswith("https://api.example/repos/someone/app/statuses/abc123"), request)
-        body = json.loads(request.split("--data ", 1)[1].rsplit(" https://", 1)[0])
-        self.assertEqual(body, {"state": "success", "context": "deploy/production",
+        self.assertEqual(self.body("abc123"), {"state": "success", "context": "deploy/production",
                                 "description": "Deployed to production", "target_url": "https://jenkins/job/1"})
 
     def test_given_an_unknown_state_when_setting_a_status_then_it_is_refused_before_any_request(self):
@@ -158,29 +163,23 @@ class ForgeGitHubTests(ForgeTestCase):
         request = self.request("merge")
         self.assertIn("--request PUT", request)
         self.assertIn("/repos/someone/app/pulls/7/merge", request)
-        body = json.loads(request.split("--data ", 1)[1].rsplit(" https://", 1)[0])
-        self.assertEqual(body, {"merge_method": "merge", "sha": "abc123", "commit_title": "release: v1.0.0 (#7)"})
+        self.assertEqual(self.body("merge"),
+                         {"merge_method": "merge", "sha": "abc123", "commit_title": "release: v1.0.0 (#7)"})
 
     def test_given_github_when_creating_a_tag_then_it_posts_the_ref(self):
         self.respond("refs", (0, {"ref": "refs/tags/v1.2.3"}))
         result = self.forge("create-tag", "app", "v1.2.3", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
-        request = "".join(self.request("refs").split())
-        self.assertIn('"ref":"refs/tags/v1.2.3"', request)
-        self.assertIn('"sha":"abc123"', request)
+        self.assertEqual(self.body("refs"), {"ref": "refs/tags/v1.2.3", "sha": "abc123"})
 
     def test_given_github_when_creating_a_release_without_notes_then_github_writes_them(self):
         self.respond("releases", (0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
         result = self.forge("create-release", "app", "v1.2.3", "abc123", "v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "17\thttps://example/release/17\n")
-        request = "".join(self.request("releases").split())
-        self.assertIn('"generate_release_notes":true', request)
-        self.assertIn('"draft":false', request)
-        self.assertIn('"tag_name":"v1.2.3"', request)
-        self.assertIn('"target_commitish":"abc123"', request)
-        self.assertIn('"name":"v1.2.3"', request)
+        self.assertEqual(self.body("releases"), {"tag_name": "v1.2.3", "target_commitish": "abc123", "name": "v1.2.3",
+                                                 "draft": False, "prerelease": False, "generate_release_notes": True})
 
     def test_given_a_notes_file_when_creating_a_release_then_its_text_is_the_body(self):
         notes = self.temp / "notes.md"
@@ -188,7 +187,7 @@ class ForgeGitHubTests(ForgeTestCase):
         self.respond("releases", (0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
         result = self.forge("create-release", "app", "v1.2.3", "abc123", "v1.2.3", "--notes-file", str(notes))
         self.assertEqual(result.returncode, 0, result.stderr)
-        body = json.loads(self.request("releases").split("--data ", 1)[1].rsplit(" https://", 1)[0])
+        body = self.body("releases")
         self.assertEqual(body["body"], "Fixes the thing.\n")
         self.assertNotIn("generate_release_notes", body)
 
@@ -197,7 +196,7 @@ class ForgeGitHubTests(ForgeTestCase):
         result = self.forge("create-release", "app", "v1.2.3", "abc123", "v1.2.3", "--draft")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "17\thttps://example/release/17\n")
-        self.assertIn('"draft":true', "".join(self.request("releases").split()))
+        self.assertTrue(self.body("releases")["draft"])
 
     def test_given_the_draft_comes_back_public_when_creating_a_draft_release_then_it_fails(self):
         self.respond("releases", (0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
@@ -233,7 +232,7 @@ class ForgeGitHubTests(ForgeTestCase):
         request = self.request("17")
         self.assertIn("--request PATCH", request)
         self.assertIn("/repos/someone/app/releases/17", request)
-        self.assertIn('"draft": false', request)
+        self.assertEqual(self.body("17"), {"draft": False})
 
     def test_given_a_branch_with_a_slash_when_deleting_on_github_then_the_ref_path_keeps_it(self):
         self.respond("1.0.0", (0, None))
@@ -347,12 +346,62 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage: forge.sh merge-pr <repo> <number> <sha> <title>", result.stderr)
 
+    def test_given_no_command_when_run_then_every_command_is_listed_and_it_exits_2(self):
+        result = self.forge()
+        self.assertEqual((result.returncode, result.stdout), (2, ""))
+        for command in ("set-status", "get-statuses", "merge-pr", "create-tag", "create-release",
+                        "upload-release-file", "publish-release", "delete-branch"):
+            self.assertRegex(result.stderr, rf"(?m)^  {command} +<repo>", command)
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_given_a_json_body_when_sent_then_it_travels_in_a_temporary_file_that_is_removed(self):
+        self.respond("abc123", (0, {}))
+        result = self.forge("set-status", "app", "abc123", "success", "ctx", "description")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        request = self.request("abc123")
+        self.assertNotIn("--data ", request)
+        sent = request.split("--data-binary @", 1)[1].split(" ", 1)[0]
+        self.assertEqual(self.body("abc123"), {"state": "success", "context": "ctx", "description": "description"})
+        self.assertFalse(os.path.exists(sent), f"{sent} was left behind")
+
+    def test_given_release_notes_over_128_kib_when_creating_a_release_then_they_are_sent_whole(self):
+        # One argument holds at most 128 KiB on Linux: notes sent as one would fail to start curl.
+        notes = self.temp / "notes.md"
+        notes.write_text("A long release.\n" + "x" * 200 * 1024 + "\n")
+        self.respond("releases", (0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
+        result = self.forge("create-release", "app", "v1.2.3", "abc123", "v1.2.3", "--notes-file", str(notes))
+        self.assertEqual((result.returncode, result.stdout), (0, "17\thttps://example/release/17\n"), result.stderr)
+        self.assertEqual(self.body("releases")["body"], notes.read_text())
+
+    def test_given_an_answer_without_a_page_address_when_creating_a_release_then_it_fails(self):
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": None}))
+        result = self.forge("create-release", "app", "v1.2.3", "abc123", "v1.2.3", "--draft")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("create-release failed: the answer has no release id and URL", result.stderr)
+
 
 @needs_bash_and_jq
 class ForgeForgejoTests(ForgeTestCase):
     def setUp(self):
         super().setUp()
         self.env = dict(self.env, FORGE_TYPE="forgejo")
+
+    def test_given_forgejo_and_only_github_owner_when_run_then_the_catalogs_owner_is_used(self):
+        # GITHUB_OWNER (which the pipeline sets) names the GitHub owner, never the Forgejo one.
+        self.fake("python3", FAKE_PYTHON)
+        env = {k: v for k, v in self.env.items() if k != "FORGE_OWNER"}
+        env["GITHUB_OWNER"] = "octo"
+        self.respond("abc123", (0, {}))
+        result = self.forge("set-status", "app", "abc123", "success", "ctx", "description", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.request("abc123").strip().endswith(
+            "https://api.example/repos/catalogowner/app/statuses/abc123"), self.request("abc123"))
+
+    def test_given_an_answer_without_a_page_address_when_creating_a_forgejo_release_then_it_fails(self):
+        self.respond("releases", (0, {"id": 17, "draft": False, "html_url": ""}))
+        result = self.forge("create-release", "app", "v1.2.3", "abc123", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("no release id and URL", result.stderr)
 
     def test_given_forgejo_when_setting_a_status_then_it_posts_to_the_commit(self):
         self.respond("abc123", (0, {"id": 1}))

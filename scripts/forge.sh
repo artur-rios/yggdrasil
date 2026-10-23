@@ -18,16 +18,17 @@
 # no longer <sha>. delete-branch succeeds, with a note on stderr, when the branch is already gone.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
-# 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for.
+# 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
+# 2 that there was no command at all (it prints the list of commands).
 # On Forgejo merge-pr waits (every 3 s, up to 20 times) while the server answers "try again later": it
 # checks a pull request again in the background after a new commit status. The token reaches curl on
-# stdin, never in an argument or a message. With no command, or an unknown one, it refuses; a known
-# command with the wrong arguments prints its usage. Reference: docs/setup.md, "The git server commands".
+# stdin, never in an argument or a message. An unknown command is refused; a known command with the
+# wrong arguments prints its usage. Reference: docs/setup.md, "The git server commands".
 #
 # <repo> is the repository name; the owner comes from the environment, else from the catalog:
 #   FORGE_TYPE         forgejo or github                  (else catalog.py forge type)
 #   FORGE_API_URL      the REST API's base URL            (else, for GitHub, GITHUB_API_URL, else catalog.py forge api)
-#   FORGE_OWNER        the owner of the repositories      (else GITHUB_OWNER, else catalog.py owner)
+#   FORGE_OWNER        the owner of the repositories      (else, for GitHub, GITHUB_OWNER, else catalog.py owner)
 #   FORGE_TOKEN        the access token, required         (else, for GitHub, GH_TOKEN)
 #   GITHUB_UPLOADS_URL where GitHub takes release files   (default https://uploads.github.com)
 set -euo pipefail
@@ -60,7 +61,9 @@ configure() {
   [[ -n "$api_url" ]] || api_url=$(catalog forge api) || die "cannot read the git server's API from the catalog"
   api_url=${api_url%/}
 
-  owner=${FORGE_OWNER:-${GITHUB_OWNER:-}}
+  # GITHUB_OWNER is the pipeline's name for the GitHub owner: it says nothing about a Forgejo one.
+  owner=${FORGE_OWNER:-}
+  [[ -n "$owner" || "$forge_type" != github ]] || owner=${GITHUB_OWNER:-}
   [[ -n "$owner" ]] || owner=$(catalog owner) || die "cannot read the owner from the catalog"
 
   uploads_url=${GITHUB_UPLOADS_URL:-https://uploads.github.com}
@@ -86,17 +89,23 @@ repo_url() { printf '%s/repos/%s/%s' "$api_url" "$(encode "$owner")" "$(encode "
 # nothing answered. Returns curl's status.
 #
 # curl reads its headers, the token among them, from a config on stdin: arguments are readable by
-# every user of the machine (ps), stdin is not. A body is an argument, which is fine: none holds a secret.
+# every user of the machine (ps), stdin is not. A JSON body (none holds a secret) goes through a
+# temporary file, removed afterwards, not an argument: release notes can be longer than the most one
+# argument may hold (128 KiB on Linux), and stdin is the config's.
 # --write-out puts the HTTP status on a line of its own after the body, split off again below. curl's
 # own error line is kept out of the log unless nothing answered: for an HTTP error, the server's
 # message says more ("curl: (22) ... error: 500" would also stand in a log where the delete of a
 # branch that is already gone succeeded).
 send() {
-  local method=$1 url=$2 out status=0 errors
+  local method=$1 url=$2 out status=0 errors body=""
   shift 2
   local args=(--silent --show-error --fail-with-body --write-out '\n%{http_code}' --request "$method" --config -)
   case "${1:-}" in
-    --json) args+=(--header "Content-Type: application/json" --data "$2") ;;
+    --json)
+      body=$(mktemp)
+      printf '%s' "$2" >"$body"
+      args+=(--header "Content-Type: application/json" --data-binary "@$body")
+      ;;
     --file) args+=(--header "Content-Type: application/octet-stream" --data-binary "@$2") ;;
     --form) args+=(--form "$2") ;; # curl makes the multipart Content-Type, boundary included
   esac
@@ -122,7 +131,7 @@ send() {
       [[ -n "$failure" ]] || failure="no answer (curl exit $status)"
     fi
   fi
-  rm -f "$errors"
+  rm -f "$errors" ${body:+"$body"}
   return "$status"
 }
 
@@ -227,7 +236,10 @@ github_create_release() {
   if [[ "$draft" == true ]]; then
     jq -e '.draft == true' <<<"$out" >/dev/null || die "create-release failed: the server did not create an unpublished draft release for $tag"
   fi
-  jq -er '[.id, .html_url] | @tsv' <<<"$out" || die "create-release failed: the answer has no release id and URL"
+  # Both, or the pipeline would go on without the release's page (a draft's above all: its address
+  # is how the owner finds a release whose packaging failed).
+  jq -er 'select(.id != null and (.html_url // "") != "") | [.id, .html_url] | @tsv' <<<"$out" \
+    || die "create-release failed: the answer has no release id and URL"
 }
 
 github_upload_release_file() {
@@ -318,7 +330,10 @@ forgejo_create_release() {
   if [[ "$draft" == true ]]; then
     jq -e '.draft == true' <<<"$out" >/dev/null || die "create-release failed: the server did not create an unpublished draft release for $tag"
   fi
-  jq -er '[.id, .html_url] | @tsv' <<<"$out" || die "create-release failed: the answer has no release id and URL"
+  # Both, or the pipeline would go on without the release's page (a draft's above all: its address
+  # is how the owner finds a release whose packaging failed).
+  jq -er 'select(.id != null and (.html_url // "") != "") | [.id, .html_url] | @tsv' <<<"$out" \
+    || die "create-release failed: the answer has no release id and URL"
 }
 
 forgejo_upload_release_file() {
@@ -363,8 +378,25 @@ forgejo_delete_branch() {
 
 # ---- Dispatch ----
 
-command=${1:-}
-shift || true
+# The commands and their arguments: what a call without any prints.
+commands() {
+  cat >&2 <<'EOF'
+usage: forge.sh <command> <arguments>
+  set-status          <repo> <sha> <state> <context> <description> [target-url]
+  get-statuses        <repo> <sha>
+  merge-pr            <repo> <number> <sha> <title>
+  create-tag          <repo> <tag> <sha>
+  create-release      <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]
+  upload-release-file <repo> <release-id> <file>
+  publish-release     <repo> <release-id>
+  delete-branch       <repo> <branch>
+Reference: docs/setup.md, "The git server commands".
+EOF
+}
+
+(($#)) || { commands; exit 2; }
+command=$1
+shift
 case "$command" in
   set-status) usage="<repo> <sha> <state> <context> <description> [target-url]" min=5 max=6 ;;
   get-statuses) usage="<repo> <sha>" min=2 max=2 ;;
