@@ -225,9 +225,13 @@ void branchBuild(Map ctx, List plan) {
     : plan.findAll { it.trigger == 'branch' && matchesAny(it.branches, branch) }
 
   List inputs = []
+  // The commit the checks ran on (and found no yggdrasil.yml on): what must be deployed. null when
+  // nothing was prepared (other branches, DEPLOY_TO), which deploys the checkout as it always did.
+  String checkedSha = null
   // "Build with Parameters" deploys without checks, as it always did.
   if (!deployToParameter && (branch in ['develop', 'main'] || branch.startsWith('release/'))) {
     Map state = prepare(ctx, 'push', targets as boolean)
+    checkedSha = state.sha
     if (state.config != null) {
       List failed = runChecks(ctx, state)
       if (failed) {
@@ -245,7 +249,7 @@ void branchBuild(Map ctx, List plan) {
   }
   String version = (branch ==~ RELEASE_BRANCH) ? (branch =~ RELEASE_BRANCH)[0][1] : branch.replaceAll(/[^A-Za-z0-9_.-]/, '-')
   for (Map environment : targets) {
-    deployTo(app, environment, version, null, deployToParameter, ctx.repo, inputs)
+    deployTo(app, environment, version, null, deployToParameter, ctx.repo, inputs, checkedSha)
   }
 }
 
@@ -762,8 +766,11 @@ void release(String app, List environments, boolean releaseArtifacts, String rep
 // commit (release pull requests), deploy/<environment> reports the outcome on that commit, posted
 // after the node. start: leave an onDemand environment running even if it was stopped (DEPLOY_START=1,
 // see deploy.sh). inputs: checks whose stashed archives go into the build context (DEPLOY_INPUTS_DIR).
+// expectedSha (a push to develop, main or release/*): the commit the checks ran on; the deploy agent's
+// checkout must be that commit or nothing is deployed -- a push that lands while the checks run must not
+// deploy a commit no check saw. Checked without a status (branch builds post none).
 void deployTo(String app, Map environment, String version, String statusSha, boolean start = false,
-              String repo = null, List inputs = []) {
+              String repo = null, List inputs = [], String expectedSha = null) {
   stage("Deploy to ${environment.name}") {
     if (environment.approval) {
       // Outside node(): waiting for a person must not hold an agent.
@@ -776,6 +783,9 @@ void deployTo(String app, Map environment, String version, String statusSha, boo
         sha = checkoutBuild()
         if (statusSha && sha != statusSha) {
           error "The pull request moved from ${statusSha.take(7)} to ${sha.take(7)} during the release; start it again."
+        }
+        if (expectedSha) {
+          sameCommit(sha, expectedSha)
         }
         String inputsDir = ''
         if (inputs) {
@@ -876,9 +886,10 @@ String headCommit() {
   return sha
 }
 
-// The commit this build is for, as the branch source chose it when the build started (the build's
-// SCMRevisionAction), read on the controller without checking anything out: what the ci agent then
-// fetches by hash.
+// The commit this build is for, read on the controller without checking anything out: what the ci
+// agent then fetches by hash. The first call asks the branch source for the head's revision and records
+// it on the build (see revisionHash), so the head at that moment -- not necessarily the commit that
+// started the build -- is the build's commit from then on.
 String buildCommit() {
   String sha = revisionHash(currentBuild.rawBuild)
   if (!(sha && sha ==~ COMMIT)) {
@@ -895,8 +906,9 @@ String buildCommit() {
 // (pipelineBranchDefaultsProjectFactory, which runs the Jenkinsfile kept in Jenkins) never records one
 // -- unlike the factory that reads a repository's Jenkinsfile (proved by scripts/test_jenkins_live.py)
 // -- so the first call asks the branch source for the head's revision, on the controller with the job's
-// own read credential, as that factory would have, and records it on the build: every later call, and
-// the deploy agents' `checkout scm`, get the same commit.
+// own read credential, as that factory would have, and records it on the build, so every later call
+// gets the same commit. Whether the deploy agents' `checkout scm` follows the recorded action is not
+// relied on: deployTo() compares their checkout with the checked commit (expectedSha).
 @NonCPS
 String revisionHash(def run) {
   def revision = run.getAction(jenkins.scm.api.SCMRevisionAction)?.revision

@@ -437,6 +437,25 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertLess(body.index("source.fetch("), body.index("run.addAction("))
         self.assertRegex(self.lib.code[self.lib.functions["buildCommit"][0]:], r"^\{\s*String sha = revisionHash\(currentBuild\.rawBuild\)")
 
+    def test_given_a_checked_push_when_deployed_then_the_deployed_commit_must_be_the_checked_one(self):
+        # A push that lands while the checks run must not be deployed by `checkout scm` on the deploy agent:
+        # branchBuild hands the checked commit to deployTo, which refuses any other checkout before deploy.sh.
+        lib = self.lib
+        start, end = lib.functions["branchBuild"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"checkedSha = state\.sha")
+        self.assertRegex(body, r"deployTo\([^\n]*, inputs, checkedSha\)")
+        self.assertLess(body.index("checkedSha = state.sha"), body.index("deployTo("))
+        self.assertIsNotNone(re.search(r"void deployTo\([^)]*String expectedSha = null\)", lib.code))
+        start, end = lib.functions["deployTo"]
+        body = lib.code[start:end]
+        guard = body.index("sameCommit(sha, expectedSha)")
+        self.assertLess(body.index("sha = checkoutBuild()"), guard)
+        self.assertLess(guard, body.index("deploy.sh"))
+        self.assertLess(guard, body.index("unstash"))
+        # No status for it: branch builds post none.
+        self.assertNotRegex(body[guard - 200:guard + 50], r"reportStatus")
+
     def test_given_describe_when_read_then_a_failed_run_without_errors_fails_the_build(self):
         # describe exits 0 with a document, or 1 with the document's errors. A run that failed some other
         # way must not be read as "no yggdrasil.yml" (which turns every check off).

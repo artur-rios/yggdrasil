@@ -90,6 +90,9 @@ JENKINS_URL = "http://jenkins:8080/"
 # The repositories: pull requests (with yggdrasil.yml on their branches), pushes with yggdrasil.yml on
 # develop, a repository that never has one, and an owner-tagged library.
 APP, WEB, PLAIN, LIB = "shop-api", "shop-web", "plain-site", "ygg-lib"
+# Pushes to develop whose check is slow when the commit carries a file named `slow`: the window in which
+# develop moves on during a build.
+WORKER = "shop-worker"
 
 # A check's command whose output differs from its text: the shell trace (sh -x) prints the command, so
 # the marker in the log proves the check ran, not that it was planned.
@@ -125,6 +128,7 @@ def test_catalog():
              "credentials": ["shop-db-password"]},
             {"id": WEB, "name": "Web", "kind": "web", "health": "http://shop-web:8080/", "checks": ["unit"]},
             {"id": PLAIN, "name": "Site", "kind": "web", "health": "http://plain-site:8080/"},
+            {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/"},
         ]}],
         "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"}],
     }
@@ -295,9 +299,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         cls.create_repositories()
         cls.apply_rules()
         cls.first_builds = {}
-        for job in (APP, WEB, PLAIN, LIB):
+        for job in (APP, WEB, PLAIN, LIB, WORKER):
             cls.jenkins.post(job_path(job) + "/build", {"delay": "0"})
-        for job in (APP, WEB, PLAIN, LIB):
+        for job in (APP, WEB, PLAIN, LIB, WORKER):
             for branch in ("develop", "main"):
                 cls.first_builds[(job, branch)] = cls.wait_for_build(job, branch, after=0, timeout=900)
 
@@ -565,13 +569,17 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
     def create_repositories(cls):
         """shop-api, shop-web, plain-site and ygg-lib: main and develop. shop-web has yggdrasil.yml on
         develop (unit, only for changes under src/)."""
-        for repo in (APP, WEB, PLAIN, LIB):
+        for repo in (APP, WEB, PLAIN, LIB, WORKER):
             cls.new_repository(repo)
             cls.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/branches",
                                    {"new_branch_name": "develop", "old_branch_name": "main"})
         cls.change_file(OWNER, WEB, "yggdrasil.yml",
                         pipeline_file(unit={**UNIT, "run": 'echo "WEB-UNIT-$((40 + 2))-RAN"', "paths": ["src/**"]}),
                         "develop")
+        cls.change_file(OWNER, WORKER, "yggdrasil.yml", pipeline_file(unit={
+            "image": "alpine:3",
+            "run": 'if [ -f slow ]; then echo "SLOW-$((1 + 1))-CHECK"; sleep 60; fi; echo "WORKER-$((40 + 2))-RAN"'}),
+            "develop")
 
     @classmethod
     def apply_rules(cls):
@@ -662,7 +670,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         boot = self.first_boot
         # Job DSL's giteaSCMSource and pipelineBranchDefaultsProjectFactory: one job per catalog entry,
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
-        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB})
+        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER})
         for job, made in boot["jobs"].items():
             self.assertEqual(made, {"sources": ["org.jenkinsci.plugin.gitea.GiteaSCMSource"],
                                     "factory": "org.jenkinsci.plugins.pipeline.multibranch.defaults."
@@ -907,6 +915,36 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIn("Check unit: run (no earlier result; changed files match)", code.console)
         self.assertIn("WEB-UNIT-42-RAN", code.console)
         self.assertEqual(self.latest_statuses(WEB, sha)["unit"][1:3], ("success", JENKINS))
+
+    def test_given_develop_moving_on_during_a_build_when_it_deploys_then_only_the_checked_commit_is_deployed(self):
+        # The checks ran on one commit; while they ran, another landed on develop. The deploy agent's
+        # `checkout scm` must deploy the checked commit, or the deploy must refuse: never the newer
+        # commit, which no check saw.
+        before = self.last_number(WORKER, "develop")
+        checked = self.land_on_develop(WORKER, "slow", {"slow": "slow\n"})
+        deadline = time.monotonic() + 600
+        while "SLOW-2-CHECK" not in self.console(WORKER, "develop", before + 1):
+            self.assertLess(time.monotonic(), deadline, "the build never reached its slow check")
+            time.sleep(2)
+        moved = self.land_on_develop(WORKER, "moved", {"moved.txt": "after the check started\n"})
+        self.assertNotEqual(moved, checked)
+        build = self.wait_for_build(WORKER, "develop", after=before)
+        self.assertEqual(build.number, before + 1)
+        self.assertIn(f"Status unit on {checked[:7]}: success", build.console)
+        self.assertNotIn(f"version=develop-{moved[:7]}", build.console)
+        if build.result == "SUCCESS":
+            self.assertIn(f"DEPLOY-STUB environment=development stack={WORKER} checkout=app version=develop-{checked[:7]}",
+                          build.console)
+        else:
+            self.assertEqual(build.result, "FAILURE", build.console[-4000:])
+            self.assertIn(f"The commit moved from {checked[:7]} to {moved[:7]} during the build", build.console)
+            self.assertNotIn("DEPLOY-STUB", build.console)
+        print(f"\n  develop moved during the build: {build.result} "
+              f"({'checkout scm deployed the checked commit' if build.result == 'SUCCESS' else 'the guard refused'})")
+        # The newer commit gets its own build, checked and deployed.
+        newer = self.wait_for_build(WORKER, "develop", after=build.number)
+        self.assertEqual(newer.result, "SUCCESS", newer.console[-4000:])
+        self.assertIn(f"version=develop-{moved[:7]}", newer.console)
 
     # --- Owner tags --------------------------------------------------------------------------------
 
