@@ -384,6 +384,38 @@ class PublishReleaseTests(unittest.TestCase):
                          [["forgejo", "upload-release-file", "setup.exe"], ["github", "upload-release-file", "setup.exe"]])
         self.assertEqual([c for c in new_calls if any(w in c for w in (" create-", " publish-release", "wait-ref"))], [])
 
+    def test_given_attach_while_the_github_copy_is_pending_when_run_then_forgejo_gets_the_files_and_it_exits_5(self):
+        # After a skip the release is published on Forgejo only: GitHub has no release of the tag until the
+        # release-resume job makes it. attach puts the files on Forgejo's and says so (exit 5), without
+        # touching GitHub beyond the look.
+        first = self.temp / "first"
+        first.mkdir()
+        (first / "app.zip").write_bytes(b"zip bytes")
+        self.assertEqual(self.publish(files=first).returncode, 0)
+        later = self.temp / "later"
+        later.mkdir()
+        (later / "setup.exe").write_bytes(b"1234")
+        before = len(self.calls())
+        result = self.run_script("attach", "app", "v1.4.0", str(later), "--mirror-releases", env=self.mirror_env)
+        self.assertEqual(result.returncode, 5, result.stderr)
+        self.assertEqual(result.stdout, "https://forgejo.example/app/releases/v1.4.0\n")
+        self.assertIn("publish-release: GitHub has no release of v1.4.0 yet (its copy is pending): the files are on "
+                      "Forgejo's release only", result.stderr)
+        self.assertEqual(self.attached("forgejo"), {"app.zip": "9", "setup.exe": "4"})
+        self.assertEqual([c for c in self.calls()[before:] if c.startswith("github ")], ["github find-release app v1.4.0"])
+
+    def test_given_attach_when_the_github_lookup_fails_then_nothing_is_uploaded(self):
+        self.assertEqual(self.publish().returncode, 0)
+        extra = self.temp / "extra"
+        extra.mkdir()
+        (extra / "setup.exe").write_bytes(b"1234")
+        before = len(self.calls())
+        result = self.run_script("attach", "app", "v1.4.0", str(extra), "--mirror-releases",
+                                 env=dict(self.mirror_env, FAKE_FAIL="github find-release"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("looking for the release of v1.4.0 on GitHub failed", result.stderr)
+        self.assertEqual([c for c in self.calls()[before:] if " upload-release-file " in c], [])
+
     def test_given_attach_and_no_release_when_run_then_it_fails(self):
         result = self.run_script("attach", "app", "v1.4.0", str(self.files))
         self.assertEqual((result.returncode, result.stdout), (1, ""))

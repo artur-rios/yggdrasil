@@ -26,11 +26,15 @@
 # files that could not be built (a skipped GitHub Actions run), separated by commas or spaces.
 #
 # `attach` puts the files of <files-dir> on the releases that exist already, published or not, the same
-# way (steps 3 and 4), for the Windows files that arrive after a release was published.
+# way (steps 3 and 4), for the Windows files that arrive after a release was published. Both releases are
+# looked up first; with --mirror-releases and no release of the tag on GitHub (its copy pending: the
+# release was published after a skip, on the git server only), the files go to the git server's release
+# only and the exit is 5.
 #
 # Prints the release's address on the git server, then (with --mirror-releases) GitHub's, one per line.
 # Exit 0 is success; 1 a step failed, explained on stderr as "publish-release: <what> failed: <why>" (the
-# drafts stay); 2 a wrong command line, or --mirror-releases without GH_TOKEN and GITHUB_OWNER.
+# drafts stay); 2 a wrong command line, or --mirror-releases without GH_TOKEN and GITHUB_OWNER; 5 (attach
+# only) attached on the git server, GitHub has no release of the tag yet (the release-resume job makes it).
 #
 # Environment: the installation's git server as forge.sh reads it (FORGE_TYPE, FORGE_API_URL,
 # FORGE_OWNER, FORGE_TOKEN; on a GitHub installation GITHUB_OWNER, GH_TOKEN...), and for --mirror-releases
@@ -249,9 +253,24 @@ the_existing_release() {
 sides=(primary)
 [[ "$mirror" != true ]] || sides+=(mirror)
 
+pending=false
 if [[ "$mode" == attach ]]; then
+  # Both releases looked up before anything is uploaded. GitHub without one is its copy still to make
+  # (a release published after a skip): the files go to the git server's release only, and exit 5 says so.
   for side in "${sides[@]}"; do
-    the_existing_release "$side"
+    if [[ "$side" == mirror ]]; then
+      forge mirror find-release "$repo" "$tag"
+      case "$rc" in
+        0) read_release mirror ;;
+        4) pending=true ;;
+        *) fail "looking for the release of $tag on GitHub" "${err:-forge.sh exited $rc}" ;;
+      esac
+    else
+      the_existing_release "$side"
+    fi
+  done
+  [[ "$pending" != true ]] || sides=(primary)
+  for side in "${sides[@]}"; do
     upload_files "$side" "${release_id[$side]}"
   done
 else
@@ -286,3 +305,7 @@ fi
 for side in "${sides[@]}"; do
   printf '%s\n' "${release_url[$side]}"
 done
+if [[ "$pending" == true ]]; then
+  echo "publish-release: GitHub has no release of $tag yet (its copy is pending): the files are on $label_primary's release only; the release-resume job makes the GitHub copy, with them" >&2
+  exit 5
+fi
