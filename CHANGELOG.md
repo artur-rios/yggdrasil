@@ -201,7 +201,9 @@ this release loads the library at `main`, so it would run the new library at onc
 (builds would wait for a `ci` agent that does not exist; the HTTP Request plugin is missing). The old library
 keeps working pinned: it still clones `scripts/` from `main`, and the `github.sh` commands it calls (`wait-checks`,
 `set-status`, `merge-pr`, `release`, `publish-release`, `delete-branch`) and `deploy.sh <environment> <application>
-<checkout> <version>` take the same arguments as before.
+<checkout> <version>` take the same arguments as before. **Then, before relying on it on GitHub:** run a scratch
+GitHub repository with `forge.type: github` through a pull request, its checks and a release, end to end; the
+GitHub paths have been tested against fakes only ([docs/setup.md](docs/setup.md#an-existing-github-installation)).
 
 Nothing in a repository has to change for it to keep deploying and releasing. On the dev (controller) host: set
 `YGGDRASIL_LIBRARY_VERSION` (a release tag of your fork that has this pipeline), `CI_AGENT_WORKDIR` and

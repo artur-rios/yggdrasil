@@ -1254,6 +1254,16 @@ same arguments and print the same output (they now go through `scripts/forge.sh`
 <application> <checkout> <version>` is unchanged (its new `YGG_DOMAIN` and `DEPLOY_INPUTS_DIR` are optional).
 The pin is replaced by `YGGDRASIL_LIBRARY_VERSION` when you upgrade with `scripts/platform.sh up`.
 
+**Run a scratch repository through it on GitHub before you rely on it.** The pipeline's GitHub paths (the
+GitHub branch source with the library at a tag, `github-read`, GitHub Actions results, release pull requests,
+releases and their files) have been tested against fakes only, never against GitHub itself; Forgejo's ran live.
+Before you merge this release into `main` for an installation that runs on GitHub (or set one up on GitHub),
+take a throwaway repository on GitHub with a `yggdrasil.yml` and a catalog entry with `forge.type: github` (no
+`forge` block is the same) and a release environment, and run it end to end: a pull request into `develop`
+(branch policy and checks reported), a push that deploys, and a release pull request into `main` that deploys,
+merges, tags and publishes its release (with files, if your repositories have any). Only then move your own
+repositories.
+
 An installation that ran on GitHub before the pipeline moved into Jenkins keeps working without a change to
 any repository: its repositories have no `yggdrasil.yml`, so they deploy and release as they always did (a
 release waits for every GitHub Actions check, and `releaseArtifacts: true` still runs its workflow). Two
