@@ -1573,7 +1573,8 @@ skip:
 - finish with the `release-resume` job (`REPOSITORY`, `TAG`): it makes the GitHub copy, with the Windows files
   ([below](#finishing-a-release-that-stopped)). The `actions-release` job attaches Windows files to a release
   that exists on both servers; while the GitHub copy is pending it attaches them on Forgejo only and says to
-  run `release-resume`.
+  run `release-resume`. Either way the notes keep their *Missing files* section: delete it by hand afterwards
+  ([below](#finishing-a-release-that-stopped)).
 
 ### Releases
 
@@ -1632,6 +1633,11 @@ stops the job. `COMMIT` is refused for an `owner-tag` repository, whose tags are
 
 The **`actions-release`** job (`REPOSITORY`, `TAG`) runs the Windows workflow again for a tag and attaches its
 files to a release that was published without them.
+
+The notes are not rewritten afterwards: a release published without its Windows files keeps the
+*Missing files* section of its notes after `actions-release` or `release-resume` has attached them (both
+reuse the release, notes and all, on Forgejo and on GitHub). Once the files are there, edit the release
+on each server and delete that section by hand.
 
 ### Owner tags and NuGet
 
