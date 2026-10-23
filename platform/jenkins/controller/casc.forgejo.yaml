@@ -53,7 +53,10 @@ unclassified:
           modernSCM:
             libraryPath: "jenkins/library/"
             scm:
-              "org.jenkinsci.plugin.gitea.GiteaSCMSource":
+              # The Gitea plugin's source has no symbol: Configuration as Code names it after its class
+              # without the SCMSource suffix (as github is GitHubSCMSource). The class's full name is
+              # refused (proved by scripts/test_jenkins_live.py).
+              gitea:
                 serverUrl: "${FORGE_URL}"
                 repoOwner: "${GITHUB_OWNER}"
                 repository: "${YGGDRASIL_REPOSITORY}"

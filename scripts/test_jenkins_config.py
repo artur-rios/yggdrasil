@@ -196,7 +196,8 @@ class JenkinsLibraryTests(unittest.TestCase):
             self.assertEqual(library["retriever"]["modernSCM"]["libraryPath"], "jenkins/library/", name)
 
     def test_given_the_forgejo_configuration_when_read_then_the_library_comes_from_the_forge_with_the_read_credential(self):
-        source, = libraries("casc.forgejo.yaml")[0]["retriever"]["modernSCM"]["scm"].values()
+        # gitea: the name Configuration as Code gives GiteaSCMSource (no symbol); its class name is refused.
+        source = libraries("casc.forgejo.yaml")[0]["retriever"]["modernSCM"]["scm"]["gitea"]
         self.assertEqual(source["serverUrl"], "${FORGE_URL}")
         self.assertEqual(source["repoOwner"], "${GITHUB_OWNER}")
         self.assertEqual(source["repository"], "${YGGDRASIL_REPOSITORY}")
