@@ -70,6 +70,8 @@ TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-]+\Z")
 FORGES = ("forgejo", "github")
 # A Jenkins agent label: what an environment's id is by default, so the same shape.
 AGENT_NAME = ID
+# The pipeline's own agents (agents.groovy): checks on ci, release files on release. Never a write token.
+BUILD_AGENTS = ("ci", "release")
 KINDS = {"api", "web", "worker", "platform"}
 MODES = {"proxy", "ports"}
 TRIGGERS = {"manual", "branch", "release"}
@@ -267,6 +269,15 @@ def _forge_errors(catalog):
                                                 and AGENT_NAME.match(block["publishAgent"])):
                 errors.append("forge.publishAgent: a Jenkins agent name (lowercase letters, digits and dashes; "
                               "default the agent of the last release environment)")
+            elif block.get("publishAgent") in BUILD_AGENTS:
+                # The publish agent holds the write token and the GitHub App: ci runs the repositories'
+                # checks and release builds their files, so neither may ever be it.
+                errors.append(f"forge.publishAgent: '{block['publishAgent']}' is one of the pipeline's ci and "
+                              "release agents, which never hold a write credential; name an environment's agent")
+            elif "publishAgent" in block and block["publishAgent"] not in _environment_agents(catalog):
+                errors.append(f"forge.publishAgent: '{block['publishAgent']}' is not an environment's agent, so "
+                              "Jenkins has no such node (an environment's `agent`, or the id of one that deploys "
+                              "by branch or release)")
     if "mirror" in catalog:
         block = catalog["mirror"]
         if forge_type != "forgejo":
@@ -284,6 +295,32 @@ def _forge_errors(catalog):
             if "releases" in block and not isinstance(block["releases"], bool):
                 errors.append("mirror.releases: true or false (default true)")
     return errors
+
+
+def _environment_agents(catalog):
+    """The agents platform/jenkins/controller/init.groovy.d/agents.groovy makes for the environments,
+    by its rule: for each environment and each application deploying there (all of them unless the
+    application lists its environments), the merged options' `agent`, or the environment's id when they
+    trigger by branch or release. Called while validating, so anything malformed is skipped (its own
+    error is reported elsewhere)."""
+    environments = catalog.get("environments")
+    systems = catalog.get("systems")
+    applications = [app for system in (systems if isinstance(systems, list) else []) if isinstance(system, dict)
+                    for app in (system.get("applications") if isinstance(system.get("applications"), list) else [])
+                    if isinstance(app, dict) and app.get("kind") != "platform"]
+    agents = set()
+    for env in environments if isinstance(environments, list) else []:
+        if not isinstance(env, dict) or not isinstance(env.get("id"), str):
+            continue
+        for app in applications:
+            overrides = app.get("environments")
+            if overrides is not None and not (isinstance(overrides, dict) and env["id"] in overrides):
+                continue
+            override = (overrides or {}).get(env["id"]) if isinstance(overrides, dict) else None
+            options = {**env, **(override if isinstance(override, dict) else {})}
+            if options.get("trigger") in ("branch", "release") or options.get("agent"):
+                agents.add(options.get("agent") or env["id"])
+    return agents
 
 
 def _repository_names(systems):

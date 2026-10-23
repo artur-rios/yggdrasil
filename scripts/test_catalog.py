@@ -457,9 +457,39 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(self.run_cli(catalog(), "forge", "token")[0], 2)
 
     def test_given_a_publish_agent_when_read_then_it_wins_over_the_release_environment(self):
-        v = catalog(forge=dict(self.FORGEJO, publishAgent="publisher"))
+        # staging (trigger branch) has an agent of its own, named by its id.
+        v = catalog(forge=dict(self.FORGEJO, publishAgent="staging"))
         self.assertEqual(c.validate(v), [])
-        self.assertEqual(c.forge(v)["publishAgent"], "publisher")
+        self.assertEqual(c.forge(v)["publishAgent"], "staging")
+
+    def test_given_a_publish_agent_on_the_ci_or_release_agent_when_validated_then_it_is_an_error(self):
+        # ci runs the repositories' checks and release builds their files: neither may hold the write
+        # token, and agents.groovy makes both whatever the catalog says.
+        for name in ("ci", "release"):
+            with self.subTest(name=name):
+                errors = self.errors(forge=dict(self.FORGEJO, publishAgent=name))
+                self.assertTrue(any("forge.publishAgent" in e and "ci and release" in e for e in errors), errors)
+
+    def test_given_a_publish_agent_no_environment_has_when_validated_then_it_is_an_error(self):
+        # agents.groovy makes an agent only for an environment's `agent` (or the id of one that deploys
+        # by branch or release): a name it never makes would leave every release waiting for a node.
+        # dev deploys by hand with no agent set, so it has none either.
+        for name in ("publisher", "dev"):
+            with self.subTest(name=name):
+                errors = self.errors(forge=dict(self.FORGEJO, publishAgent=name))
+                self.assertTrue(any("forge.publishAgent" in e and "not an environment's agent" in e
+                                    for e in errors), errors)
+
+    def test_given_an_application_override_naming_an_agent_when_validated_then_it_may_publish(self):
+        v = catalog(forge=dict(self.FORGEJO, publishAgent="late"))
+        v["systems"][0]["applications"][1]["environments"]["prod"]["agent"] = "late"
+        self.assertEqual(c.validate(v), [])
+
+    def test_given_a_malformed_catalog_and_a_publish_agent_when_validated_then_it_only_reports_errors(self):
+        for broken in ({"environments": "x"}, {"environments": [3, {"id": 4}]}, {"systems": [{"applications": [3]}, 5]},
+                       {"systems": [{"applications": [{"id": "a", "environments": "x"}]}]}):
+            with self.subTest(broken=broken):
+                self.assertTrue(self.errors(forge=dict(self.FORGEJO, publishAgent="vps"), **broken))
 
     def test_given_no_publish_agent_when_read_then_it_is_the_last_release_environments_agent(self):
         # prod (trigger release) is the only release environment; its agent is vps.

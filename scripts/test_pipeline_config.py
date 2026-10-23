@@ -14,7 +14,7 @@ import pipeline_config as pc
 
 CATALOG = {
     "owner": "someone",
-    "forge": {"type": "forgejo", "url": "https://git.example.com", "publishAgent": "release"},
+    "forge": {"type": "forgejo", "url": "https://git.example.com", "publishAgent": "vps"},
     "environments": [
         {"id": "dev", "name": "Dev", "trigger": "manual"},
         {"id": "prod", "name": "Prod", "trigger": "release", "agent": "vps"},
@@ -365,8 +365,11 @@ class PublishAgentTests(unittest.TestCase):
         value = catalog()
         del value["forge"]["publishAgent"]
         self.assertEqual(cat.forge(value)["publishAgent"], "vps")
-        value["forge"]["publishAgent"] = "release"
-        self.assertEqual(cat.forge(value)["publishAgent"], "release")
+        # dev deploys by hand, but naming its agent makes one, which may publish.
+        value["environments"][0]["agent"] = "publisher"
+        value["forge"]["publishAgent"] = "publisher"
+        self.assertEqual(cat.validate(value), [])
+        self.assertEqual(cat.forge(value)["publishAgent"], "publisher")
 
 
 class CliTests(unittest.TestCase):
