@@ -554,7 +554,8 @@ class RepositoryTests(unittest.TestCase):
     def test_given_a_repository_entry_when_read_then_its_defaults_are_filled(self):
         v = catalog(repositories=[{"id": "dotnet-util"}])
         self.assertEqual(c.repositories(v), [{"id": "dotnet-util", "checks": [], "actionsChecks": [],
-                                              "credentials": [], "release": "none", "tags": "v*", "rules": "release"}])
+                                              "credentials": [], "releaseCredentials": [], "release": "none", "tags": "v*",
+                                              "rules": "release"}])
 
     def test_given_a_library_entry_when_read_then_its_tag_pattern_is_kept(self):
         v = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "tags": "[0-9]*"}])
@@ -563,7 +564,7 @@ class RepositoryTests(unittest.TestCase):
 
     def test_given_an_entry_with_every_field_when_read_then_they_are_kept(self):
         entry = {"id": "ci-only", "checks": ["build"], "actionsChecks": ["test"], "credentials": ["nuget-key"],
-                 "release": "owner-tag", "tags": "v*", "rules": "basic"}
+                 "releaseCredentials": ["sign-key"], "release": "owner-tag", "tags": "v*", "rules": "basic"}
         v = catalog(repositories=[entry])
         self.assertEqual(c.validate(v), [])
         self.assertEqual(c.repositories(v), [entry])
@@ -634,8 +635,8 @@ class RepositoryTests(unittest.TestCase):
 
     def test_given_bad_check_lists_when_validated_then_each_is_an_error(self):
         errors = self.errors(repositories=[{"id": "lib", "checks": ["ok", " "], "actionsChecks": "test",
-                                            "credentials": ["a b"]}])
-        for field in ("checks", "actionsChecks", "credentials"):
+                                            "credentials": ["a b"], "releaseCredentials": "sign-key"}])
+        for field in ("checks", "actionsChecks", "credentials", "releaseCredentials"):
             self.assertTrue(any(f"repositories[0].{field}" in e for e in errors), (field, errors))
 
     def test_given_an_unknown_repository_key_when_validated_then_it_is_an_error(self):
@@ -678,6 +679,21 @@ class RepositoryTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertTrue(any(".credentials" in e for e in self.app_errors(credentials=[bad])))
         self.assertTrue(any(".credentials" in e for e in self.app_errors(credentials="nuget-key")))
+
+    def test_given_release_credentials_when_validated_then_they_are_credential_ids(self):
+        self.assertEqual(self.app_errors(releaseCredentials=["sign-key"]), [])
+        for bad in (["sign key"], "sign-key", [3]):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(".releaseCredentials" in e for e in self.app_errors(releaseCredentials=bad)))
+
+    def test_given_an_id_in_both_credential_lists_when_validated_then_it_is_an_error(self):
+        # One id in both would let any branch's check bind what only the release build may.
+        errors = self.app_errors(credentials=["nuget-key", "sign-key"], releaseCredentials=["sign-key"])
+        self.assertTrue(any(".releaseCredentials" in e and "'sign-key'" in e and "also in credentials" in e
+                            for e in errors), errors)
+        errors = self.errors(repositories=[{"id": "lib", "credentials": ["k"], "releaseCredentials": ["k"]}])
+        self.assertTrue(any("repositories[0].releaseCredentials" in e and "also in credentials" in e
+                            for e in errors), errors)
 
     def test_given_bad_actions_checks_when_validated_then_it_is_an_error(self):
         self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks=["test", ""])))

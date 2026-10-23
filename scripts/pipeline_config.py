@@ -206,6 +206,7 @@ def entry_for(catalog, job_id):
         kind            "application" | "repository"
         id, repository  the job id, and the git repository it builds (an application's `repository`, else its id)
         credentials     the Jenkins credential ids its checks may bind
+        releaseCredentials  the ones its release build (release.build) may bind, and nothing else
         checks          the checks Jenkins must report on pull requests
         actionsChecks   the GitHub Actions jobs required besides them
         release         "deploy" (an application with a release environment: Jenkins tags it),
@@ -217,20 +218,23 @@ def entry_for(catalog, job_id):
             releases = any(env["trigger"] == "release" for env in cat.resolve(catalog, job_id))
             return {"kind": "application", "id": job_id, "repository": app.get("repository") or job_id,
                     "credentials": list(app.get("credentials") or []),
+                    "releaseCredentials": list(app.get("releaseCredentials") or []),
                     "checks": list(app.get("checks") or []),
                     "actionsChecks": list(app.get("actionsChecks") or []),
                     "release": "deploy" if releases else "none", "tags": "v*"}
     for entry in cat.repositories(catalog):
         if entry["id"] == job_id:
             return {"kind": "repository", "id": job_id, "repository": job_id,
-                    "credentials": entry["credentials"], "checks": entry["checks"],
+                    "credentials": entry["credentials"], "releaseCredentials": entry["releaseCredentials"],
+                    "checks": entry["checks"],
                     "actionsChecks": entry["actionsChecks"], "release": entry["release"], "tags": entry["tags"]}
     raise ConfigError(f"'{job_id}' is not an application or a repository in catalog.yaml")
 
 
 def validate_against(config, entry):
     """What the catalog does not allow this repository to do, as sentences (empty when fine): a
-    credential outside the entry's `credentials`, a catalog check the file does not define, deploy
+    check's credential outside the entry's `credentials`, a release build's outside its
+    `releaseCredentials` (each list only for its own context), a catalog check the file does not define, deploy
     inputs naming a check that is not defined, `publish` on anything but an owner-tagged
     repository, `release` on something that does not release. `config` is load_config()'s result."""
     if config is None:
@@ -238,13 +242,17 @@ def validate_against(config, entry):
     errors = []
     checks = config.get("checks") or {}
 
-    bindings = [(f"checks.{name}.credentials", check.get("credentials")) for name, check in checks.items()]
-    bindings.append(("release.build.credentials", ((config.get("release") or {}).get("build") or {}).get("credentials")))
-    for where, credentials in bindings:
+    # A check runs any branch's code: it may bind only `credentials`. The release build runs the
+    # merged release's code on the release agent: only `releaseCredentials`. Neither list covers both.
+    bindings = [(f"checks.{name}.credentials", check.get("credentials"), "credentials")
+                for name, check in checks.items()]
+    bindings.append(("release.build.credentials",
+                     ((config.get("release") or {}).get("build") or {}).get("credentials"), "releaseCredentials"))
+    for where, credentials, allowed in bindings:
         for variable, credential in (credentials or {}).items():
-            if credential not in entry["credentials"]:
+            if credential not in entry[allowed]:
                 errors.append(f"{where}.{variable}: credential '{credential}' is not allowed for {entry['id']} "
-                              f"(its catalog credentials: {entry['credentials']})")
+                              f"(its catalog {allowed}: {entry[allowed]})")
 
     for name in entry["checks"]:
         if name not in checks:

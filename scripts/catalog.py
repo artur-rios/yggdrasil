@@ -78,7 +78,7 @@ TRIGGERS = {"manual", "branch", "release"}
 # `repositories`: how a repository that is not an application is released and protected.
 RELEASES = ("none", "owner-tag")
 RULES = ("release", "basic")
-REPOSITORY_KEYS = {"id", "checks", "actionsChecks", "credentials", "release", "tags", "rules"}
+REPOSITORY_KEYS = {"id", "checks", "actionsChecks", "credentials", "releaseCredentials", "release", "tags", "rules"}
 
 # Every environment option, with its default. An application's override may set any of them except
 # the identity fields (id, name).
@@ -342,7 +342,8 @@ def _repository_errors(catalog, systems):
         return []
     entries = catalog["repositories"]
     if not isinstance(entries, list):
-        return ["repositories: a list of {id, checks, actionsChecks, credentials, release, tags, rules}"]
+        return ["repositories: a list of {id, checks, actionsChecks, credentials, releaseCredentials, release, tags, "
+                "rules}"]
     errors = []
     taken = _repository_names(systems)
     seen = []
@@ -432,17 +433,27 @@ def _application_field_errors(where, app):
 
 
 def _check_list_errors(where, entry):
-    """checks, actionsChecks and credentials of an application or a repository (all optional lists)."""
+    """checks, actionsChecks, credentials and releaseCredentials of an application or a repository (all
+    optional lists). `credentials` are what its checks may bind, `releaseCredentials` what its release
+    build may: a check runs any branch's code, so a signing key allowed there would reach whoever opens a
+    pull request. The two lists are kept apart: an id in both is an error."""
     errors = []
+    credential = (lambda v: isinstance(v, str) and CREDENTIAL_ID.match(v),
+                  "Jenkins credential ids (letters, digits, '.', '_' and '-')")
     for key, valid, what in (
         ("checks", _text, "the checks Jenkins reports, none empty"),
         ("actionsChecks", _text, "GitHub Actions job names, none empty"),
-        ("credentials", lambda v: isinstance(v, str) and CREDENTIAL_ID.match(v),
-         "Jenkins credential ids (letters, digits, '.', '_' and '-')"),
+        ("credentials", *credential),
+        ("releaseCredentials", *credential),
     ):
         value = entry.get(key)
         if value is not None and (not isinstance(value, list) or not all(valid(item) for item in value)):
             errors.append(f"{where}.{key}: a list of {what}")
+    checks, release = entry.get("credentials"), entry.get("releaseCredentials")
+    if isinstance(checks, list) and isinstance(release, list):
+        for both in [r for r in release if isinstance(r, str) and r in checks]:
+            errors.append(f"{where}.releaseCredentials: '{both}' is also in credentials; an id is either a check's "
+                          "(credentials) or the release build's (releaseCredentials), never both")
     return errors
 
 
@@ -548,6 +559,7 @@ def repositories(catalog):
              "checks": list(entry.get("checks") or []),
              "actionsChecks": list(entry.get("actionsChecks") or []),
              "credentials": list(entry.get("credentials") or []),
+             "releaseCredentials": list(entry.get("releaseCredentials") or []),
              "release": entry.get("release", "none"),
              "tags": entry.get("tags", "v*"),
              "rules": entry.get("rules", "release")} for entry in catalog.get("repositories") or []]

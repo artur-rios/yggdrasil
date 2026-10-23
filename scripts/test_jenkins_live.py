@@ -267,7 +267,8 @@ def test_catalog():
     the skip), both on the agent vps, and a GitHub mirror without release copies; shop-api requires the
     check unit and may bind shop-db-password; shop-web requires unit; plain-site has no checks and only
     development (it does not release); ygg-lib, ygg-tool and dotnet-lib are tagged by their owner; the
-    release applications (shop-desktop may bind shop-db-password for its release build; shop-tools requires
+    release applications (shop-desktop may bind shop-db-password for its release build only, through
+    releaseCredentials; shop-tools requires
     a GitHub Actions check; shop-resume's release build binds a credential added only later)."""
     return {
         "owner": OWNER,
@@ -288,12 +289,12 @@ def test_catalog():
             {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/"},
             {"id": RELEASE, "name": "Release", "kind": "web", "health": "http://shop-release:8080/", "checks": ["unit"]},
             {"id": DESKTOP, "name": "Desktop", "kind": "web", "health": "http://shop-desktop:8080/",
-             "credentials": ["shop-db-password"]},
+             "releaseCredentials": ["shop-db-password"]},
             {"id": TOOLS, "name": "Tools", "kind": "web", "health": "http://shop-tools:8080/",
              "actionsChecks": ["Console (Windows)"]},
             {"id": BROKEN, "name": "Broken", "kind": "web", "health": "http://shop-broken:8080/"},
             {"id": RESUME, "name": "Resume", "kind": "web", "health": "http://shop-resume:8080/",
-             "credentials": ["shop-resume-key"]},
+             "releaseCredentials": ["shop-resume-key"]},
         ]}],
         "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"},
                          {"id": OWNED, "release": "owner-tag", "tags": "v*"},
@@ -1086,6 +1087,21 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertNotIn(UNIT_RAN, build.console)
         self.assertNotIn("(Checks)", build.console)
         self.assertEqual(self.statuses(APP, sha), [])
+
+    def test_given_a_check_asking_for_a_release_credential_when_built_then_the_build_fails_before_it_runs(self):
+        # shop-desktop's release build may bind shop-db-password (releaseCredentials); a check, which runs
+        # any branch's code, may not, although Jenkins has the credential.
+        check = {**UNIT, "credentials": {"SIGNING_KEY": "shop-db-password"}}
+        branch = "feature/release-credential"
+        sha = self.branch_with(CLAUDE, DESKTOP, branch, {"yggdrasil.yml": pipeline_file(unit=check)})
+        number, build = self.pull_request_build(CLAUDE, DESKTOP, branch)
+        self.assertEqual(build.result, "FAILURE")
+        self.assertIn("yggdrasil.yml cannot be used", build.console)
+        self.assertIn(f"credential 'shop-db-password' is not allowed for {DESKTOP} (its catalog credentials: [])",
+                      build.console)
+        self.assertNotIn(UNIT_RAN, build.console)
+        self.assertNotIn("(Checks)", build.console)
+        self.assertEqual(self.statuses(DESKTOP, sha), [])
 
     def test_given_a_forged_success_by_claude_when_built_then_the_check_still_runs(self):
         sha = self.branch_with(CLAUDE, APP, "feature/forged", {"yggdrasil.yml": pipeline_file(unit=UNIT)})

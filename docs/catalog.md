@@ -121,6 +121,7 @@ repositories:
 | `checks` | `[]` | The checks Jenkins reports on pull requests to `develop` and `main`, as for an application's `checks`. No empty entries. |
 | `actionsChecks` | `[]` | GitHub Actions job names required besides them on `develop` (not on `main`), as for an application's `actionsChecks`. No empty entries. |
 | `credentials` | `[]` | The only Jenkins credentials the repository's checks may bind. Jenkins credential ids: letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
+| `releaseCredentials` | `[]` | The only Jenkins credentials its release build (`release.build.credentials` in `yggdrasil.yml`) may bind: signing keys and the like. Kept apart from `credentials` because a check runs any branch's code: an id listed here is never bindable by a check, and an id in both lists is an error. Same id format. |
 | `release` | `none` | `none`: no versions. `owner-tag`: the owner creates the version tags by hand, matching `tags`. (Applications are different: Jenkins creates their `v*` tags.) |
 | `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*` and `[...]` classes (`[0-9]*` for versions without a `v`). Only meaningful with `release: owner-tag`. |
 | `rules` | `release` | `release`: the full branching model (protected `develop`, `main` and `release/*`). `basic`: `develop` and `main` only, without force pushes or deletion. |
@@ -174,21 +175,22 @@ may not start with `-`).
 The file is also checked against the catalog entry of the repository (the application, or its
 [`repositories`](#repositories) entry):
 
-- every credential in `checks.*.credentials` and `release.build.credentials` must be in the entry's
-  `credentials`; it is never bound on `renovate/*` builds;
+- every credential in `checks.*.credentials` must be in the entry's `credentials`, and every one in
+  `release.build.credentials` in its `releaseCredentials` (never the other list: a check runs any branch's
+  code, so a release build's signing key is never a check's); none is bound on `renovate/*` builds;
 - every name in the entry's `checks` must be defined under `checks`;
 - `deploy.inputs` may only name checks defined in the file;
 - `publish` is allowed only for a `repositories` entry with `release: owner-tag`. Its packages are pushed
   with the Jenkins credential `nuget-api-key` (a fixed id, configured by `NUGET_API_KEY_FILE`), which the
   pipeline binds only on the release agent around `scripts/nuget-push.sh`: it is never a check's or a
-  release build's, whatever `credentials` says ([Owner tags and NuGet](setup.md#owner-tags-and-nuget));
+  release build's, whatever `credentials` or `releaseCredentials` say ([Owner tags and NuGet](setup.md#owner-tags-and-nuget));
 - `release` is allowed for an application with a release environment and for `release: owner-tag`.
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
 (`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,
 `{"entry", "config", "errors"}`, where `config` is `null` when there is no file, and exits `1` when
 `errors` is not empty. The entry has `kind` (`application` or `repository`), `id`, `repository`,
-`credentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
+`credentials`, `releaseCredentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
 environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
 
 ### Which checks run
@@ -387,6 +389,7 @@ An application's environment variables are not catalog fields: they come from th
 | `checks` | The checks Jenkins reports on the pull requests to `develop` and `main`, besides `branch-policy`. They are required there. Only list checks that run on **every** pull request: one that doesn't run would leave its required check pending forever (a `paths` filter in `yggdrasil.yml` makes Jenkins report such a check as skipped, which satisfies it). No empty entries (*status API*). Each name is defined under `checks` in the repository's `yggdrasil.yml`. On a GitHub installation whose repository has no `yggdrasil.yml` yet they are still the job part of `<workflow> / <job>` in a pull request's Checks tab, and `scripts/rules.py` would bind them to no app: [adopt `yggdrasil.yml` first](setup.md#an-existing-github-installation). |
 | `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`, on pull requests into `develop` only (`main` requires only what Jenkins reports): the job part of `<workflow> / <job>` in a pull request's Checks tab. A job moved here from `checks` is no longer required on `main`. On GitHub the required check is bound to GitHub Actions, so only checks from it satisfy them (`checks`, Jenkins', are bound to no app); on Forgejo they are required by name, like the others. The same rule applies: only checks that run on **every** pull request. No empty entries. |
 | `credentials` | Optional list, default `[]`. The only Jenkins credentials the application's checks may bind: Jenkins credential ids (letters, digits, `.`, `_` and `-`, starting with a letter or digit). Anything else is refused by the pipeline. |
+| `releaseCredentials` | Optional list, default `[]`. The only Jenkins credentials the application's release build (`release.build.credentials` in its `yggdrasil.yml`) may bind, on the release agent: signing keys and the like. Never bindable by a check, which runs any branch's code; an id in both this and `credentials` is an error. Same id format. |
 | `domain` | Optional. The domain a site is served on: a lowercase host name with at least one dot (`docs.example.com`). For applications that are published sites. Without it the host's `DOMAIN` is used (the deploy agent gets it as `YGG_DOMAIN`). `scripts/deploy.sh` exports the full host name as `YGG_PUBLIC_HOST` (`<host><hostSuffix>.<domain>`; `python3 scripts/catalog.py public-host <id> <environment> <default-domain>` prints it), which a stack file may use instead of `PUBLIC_HOST`. It does not route anything by itself. |
 | `path` | Optional. Where under the domain the site lives: starts with `/`, does not end with one, no `..` (`/docs`). `scripts/deploy.sh` exports it as `YGG_PUBLIC_PATH` (empty without one; `python3 scripts/catalog.py public-path <id>`). |
 | `apex` | Optional boolean. With `true` the site is also served on the bare domain, not only under its host name. With `apex: true` and no `host`, `YGG_PUBLIC_HOST` is the bare domain; with both, it is the `host` name (the stack file adds the bare domain itself). An apex-only site (no `host`) has the bare domain in **every** environment, whatever the `hostSuffix`: deploy it to one environment only. |
@@ -438,7 +441,7 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py mirror [github\|releases]` | The mirror: JSON, or one value (booleans `true`/`false`). Exits `1` with `catalog.yaml has no mirror` when there is none |
 | `python3 scripts/catalog.py repositories` | The ids of the [`repositories`](#repositories) that are not applications, one per line (nothing when there are none) |
 | `python3 scripts/catalog.py repository-names` | Every git repository under the owner, once each and one per line: the deployable applications' (their `repository`, else their `id`) and then the `repositories` entries. What `scripts/renovate.sh` visits |
-| `python3 scripts/catalog.py repository-entry <id>` | JSON of one such repository with defaults applied (`id`, `checks`, `actionsChecks`, `credentials`, `release`, `tags`, `rules`). Exits `1` when the id is not listed |
+| `python3 scripts/catalog.py repository-entry <id>` | JSON of one such repository with defaults applied (`id`, `checks`, `actionsChecks`, `credentials`, `releaseCredentials`, `release`, `tags`, `rules`). Exits `1` when the id is not listed |
 | `python3 scripts/catalog.py public-host <app> <environment> <default-domain>` / `public-path <app>` | A site's full host name in an environment (`<host><hostSuffix>.<domain>`, or the bare domain for an apex-only site; empty when the application has none or there is no domain) and its path: what `deploy.sh` exports as `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH` |
 | `python3 scripts/catalog.py systems` | `<id><TAB><name>`, one system per line |
 | `python3 scripts/catalog.py show <app>` | JSON: the application's fields, plus `system`, its system's id |

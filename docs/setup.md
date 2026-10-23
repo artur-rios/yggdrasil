@@ -1553,7 +1553,8 @@ the repository's release lock:
 4. On the publish agent, the **merge** (titled `release: vx.y.z (#N)`, refused if the head moved) and the
    **tag** `vx.y.z` on the merge commit.
 5. The **release files**, when the file declares `release`: `release.build` runs on the release agent from
-   the tag, with only the credentials `release.build.credentials` names, and each of its `files` globs is
+   the tag, with only the credentials `release.build.credentials` names (each allowed by the catalog entry's
+   `releaseCredentials`), and each of its `files` globs is
    stashed (a glob that matches nothing fails the release); `release.windows` has the workflow dispatched on
    GitHub once the mirror has pushed the tag, and its files downloaded; everything is gathered on the release
    agent and `release.validate` runs over a copy. Validation is **pass or fail only**: what is uploaded is

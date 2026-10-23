@@ -85,7 +85,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   archive to an image build. A push deploys only if its checks passed, and the commit they saw. A repository without
   the file deploys and releases as before. How it all fits, what happens on each push, pull request and tag, and the
   accepted risks: [docs/setup.md, The pipeline](docs/setup.md#the-pipeline).
-- **Releases from Jenkins**: after the merge and the tag, `release.build` builds the files on the release agent,
+- **Releases from Jenkins**: after the merge and the tag, `release.build` builds the files on the release agent
+  (with only the credentials the catalog entry's new `releaseCredentials` allows: never its checks' `credentials`,
+  since a check runs any branch's code),
   `release.windows` has GitHub Actions build the Windows ones, `release.validate` checks them (pass or fail; it cannot
   change them), and `scripts/publish-release.sh` uploads and checks them on a draft release on Forgejo and, with
   a `mirror`, on GitHub, then publishes Forgejo's and GitHub's last. The notes are the version's `CHANGELOG.md`

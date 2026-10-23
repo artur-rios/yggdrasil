@@ -332,9 +332,29 @@ class PipelineLibraryTests(unittest.TestCase):
                 continue
             self.assertTrue(lib.code.startswith("forgeCredential(", match.end()),
                             f"line {lib.line(match.start())}: credentialsId not from forgeCredential()")
-        # withCheckCredentials compares each id with the catalog entry's credentials before binding it.
+        # withCheckCredentials compares each id with the catalog entry's list for its context before
+        # binding it: a check with `credentials`, the release build with `releaseCredentials` (C1).
         start, end = lib.functions["withCheckCredentials"]
-        self.assertIn("entry.credentials", lib.code[start:end])
+        body = lib.code[start:end]
+        self.assertRegex(lib.code, r"void withCheckCredentials\(Map check, Map entry, String allowList, Closure body\)")
+        self.assertIn("allowList in ['credentials', 'releaseCredentials']", body)
+        self.assertIn("entry[allowList]", body)
+        self.assertNotIn("entry.credentials", body)
+
+    def test_given_check_and_release_bindings_when_read_then_each_uses_its_own_catalog_list(self):
+        # A check runs any branch's code: a signing key the owner allows for the release build must never
+        # be bindable there. Each caller names its list; nothing else calls the helper.
+        lib = self.lib
+        calls = [(lib.function_at(m.start()), lib.code[m.start():m.start() + 200])
+                 for m in re.finditer(r"(?<!void )\bwithCheckCredentials\(", lib.masked)]
+        self.assertEqual(sorted(f for f, _ in calls), ["buildReleaseFiles", "runCheck"])
+        for function, call in calls:
+            wanted = "'releaseCredentials'" if function == "buildReleaseFiles" else "'credentials'"
+            self.assertRegex(call, r"^withCheckCredentials\([^{]*, " + re.escape(wanted) + r"\) \{", function)
+        # The plan's second look (planProblem) is about checks: `credentials` only.
+        body = lib.code[slice(*lib.functions["planProblem"])]
+        self.assertIn("entry.credentials", body)
+        self.assertNotIn("releaseCredentials", body)
 
     def test_given_the_library_when_read_then_only_report_status_and_the_publish_agent_ask_for_write(self):
         lib = self.lib
@@ -635,7 +655,7 @@ class ReleaseLibraryTests(unittest.TestCase):
             for literal in ("'write'", "'github'", "'github.sh'", "'publish-release.sh'", "'github-app'"):
                 self.assertNotIn(literal, code, f"{where} has {literal}")
         start, end = lib.functions["buildReleaseFiles"]
-        self.assertRegex(lib.code[start:end], r"withCheckCredentials\(\[name: 'release-build', credentials: build\.credentials\], entry\)")
+        self.assertRegex(lib.code[start:end], r"withCheckCredentials\(\[name: 'release-build', credentials: build\.credentials\], entry, 'releaseCredentials'\)")
 
     def test_given_the_publish_agent_when_read_then_it_alone_gets_the_write_token_and_the_github_app(self):
         lib = self.lib

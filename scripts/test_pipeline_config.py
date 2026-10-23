@@ -22,7 +22,8 @@ CATALOG = {
     "systems": [
         {"id": "shop", "name": "Shop", "applications": [
             {"id": "shop-api", "name": "API", "kind": "api", "health": "http://shop-api:8080/healthz",
-             "checks": ["unit", "lint"], "actionsChecks": ["windows"], "credentials": ["nuget-key", "sign-key"]},
+             "checks": ["unit", "lint"], "actionsChecks": ["windows"], "credentials": ["nuget-key"],
+             "releaseCredentials": ["sign-key"]},
             {"id": "shop-site", "name": "Site", "kind": "web", "health": "http://shop-site:8080/healthz",
              "repository": "shop-frontend", "environments": {"dev": {}}},
         ]},
@@ -277,6 +278,23 @@ class ValidateAgainstTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("release.build.credentials.KEY", errors[0])
 
+    def test_given_a_check_binding_a_release_credential_when_validated_then_it_is_an_error(self):
+        # releaseCredentials are the release build's alone: a check runs any branch's code, so it would
+        # hand a signing key to whoever opens a pull request.
+        errors = self.errors("checks:\n  unit:\n    image: x\n    run: y\n    credentials: {SIGN_KEY: sign-key}\n"
+                             "  lint: {image: x, run: y}\n")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("checks.unit.credentials.SIGN_KEY", errors[0])
+        self.assertIn("'sign-key' is not allowed", errors[0])
+        self.assertIn("credentials: ['nuget-key']", errors[0])
+
+    def test_given_a_release_build_binding_a_check_credential_when_validated_then_it_is_an_error(self):
+        errors = self.errors("checks:\n  unit: {image: x, run: y}\n  lint: {image: x, run: y}\n"
+                             "release:\n  build:\n    image: x\n    run: y\n    credentials: {KEY: nuget-key}\n")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("release.build.credentials.KEY", errors[0])
+        self.assertIn("releaseCredentials: ['sign-key']", errors[0])
+
     def test_given_an_entry_without_credentials_when_validated_then_any_credential_is_an_error(self):
         errors = self.errors("checks:\n  lint:\n    image: x\n    run: y\n    credentials: {KEY: nuget-key}\n",
                              "shop-specs")
@@ -336,7 +354,7 @@ class EntryTests(unittest.TestCase):
     def test_given_a_library_entry_when_described_then_it_is_owner_tagged_with_its_pattern(self):
         self.assertEqual(pc.entry_for(catalog(), "dotnet-util"), {
             "kind": "repository", "id": "dotnet-util", "repository": "dotnet-util",
-            "credentials": ["nuget-key"], "checks": ["unit"], "actionsChecks": [],
+            "credentials": ["nuget-key"], "releaseCredentials": [], "checks": ["unit"], "actionsChecks": [],
             "release": "owner-tag", "tags": "[0-9]*"})
 
     def test_given_a_repository_without_a_release_when_described_then_it_releases_nothing(self):
@@ -346,13 +364,14 @@ class EntryTests(unittest.TestCase):
     def test_given_an_application_with_a_release_environment_when_described_then_it_deploys_on_release(self):
         self.assertEqual(pc.entry_for(catalog(), "shop-api"), {
             "kind": "application", "id": "shop-api", "repository": "shop-api",
-            "credentials": ["nuget-key", "sign-key"], "checks": ["unit", "lint"], "actionsChecks": ["windows"],
-            "release": "deploy", "tags": "v*"})
+            "credentials": ["nuget-key"], "releaseCredentials": ["sign-key"], "checks": ["unit", "lint"],
+            "actionsChecks": ["windows"], "release": "deploy", "tags": "v*"})
 
     def test_given_an_application_without_a_release_environment_when_described_then_it_releases_nothing(self):
         entry = pc.entry_for(catalog(), "shop-site")
         self.assertEqual((entry["release"], entry["repository"]), ("none", "shop-frontend"))
-        self.assertEqual((entry["checks"], entry["credentials"], entry["actionsChecks"]), ([], [], []))
+        self.assertEqual((entry["checks"], entry["credentials"], entry["releaseCredentials"], entry["actionsChecks"]),
+                         ([], [], [], []))
 
     def test_given_an_unknown_job_when_described_then_it_is_a_config_error(self):
         with self.assertRaises(pc.ConfigError) as caught:

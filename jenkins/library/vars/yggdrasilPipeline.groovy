@@ -90,12 +90,14 @@
 //     node(), and by onPublishAgent(), on the publish agent (forge.publishAgent: merges, tags, releases,
 //     uploads), the one agent that also gets the GitHub App for a release. Neither the ci nor the
 //     release agent ever holds either: checkouts and reads there use the read credential, and the
-//     release agent's builds only the ids release.build.credentials names (allow-listed like a
-//     check's). Files cross between the agents as stashes;
+//     release agent's builds only the ids release.build.credentials names (allow-listed against the
+//     entry's `releaseCredentials`, never its checks' `credentials`). Files cross between the agents
+//     as stashes;
 //   - nothing waits on an agent: GitHub Actions, a Windows run, a tag reaching GitHub and the skip are
 //     waited for outside node(), each look a short call on the publish agent (pollGithub);
 //   - a check binds only the ids its plan names, each one checked against the catalog entry's
-//     `credentials` again here, and never one of the forge's own nor the NuGet key (withCheckCredentials);
+//     `credentials` again here (never its `releaseCredentials`), and never one of the forge's own nor
+//     the NuGet key (withCheckCredentials);
 //   - the NuGet key (nuget-api-key) is bound by withNugetKey() only, on the release agent, around
 //     scripts/nuget-push.sh and nothing else: no repository code runs in that step (pushPackages);
 //   - no value reaches a shell script through Groovy interpolation: every `sh` script is a single-
@@ -632,7 +634,7 @@ boolean runCheck(Map ctx, Map state, Map check) {
     node('ci') {
       try {
         checkoutCommit(ctx, state.sha)
-        withCheckCredentials(check, state.entry) { String envFile ->
+        withCheckCredentials(check, state.entry, 'credentials') { String envFile ->
           withEnv(["YGG_CHECK_NAME=${check.name}", "YGG_CHECK_IMAGE=${check.image}", "YGG_CHECK_RUN=${check.run}",
                    "YGG_CHECK_DOCKER=${check.docker == true ? '1' : ''}", "YGG_CHECK_ENV_FILE=${envFile}"]) {
             // run-check.sh takes the command in exec form: sh -c runs the file's `run` line as written.
@@ -667,15 +669,21 @@ boolean runCheck(Map ctx, Map state, Map check) {
 // A check's credentials ({ENV: credential id}, from its plan) bound for the body only, written to a
 // file only the agent's user can read (umask 077, in the workspace's @tmp, outside every mount), handed
 // to the body as its path ('' when the check has none) and deleted afterwards. Every id is checked
-// against the catalog entry's `credentials` here, right before it is bound, and the forge's own ids
-// (any id starting with forge- or github-) are refused whatever the catalog says: a check runs code
-// from a branch.
-void withCheckCredentials(Map check, Map entry, Closure body) {
+// against the catalog entry's list for the caller's context here, right before it is bound: `allowList`
+// is 'credentials' for a check (runCheck) and 'releaseCredentials' for the release build
+// (buildReleaseFiles). The two lists are kept apart in the catalog because a check runs code from any
+// branch: a signing key allowed for the release build is never bindable by a check. The forge's own ids
+// (any id starting with forge- or github-) and the NuGet key are refused whatever the catalog says.
+void withCheckCredentials(Map check, Map entry, String allowList, Closure body) {
+  if (!(allowList in ['credentials', 'releaseCredentials'])) {
+    error "withCheckCredentials: unknown allow-list '${printable(allowList)}'"
+  }
   Map credentials = (check.credentials ?: [:]) as Map
   if (credentials.isEmpty()) {
     body('')
     return
   }
+  List allowed = (entry[allowList] ?: []) as List
   // No branch at all in the release-resume job (a plain pipeline job): it releases a tag on main.
   String branch = env.CHANGE_BRANCH ?: env.BRANCH_NAME ?: ''
   if (branch.startsWith('renovate/')) {
@@ -689,8 +697,8 @@ void withCheckCredentials(Map check, Map entry, Closure body) {
     if (!(variable ==~ ENV_VAR)) {
       error "Check ${check.name}: '${printable(variable)}' is not an environment variable name"
     }
-    if (!(id in (entry.credentials ?: []))) {
-      error "Check ${check.name}: the credential '${printable(id)}' is not in the catalog's credentials of ${entry.id}"
+    if (!(id in allowed)) {
+      error "Check ${check.name}: the credential '${printable(id)}' is not in the catalog's ${allowList} of ${entry.id}"
     }
     // The pipeline's own: forge-read, forge-write, forge-webhook, github-app, github-read.
     if (id.startsWith('forge-') || id.startsWith('github-')) {
@@ -1144,8 +1152,8 @@ void deleteReleaseBranch(Map ctx) {
 
 // Stage Release files, for yggdrasil.yml's release on the tag `tag` (commit `sha`):
 //   - release.build on the release agent: the tag checked out with the read credential, the build run
-//     with run-check.sh in its image (credentials from release.build.credentials, allow-listed like a
-//     check's), each of release.build.files stashed (buildReleaseFiles);
+//     with run-check.sh in its image (credentials from release.build.credentials, allow-listed against
+//     the entry's releaseCredentials), each of release.build.files stashed (buildReleaseFiles);
 //   - release.windows: the workflow dispatched on the tag, its files from GitHub (windowsFiles); after
 //     a skip, or when that fails, they are missing;
 //   - everything gathered on the release agent, release.validate run over it, and the validated set
@@ -1182,7 +1190,7 @@ List buildReleaseFiles(Map ctx, Map entry, Map build, String tag, String sha) {
   node('release') {
     try {
       checkoutTag(ctx, tag, sha)
-      withCheckCredentials([name: 'release-build', credentials: build.credentials], entry) { String envFile ->
+      withCheckCredentials([name: 'release-build', credentials: build.credentials], entry, 'releaseCredentials') { String envFile ->
         withEnv(["YGG_IMAGE=${build.image}", "YGG_RUN=${build.run}", "YGG_ENV_FILE=${envFile ?: "${scratch()}/release-build.env"}",
                  "YGG_TAG=${tag}", "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
           int code = sh(script: '''
