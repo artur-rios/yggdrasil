@@ -41,6 +41,7 @@ class PlatformTests(unittest.TestCase):
                           'echo "FORGE_URL=${FORGE_URL:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "FORGE_JENKINS_USER=${FORGE_JENKINS_USER:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "GITHUB_READ_APP_KEY_FILE=${GITHUB_READ_APP_KEY_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "NUGET_API_KEY_FILE=${NUGET_API_KEY_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
                           '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
                           '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
@@ -448,6 +449,27 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, line)
             self.assertIn("set both GITHUB_READ_APP_ID and GITHUB_READ_APP_KEY_FILE", result.stderr)
             self.assertEqual(self.docker_calls(), "")
+
+    def test_given_no_nuget_key_when_up_then_jenkins_does_not_read_its_configuration(self):
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertNotIn("casc.nuget.yaml", calls)
+        # No key to mount: /dev/null, not a path Docker would create as a directory.
+        self.assertIn("NUGET_API_KEY_FILE=/dev/null\n", calls)
+
+    def test_given_a_nuget_key_file_when_up_then_jenkins_reads_the_nuget_credential(self):
+        for forge_block, files in (("", self.GITHUB_APP),
+                                   ("forge:\n  type: forgejo\n  url: https://git.example.com\n", self.FORGE_FILES)):
+            if forge_block:
+                self.use_catalog(forge_block)
+            self.log.unlink(missing_ok=True)
+            result = self.up(self.JENKINS + files + "NUGET_API_KEY_FILE=/etc/yggdrasil/nuget-api-key\n")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = self.docker_calls()
+            self.assertRegex(calls, r"YGG_CASC_CONFIG=/etc/jenkins/casc\.yaml,[^\n]*,/etc/jenkins/casc\.nuget\.yaml\n")
+            # Compose reads the setting from the env file itself; platform.sh leaves it alone.
+            self.assertNotIn("NUGET_API_KEY_FILE=/dev/null", calls)
 
     def test_given_a_forgejo_catalog_when_up_then_the_read_only_github_app_is_not_configured(self):
         # Forgejo's ci identity is forge-read; github-read is a GitHub installation's.

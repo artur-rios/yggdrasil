@@ -9,6 +9,8 @@
 #                         retrieved from Forgejo
 #   casc.github.yaml      GitHub (no forge block): the library retrieved from GitHub
 #   casc.github-app.yaml  the github-app credential: on GitHub, and on Forgejo only with a `mirror`
+#   casc.github-read.yaml the optional read-only GitHub App (github-read), on GitHub
+#   casc.nuget.yaml       the optional NuGet API key (nuget-api-key), when NUGET_API_KEY_FILE is set
 #
 # Configuration as Code merges them; no scalar is defined in two of them.
 
@@ -248,6 +250,32 @@ jobs:
           cps {
             // In the sandbox, like the default Jenkinsfile: it only loads the library, which runs trusted.
             script(new File('/etc/jenkins/actions-release.groovy').getText('UTF-8'))
+            sandbox(true)
+          }
+        }
+      }
+  - script: |
+      // release-resume: releases a tag that exists already -- a release that failed after its merge (the
+      // pull request is merged and tagged), the GitHub copy of a release published after "Deploy without
+      // GitHub Actions checks", a library's packages a tag build did not push. The owner runs it with
+      // "Build with Parameters": REPOSITORY, the catalog id (an application with a trigger: release
+      // environment, or a repositories entry with release: owner-tag), and TAG, the tag (it must exist and
+      // be on main). Its script is kept in Jenkins like the default Jenkinsfile
+      // (jenkins/release-resume.groovy, mounted by platform/compose.yml) and only calls the pinned
+      // library, which checks both and runs the steps a release runs after its merge
+      // (yggdrasilPipeline.releaseResume).
+      //
+      // Who may run it: as for actions-release, the only user is the owner.
+      pipelineJob('release-resume') {
+        description('Release a tag that exists already: finish a release, make its GitHub copy, push its packages.')
+        parameters {
+          stringParam('REPOSITORY', '', 'The catalog id (an application with a release environment, or an owner-tagged repositories entry).')
+          stringParam('TAG', '', 'The tag, e.g. v1.4.0 (1.4.0 for a library). It must exist and be on main.')
+        }
+        definition {
+          cps {
+            // In the sandbox, like the default Jenkinsfile: it only loads the library, which runs trusted.
+            script(new File('/etc/jenkins/release-resume.groovy').getText('UTF-8'))
             sandbox(true)
           }
         }

@@ -191,13 +191,17 @@ uses_github_read=""
 if [[ "$forge_type" == github && -n "$github_read_id" && -n "$github_read_key" ]]; then
   uses_github_read=1
 fi
+# The NuGet API key (the owner-tagged libraries' packages), on either git server, when its file is set.
+nuget_key_file=$(setting NUGET_API_KEY_FILE)
 YGG_CASC_CONFIG="/etc/jenkins/casc.yaml,/etc/jenkins/casc.$forge_type.yaml"
 [[ -z "$uses_github_app" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.github-app.yaml"
 [[ -z "$uses_github_read" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.github-read.yaml"
+[[ -z "$nuget_key_file" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.nuget.yaml"
 export FORGE_URL FORGE_JENKINS_USER YGG_CASC_CONFIG
 # Without an App there is no key to mount: /dev/null, not a path Docker would create as a directory.
 [[ -n "$uses_github_app" ]] || export GITHUB_APP_KEY_FILE=/dev/null
 [[ -n "$uses_github_read" ]] || export GITHUB_READ_APP_KEY_FILE=/dev/null
+[[ -n "$nuget_key_file" ]] || export NUGET_API_KEY_FILE=/dev/null
 
 # The profile-only variables compose.yml cannot mark as required (see the note at its top). The forge
 # profile has none: Forgejo needs only DOMAIN, and FORGEJO_SSH_PORT defaults to 2222. The jenkins profile

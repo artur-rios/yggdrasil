@@ -105,7 +105,6 @@ repositories:
     tags: "[0-9]*"
     checks: [Build and test]
     actionsChecks: [test]
-    credentials: [nuget-api-key]
   # A repository that only runs CI: develop and main are protected, nothing is released.
   - id: shop-specs
     checks: [lint]
@@ -143,7 +142,7 @@ checks:                         # name -> a command run in a container; the name
     run: ci/test.sh             # a command line, run with sh -c in the checkout
     docker: true                # give it the Docker engine (default false)
     credentials:                # ENV_VAR -> Jenkins credential id
-      NUGET_KEY: nuget-api-key
+      REPORTGENERATOR_LICENSE: reportgenerator-license
     paths: ["src/**", "tests/**"]   # run only when a changed file matches (default: always; never empty)
     junit: "**/TestResults/*.xml"   # test results Jenkins collects
     archive: "out/**"               # files kept as the build's artifacts
@@ -174,7 +173,10 @@ The file is also checked against the catalog entry of the repository (the applic
   `credentials`; it is never bound on `renovate/*` builds;
 - every name in the entry's `checks` must be defined under `checks`;
 - `deploy.inputs` may only name checks defined in the file;
-- `publish` is allowed only for a `repositories` entry with `release: owner-tag`;
+- `publish` is allowed only for a `repositories` entry with `release: owner-tag`. Its packages are pushed
+  with the Jenkins credential `nuget-api-key` (a fixed id, configured by `NUGET_API_KEY_FILE`), which the
+  pipeline binds only on the release agent around `scripts/nuget-push.sh`: it is never a check's or a
+  release build's, whatever `credentials` says;
 - `release` is allowed for an application with a release environment and for `release: owner-tag`.
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`

@@ -316,14 +316,19 @@ class PipelineLibraryTests(unittest.TestCase):
             if body in FORGE_CREDENTIAL_IDS:
                 self.assertEqual(lib.function_at(start), "forgeCredential",
                                  f"line {lib.line(start)}: credential id '{body}' outside forgeCredential()")
-        # withCredentials only in the two binding helpers: the forge's token, and a check's allow-listed ids.
+        # withCredentials only in the three binding helpers: the forge's token, a check's allow-listed ids,
+        # and the NuGet key.
         for match in re.finditer(r"\bwithCredentials\s*\(", lib.masked):
-            self.assertIn(lib.function_at(match.start()), ("withForgeToken", "withCheckCredentials"),
+            self.assertIn(lib.function_at(match.start()), ("withForgeToken", "withCheckCredentials", "withNugetKey"),
                           f"line {lib.line(match.start())}: withCredentials outside the binding helpers")
         # Every credentialsId names forgeCredential(...), except the check bindings, whose ids the plan gives
-        # and withCheckCredentials checks against the catalog entry first.
+        # and withCheckCredentials checks against the catalog entry first, and the NuGet key's fixed id.
         for match in re.finditer(r"\bcredentialsId\s*:\s*", lib.code):
-            if lib.function_at(match.start()) == "withCheckCredentials":
+            function = lib.function_at(match.start())
+            if function == "withCheckCredentials":
+                continue
+            if function == "withNugetKey":
+                self.assertTrue(lib.code.startswith("NUGET_CREDENTIAL,", match.end()), f"line {lib.line(match.start())}")
                 continue
             self.assertTrue(lib.code.startswith("forgeCredential(", match.end()),
                             f"line {lib.line(match.start())}: credentialsId not from forgeCredential()")
@@ -626,7 +631,7 @@ class ReleaseLibraryTests(unittest.TestCase):
                               "mergeAndTag", "publishRelease", "windowsFiles"):
                 self.assertNotIn(forbidden, reached, f"{where} reaches {forbidden}")
             code = lib.code_reached(start, end, leaving_out=("forgeCredential", "withForgeToken", "github"))
-            self.assertEqual(set(re.findall(r"withForgeToken\(\s*'(\w+)'", code)), {"read"}, where)
+            self.assertLessEqual(set(re.findall(r"withForgeToken\(\s*'(\w+)'", code)), {"read"}, where)
             for literal in ("'write'", "'github'", "'github.sh'", "'publish-release.sh'", "'github-app'"):
                 self.assertNotIn(literal, code, f"{where} has {literal}")
         start, end = lib.functions["buildReleaseFiles"]
@@ -729,8 +734,10 @@ class ReleaseLibraryTests(unittest.TestCase):
             self.assertTrue(glob.fullmatch(good), good)
         for bad in ("a,b", "a b", "/etc/passwd", "-x", "dist/*.zip\n", ""):
             self.assertFalse(glob.fullmatch(bad), repr(bad))
-        start, end = lib.functions["releaseProblem"]
-        self.assertIn("glob.split('/').any { it in ['.', '..', ''] }", lib.code[start:end])
+        start, end = lib.functions["usableGlob"]
+        self.assertIn("!glob.split('/').any { it in ['.', '..', ''] }", lib.code[start:end])
+        self.assertIn("usableGlob", lib.calls["releaseProblem"])
+        self.assertIn("usableGlob", lib.calls["nugetProblem"])
 
     def test_given_a_failing_validation_when_read_then_publish_release_is_never_reached(self):
         # The drafts are made by publish-release.sh: a validation that fails before it is called leaves
@@ -838,14 +845,151 @@ class ReleaseLibraryTests(unittest.TestCase):
         body = lib.code[start:end]
         context = body.index("catalogContext(app)")
         self.assertLess(context, body.index("globMatches(ctx.tags, tag)"))
-        self.assertLess(body.index("globMatches(ctx.tags, tag)"), body.index("node('release')"))
-        self.assertLess(body.index("'tag-sha'"), body.index("checkoutTag("))
-        self.assertLess(body.index("describeCheckout(ctx)"), body.index("windowsFiles("))
+        self.assertLess(body.index("globMatches(ctx.tags, tag)"), body.index("readReleaseTag(ctx, tag)"))
+        # The tag read (it exists, it is on main) like every other release from a tag.
+        self.assertLess(body.index("readReleaseTag(ctx, tag)"), body.index("windowsFiles("))
         self.assertIn("declares no release.windows", body)
         self.assertLess(body.index("windowsFiles("), body.index("['attach', ctx.repo, tag"))
         self.assertIn('lock(resource: "release-${app}")', body)
         entry = (ROOT / "jenkins" / "library" / "vars" / "yggdrasilActionsRelease.groovy").read_text(encoding="utf-8")
         self.assertIn("yggdrasilPipeline.actionsRelease()", entry)
+
+    def test_given_actions_release_while_the_github_copy_is_pending_when_read_then_it_points_at_release_resume(self):
+        # publish-release.sh attach exits 5 when GitHub has no release of the tag (after a skip): the files
+        # are on the git server's release only, and the owner is told how the GitHub copy is made.
+        start, end = self.lib.functions["actionsRelease"]
+        body = self.lib.code[start:end]
+        self.assertRegex(body, r"toolStatus\('publish-release\.sh', arguments, ")
+        self.assertIn("code != 0 && code != 5", body)
+        self.assertIn("pending: code == 5", body)
+        self.assertRegex(body, r"if \(attached\.pending\) \{\s*currentBuild\.description = [^\n]*\n\s*"
+                               r"unstable \"GitHub has no release of \$\{tag\} yet")
+        self.assertIn("The release-resume job (REPOSITORY=${app}, TAG=${tag}) makes the GitHub copy, with them.", body)
+
+
+class TagReleaseLibraryTests(unittest.TestCase):
+    """Owner-tagged releases (a tag build), NuGet packages and the release-resume job: the tag checked to be
+    on main before anything, one copy of the release logic, and the NuGet key bound only around the push."""
+
+    def setUp(self):
+        self.lib = library()
+
+    def body(self, name):
+        start, end = self.lib.functions[name]
+        return self.lib.code[start:end]
+
+    def test_given_a_tag_build_when_read_then_only_an_owner_tag_matching_its_pattern_releases(self):
+        call = self.body("call")
+        self.assertRegex(call, r"if \(env\.TAG_NAME\) \{\s*tagBuild\(ctx\)\s*return")
+        body = self.body("tagBuild")
+        owner = body.index("ctx.release != 'owner-tag'")
+        pattern = body.index("globMatches(ctx.tags, tag)")
+        lock = body.index('lock(resource: "release-${ctx.app}")')
+        self.assertLess(owner, lock)
+        self.assertLess(pattern, lock)
+        self.assertLess(lock, body.index("readReleaseTag(ctx, tag)"))
+        self.assertLess(body.index("readReleaseTag(ctx, tag)"), body.index("releaseTag(ctx, tag, described)"))
+        self.assertIn("Nothing to do for the tag", body)
+        # catalogContext says which path an entry is on.
+        self.assertIn("release: application != null", self.body("catalogContext"))
+
+    def test_given_a_tag_when_read_then_its_commit_must_be_on_main_before_anything_else(self):
+        lib = self.lib
+        body = self.body("readReleaseTag")
+        # On the release agent, with the read token only.
+        (label, start, end), = [b for b in lib.node_blocks() if lib.function_at(b[1]) == "readReleaseTag"]
+        self.assertEqual(label, "'release'")
+        self.assertIn("withForgeToken('read')", body)
+        self.assertLess(body.index("'tag-sha'"), body.index("checkoutTag(ctx, tag, sha)"))
+        main = body.index('merge-base --is-ancestor "$YGG_SHA" refs/remotes/origin/main')
+        self.assertLess(body.index("checkoutTag(ctx, tag, sha)"), main)
+        self.assertIn("the tag is not on main", body)
+        self.assertLess(main, body.index("the tag is not on main"))
+        self.assertLess(body.index("the tag is not on main"), body.index("describeCheckout(ctx)"))
+        # Nothing of the repository runs while it is read: no run-check.sh, no release step, no key.
+        for forbidden in ("packPackages", "pushPackages", "buildReleaseFiles", "withNugetKey", "withCheckCredentials"):
+            self.assertNotIn(forbidden, lib.reachable(start, end))
+        # And every path that releases from a tag reads it first.
+        for name in ("tagBuild", "releaseResume", "actionsRelease"):
+            self.assertIn("readReleaseTag", lib.calls[name], name)
+
+    def test_given_the_release_logic_when_read_then_there_is_one_copy_of_it(self):
+        lib = self.lib
+        # releaseFromTag is called by the release pull request and by releaseTag, which the tag build and
+        # release-resume share; publishRelease and the files only from releaseFromTag.
+        callers = {name for name, calls in lib.calls.items() if "releaseFromTag" in calls and name != "releaseFromTag"}
+        self.assertEqual(callers, {"releasePullRequest", "releaseTag"})
+        callers = {name for name, calls in lib.calls.items() if "releaseTag" in calls and name != "releaseTag"}
+        self.assertEqual(callers, {"tagBuild", "releaseResume"})
+        for step in ("publishRelease", "releaseFiles", "publishPackages"):
+            callers = {name for name, calls in lib.calls.items() if step in calls and name != step}
+            self.assertEqual(callers, {"releaseFromTag"}, step)
+        body = self.body("releaseFromTag")
+        self.assertLess(body.index("publishPackages("), body.index("releaseFiles("))
+        self.assertLess(body.index("publishPackages("), body.index("publishRelease("))
+        # The release pull request passes no packages: applications have none.
+        self.assertNotIn("nuget", self.body("releasePullRequest"))
+        # A library declaring only publish.nuget is published, not released; anything else releases.
+        self.assertIn("boolean releasing = releaseConfig != null || nuget == null", self.body("releaseTag"))
+        self.assertIn("ctx.release == 'owner-tag'", self.body("releaseTag"))
+
+    def test_given_packages_when_read_then_they_are_packed_without_any_credential_and_stashed_past_the_link_guard(self):
+        lib = self.lib
+        (label, start, end), = [b for b in lib.node_blocks() if lib.function_at(b[1]) == "packPackages"]
+        self.assertEqual(label, "'release'")
+        reached = lib.reachable(start, end)
+        # The checkout's read token (withForgeToken) is the only binding there.
+        for forbidden in ("withNugetKey", "withCheckCredentials", "onPublishAgent", "github"):
+            self.assertNotIn(forbidden, lib.words_reached(start, end), forbidden)
+        self.assertEqual({lib.function_at(m.start()) for m in re.finditer(r"\bwithCredentials\b", lib.masked)}
+                         & {name for name in reached if name in lib.functions}, {"withForgeToken"})
+        self.assertLessEqual(set(re.findall(r"withForgeToken\(\s*'(\w+)'", lib.code_reached(start, end, ("withForgeToken",)))),
+                             {"read"})
+        body = self.body("packPackages")
+        self.assertIn("run-check.sh nuget-pack", body)
+        self.assertLess(body.index("run-check.sh nuget-pack"), body.index("refuseLinks(false, 'the packages')"))
+        self.assertLess(body.index("refuseLinks(false, 'the packages')"), body.index("stashGlob('nuget-packages'"))
+        self.assertIn("nugetProblem", lib.calls["releaseTag"])
+
+    def test_given_the_nuget_key_when_read_then_it_is_bound_only_around_nuget_push_on_the_release_agent(self):
+        lib = self.lib
+        self.assertEqual(field_literal(lib, "NUGET_CREDENTIAL"), ("'", "nuget-api-key"))
+        # Called without parentheses (a closure only): every use of the word, but its definition, is there.
+        uses = {lib.function_at(m.start()) for m in re.finditer(r"\bwithNugetKey\b", lib.masked)
+                if not re.search(r"def\s+$", lib.masked[max(0, m.start() - 10):m.start()])}
+        self.assertEqual(uses, {"pushPackages"})
+        (label, start, end), = [b for b in lib.node_blocks() if lib.function_at(b[1]) == "pushPackages"]
+        self.assertEqual(label, "'release'")
+        # No repository code where the key is: no checkout of the repository, no run-check.sh, no build.
+        reached = lib.reachable(start, end)
+        for forbidden in ("checkoutCommit", "checkoutTag", "describeCheckout", "withCheckCredentials", "onPublishAgent"):
+            self.assertNotIn(forbidden, reached, forbidden)
+        code = lib.code[start:end]
+        self.assertNotIn("run-check.sh", code)
+        self.assertEqual(code.count("withNugetKey"), 1)
+        # The packages from the stash only, no link among them, then nuget-push.sh inside the binding.
+        self.assertLess(code.index("deleteDir()"), code.index("unstash 'nuget-packages'"))
+        self.assertLess(code.index("unstash 'nuget-packages'"), code.index("refuseLinks(true, 'the packages')"))
+        key = code.index("withNugetKey")
+        self.assertLess(code.index("refuseLinks(true, 'the packages')"), key)
+        self.assertIn("bash yggdrasil/scripts/nuget-push.sh", code[key:])
+        self.assertIn('"$WORKSPACE/packages/**/*.nupkg"', code[key:])
+        self.assertRegex(self.body("withNugetKey"), r"string\(credentialsId: NUGET_CREDENTIAL, variable: 'NUGET_API_KEY'\)")
+        # A check (or a release build) never gets it, whatever the catalog says.
+        self.assertIn("id == NUGET_CREDENTIAL", self.body("withCheckCredentials"))
+
+    def test_given_the_release_resume_job_when_read_then_it_checks_its_parameters_then_releases_the_tag(self):
+        body = self.body("releaseResume")
+        context = body.index("catalogContext(app)")
+        self.assertLess(context, body.index("ctx.release in ['deploy', 'owner-tag']"))
+        self.assertLess(body.index("ctx.release in ['deploy', 'owner-tag']"), body.index("globMatches(ctx.tags, tag)"))
+        lock = body.index('lock(resource: "release-${app}")')
+        self.assertLess(body.index("globMatches(ctx.tags, tag)"), lock)
+        self.assertLess(lock, body.index("readReleaseTag(ctx, tag)"))
+        self.assertLess(body.index("readReleaseTag(ctx, tag)"), body.index("releaseTag(ctx, tag, described)"))
+        self.assertNotIn("node(", body)
+        entry = (ROOT / "jenkins" / "library" / "vars" / "yggdrasilReleaseResume.groovy").read_text(encoding="utf-8")
+        self.assertRegex(entry, r"def call\(\) \{\s*yggdrasilPipeline\.releaseResume\(\)\s*\}")
 
 
 if __name__ == "__main__":

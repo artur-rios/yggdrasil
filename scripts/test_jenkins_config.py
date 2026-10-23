@@ -168,6 +168,56 @@ class ActionsReleaseJobTests(unittest.TestCase):
 
 
 @unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
+class ReleaseResumeJobTests(unittest.TestCase):
+    def script(self):
+        scripts = [entry["script"] for entry in casc()["jobs"] if "pipelineJob('release-resume')" in entry["script"]]
+        self.assertEqual(len(scripts), 1)
+        return scripts[0]
+
+    def test_given_the_job_dsl_when_read_then_release_resume_runs_the_script_kept_in_jenkins(self):
+        script = self.script()
+        self.assertIn("script(new File('/etc/jenkins/release-resume.groovy').getText('UTF-8'))", script)
+        self.assertIn("sandbox(true)", script)
+        self.assertNotIn("scm", script)
+        for parameter in ("REPOSITORY", "TAG"):
+            self.assertRegex(script, rf"stringParam\('{parameter}', ''")
+        self.assertNotIn("${", script)
+        self.assertIn("only user is the owner", script)
+
+    def test_given_the_release_resume_script_when_read_then_it_only_calls_the_library(self):
+        lines = [line for line in read(ROOT / "jenkins" / "release-resume.groovy").splitlines()
+                 if line.strip() and not line.lstrip().startswith("//")]
+        self.assertEqual(lines, ["@Library('yggdrasil') _", "yggdrasilReleaseResume()"])
+
+    def test_given_the_compose_service_when_read_then_the_release_resume_script_is_mounted(self):
+        volumes = " ".join(jenkins_service()["volumes"])
+        self.assertIn("../jenkins/release-resume.groovy:/etc/jenkins/release-resume.groovy:ro", volumes)
+
+
+@unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
+class NugetCredentialTests(unittest.TestCase):
+    def test_given_the_nuget_configuration_when_read_then_it_has_the_nuget_key_only(self):
+        # Optional, so a file of its own: platform.sh adds it only when NUGET_API_KEY_FILE is set.
+        found = credentials("casc.nuget.yaml")
+        self.assertEqual(set(found), {"nuget-api-key"})
+        kind, fields = found["nuget-api-key"]
+        self.assertEqual(kind, "string")
+        self.assertEqual(fields["secret"], "${readFile:/run/secrets/nuget-api-key}")
+        for name in ("casc.yaml", "casc.forgejo.yaml", "casc.github.yaml", "casc.github-app.yaml"):
+            self.assertNotIn("nuget-api-key", yaml.dump(casc(name)), name)
+
+    def test_given_the_compose_service_when_read_then_the_nuget_key_is_a_file_mounted_read_only(self):
+        volumes = jenkins_service()["volumes"]
+        self.assertIn("${NUGET_API_KEY_FILE:-/dev/null}:/run/secrets/nuget-api-key:ro", volumes)
+        self.assertIn("./jenkins/controller/casc.nuget.yaml:/etc/jenkins/casc.nuget.yaml:ro", volumes)
+
+    def test_given_the_environment_example_when_read_then_it_documents_the_nuget_key(self):
+        text = read(ROOT / "env" / "platform.env.example")
+        self.assertRegex(text, r"(?m)^NUGET_API_KEY_FILE=$")
+        self.assertIn("nuget-api-key", text)
+
+
+@unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
 class JenkinsCredentialsTests(unittest.TestCase):
     def test_given_the_forgejo_configuration_when_read_then_it_has_the_forge_credentials_and_no_github_app(self):
         found = credentials("casc.forgejo.yaml")
@@ -266,7 +316,7 @@ class JenkinsfileTests(unittest.TestCase):
         volumes = " ".join(jenkins_service()["volumes"])
         self.assertIn("../jenkins/Jenkinsfile.default:/etc/jenkins/Jenkinsfile.default:ro", volumes)
         for name in ("casc.yaml", "casc.forgejo.yaml", "casc.github.yaml", "casc.github-app.yaml",
-                     "casc.github-read.yaml"):
+                     "casc.github-read.yaml", "casc.nuget.yaml"):
             self.assertIn(f"./jenkins/controller/{name}:/etc/jenkins/{name}:ro", volumes)
 
 

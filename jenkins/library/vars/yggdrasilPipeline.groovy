@@ -31,6 +31,14 @@
 //                               the path it always had (release(): every GitHub Actions check waited
 //                               for, releaseArtifacts: true's artifact workflow)
 //   the actions-release job  -> the Windows files of a release published without them (actionsRelease)
+//   a version tag pushed by the owner (a repositories entry with release: owner-tag, the tag matching
+//                               its `tags`) -> the tag's commit checked to be on main, then, from its
+//                               yggdrasil.yml, publish.nuget's packages packed and pushed (the NuGet key
+//                               bound for the push only, on the release agent) and/or the release, as a
+//                               release pull request makes it after its merge (tagBuild, releaseTag)
+//   the release-resume job   -> the same for a tag that exists already: a release that failed after its
+//                               merge, the GitHub copy of a release published after the skip, a push of
+//                               packages that stopped half way (releaseResume)
 //   push to develop, main or release/* (with yggdrasil.yml)
 //                            -> the checks, then the branch's deploys only if every check passed; a
 //                               check named in deploy.inputs hands its archive to the image build
@@ -70,7 +78,9 @@
 //   - nothing waits on an agent: GitHub Actions, a Windows run, a tag reaching GitHub and the skip are
 //     waited for outside node(), each look a short call on the publish agent (pollGithub);
 //   - a check binds only the ids its plan names, each one checked against the catalog entry's
-//     `credentials` again here, and never one of the forge's own (withCheckCredentials);
+//     `credentials` again here, and never one of the forge's own nor the NuGet key (withCheckCredentials);
+//   - the NuGet key (nuget-api-key) is bound by withNugetKey() only, on the release agent, around
+//     scripts/nuget-push.sh and nothing else: no repository code runs in that step (pushPackages);
 //   - no value reaches a shell script through Groovy interpolation: every `sh` script is a single-
 //     quoted literal, and values go in as environment variables (withEnv), quoted "$VAR" there.
 
@@ -113,6 +123,11 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final String SKIPPED = 'without GitHub Actions checks'
 // delete-branch exit 3: Forgejo keeps a protected branch, which is not a reason to fail a release.
 @Field static final String KEPT_BRANCH = 'kept: release branches are protected on Forgejo; the owner deletes them'
+// The NuGet API key's Jenkins credential (casc.nuget.yaml): a fixed id, since yggdrasil.yml's publish has no
+// credentials field. Bound by withNugetKey() only.
+@Field static final String NUGET_CREDENTIAL = 'nuget-api-key'
+// publish.nuget.packages when the file does not say.
+@Field static final String NUGET_PACKAGES = '**/*.nupkg'
 
 // Run from a directory: exit 3, naming them, when a symbolic link under it leads out of it -- or, with
 // YGG_ANY_LINK set, when there is any link at all (a release's files are files). A build or a check ran as
@@ -190,9 +205,9 @@ def call(Map config = [:]) {
 
   timeout(time: 4, unit: 'HOURS') {
     withForgeEnvironment(ctx) {
+      // A tag build: TAG_NAME is set for a tag head (what buildingTag() reads).
       if (env.TAG_NAME) {
-        // Owner-tagged releases are a later version of this library; a tag builds nothing here yet.
-        echo "Nothing to do for the tag ${printable(env.TAG_NAME)}: this library version does not release tags."
+        tagBuild(ctx)
         return
       }
       if (env.CHANGE_ID) {
@@ -205,9 +220,10 @@ def call(Map config = [:]) {
 }
 
 // What the catalog says about a job: [app, repo (its git repository), forge, mirror, checksTimeout (of
-// its first environment), plan (its environments, resolved), releaseArtifacts, tags (its version tag
-// pattern), owner, repository (this repository's name)]. Fails unless `app` is a catalog id of an
-// application or a repositories entry.
+// its first environment), plan (its environments, resolved), releaseArtifacts, release (deploy: an
+// application with a trigger: release environment; owner-tag; none -- pipeline_config.py entry_for's
+// reading), tags (its version tag pattern), owner, repository (this repository's name)]. Fails unless
+// `app` is a catalog id of an application or a repositories entry.
 Map catalogContext(String app) {
   if (!(app ==~ CATALOG_ID)) {
     error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
@@ -223,6 +239,8 @@ Map catalogContext(String app) {
   return [app: app, repo: application != null ? (application.repository ?: app) : app, forge: forgeOf(catalog),
           mirror: mirrorOf(catalog), checksTimeout: (plan ? plan[0].checksTimeout : 3600) as int, plan: plan,
           releaseArtifacts: application?.releaseArtifacts == true,
+          release: application != null ? (plan.any { it.trigger == 'release' } ? 'deploy' : 'none')
+                                        : (repositoryEntry.release ?: 'none').toString(),
           tags: application != null ? 'v*' : (repositoryEntry.tags ?: 'v*').toString(),
           owner: catalog.owner.toString(), repository: (catalog.repository ?: 'yggdrasil').toString()]
 }
@@ -641,7 +659,8 @@ void withCheckCredentials(Map check, Map entry, Closure body) {
     body('')
     return
   }
-  String branch = env.CHANGE_BRANCH ?: env.BRANCH_NAME
+  // No branch at all in the release-resume job (a plain pipeline job): it releases a tag on main.
+  String branch = env.CHANGE_BRANCH ?: env.BRANCH_NAME ?: ''
   if (branch.startsWith('renovate/')) {
     error "Check ${check.name}: a renovate/* build never gets credentials"
   }
@@ -659,6 +678,10 @@ void withCheckCredentials(Map check, Map entry, Closure body) {
     // The pipeline's own: forge-read, forge-write, forge-webhook, github-app, github-read.
     if (id.startsWith('forge-') || id.startsWith('github-')) {
       error "Check ${check.name}: '${id}' is named like one of the pipeline's own credentials (forge-*, github-*), never a check's"
+    }
+    // The NuGet key is the push step's alone (withNugetKey), where no repository code runs.
+    if (id == NUGET_CREDENTIAL) {
+      error "Check ${check.name}: '${id}' is the NuGet key, bound only to push a library's packages, never a check's"
     }
     bindings << string(credentialsId: id, variable: variable)
   }
@@ -945,17 +968,28 @@ String resumeNote(Map ctx, String tag) {
 // Steps 4 and 5 of a release, from a tag that exists on `sha`: the release files (yggdrasil.yml's
 // release, when declared: releaseFiles) and publishRelease, whose publish-release.sh picks up the tag, a
 // draft and the files an earlier run left. The release pull request calls it after its merge; the
-// owner-tagged releases (a tag build) and the release-resume job call it with the tag's commit -- one copy
-// of the release logic. opts:
+// owner-tagged releases (a tag build) and the release-resume job call it with the tag's commit, through
+// releaseTag -- one copy of the release logic. opts:
 //   skipped  the GitHub Actions checks were skipped (GitHub may not be answering): no Windows files, and
 //            no GitHub copy of the release -- published on the git server only, "GitHub copy pending"
 //            (the release-resume job makes the copy later, publish-release.sh being idempotent)
 //   seconds  how long a Windows run may take (default 3600)
+//   nuget    publish.nuget of an owner-tagged library: its packages packed and pushed first
+//            (publishPackages; a version the feed has already is skipped, so a rerun goes on)
+//   release  false: no release on the git server (a library that only publishes packages); default true
 // Returns [urls: the releases' addresses, missing: the Windows files left out, reason: why,
-// githubPending: whether the GitHub copy was left for later].
+// githubPending: whether the GitHub copy was left for later, packages: whether packages were pushed,
+// released: whether a release was published].
 Map releaseFromTag(Map ctx, Map entry, Map releaseConfig, String tag, String sha, Map opts) {
   boolean skipped = opts.skipped == true
   int seconds = (opts.seconds ?: 3600) as int
+  Map nuget = opts.nuget as Map
+  if (nuget != null) {
+    publishPackages(ctx, nuget, tag, sha)
+  }
+  if (opts.release == false) {
+    return [urls: [], missing: [], reason: '', githubPending: false, packages: nuget != null, released: false]
+  }
   boolean githubPending = mirrorsReleases(ctx) && skipped
   Map files = releaseConfig != null ? releaseFiles(ctx, entry, releaseConfig, tag, sha, skipped, seconds)
                                     : [stash: null, missing: [], reason: '']
@@ -963,7 +997,8 @@ Map releaseFromTag(Map ctx, Map entry, Map releaseConfig, String tag, String sha
     echo "GitHub copy pending: the GitHub Actions checks were skipped, so ${tag} is published on the git server only. The release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}) makes its GitHub copy."
   }
   List urls = publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx) && !skipped)
-  return [urls: urls, missing: files.missing, reason: files.reason, githubPending: githubPending]
+  return [urls: urls, missing: files.missing, reason: files.reason, githubPending: githubPending, packages: nuget != null,
+          released: true]
 }
 
 // Stage Wait for GitHub Actions: the entry's actionsChecks on the release's commit, for as long as
@@ -1405,7 +1440,7 @@ String releaseProblem(Map releaseConfig) {
   }
   for (Map files : [[field: 'release.build.files', globs: build?.files], [field: 'release.windows.files', globs: windows?.files]]) {
     for (Object glob : (files.globs ?: []) as List) {
-      if (!(glob instanceof String) || !(glob ==~ RELEASE_GLOB) || glob.split('/').any { it in ['.', '..', ''] }) {
+      if (!usableGlob(glob)) {
         return "${files.field}: '${printable(glob)}' is not a relative glob (letters, digits, . _ * ? + @ = - and /, no . or .. part)"
       }
     }
@@ -1413,14 +1448,276 @@ String releaseProblem(Map releaseConfig) {
   return null
 }
 
+// What publish.nuget must look like before anything of it is used (as releaseProblem). null when fine.
+@NonCPS
+String nugetProblem(Map nuget) {
+  if (!(nuget.image instanceof String) || !(nuget.image ==~ IMAGE)) {
+    return "publish.nuget.image: '${printable(nuget.image)}' is not an image"
+  }
+  if (!(nuget.run instanceof String) || !nuget.run.trim()) {
+    return 'publish.nuget.run: no command to run'
+  }
+  if (nuget.packages != null && !usableGlob(nuget.packages)) {
+    return "publish.nuget.packages: '${printable(nuget.packages)}' is not a relative glob (letters, digits, . _ * ? + @ = - and /, no . or .. part)"
+  }
+  return null
+}
+
+// A glob the stash step takes as it is meant (RELEASE_GLOB), with no ., .. or empty part.
+@NonCPS
+boolean usableGlob(Object glob) {
+  return glob instanceof String && glob ==~ RELEASE_GLOB && !glob.split('/').any { it in ['.', '..', ''] }
+}
+
+// ---- Owner-tagged releases (a tag build) and the release-resume job ----
+
+// A tag build. Only for a repositories entry with release: owner-tag, and a tag matching its `tags` (the
+// Job DSL discovers tags for those entries alone, and only young ones: casc.yaml); any other tag is
+// "Nothing to do". The owner pushed it (Forgejo's tag rules let nobody else make such a tag), so under the
+// repository's release lock: the tag read on the release agent, its commit checked to be on main before
+// anything else (readReleaseTag), then what its yggdrasil.yml declares (releaseTag). Without a
+// yggdrasil.yml at the tag there is nothing to do either: the repository behaves as before the file
+// existed.
+void tagBuild(Map ctx) {
+  String tag = env.TAG_NAME
+  if (ctx.release != 'owner-tag') {
+    echo "Nothing to do for the tag ${printable(tag)}: ${ctx.app} is not released by its owner's tags (catalog.yaml: release ${ctx.release})."
+    return
+  }
+  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+    echo "Nothing to do for the tag ${printable(tag)}: not a version tag of ${ctx.app} (${ctx.tags})."
+    return
+  }
+  lock(resource: "release-${ctx.app}") {
+    Map described = readReleaseTag(ctx, tag)
+    if (described.config == null) {
+      echo "Nothing to do for the tag ${tag}: ${ctx.app} has no yggdrasil.yml at it, so it declares no release and no packages."
+      return
+    }
+    reportTagRelease(tag, releaseTag(ctx, tag, described), tag)
+  }
+}
+
+// The release-resume job (platform/jenkins/controller/casc.yaml, its script jenkins/release-resume.groovy
+// kept in Jenkins): what a tag releases, for a tag that exists already. REPOSITORY is a catalog id that
+// releases (an application with a trigger: release environment, or release: owner-tag), TAG one of its
+// version tags; the tag must exist and be on main (readReleaseTag). Then releaseTag, with the GitHub copy
+// as the catalog says (mirror.releases): it finishes a release that failed after its merge, makes the
+// GitHub copy of one published after the skip (and adds the Windows files it was published without), or
+// pushes the packages a tag build did not get to. Everything is idempotent (publish-release.sh reuses the
+// tag, the releases and the files there; nuget-push.sh skips the versions the feed has), so running it
+// twice is harmless. Under the repository's release lock, like a release pull request.
+void releaseResume() {
+  String app = (params.REPOSITORY ?: '').toString().trim()
+  String tag = (params.TAG ?: '').toString().trim()
+  Map ctx = catalogContext(app)
+  if (!(ctx.release in ['deploy', 'owner-tag'])) {
+    error "${app} does not release (catalog.yaml: an application with no trigger: release environment, or a repositories entry without release: owner-tag)."
+  }
+  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+    error "'${printable(tag)}' is not a version tag of ${app} (${ctx.tags})"
+  }
+  timeout(time: 4, unit: 'HOURS') {
+    withForgeEnvironment(ctx) {
+      lock(resource: "release-${app}") {
+        Map described = readReleaseTag(ctx, tag)
+        // An application releases without a yggdrasil.yml too (a release with its notes only, as its
+        // release pull request did on Forgejo); an owner-tagged repository does not, and on GitHub such an
+        // application's releases are github.sh's (release()), not this path's.
+        if (described.config == null && (ctx.release == 'owner-tag' || ctx.forge.type == 'github')) {
+          error "${app} has no yggdrasil.yml at ${tag}: there is nothing this job releases."
+        }
+        reportTagRelease(tag, releaseTag(ctx, tag, described), "${app} ${tag}")
+      }
+    }
+  }
+}
+
+// Stage Read the tag, on the release agent with the read token: the tag's commit (forge.sh tag-sha, an
+// annotated tag peeled), checked out with the history of every branch (checkoutTag: the tag must point to
+// it), which must be on main -- an owner's tag elsewhere releases nothing ("the tag is not on main"); then
+// yggdrasil.yml at the tag (describeCheckout). Nothing of the repository runs here. Returns [sha, entry,
+// config (null without yggdrasil.yml)]. Fails when the tag does not exist.
+Map readReleaseTag(Map ctx, String tag) {
+  Map described = null
+  stage('Read the tag') {
+    node('release') {
+      try {
+        checkoutTools()
+        String tmp = scratch()
+        int code = withForgeToken('read') {
+          return toolStatus('forge.sh', ['tag-sha', ctx.repo, tag], "${tmp}/tag-sha")
+        }
+        if (code == 4) {
+          error "${ctx.app} has no tag ${tag}."
+        }
+        if (code != 0) {
+          error "forge.sh tag-sha exited ${code}; its message is above."
+        }
+        String sha = readScratch(tmp, 'tag-sha').trim()
+        if (!(sha ==~ COMMIT)) {
+          error "forge.sh tag-sha answered '${printable(sha)}', not a commit"
+        }
+        checkoutTag(ctx, tag, sha)
+        withEnv(["YGG_SHA=${sha}"]) {
+          int onMain = sh(script: 'git -C app merge-base --is-ancestor "$YGG_SHA" refs/remotes/origin/main', returnStatus: true)
+          if (onMain == 1) {
+            error "Not released: the tag is not on main (${tag} is on ${sha.take(7)}, which main does not contain)."
+          }
+          if (onMain != 0) {
+            error "Not released: git merge-base exited ${onMain}, so whether ${tag} is on main is not known."
+          }
+        }
+        echo "${tag} is on ${sha.take(7)}, on main."
+        Map document = describeCheckout(ctx)
+        described = [sha: sha, entry: document.entry, config: document.config]
+      } finally {
+        cleanScratch()
+        cleanWs()
+      }
+    }
+  }
+  return described
+}
+
+// What a tag releases, from its yggdrasil.yml (`described`: readReleaseTag's answer), through
+// releaseFromTag -- the release pull request's own steps after its merge. An owner-tagged library's
+// publish.nuget: its packages packed and pushed; then the release (the files of `release`, when
+// declared, and the notes) unless the library declares publish.nuget and no release: a library's
+// packages are its release. Everything is checked before any of it runs. Returns releaseFromTag's
+// answer.
+Map releaseTag(Map ctx, String tag, Map described) {
+  Map config = (described.config ?: [:]) as Map
+  Map releaseConfig = config.release as Map
+  Map nuget = ctx.release == 'owner-tag' ? (((config.publish ?: [:]) as Map).nuget as Map) : null
+  boolean releasing = releaseConfig != null || nuget == null
+  if (releaseConfig != null) {
+    String problem = releaseProblem(releaseConfig)
+    if (problem) {
+      error "yggdrasil.yml's release cannot be used: ${problem}. Nothing is released."
+    }
+    if (releaseConfig.windows && !githubActions(ctx)) {
+      error 'release.windows needs GitHub Actions, and this installation has no GitHub mirror (catalog.yaml mirror). Nothing is released.'
+    }
+  }
+  if (nuget != null) {
+    String problem = nugetProblem(nuget)
+    if (problem) {
+      error "yggdrasil.yml's publish.nuget cannot be used: ${problem}. Nothing is published."
+    }
+  }
+  if (releasing) {
+    requirePublishAgent(ctx)
+  }
+  int seconds = ((ctx.plan.find { it.trigger == 'release' }?.checksTimeout) ?: ctx.checksTimeout) as int
+  return releaseFromTag(ctx, described.entry, releaseConfig, tag, described.sha,
+                        [nuget: nuget, release: releasing, seconds: seconds])
+}
+
+// The build's description (`what`: what was released, then what was done) and the log; unstable when
+// Windows files are missing (the actions-release job attaches them).
+void reportTagRelease(String tag, Map published, String what) {
+  List done = []
+  if (published.packages) {
+    done << 'packages pushed'
+  }
+  if (published.released) {
+    done << 'released'
+    echo "Released ${tag}: ${published.urls.join(' ')}"
+  }
+  currentBuild.description = "${what}: ${done.join(', ')}"
+  if (published.missing) {
+    unstable "${tag} was published without its Windows files: ${published.missing.join(', ')} (${published.reason}). The actions-release job attaches them."
+  }
+}
+
+// Stage Packages, publish.nuget of an owner-tagged library at the tag: packed (packPackages), then pushed
+// (pushPackages) -- two steps on the release agent, so the key is never where the repository's code runs.
+void publishPackages(Map ctx, Map nuget, String tag, String sha) {
+  stage('Packages') {
+    packPackages(ctx, nuget, tag, sha)
+    pushPackages(tag)
+  }
+}
+
+// On the release agent, with no credential at all: the tag checked out, publish.nuget.run in
+// publish.nuget.image with run-check.sh (from the checkout's root, RELEASE_TAG and RELEASE_VERSION in its
+// environment), then the packages (publish.nuget.packages, default **/*.nupkg) stashed after LINK_GUARD:
+// none matching fails the publish, a link leading out of the checkout refuses them.
+void packPackages(Map ctx, Map nuget, String tag, String sha) {
+  String glob = (nuget.packages ?: NUGET_PACKAGES) as String
+  node('release') {
+    try {
+      checkoutTag(ctx, tag, sha)
+      withEnv(["YGG_IMAGE=${nuget.image}", "YGG_RUN=${nuget.run}", "YGG_TMP=${scratch()}", "YGG_TAG=${tag}",
+               "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+        int code = sh(script: '''
+          umask 077
+          mkdir -p "$YGG_TMP"
+          env_file="$YGG_TMP/nuget-pack.env"
+          printf 'RELEASE_TAG=%s\\nRELEASE_VERSION=%s\\n' "$YGG_TAG" "$YGG_VERSION" >"$env_file"
+          bash yggdrasil/scripts/run-check.sh nuget-pack "$YGG_IMAGE" "$WORKSPACE/app" --env-file "$env_file" \\
+            -- sh -c "$YGG_RUN"
+        ''', returnStatus: true)
+        if (code != 0) {
+          error "publish.nuget.run failed (exit ${code}): nothing is pushed."
+        }
+      }
+      dir('app') {
+        refuseLinks(false, 'the packages')
+        stashGlob('nuget-packages', glob, 'publish.nuget.packages')
+      }
+    } finally {
+      cleanScratch()
+      cleanWs()
+    }
+  }
+}
+
+// On the release agent again, a fresh workspace: this repository's tools and the packages' stash only (no
+// link among them), then scripts/nuget-push.sh with the NuGet key bound (withNugetKey), which runs nothing
+// but `dotnet nuget push --skip-duplicate` in its pinned image. The feed is nuget.org unless the agent's
+// environment names another (YGG_NUGET_SOURCE, and YGG_NUGET_CA_FILE for its CA: the live tests' local
+// feed).
+void pushPackages(String tag) {
+  node('release') {
+    try {
+      checkoutTools()
+      dir('packages') {
+        deleteDir()
+      }
+      sh(script: 'mkdir -p packages')
+      dir('packages') {
+        unstash 'nuget-packages'
+        refuseLinks(true, 'the packages')
+      }
+      withNugetKey {
+        sh(script: '''
+          set -- "$WORKSPACE/packages/**/*.nupkg"
+          if [ -n "${YGG_NUGET_SOURCE:-}" ]; then set -- "$@" --source "$YGG_NUGET_SOURCE"; fi
+          if [ -n "${YGG_NUGET_CA_FILE:-}" ]; then set -- "$@" --ca-file "$YGG_NUGET_CA_FILE"; fi
+          bash yggdrasil/scripts/nuget-push.sh "$@"
+        ''')
+      }
+    } finally {
+      cleanScratch()
+      cleanWs()
+    }
+  }
+  echo "The packages of ${tag} are pushed."
+}
+
 // ---- The actions-release job ----
 
 // The actions-release job (platform/jenkins/controller/casc.yaml, its script jenkins/actions-release.groovy
 // kept in Jenkins): the Windows files of a release that was published without them (after the skip, or
 // a Windows run that failed), attached to it. Parameters REPOSITORY (a catalog id whose yggdrasil.yml at
-// the tag declares release.windows) and TAG (one of its version tags, which must exist). The workflow is
-// dispatched on the tag and waited for outside node(); its files are downloaded on the publish agent and
-// put on the release (and its GitHub copy) with publish-release.sh attach. Under the application's release
+// the tag declares release.windows) and TAG (one of its version tags, which must exist and be on main:
+// readReleaseTag). The workflow is dispatched on the tag and waited for outside node(); its files are
+// downloaded on the publish agent and put on the release (and its GitHub copy) with publish-release.sh
+// attach. When the GitHub copy is still to make (a release published after the skip, on the git server
+// only: attach exits 5), the files go to the git server's release, the build is unstable and says to run
+// the release-resume job, which makes the GitHub copy with every file. Under the application's release
 // lock, so it never runs next to that application's release.
 void actionsRelease() {
   String app = (params.REPOSITORY ?: '').toString().trim()
@@ -1437,34 +1734,7 @@ void actionsRelease() {
   timeout(time: 4, unit: 'HOURS') {
     withForgeEnvironment(ctx) {
       lock(resource: "release-${app}") {
-        Map described = null
-        stage('Read the release') {
-          node('release') {
-            try {
-              checkoutTools()
-              String tmp = scratch()
-              int code = withForgeToken('read') {
-                return toolStatus('forge.sh', ['tag-sha', ctx.repo, tag], "${tmp}/tag-sha")
-              }
-              if (code == 4) {
-                error "${app} has no tag ${tag}."
-              }
-              if (code != 0) {
-                error "forge.sh tag-sha exited ${code}; its message is above."
-              }
-              String sha = readScratch(tmp, 'tag-sha').trim()
-              if (!(sha ==~ COMMIT)) {
-                error "forge.sh tag-sha answered '${printable(sha)}', not a commit"
-              }
-              checkoutTag(ctx, tag, sha)
-              Map document = describeCheckout(ctx)
-              described = [sha: sha, config: document.config]
-            } finally {
-              cleanScratch()
-              cleanWs()
-            }
-          }
-        }
+        Map described = readReleaseTag(ctx, tag)
         Map releaseConfig = described.config?.release as Map
         if (!releaseConfig?.windows) {
           error "${app}'s yggdrasil.yml at ${tag} declares no release.windows: there are no Windows files to attach."
@@ -1481,8 +1751,9 @@ void actionsRelease() {
           error "No Windows files for ${tag}: ${got.reason}. Nothing was attached."
         }
         boolean mirrorReleases = mirrorsReleases(ctx)
+        Map attached = null
         stage('Attach') {
-          List urls = onPublishAgent(ctx, true, mirrorReleases) {
+          attached = onPublishAgent(ctx, true, mirrorReleases) {
             dir('release-files') {
               deleteDir()
             }
@@ -1497,15 +1768,25 @@ void actionsRelease() {
             if (mirrorReleases) {
               arguments << '--mirror-releases'
             }
-            String out = ''
+            String tmp = scratch()
+            int code = 1
             withEnv(["GITHUB_OWNER=${githubOwner(ctx)}"]) {
-              out = tool('publish-release.sh', arguments, true)
+              code = toolStatus('publish-release.sh', arguments, "${tmp}/attach.out")
             }
-            return (out ?: '').readLines().findAll { it.trim() }
+            // 5: attached on the git server; GitHub has no release of the tag yet (its copy is pending).
+            if (code != 0 && code != 5) {
+              error "publish-release.sh attach exited ${code}; its message is above. The Windows files may be on some of the releases: run this job again."
+            }
+            return [urls: readScratch(tmp, 'attach.out').readLines().findAll { it.trim() }, pending: code == 5]
           }
-          echo "Attached the Windows files of ${tag}: ${urls.join(' ')}"
+          echo "Attached the Windows files of ${tag}: ${attached.urls.join(' ')}"
         }
-        currentBuild.description = "${app} ${tag}: Windows files attached"
+        if (attached.pending) {
+          currentBuild.description = "${app} ${tag}: Windows files attached on the git server; GitHub copy pending"
+          unstable "GitHub has no release of ${tag} yet (it was published after the skip, on the git server only): the Windows files are on the git server's release. The release-resume job (REPOSITORY=${app}, TAG=${tag}) makes the GitHub copy, with them."
+        } else {
+          currentBuild.description = "${app} ${tag}: Windows files attached"
+        }
       }
     }
   }
@@ -1802,6 +2083,14 @@ def withForgeToken(String access, Closure body) {
   String variable = access == 'github' ? 'GH_TOKEN' : 'FORGE_TOKEN'
   return withCredentials([usernamePassword(credentialsId: forgeCredential(access), usernameVariable: 'FORGE_USER',
                                            passwordVariable: variable)]) {
+    return body()
+  }
+}
+
+// The NuGet API key (NUGET_CREDENTIAL, casc.nuget.yaml) as NUGET_API_KEY for the body. Only pushPackages
+// binds it, on the release agent, around scripts/nuget-push.sh (scripts/test_pipeline_library.py checks it).
+def withNugetKey(Closure body) {
+  return withCredentials([string(credentialsId: NUGET_CREDENTIAL, variable: 'NUGET_API_KEY')]) {
     return body()
   }
 }
