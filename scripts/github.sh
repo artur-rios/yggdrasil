@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The GitHub side of a release, as small commands the pipeline calls one at a time.
+# The GitHub Actions side of a release, as small commands the pipeline calls one at a time.
 # Needs GH_TOKEN (Jenkins passes the GitHub App's installation token), curl and jq.
 #
 #     scripts/github.sh wait-checks   <repo> <sha> [timeout-seconds]
@@ -9,9 +9,15 @@
 #     scripts/github.sh publish-release <repo> <version> <sha> [timeout] -> verified public release
 #     scripts/github.sh delete-branch <repo> <branch>
 #
+# Only wait-checks and the release-artifacts workflow flow of publish-release are GitHub Actions; the
+# rest (statuses, merge, tags, releases, branches) is the git server's interface, which scripts/forge.sh
+# implements for GitHub and Forgejo alike, and this script hands those steps to it with the type set to
+# github. The commands, their arguments and their output are what the Jenkins pipeline has always called.
+#
 # <repo> is the repository name; the owner is $GITHUB_OWNER (the catalog's owner; the pipeline sets it).
 set -euo pipefail
 
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 owner=${GITHUB_OWNER:?set GITHUB_OWNER to the GitHub owner of the repositories}
 api_url=${GITHUB_API_URL:-https://api.github.com}
 # Seconds between two looks at the checks (wait-checks).
@@ -20,18 +26,23 @@ poll_seconds=${GITHUB_POLL_SECONDS:-20}
 die() { echo "github: $*" >&2; exit 1; }
 [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN is not set"
 
+# forge.sh learns everything from here, not from the catalog: this runs on agents that only know
+# the environment the pipeline gives them.
+export FORGE_TYPE=github FORGE_API_URL=$api_url FORGE_OWNER=$owner FORGE_TOKEN=$GH_TOKEN
+forge() { bash "$here/forge.sh" "$@"; }
+
 # api <method> <path> [json-body]
 api() {
   local method=$1 path=$2 body=${3:-}
-  local args=(--silent --show-error --fail-with-body --request "$method"
-    --header "Authorization: Bearer $GH_TOKEN"
-    --header "Accept: application/vnd.github+json"
-    --header "X-GitHub-Api-Version: 2022-11-28")
+  # The token reaches curl on stdin, in a config, never as an argument that ps would show.
+  local config
+  config=$(printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\nheader = "X-GitHub-Api-Version: 2022-11-28"' "$GH_TOKEN")
+  local args=(--silent --show-error --fail-with-body --request "$method" --config -)
   [[ -n "$body" ]] && args+=(--header "Content-Type: application/json" --data "$body")
   local out
   # On an error answer, --fail-with-body puts GitHub's explanation on stdout, where a caller's jq
-  # would swallow it ("merge-pr" would print null): it goes to stderr, into the build log, instead.
-  if ! out=$(curl "${args[@]}" "$api_url/$path"); then
+  # would swallow it: it goes to stderr, into the build log, instead.
+  if ! out=$(curl "${args[@]}" "$api_url/$path" <<<"$config"); then
     echo "github: $method $path failed${out:+: $out}" >&2
     return 1
   fi
@@ -89,46 +100,25 @@ wait_checks() {
   done
 }
 
-set_status() {
-  local repo=$1 sha=$2 state=$3 context=$4 description=$5 target=${6:-}
-  api POST "repos/$owner/$repo/statuses/$sha" "$(jq -n \
-    --arg state "$state" --arg context "$context" --arg description "$description" --arg target "$target" \
-    '{state: $state, context: $context, description: $description} + (if $target == "" then {} else {target_url: $target} end)')" >/dev/null
-}
-
-merge_pr() {
-  local repo=$1 number=$2 sha=$3 title=$4
-  # A merge commit, never squash or rebase: develop and main must keep sharing history, or the next
-  # release branch cut from develop would conflict with main. sha makes the merge fail if the pull
-  # request moved on since it was deployed.
-  api PUT "repos/$owner/$repo/pulls/$number/merge" "$(jq -n --arg sha "$sha" --arg title "$title" \
-    '{merge_method: "merge", sha: $sha, commit_title: $title}')" | jq -r '.sha'
-}
-
 release() {
   local repo=$1 version=$2 sha=$3
   # Applications without a release-artifact workflow retain the original GitHub release path.
-  api POST "repos/$owner/$repo/releases" "$(jq -n --arg tag "v$version" --arg sha "$sha" \
-    '{tag_name: $tag, target_commitish: $sha, name: $tag, generate_release_notes: true}')" | jq -r '.html_url'
+  forge create-release "$repo" "v$version" "$sha" "v$version" | cut -f2
 }
 
 publish_release() {
   local repo=$1 version=$2 sha=$3 timeout=${4:-7200}
-  local tag="v$version" deadline=$((SECONDS + timeout)) release_json release_id release_url
+  local tag="v$version" deadline=$((SECONDS + timeout)) release_json release_id release_url created
 
   # The tag is made explicit before packaging, so the application workflow checks out exactly the
   # commit Jenkins deployed and merged. Its release-tags ruleset makes that ref immutable.
-  api POST "repos/$owner/$repo/git/refs" "$(jq -n --arg ref "refs/tags/$tag" --arg sha "$sha" \
-    '{ref: $ref, sha: $sha}')" >/dev/null
+  forge create-tag "$repo" "$tag" "$sha"
 
   # Artifacts are assembled behind a draft. The application workflow alone publishes it, after it
   # has compared every uploaded byte and digest with the locally validated bundle.
-  release_json=$(api POST "repos/$owner/$repo/releases" "$(jq -n --arg tag "$tag" --arg sha "$sha" \
-    '{tag_name: $tag, target_commitish: $sha, name: $tag, generate_release_notes: true, draft: true, prerelease: false}')")
-  release_id=$(jq -er 'select(.draft == true) | .id' <<<"$release_json") \
+  created=$(forge create-release "$repo" "$tag" "$sha" "$tag" --draft) \
     || die "GitHub did not create an unpublished draft release for $tag"
-  release_url=$(jq -er '.html_url' <<<"$release_json") \
-    || die "GitHub did not return the draft release URL for $tag"
+  IFS=$'\t' read -r release_id release_url <<<"$created"
 
   api POST "repos/$owner/$repo/actions/workflows/release-artifacts.yml/dispatches" "$(jq -n \
     --arg ref "$tag" --arg tag "$tag" --arg release_id "$release_id" \
@@ -150,28 +140,14 @@ publish_release() {
   done
 }
 
-delete_branch() {
-  local repo=$1 branch=$2 out
-  # github/rulesets.py turns on "delete head branches on merge", so GitHub has usually deleted the
-  # branch already by the time this runs, and answers 422 "Reference does not exist": that is done.
-  if ! out=$(api DELETE "repos/$owner/$repo/git/refs/heads/$branch" 2>&1); then
-    if grep -q 'Reference does not exist' <<<"$out"; then
-      echo "github: $branch was already deleted"
-      return 0
-    fi
-    echo "$out" >&2
-    return 1
-  fi
-}
-
 command=${1:-}
 shift || true
 case "$command" in
   wait-checks) wait_checks "$@" ;;
-  set-status) set_status "$@" ;;
-  merge-pr) merge_pr "$@" ;;
+  set-status) forge set-status "$@" ;;
+  merge-pr) forge merge-pr "$@" ;;
   release) release "$@" ;;
   publish-release) publish_release "$@" ;;
-  delete-branch) delete_branch "$@" ;;
+  delete-branch) forge delete-branch "$@" ;;
   *) die "unknown command '$command'" ;;
 esac

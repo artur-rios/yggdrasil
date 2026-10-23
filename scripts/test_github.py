@@ -26,6 +26,7 @@ FAKE_CURL = textwrap.dedent(r"""
     n=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     echo "$n" >"$count_file"
     printf '%s\n' "$*" >"$FAKE_CURL_DIR/$key.request.$n"
+    cat >"$FAKE_CURL_DIR/$key.config.$n"
     response="$FAKE_CURL_DIR/$key.$n"
     [[ -f "$response" ]] || response="$FAKE_CURL_DIR/$key.last"
     read -r status body <"$response"
@@ -97,6 +98,16 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("did not answer", result.stderr)
 
+    def test_given_any_request_when_made_then_the_token_travels_in_curls_config_not_its_arguments(self):
+        self.respond("check-suites", last=(0, SUITES_DONE))
+        self.respond("check-runs", last=(0, runs(("branch-policy", "success"))))
+        self.respond("merge", (0, {"sha": "def456"}))
+        for arguments in (("wait-checks", "app", "abc123", "60"), ("merge-pr", "app", "7", "abc123", "title")):
+            self.assertEqual(self.github(*arguments).returncode, 0, arguments)
+        for key in ("check-suites", "merge"):
+            self.assertNotIn("token", self.request(key))
+            self.assertIn('header = "Authorization: Bearer token"', (self.state / f"{key}.config.1").read_text())
+
     def test_given_a_merge_github_refuses_when_merging_then_its_reason_is_shown(self):
         self.respond("merge", (22, {"message": "Required status check \"deploy/production\" is expected."}))
         result = self.github("merge-pr", "app", "7", "abc123", "release: v1.0.0 (#7)")
@@ -110,11 +121,19 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "def456")
 
+    def test_given_a_version_when_releasing_then_it_prints_the_release_url(self):
+        self.respond("releases", (0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
+        result = self.github("release", "app", "1.2.3", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "https://example/release/17\n")
+        self.assertIn('"tag_name":"v1.2.3"', "".join(self.request("releases").split()))
+
     def test_given_a_branch_github_already_deleted_when_deleting_then_it_succeeds(self):
         self.respond("1.0.0", (22, {"message": "Reference does not exist"}))
         result = self.github("delete-branch", "app", "release/1.0.0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("already deleted", result.stdout)
+        # forge.sh's note, which belongs on stderr like every message that is not an answer.
+        self.assertIn("already deleted", result.stderr)
 
     def test_given_a_branch_github_refuses_to_delete_when_deleting_then_it_fails(self):
         self.respond("1.0.0", (22, {"message": "Resource not accessible by integration"}))
