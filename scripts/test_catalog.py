@@ -34,6 +34,16 @@ def catalog(**changes):
     return value
 
 
+def run_cli(value, *argv):
+    """main(argv) against `value` instead of the repository's catalog: (exit status, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    out.reconfigure = lambda **_: None  # main() asks stdout for plain LF line endings
+    with mock.patch.object(c, "load", return_value=value), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        status = c.main(list(argv))
+    return status, out.getvalue(), err.getvalue()
+
+
 class ValidateTests(unittest.TestCase):
     def test_given_a_valid_catalog_when_validated_then_there_are_no_errors(self):
         self.assertEqual(c.validate(catalog()), [])
@@ -309,13 +319,7 @@ class ForgeTests(unittest.TestCase):
         return c.validate(catalog(**changes))
 
     def run_cli(self, value, *argv):
-        """main(argv) against `value` instead of the repository's catalog: (exit status, stdout, stderr)."""
-        out, err = io.StringIO(), io.StringIO()
-        out.reconfigure = lambda **_: None  # main() asks stdout for plain LF line endings
-        with mock.patch.object(c, "load", return_value=value), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            status = c.main(list(argv))
-        return status, out.getvalue(), err.getvalue()
+        return run_cli(value, *argv)
 
     def test_given_no_forge_block_when_read_then_it_is_github_as_before(self):
         self.assertEqual(c.forge(catalog())["type"], "github")
@@ -434,6 +438,151 @@ class ForgeTests(unittest.TestCase):
         status, out, err = self.run_cli(catalog(), "mirror")
         self.assertEqual((status, out), (1, ""))
         self.assertIn("catalog.yaml has no mirror", err)
+
+
+class RepositoryTests(unittest.TestCase):
+    """`repositories`: git repositories that are not applications (libraries, CI-only ones, yggdrasil
+    itself), and the application fields the site and the git server's rules read."""
+
+    def errors(self, **changes):
+        return c.validate(catalog(**changes))
+
+    def app_errors(self, **fields):
+        value = catalog()
+        value["systems"][0]["applications"][1].update(fields)
+        return c.validate(value)
+
+    def test_given_a_repository_entry_when_read_then_its_defaults_are_filled(self):
+        v = catalog(repositories=[{"id": "dotnet-util"}])
+        self.assertEqual(c.repositories(v), [{"id": "dotnet-util", "checks": [], "actionsChecks": [],
+                                              "credentials": [], "release": "none", "tags": "v*", "rules": "release"}])
+
+    def test_given_a_library_entry_when_read_then_its_tag_pattern_is_kept(self):
+        v = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "tags": "[0-9]*"}])
+        self.assertEqual(c.repositories(v)[0]["tags"], "[0-9]*")
+        self.assertEqual(c.validate(v), [])
+
+    def test_given_an_entry_with_every_field_when_read_then_they_are_kept(self):
+        entry = {"id": "ci-only", "checks": ["build"], "actionsChecks": ["test"], "credentials": ["nuget-key"],
+                 "release": "owner-tag", "tags": "v*", "rules": "basic"}
+        v = catalog(repositories=[entry])
+        self.assertEqual(c.validate(v), [])
+        self.assertEqual(c.repositories(v), [entry])
+
+    def test_given_no_repositories_when_read_then_there_are_none(self):
+        self.assertEqual(c.repositories(catalog()), [])
+
+    def test_given_the_repository_catalog_when_read_then_it_has_no_repositories_yet(self):
+        self.assertEqual(c.repositories(c.load()), [])
+
+    def test_given_repositories_that_is_not_a_list_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any(e.startswith("repositories:") for e in self.errors(repositories={"id": "x"})))
+
+    def test_given_an_entry_that_is_not_a_mapping_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("repositories[0]" in e for e in self.errors(repositories=["x"])))
+
+    def test_given_a_repository_with_a_bad_id_when_validated_then_it_is_an_error(self):
+        for bad in (None, "", "a b", "a/b", 3):
+            with self.subTest(bad=bad):
+                self.assertTrue(any("repositories[0].id" in e for e in self.errors(repositories=[{"id": bad}])))
+
+    def test_given_a_repository_that_is_also_an_applications_when_validated_then_it_is_an_error(self):
+        errors = self.errors(repositories=[{"id": "shop-api"}])
+        self.assertTrue(any("shop-api is already an application's repository" in e for e in errors), errors)
+
+    def test_given_a_repository_that_is_an_applications_repository_field_when_validated_then_it_is_an_error(self):
+        value = catalog(repositories=[{"id": "shop-frontend"}, {"id": "shop-web"}])
+        value["systems"][0]["applications"][1]["repository"] = "shop-frontend"
+        errors = c.validate(value)
+        # shop-web is no longer a repository name: shop-web's repository is shop-frontend.
+        self.assertEqual([e for e in errors if "already an application's repository" in e],
+                         ["repositories[0].id: shop-frontend is already an application's repository"])
+
+    def test_given_two_repositories_with_the_same_id_when_validated_then_it_is_an_error(self):
+        errors = self.errors(repositories=[{"id": "dotnet-util"}, {"id": "dotnet-util"}])
+        self.assertTrue(any("repositories[1].id" in e and "duplicate" in e for e in errors), errors)
+
+    def test_given_a_repository_with_a_dot_when_validated_then_it_is_valid(self):
+        self.assertEqual(self.errors(repositories=[{"id": "reveal.js"}]), [])
+
+    def test_given_an_unknown_release_kind_when_validated_then_it_is_an_error(self):
+        errors = self.errors(repositories=[{"id": "lib", "release": "tag"}])
+        self.assertTrue(any("repositories[0].release" in e and "owner-tag" in e for e in errors), errors)
+
+    def test_given_an_unknown_rules_kind_when_validated_then_it_is_an_error(self):
+        errors = self.errors(repositories=[{"id": "lib", "rules": "strict"}])
+        self.assertTrue(any("repositories[0].rules" in e for e in errors), errors)
+
+    def test_given_a_bad_tag_pattern_when_validated_then_it_is_an_error(self):
+        for bad in ("", "v* ", "v/*", 3, None):
+            with self.subTest(bad=bad):
+                errors = self.errors(repositories=[{"id": "lib", "release": "owner-tag", "tags": bad}])
+                self.assertTrue(any("repositories[0].tags" in e for e in errors), errors)
+
+    def test_given_bad_check_lists_when_validated_then_each_is_an_error(self):
+        errors = self.errors(repositories=[{"id": "lib", "checks": ["ok", " "], "actionsChecks": "test",
+                                            "credentials": ["a b"]}])
+        for field in ("checks", "actionsChecks", "credentials"):
+            self.assertTrue(any(f"repositories[0].{field}" in e for e in errors), (field, errors))
+
+    def test_given_an_unknown_repository_key_when_validated_then_it_is_an_error(self):
+        errors = self.errors(repositories=[{"id": "lib", "branch": "main"}])
+        self.assertTrue(any("repositories[0]" in e and "branch" in e for e in errors), errors)
+
+    def test_given_the_application_site_fields_when_validated_then_they_are_valid(self):
+        self.assertEqual(self.app_errors(domain="shop.example.com", path="/shop/app", apex=True,
+                                         actionsChecks=["test"], credentials=["nuget-key", "a.b_c-1"]), [])
+
+    def test_given_an_application_path_without_a_leading_slash_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any(".path" in e for e in self.app_errors(path="shop")))
+
+    def test_given_an_application_path_with_a_trailing_slash_when_validated_then_it_is_an_error(self):
+        for bad in ("/shop/", "/"):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(".path" in e for e in self.app_errors(path=bad)))
+
+    def test_given_an_application_path_with_dot_dot_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any(".path" in e for e in self.app_errors(path="/a/../b")))
+
+    def test_given_an_application_domain_without_a_dot_when_validated_then_it_is_an_error(self):
+        for bad in ("localhost", "Shop.example.com", "a b.com", 3):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(".domain" in e for e in self.app_errors(domain=bad)))
+
+    def test_given_an_apex_that_is_not_a_boolean_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any(".apex" in e for e in self.app_errors(apex="yes")))
+
+    def test_given_a_credential_id_with_a_space_when_validated_then_it_is_an_error(self):
+        for bad in ("nuget key", "-key", "", 3):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(".credentials" in e for e in self.app_errors(credentials=[bad])))
+        self.assertTrue(any(".credentials" in e for e in self.app_errors(credentials="nuget-key")))
+
+    def test_given_bad_actions_checks_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks=["test", ""])))
+        self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks="test")))
+
+    def test_given_the_cli_when_asked_for_the_repositories_then_it_prints_their_ids(self):
+        v = catalog(repositories=[{"id": "dotnet-util"}, {"id": "reveal.js"}])
+        self.assertEqual(run_cli(v, "repositories"), (0, "dotnet-util\nreveal.js\n", ""))
+
+    def test_given_the_cli_and_no_repositories_when_asked_then_it_prints_nothing(self):
+        self.assertEqual(run_cli(catalog(), "repositories"), (0, "", ""))
+
+    def test_given_the_cli_when_asked_for_a_repository_entry_then_it_prints_it_as_json(self):
+        v = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "tags": "[0-9]*"}])
+        status, out, _ = run_cli(v, "repository-entry", "dotnet-util")
+        self.assertEqual(status, 0)
+        self.assertEqual(c.json.loads(out), c.repositories(v)[0])
+        self.assertEqual(c.json.loads(out)["tags"], "[0-9]*")
+
+    def test_given_the_cli_when_asked_for_an_unknown_repository_entry_then_it_exits_with_one(self):
+        status, out, err = run_cli(catalog(repositories=[{"id": "a"}]), "repository-entry", "b")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("'b' is not a repository in catalog.yaml", err)
+
+    def test_given_the_cli_when_asked_for_a_repository_entry_without_an_id_then_it_is_a_usage_error(self):
+        self.assertEqual(run_cli(catalog(), "repository-entry")[0], 2)
 
 
 class DeployableTests(unittest.TestCase):

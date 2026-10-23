@@ -259,6 +259,10 @@ class SourceTests(StoreFixture):
         self.assertIn("onDemand", self.values("environment-option", environment="development"))
         self.assertIn("mode", self.values("app-option", application="heimdall-api", environment="development"))
 
+    def test_repositories_are_the_catalog_s_non_application_ones(self):
+        self.ctx._catalog = {**self.ctx.catalog(), "repositories": [{"id": "dotnet-util"}, {"id": "reveal.js"}]}
+        self.assertEqual(self.values("repository"), ["dotnet-util", "reveal.js"])
+
     def test_commands_are_the_tree_s(self):
         self.assertIn("vars get", self.values("command"))
 

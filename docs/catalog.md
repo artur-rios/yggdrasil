@@ -42,6 +42,7 @@ owner: acme            # GitHub user or organisation of the application reposito
 repository: yggdrasil  # this repository's name under the owner (default yggdrasil)
 forge: {...}           # the git server: forgejo or github (default: github, see below)
 mirror: {...}          # optional, with forgejo: mirror the repositories to GitHub
+repositories: [...]    # optional: repositories that are not applications (libraries, CI-only ones, yggdrasil)
 environments: [...]    # at least one, in promotion order
 systems: [...]
 ```
@@ -84,6 +85,44 @@ forge:
 `mirror` is only allowed with `forge.type: forgejo`; any other key in `forge` or `mirror` is an
 error. Read them with `python3 scripts/catalog.py forge` / `mirror` (see
 [Command line](#command-line)).
+
+## Repositories
+
+`repositories` lists the git repositories under `owner` that are **not applications**: libraries that
+publish a package, repositories that only run CI, yggdrasil itself. They get the git server's branch and
+tag rules and a Jenkins job like an application's repository does, but nothing is deployed from them.
+An application's repository (its `repository`, else its `id`) is never listed here.
+
+```yaml
+repositories:
+  # A library: the owner publishes versions by creating tags like 1.4.0 (no leading v).
+  - id: dotnet-util
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [Build and test]
+    actionsChecks: [test]
+    credentials: [nuget-api-key]
+  # A repository that only runs CI: develop and main are protected, nothing is released.
+  - id: shop-specs
+    checks: [lint]
+  # yggdrasil itself: the full branching model, and the owner creates its version tags (v*).
+  - id: yggdrasil
+    release: owner-tag
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `id` | required | The repository name under `owner`: letters, digits, `.`, `_` and `-` (`reveal.js` is fine). Unique, and not the repository of any application (`<id> is already an application's repository`). |
+| `checks` | `[]` | The checks Jenkins reports on pull requests to `develop` and `main`, as for an application's `checks`. No empty entries. |
+| `actionsChecks` | `[]` | GitHub Actions job names required besides them, as for an application's `actionsChecks`. No empty entries. |
+| `credentials` | `[]` | The only Jenkins credentials the repository's checks may bind. Jenkins credential ids: letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
+| `release` | `none` | `none`: no versions. `owner-tag`: the owner creates the version tags by hand, matching `tags`. (Applications are different: Jenkins creates their `v*` tags.) |
+| `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*` and `[...]` classes (`[0-9]*` for versions without a `v`). Only meaningful with `release: owner-tag`. |
+| `rules` | `release` | `release`: the full branching model (protected `develop`, `main` and `release/*`). `basic`: `develop` and `main` only, without force pushes or deletion. |
+
+Any other key is an error. Read the list with `python3 scripts/catalog.py repositories` (ids) and one
+entry, defaults applied, with `python3 scripts/catalog.py repository-entry <id>`. The git server's rules
+(`scripts/rules.py`) and the Jenkins pipeline consume them.
 
 ## Environments
 
@@ -244,7 +283,12 @@ An application's environment variables are not catalog fields: they come from th
 | `metrics` | `host:port` Prometheus scrapes, if the application exposes metrics (*status API*: must be `host:port`). Qualified like `health`: `shop-api.production:9464`, one target per environment, with an `environment` label. |
 | `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. Starts with `/`, and needs `metrics` (*status API*). |
 | `host` | A lowercase host name: letters, digits and dashes (*status API*). The link the console shows: `https://<host><hostSuffix>.<DOMAIN>`, with the environment's `hostSuffix`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
-| `checks` | GitHub Actions job names required on `develop` and `main`, besides `branch-policy`: the job part of `<workflow> / <job>` in a pull request's Checks tab. Only checks from GitHub Actions satisfy them. Only list checks that run on **every** pull request: a path-filtered workflow that doesn't run would leave its required check pending forever. No empty entries (*status API*). |
+| `checks` | The checks Jenkins reports on the pull requests to `develop` and `main`, besides `branch-policy`. They are required there. Only list checks that run on **every** pull request: one that doesn't run would leave its required check pending forever. No empty entries (*status API*). With the GitHub git server and the current pipeline they are still the job part of `<workflow> / <job>` in a pull request's Checks tab. |
+| `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`: the job part of `<workflow> / <job>` in a pull request's Checks tab. Only checks from GitHub Actions satisfy them, and the same rule applies: only checks that run on **every** pull request. No empty entries. |
+| `credentials` | Optional list, default `[]`. The only Jenkins credentials the application's checks may bind: Jenkins credential ids (letters, digits, `.`, `_` and `-`, starting with a letter or digit). Anything else is refused by the pipeline. |
+| `domain` | Optional. The domain a site is served on: a lowercase host name with at least one dot (`docs.example.com`). For applications that are published sites. Read by the site routing of plan 5; it does not route anything yet. |
+| `path` | Optional. Where under the domain the site lives: starts with `/`, does not end with one, no `..` (`/docs`). Read by plan 5. |
+| `apex` | Optional boolean. With `true` the site is also served on the bare domain, not only under its host name. Read by plan 5. |
 | `releaseArtifacts` | Optional boolean, default `false`. With `true`, Jenkins creates the immutable tag and a private draft after deployment, dispatches `.github/workflows/release-artifacts.yml` with `tag`, `publish` and `release_id` inputs, and waits for that workflow to publish the verified draft. Without it, Jenkins creates the tag and public GitHub release directly. |
 | `container` | `{project, service}`: the Compose labels that find the application's container. `project` defaults to the id; the status API looks for `<project>-<environment>`, which is what `deploy.sh` uses (platform components: `project` as it is). Without `service`, **any** container of the project matches (a running one first, then the newest), so set `service` when the stack has more than one service, e.g. `{ service: api }` next to a database. |
 | `environments` | See below. |
@@ -291,6 +335,8 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py owner` / `repository` | The GitHub owner; this repository's name (default `yggdrasil`) |
 | `python3 scripts/catalog.py forge [type\|url\|api\|jenkins-user]` | The git server: JSON of `type`, `url`, `api`, `jenkinsUser` and `developers` with defaults applied (GitHub when there is no `forge` block), or one value |
 | `python3 scripts/catalog.py mirror [github\|releases]` | The mirror: JSON, or one value (booleans `true`/`false`). Exits `1` with `catalog.yaml has no mirror` when there is none |
+| `python3 scripts/catalog.py repositories` | The ids of the [`repositories`](#repositories) that are not applications, one per line (nothing when there are none) |
+| `python3 scripts/catalog.py repository-entry <id>` | JSON of one such repository with defaults applied (`id`, `checks`, `actionsChecks`, `credentials`, `release`, `tags`, `rules`). Exits `1` when the id is not listed |
 | `python3 scripts/catalog.py systems` | `<id><TAB><name>`, one system per line |
 | `python3 scripts/catalog.py show <app>` | JSON: the application's fields, plus `system`, its system's id |
 | `python3 scripts/catalog.py add-application < new.json` | Adds an application, keeping every comment of `catalog.yaml`. Reads `{"system": {"id", "name", "description"}, "application": {...}}`: the application goes at the end of that system, or of a new one (then `name` and `description` count), placed before the `yggdrasil` system. Refuses anything that would make the catalog invalid. [`ygg add`](cli.md) writes the JSON for you |

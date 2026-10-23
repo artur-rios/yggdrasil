@@ -29,7 +29,7 @@ def python(script, *arguments, env=None):
 
 def catalog_words(args):
     words = [args.action]
-    for name in ("application", "environment", "option", "field"):
+    for name in ("application", "environment", "option", "field", "entry"):
         value = getattr(args, name, None)
         if value:
             words.append(value)

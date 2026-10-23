@@ -12,6 +12,8 @@
     python3 scripts/catalog.py owner | repository         the GitHub owner, this repository's name
     python3 scripts/catalog.py forge [type|url|api|jenkins-user]  the git server (JSON without an argument)
     python3 scripts/catalog.py mirror [github|releases]    the Forgejo -> GitHub mirror (exit 1 without one)
+    python3 scripts/catalog.py repositories                ids of the repositories that are not applications
+    python3 scripts/catalog.py repository-entry <id>       JSON: one of them, defaults applied (exit 1 if unknown)
     python3 scripts/catalog.py add-application < new.json adds an application, keeping the comments
 
 add-application reads {"system": {"id", "name", "description"}, "application": {...}} on stdin. The
@@ -47,10 +49,18 @@ HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+$")
 # A git server user name (Forgejo and GitHub both accept letters, digits, dots, dashes and underscores).
 USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# A Jenkins credential id (what a `credentials(...)` binding names).
+CREDENTIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*).
+TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-]+$")
 FORGES = ("forgejo", "github")
 KINDS = {"api", "web", "worker", "platform"}
 MODES = {"proxy", "ports"}
 TRIGGERS = {"manual", "branch", "release"}
+# `repositories`: how a repository that is not an application is released and protected.
+RELEASES = ("none", "owner-tag")
+RULES = ("release", "basic")
+REPOSITORY_KEYS = {"id", "checks", "actionsChecks", "credentials", "release", "tags", "rules"}
 
 # Every environment option, with its default. An application's override may set any of them except
 # the identity fields (id, name).
@@ -175,6 +185,7 @@ def validate(catalog):
                         errors.append(f"{where}.environments.{env_id}.branches: required when trigger is branch "
                                       "(neither the application nor the environment sets them)")
     errors += _project_errors(systems, env_ids)
+    errors += _repository_errors(catalog, systems)
     return errors
 
 
@@ -244,6 +255,56 @@ def _forge_errors(catalog):
     return errors
 
 
+def _repository_names(systems):
+    """The repository of every application that has one: its `repository`, else its id (the rule
+    github/rulesets.py applies). Platform components live in this repository and have none."""
+    names = set()
+    for system in systems:
+        for app in (system.get("applications") or []) if isinstance(system, dict) else []:
+            if not isinstance(app, dict) or app.get("kind") == "platform":
+                continue
+            name = _text(app.get("repository")) or app.get("id")
+            if isinstance(name, str):
+                names.add(name)
+    return names
+
+
+def _repository_errors(catalog, systems):
+    if "repositories" not in catalog:
+        return []
+    entries = catalog["repositories"]
+    if not isinstance(entries, list):
+        return ["repositories: a list of {id, checks, actionsChecks, credentials, release, tags, rules}"]
+    errors = []
+    taken = _repository_names(systems)
+    seen = []
+    for i, entry in enumerate(entries):
+        where = f"repositories[{i}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{where}: must be a mapping")
+            continue
+        unknown = set(entry) - REPOSITORY_KEYS
+        if unknown:
+            errors.append(f"{where}: unknown key(s) {sorted(unknown)}")
+        rid = entry.get("id")
+        if not isinstance(rid, str) or not REPOSITORY.match(rid):
+            errors.append(f"{where}.id: required, a repository name (letters, digits, '.', '_' and '-')")
+        elif rid in seen:
+            errors.append(f"{where}.id: duplicate '{rid}'")
+        elif rid in taken:
+            errors.append(f"{where}.id: {rid} is already an application's repository")
+        else:
+            seen.append(rid)
+        if "release" in entry and entry["release"] not in RELEASES:
+            errors.append(f"{where}.release: one of {list(RELEASES)}")
+        if "rules" in entry and entry["rules"] not in RULES:
+            errors.append(f"{where}.rules: one of {list(RULES)}")
+        if "tags" in entry and not (isinstance(entry["tags"], str) and TAG_PATTERN.match(entry["tags"])):
+            errors.append(f"{where}.tags: a tag pattern of letters, digits, '.', '_', '-', '*' and [classes], e.g. v*")
+        errors += _check_list_errors(where, entry)
+    return errors
+
+
 def _project_errors(systems, env_ids):
     """deploy.sh names each Compose project <application>-<environment>: two pairs must not give the
     same name (application a-b in environment c, application a in environment b-c), or one deploy
@@ -283,15 +344,37 @@ def _application_field_errors(where, app):
             errors.append(f"{where}.metricsPath: a path starting with /")
         if app.get("metrics") is None:
             errors.append(f"{where}.metricsPath: set without metrics")
-    checks = app.get("checks")
-    if checks is not None and (not isinstance(checks, list) or not all(_text(check) for check in checks)):
-        errors.append(f"{where}.checks: a list of GitHub check names, none empty")
+    errors += _check_list_errors(where, app)
+    domain = app.get("domain")
+    if domain is not None and not (isinstance(domain, str) and HOST_NAME.match(domain) and "." in domain):
+        errors.append(f"{where}.domain: a lowercase host name with a dot, e.g. docs.example.com")
+    path = app.get("path")
+    if path is not None and not (isinstance(path, str) and path.startswith("/") and not path.endswith("/")
+                                 and ".." not in path):
+        errors.append(f"{where}.path: starts with / and does not end with one, no '..' (e.g. /docs)")
+    if "apex" in app and not isinstance(app["apex"], bool):
+        errors.append(f"{where}.apex: true or false")
     if "releaseArtifacts" in app and not isinstance(app["releaseArtifacts"], bool):
         errors.append(f"{where}.releaseArtifacts: true or false")
     container = app.get("container")
     if container is not None and (not isinstance(container, dict)
                                   or any(container.get(k) is not None and not _text(container[k]) for k in ("project", "service"))):
         errors.append(f"{where}.container: a mapping of project and/or service names")
+    return errors
+
+
+def _check_list_errors(where, entry):
+    """checks, actionsChecks and credentials of an application or a repository (all optional lists)."""
+    errors = []
+    for key, valid, what in (
+        ("checks", _text, "the checks Jenkins reports, none empty"),
+        ("actionsChecks", _text, "GitHub Actions job names, none empty"),
+        ("credentials", lambda v: isinstance(v, str) and CREDENTIAL_ID.match(v),
+         "Jenkins credential ids (letters, digits, '.', '_' and '-')"),
+    ):
+        value = entry.get(key)
+        if value is not None and (not isinstance(value, list) or not all(valid(item) for item in value)):
+            errors.append(f"{where}.{key}: a list of {what}")
     return errors
 
 
@@ -376,6 +459,18 @@ def mirror(catalog):
     if block is None:
         return None
     return {"github": block["github"], "releases": block.get("releases", True)}
+
+
+def repositories(catalog):
+    """The repositories that are not applications (libraries, CI-only ones, yggdrasil itself), every
+    field resolved. `tags` only means something with release owner-tag."""
+    return [{"id": entry["id"],
+             "checks": list(entry.get("checks") or []),
+             "actionsChecks": list(entry.get("actionsChecks") or []),
+             "credentials": list(entry.get("credentials") or []),
+             "release": entry.get("release", "none"),
+             "tags": entry.get("tags", "v*"),
+             "rules": entry.get("rules", "release")} for entry in catalog.get("repositories") or []]
 
 
 def applications(catalog, deployable=False):
@@ -593,6 +688,16 @@ def main(argv):
             else:
                 print(__doc__, file=sys.stderr)
                 return 2
+        elif command == "repositories" and not args:
+            # Nothing at all (not a blank line) when there are none: a `while read` loop must not run once.
+            for entry in repositories(catalog):
+                print(entry["id"])
+        elif command == "repository-entry" and len(args) == 1:
+            for entry in repositories(catalog):
+                if entry["id"] == args[0]:
+                    print(json.dumps(entry, indent=2))
+                    return 0
+            raise CatalogError(f"'{args[0]}' is not a repository in catalog.yaml")
         elif command == "applications":
             print("\n".join(a["id"] for _, a in applications(catalog, deployable="--deployable" in args)))
         elif command == "systems":
