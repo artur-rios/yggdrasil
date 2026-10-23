@@ -195,11 +195,14 @@ jobs:
                   ignoreUntrustedChanges(true)
                 }
                 if (entry.ownerTag) {
-                  // The owner tags a version by hand: build it whatever its age (-1 is no limit
-                  // either way), so a tag made on an old commit is still built.
+                  // The owner tags a version by hand and Jenkins builds the tag, but only a young
+                  // one: the first scan of a new job (a cutover, a rebuilt controller) finds every
+                  // tag the repository ever had, and without an age limit it would rebuild and
+                  // re-release all of them. A day is long enough for a webhook or the daily rescan
+                  // to see a new tag.
                   buildTags {
-                    atLeastDays('-1')
-                    atMostDays('-1')
+                    atLeastDays('0')
+                    atMostDays('1')
                   }
                 }
               }

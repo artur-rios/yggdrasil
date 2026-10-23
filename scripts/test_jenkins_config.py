@@ -109,6 +109,13 @@ class JenkinsJobTests(unittest.TestCase):
         # Both the discovery and the build strategy are inside a condition on the entry's release.
         self.assertGreater(script.count("ownerTag"), 3)
 
+    def test_given_the_job_dsl_when_read_then_old_tags_are_not_rebuilt_by_the_first_scan(self):
+        # Without an age limit a new job (cutover, rebuilt controller) would rebuild and re-release
+        # every tag the repository ever had.
+        script = job_dsl()
+        self.assertRegex(script, r"buildTags\s*\{\s*atLeastDays\('0'\)\s*atMostDays\('1'\)\s*\}")
+        self.assertNotIn("atMostDays('-1')", script)
+
     def test_given_the_job_dsl_when_read_then_the_heads_include_the_branching_model(self):
         script = job_dsl()
         self.assertRegex(script, r"\['develop', 'main', 'PR-\*', 'release/\*'\]")
