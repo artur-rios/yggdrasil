@@ -845,11 +845,13 @@ def onPublishAgent(Map ctx, boolean write, boolean github, Closure body) {
 //      "without GitHub Actions checks" after a skip);
 //   3. on the publish agent: the merge (titled "release: v<version> (#N)", which release_notes.py
 //      leaves out of the notes) and the tag v<version> on the merge commit;
-//   4. with yggdrasil.yml's release: the release files (releaseFiles: built on the release agent,
-//      the Windows ones from GitHub, validated on the release agent);
-//   5. on the publish agent: the notes and publish-release.sh (publishRelease), which makes the
-//      drafts, uploads and checks the files and publishes the release (Forgejo, then GitHub last);
-//   6. the release branch deleted -- kept, with a note, where Forgejo protects it.
+//   4. releaseFromTag, shared with the tag builds and the release-resume job: with yggdrasil.yml's
+//      release, the release files (releaseFiles: built on the release agent, the Windows ones from
+//      GitHub, validated on the release agent); then, on the publish agent, the notes and
+//      publish-release.sh (publishRelease), which makes the drafts, uploads and checks the files and
+//      publishes the release (Forgejo, then GitHub last). A failure here says the pull request is
+//      merged and tagged, and to finish the release with the release-resume job;
+//   5. the release branch deleted -- kept, with a note, where Forgejo protects it.
 // The build's description is v<version> (" (deployed without GitHub Actions checks)" after a skip); it
 // is unstable when Windows files are missing (published without them, listed in the notes and the
 // log; the actions-release job attaches them later).
@@ -893,14 +895,49 @@ void releasePullRequest(Map ctx, Map state, List environments) {
   }
 
   String merged = mergeAndTag(ctx, state.sha, version, tag)
-  Map files = releaseConfig != null ? releaseFiles(ctx, state.entry, releaseConfig, tag, merged, skipped, seconds) : [stash: null, missing: []]
-  List urls = publishRelease(ctx, state.entry, version, tag, merged, files)
-  currentBuild.description = "${tag}${skipped ? ' (deployed without GitHub Actions checks)' : ''}"
-  echo "Released ${tag}: ${urls.join(' ')}"
-  if (files.missing) {
-    unstable "${tag} was published without its Windows files: ${files.missing.join(', ')} (${files.reason}). The actions-release job attaches them."
+  // From here on the pull request is merged and the tag pushed: a failure cannot be undone by running
+  // this build again (the merge would be refused), so it says how to finish instead.
+  Map published = null
+  try {
+    published = releaseFromTag(ctx, state.entry, releaseConfig, tag, merged, [skipped: skipped, seconds: seconds])
+  } catch (FlowInterruptedException interruption) {
+    echo resumeNote(ctx, tag)
+    throw interruption
+  } catch (Exception problem) {
+    error "${problem.message}\n${resumeNote(ctx, tag)}"
+  }
+  String description = tag
+  if (skipped) {
+    description += ' (deployed without GitHub Actions checks)'
+  }
+  currentBuild.description = description
+  echo "Released ${tag}: ${published.urls.join(' ')}"
+  if (published.missing) {
+    unstable "${tag} was published without its Windows files: ${published.missing.join(', ')} (${published.reason}). The actions-release job attaches them."
   }
   deleteReleaseBranch(ctx)
+}
+
+// What a release that failed after its merge tells the owner.
+String resumeNote(Map ctx, String tag) {
+  return "Not released: the pull request is merged and tagged ${tag}; finish the release with the release-resume job (REPOSITORY=${ctx.app}, TAG=${tag})."
+}
+
+// Steps 4 and 5 of a release, from a tag that exists on `sha`: the release files (yggdrasil.yml's
+// release, when declared: releaseFiles) and publishRelease, whose publish-release.sh picks up the tag, a
+// draft and the files an earlier run left. The release pull request calls it after its merge; the
+// owner-tagged releases (a tag build) and the release-resume job call it with the tag's commit -- one copy
+// of the release logic. opts:
+//   skipped  the GitHub Actions checks were skipped (GitHub may not be answering): no Windows files
+//   seconds  how long a Windows run may take (default 3600)
+// Returns [urls: the releases' addresses, missing: the Windows files left out, reason: why].
+Map releaseFromTag(Map ctx, Map entry, Map releaseConfig, String tag, String sha, Map opts) {
+  boolean skipped = opts.skipped == true
+  int seconds = (opts.seconds ?: 3600) as int
+  Map files = releaseConfig != null ? releaseFiles(ctx, entry, releaseConfig, tag, sha, skipped, seconds)
+                                    : [stash: null, missing: [], reason: '']
+  List urls = publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx))
+  return [urls: urls, missing: files.missing, reason: files.reason]
 }
 
 // Stage Wait for GitHub Actions: the entry's actionsChecks on the release's commit, for as long as
@@ -1213,10 +1250,10 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
 
 // Stage Publish the release, on the publish agent: the notes (release_notes.py: the version's CHANGELOG.md
 // section, else the pull requests merged since the previous tag), the files (the release-files stash,
-// nothing else) and publish-release.sh, with the release's GitHub copy when the catalog's mirror.releases
-// is on (the tag waited for first, outside node(): the mirror pushes it). Returns the releases' addresses.
-List publishRelease(Map ctx, Map entry, String version, String tag, String sha, Map files) {
-  boolean mirrorReleases = mirrorsReleases(ctx)
+// nothing else) and publish-release.sh, with the release's GitHub copy when `mirrorReleases` (the
+// catalog's mirror.releases) -- the tag
+// waited for first, outside node(): the mirror pushes it. Returns the releases' addresses.
+List publishRelease(Map ctx, Map entry, String version, String tag, String sha, Map files, boolean mirrorReleases) {
   List urls = []
   stage('Publish the release') {
     if (mirrorReleases) {

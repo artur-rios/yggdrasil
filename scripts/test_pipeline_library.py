@@ -735,13 +735,36 @@ class ReleaseLibraryTests(unittest.TestCase):
         start, end = lib.functions["releasePullRequest"]
         body = lib.code[start:end]
         self.assertLess(body.index("deployTo("), body.index("mergeAndTag("))
-        self.assertLess(body.index("mergeAndTag("), body.index("releaseFiles("))
+        self.assertLess(body.index("mergeAndTag("), body.index("releaseFromTag("))
+        self.assertLess(body.index("releaseFromTag("), body.index("deleteReleaseBranch("))
+        start, end = lib.functions["releaseFromTag"]
+        body = lib.code[start:end]
         self.assertLess(body.index("releaseFiles("), body.index("publishRelease("))
-        self.assertLess(body.index("publishRelease("), body.index("deleteReleaseBranch("))
         # The merge's title is the one release_notes.py leaves out of the notes.
         self.assertIn('"release: v${version} (#${env.CHANGE_ID})"', lib.code[slice(*lib.functions["mergeAndTag"])])
         notes = (ROOT / "scripts" / "release_notes.py").read_text(encoding="utf-8")
         self.assertIn('JENKINS_RELEASE_MERGE = re.compile(r"^release: v?\\d")', notes)
+
+    def test_given_a_failure_after_the_merge_when_read_then_it_says_to_finish_with_release_resume(self):
+        # Steps 4-5 are one function (releaseFromTag) the tag builds and the release-resume job (Task 12)
+        # call too; a failure there, after the merge, says the release is merged and tagged and how to
+        # finish it, whatever failed (an error, or an interruption, which stays one).
+        lib = self.lib
+        self.assertIsNotNone(re.search(r"Map releaseFromTag\(Map ctx, Map entry, Map releaseConfig, String tag, String sha, "
+                                       r"Map opts\)", lib.code))
+        start, end = lib.functions["releasePullRequest"]
+        body = lib.code[start:end]
+        merged = body.index("mergeAndTag(")
+        attempt = body.index("try {", merged)
+        self.assertLess(attempt, body.index("releaseFromTag(", merged))
+        handled = body[body.index("releaseFromTag(", merged):body.index("deleteReleaseBranch(")]
+        self.assertRegex(handled, r"catch \(FlowInterruptedException interruption\) \{\s*echo resumeNote\(ctx, tag\)\s*"
+                                  r"throw interruption")
+        self.assertRegex(handled, r"catch \(Exception problem\) \{\s*error ")
+        self.assertIn('error "${problem.message}\\n${resumeNote(ctx, tag)}"', handled)
+        start, end = lib.functions["resumeNote"]
+        self.assertIn("the pull request is merged and tagged ${tag}; finish the release with the release-resume job "
+                      "(REPOSITORY=${ctx.app}, TAG=${tag})", lib.code[start:end])
 
     def test_given_a_skip_when_read_then_it_is_recorded_and_missing_files_make_the_build_unstable(self):
         lib = self.lib
@@ -749,8 +772,9 @@ class ReleaseLibraryTests(unittest.TestCase):
         body = lib.code[start:end]
         self.assertIn("String note = skipped ? \" (${SKIPPED})\" : ''", body)
         self.assertIn("deployTo(app, environment, version, state.sha, false, ctx.repo, [], null, note)", body)
-        self.assertIn("currentBuild.description = \"${tag}${skipped ? ' (deployed without GitHub Actions checks)' : ''}\"", body)
-        self.assertRegex(body, r"if \(files\.missing\) \{\s*unstable ")
+        self.assertIn("description += ' (deployed without GitHub Actions checks)'", body)
+        self.assertIn("currentBuild.description = description", body)
+        self.assertRegex(body, r"if \(published\.missing\) \{\s*unstable ")
         start, end = lib.functions["releaseFiles"]
         self.assertIn("skipped ? [stashes: null", lib.code[start:end])
         start, end = lib.functions["publishRelease"]

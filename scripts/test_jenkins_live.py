@@ -1257,6 +1257,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(build.result, "FAILURE", build.console[-6000:])
         self.assertIn("VALIDATION-3-FAILED", build.console)
         self.assertIn("release.validate failed (exit 3): nothing is published", build.console)
+        # After the merge a rerun cannot finish it: the message says how.
+        self.assertIn(f"Not released: the pull request is merged and tagged v1.0.0; finish the release with the "
+                      f"release-resume job (REPOSITORY={BROKEN}, TAG=v1.0.0).", build.console)
         self.assertNotIn("(Publish the release)", build.console)
         # publish-release.sh, which makes the drafts, never ran: no release at all, draft or not. The merge
         # and the tag came before the files (the release's commit is the merge).
