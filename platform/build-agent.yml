@@ -27,6 +27,10 @@ services:
       JENKINS_AGENT_NAME: ${JENKINS_AGENT_NAME}
       JENKINS_SECRET: ${JENKINS_AGENT_SECRET}
       JENKINS_AGENT_WORKDIR: ${YGG_AGENT_WORKDIR}
+      # The socket's path on the host. The mount below puts it at /var/run/docker.sock in the agent, but
+      # scripts/run-check.sh starts a check's container with `docker run -v <socket>:/var/run/docker.sock`,
+      # and the host's engine resolves that source on the host: it needs this path, not the agent's.
+      YGG_DOCKER_SOCKET: ${DOCKER_SOCKET}
     volumes:
       - ${DOCKER_SOCKET}:/var/run/docker.sock
       # The same path on both sides: a check's `docker run -v $WORKSPACE:...` goes to the host's

@@ -169,6 +169,12 @@ class BuildAgentFileTests(unittest.TestCase):
         volumes = self.compose["services"]["agent"]["volumes"]
         self.assertIn("${DOCKER_SOCKET}:/var/run/docker.sock", volumes)
 
+    def test_given_the_build_agent_file_when_read_then_the_host_socket_path_is_in_the_environment(self):
+        # run-check.sh mounts the socket into a check's container with `docker run -v`, which the host's
+        # engine resolves on the host: the agent has to know the socket's host path, not just mount it.
+        environment = self.compose["services"]["agent"]["environment"]
+        self.assertEqual(environment["YGG_DOCKER_SOCKET"], "${DOCKER_SOCKET}")
+
 
 if __name__ == "__main__":
     unittest.main()
