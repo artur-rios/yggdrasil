@@ -165,11 +165,33 @@ GITHUB_OWNER=$(python3 "$root/scripts/catalog.py" owner) || exit 1
 YGGDRASIL_REPOSITORY=$(python3 "$root/scripts/catalog.py" repository) || exit 1
 export GITHUB_OWNER YGGDRASIL_REPOSITORY
 
+# The git server decides which Configuration as Code files the Jenkins controller reads (the catalog's
+# forge block; none means GitHub, as before the git server was configurable): casc.yaml, the forge's own
+# file, and the GitHub App's credential when it is used -- always on GitHub, and on Forgejo only with a
+# mirror (the GitHub Actions checks and the release copies there).
+forge_type=$(python3 "$root/scripts/catalog.py" forge type) || exit 1
+FORGE_URL=$(python3 "$root/scripts/catalog.py" forge url) || exit 1
+FORGE_JENKINS_USER=$(python3 "$root/scripts/catalog.py" forge jenkins-user) || exit 1
+uses_github_app=""
+if [[ "$forge_type" == github ]] || python3 "$root/scripts/catalog.py" mirror github >/dev/null 2>&1; then
+  uses_github_app=1
+fi
+YGG_CASC_CONFIG="/etc/jenkins/casc.yaml,/etc/jenkins/casc.$forge_type.yaml"
+[[ -z "$uses_github_app" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.github-app.yaml"
+export FORGE_URL FORGE_JENKINS_USER YGG_CASC_CONFIG
+# Without the App there is no key to mount: /dev/null, not a path Docker would create as a directory.
+[[ -n "$uses_github_app" ]] || export GITHUB_APP_KEY_FILE=/dev/null
+
 # The profile-only variables compose.yml cannot mark as required (see the note at its top). The forge
-# profile has none: Forgejo needs only DOMAIN, and FORGEJO_SSH_PORT defaults to 2222.
+# profile has none: Forgejo needs only DOMAIN, and FORGEJO_SSH_PORT defaults to 2222. The jenkins profile
+# needs the library version, and the secrets of the git server it is configured for.
 check_profile_variables() {
   local required=()
-  [[ "$profiles" == *,jenkins,* ]] && required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD GITHUB_APP_ID GITHUB_APP_KEY_FILE)
+  if [[ "$profiles" == *,jenkins,* ]]; then
+    required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD YGGDRASIL_LIBRARY_VERSION)
+    [[ -z "$uses_github_app" ]] || required+=(GITHUB_APP_ID GITHUB_APP_KEY_FILE)
+    [[ "$forge_type" != forgejo ]] || required+=(FORGE_WRITE_TOKEN_FILE FORGE_READ_TOKEN_FILE FORGE_WEBHOOK_SECRET_FILE)
+  fi
   [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET)
   local name value
   for name in "${required[@]}"; do

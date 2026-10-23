@@ -37,6 +37,9 @@ class PlatformTests(unittest.TestCase):
                           'echo "DOCKER_HOST=${DOCKER_HOST:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "PROMETHEUS_CONFIG_FILE=${PROMETHEUS_CONFIG_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "YGG_TRAEFIK_CONFIG_HASH=${YGG_TRAEFIK_CONFIG_HASH:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "YGG_CASC_CONFIG=${YGG_CASC_CONFIG:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "FORGE_URL=${FORGE_URL:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "FORGE_JENKINS_USER=${FORGE_JENKINS_USER:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
                           '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
                           '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
@@ -387,10 +390,71 @@ class PlatformTests(unittest.TestCase):
 
     def test_given_the_dev_profiles_without_environments_when_up_then_it_starts(self):
         result = self.up("COMPOSE_PROFILES=forge,jenkins\nJENKINS_URL=https://jenkins.example.com/\n"
-                         "JENKINS_ADMIN_PASSWORD=x\nGITHUB_APP_ID=1\nGITHUB_APP_KEY_FILE=/etc/yggdrasil/github-app.pem\n")
+                         "JENKINS_ADMIN_PASSWORD=x\nGITHUB_APP_ID=1\nGITHUB_APP_KEY_FILE=/etc/yggdrasil/github-app.pem\n"
+                         "YGGDRASIL_LIBRARY_VERSION=v1.0.0\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("up --detach", self.docker_calls())
         self.assertIn("PROMETHEUS_CONFIG_FILE=prometheus-static.yml\n", self.docker_calls())
+
+    JENKINS = ("COMPOSE_PROFILES=forge,jenkins\nJENKINS_URL=https://jenkins.example.com/\nJENKINS_ADMIN_PASSWORD=x\n"
+               "YGGDRASIL_LIBRARY_VERSION=v1.0.0\n")
+    GITHUB_APP = "GITHUB_APP_ID=1\nGITHUB_APP_KEY_FILE=/etc/yggdrasil/github-app.pem\n"
+    FORGE_FILES = ("FORGE_WRITE_TOKEN_FILE=/etc/yggdrasil/forge-write-token\n"
+                   "FORGE_READ_TOKEN_FILE=/etc/yggdrasil/forge-read-token\n"
+                   "FORGE_WEBHOOK_SECRET_FILE=/etc/yggdrasil/forge-webhook-secret\n")
+
+    def use_catalog(self, forge_block):
+        """Points the tooling at a copy of the catalog with this forge/mirror block (YAML text)."""
+        catalog = (SCRIPT.parent.parent / "catalog.yaml").read_text()
+        path = self.temp / "catalog.yaml"
+        path.write_text(catalog + "\n" + forge_block)
+        self.env["YGG_CATALOG"] = str(path)
+
+    def test_given_the_jenkins_profile_without_a_library_version_when_up_then_it_is_refused(self):
+        result = self.up("COMPOSE_PROFILES=forge,jenkins\nJENKINS_URL=https://jenkins.example.com/\n"
+                         "JENKINS_ADMIN_PASSWORD=x\n" + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("YGGDRASIL_LIBRARY_VERSION must be set", result.stderr)
+        self.assertEqual(self.docker_calls(), "")
+
+    def test_given_a_github_catalog_when_up_then_jenkins_reads_the_github_configuration_and_the_app(self):
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("YGG_CASC_CONFIG=/etc/jenkins/casc.yaml,/etc/jenkins/casc.github.yaml,"
+                      "/etc/jenkins/casc.github-app.yaml\n", self.docker_calls())
+
+    def test_given_a_github_catalog_without_the_app_when_up_then_it_is_refused(self):
+        result = self.up(self.JENKINS)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("GITHUB_APP_ID must be set", result.stderr)
+
+    def test_given_a_forgejo_catalog_when_up_then_jenkins_reads_the_forgejo_configuration_without_the_app(self):
+        self.use_catalog("forge:\n  type: forgejo\n  url: https://git.example.com/\n  jenkinsUser: ygg-jenkins\n")
+        result = self.up(self.JENKINS + self.FORGE_FILES)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertIn("YGG_CASC_CONFIG=/etc/jenkins/casc.yaml,/etc/jenkins/casc.forgejo.yaml\n", calls)
+        self.assertIn("FORGE_URL=https://git.example.com\n", calls)
+        self.assertIn("FORGE_JENKINS_USER=ygg-jenkins\n", calls)
+
+    def test_given_a_forgejo_catalog_with_a_mirror_when_up_then_the_github_app_is_configured_and_required(self):
+        self.use_catalog("forge:\n  type: forgejo\n  url: https://git.example.com\nmirror:\n  github: someone\n")
+        refused = self.up(self.JENKINS + self.FORGE_FILES)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("GITHUB_APP_ID must be set", refused.stderr)
+        result = self.up(self.JENKINS + self.FORGE_FILES + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("YGG_CASC_CONFIG=/etc/jenkins/casc.yaml,/etc/jenkins/casc.forgejo.yaml,"
+                      "/etc/jenkins/casc.github-app.yaml\n", self.docker_calls())
+
+    def test_given_a_forgejo_catalog_without_token_files_when_up_then_it_is_refused(self):
+        self.use_catalog("forge:\n  type: forgejo\n  url: https://git.example.com\n")
+        for name in ("FORGE_WRITE_TOKEN_FILE", "FORGE_READ_TOKEN_FILE", "FORGE_WEBHOOK_SECRET_FILE"):
+            lines = [line for line in self.FORGE_FILES.splitlines() if not line.startswith(name + "=")]
+            result = self.up(self.JENKINS + "\n".join(lines) + "\n")
+            self.assertEqual(result.returncode, 1, name)
+            self.assertIn(f"{name} must be set", result.stderr)
+            self.assertEqual(self.docker_calls(), "")
 
     def test_given_the_forge_profile_when_up_then_no_jenkins_or_agent_variable_is_required(self):
         result = self.up("COMPOSE_PROFILES=forge\n")

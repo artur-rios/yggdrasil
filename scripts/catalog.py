@@ -34,6 +34,7 @@ Needs PyYAML (pip install pyyaml; Ubuntu: apt install python3-yaml).
 
 import fnmatch
 import json
+import os
 import pathlib
 import re
 import sys
@@ -41,7 +42,9 @@ import urllib.parse
 
 import yaml
 
-CATALOG = pathlib.Path(__file__).resolve().parent.parent / "catalog.yaml"
+# YGG_CATALOG points the tooling at another catalog (the tests of scripts/platform.sh use one with a
+# Forgejo server); an installation never sets it.
+CATALOG = pathlib.Path(os.environ.get("YGG_CATALOG") or pathlib.Path(__file__).resolve().parent.parent / "catalog.yaml")
 
 # The patterns below end in \Z, never $: `$` also matches just before a trailing newline, and a value
 # with one would reach a command line or a file name as "id\n".
