@@ -40,21 +40,23 @@ import yaml
 
 CATALOG = pathlib.Path(__file__).resolve().parent.parent / "catalog.yaml"
 
-ID = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# The patterns below end in \Z, never $: `$` also matches just before a trailing newline, and a value
+# with one would reach a command line or a file name as "id\n".
+ID = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*\Z")
 # The status API's own rules for these fields (status/src/Yggdrasil.Status/Catalog/CatalogLoader.cs):
 # it refuses the whole catalog at start-up when one is broken, so validate refuses it first.
-HOST_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+HOST_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\Z")
 # One DNS label: what <host><hostSuffix> must stay, so the wildcard certificate *.DOMAIN covers it.
-HOST_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-HOST_SUFFIX = re.compile(r"^([a-z0-9-]*[a-z0-9])?$")
-HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
-REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+$")
+HOST_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z")
+HOST_SUFFIX = re.compile(r"^([a-z0-9-]*[a-z0-9])?\Z")
+HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}\Z")
+REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+\Z")
 # A git server user name (Forgejo and GitHub both accept letters, digits, dots, dashes and underscores).
-USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 # A Jenkins credential id (what a `credentials(...)` binding names).
-CREDENTIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+CREDENTIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 # A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*).
-TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-]+$")
+TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-]+\Z")
 FORGES = ("forgejo", "github")
 # A Jenkins agent label: what an environment's id is by default, so the same shape.
 AGENT_NAME = ID

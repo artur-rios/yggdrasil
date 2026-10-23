@@ -149,11 +149,29 @@ class ForgeGitHubTests(ForgeTestCase):
 
     def test_given_github_when_reading_statuses_then_the_latest_per_context_is_printed(self):
         self.respond("status", (0, {"state": "failure", "statuses": [
-            {"context": "branch-policy", "state": "success"}, {"context": "test", "state": "failure"}]}))
+            {"context": "branch-policy", "state": "success", "creator": {"login": "jenkins"}},
+            {"context": "test", "state": "failure", "creator": {"login": "jenkins"}}]}))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "branch-policy\tsuccess\ntest\tfailure\n")
+        self.assertEqual(result.stdout, "branch-policy\tsuccess\tjenkins\ntest\tfailure\tjenkins\n")
         self.assertIn("https://api.example/repos/someone/app/commits/abc123/status", self.request("status"))
+
+    def test_given_github_statuses_when_read_then_the_creator_is_the_third_column(self):
+        # On GitHub an App's statuses are created by its bot login: reuse compares this column with
+        # forge.jenkinsUser, so it must be printed as the server gives it.
+        self.respond("status", (0, {"state": "success", "statuses": [
+            {"context": "test", "state": "success", "creator": {"login": "my-app[bot]"}},
+            {"context": "lint", "state": "success", "creator": {"login": "someone"}}]}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([line.split("\t") for line in result.stdout.splitlines()],
+                         [["test", "success", "my-app[bot]"], ["lint", "success", "someone"]])
+
+    def test_given_github_a_status_without_a_creator_when_read_then_the_third_column_is_empty(self):
+        # A deleted user's statuses have "creator": null; the line must keep its three columns.
+        self.respond("status", (0, {"statuses": [{"context": "test", "state": "success", "creator": None}]}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual((result.returncode, result.stdout), (0, "test\tsuccess\t\n"), result.stderr)
 
     def test_given_github_when_merging_then_it_prints_the_merge_commit(self):
         self.respond("merge", (0, {"sha": "def456", "merged": True}))
@@ -430,14 +448,29 @@ class ForgeForgejoTests(ForgeTestCase):
 
     def test_given_forgejo_when_reading_statuses_then_the_status_field_is_printed_per_context(self):
         self.respond("status", (0, {"state": "failure", "statuses": [
-            {"context": "branch-policy", "status": "success"}, {"context": "test", "status": "failure"}]}))
+            {"context": "branch-policy", "status": "success", "creator": {"login": "jenkins"}},
+            {"context": "test", "status": "failure", "creator": {"login": "jenkins"}}]}))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "branch-policy\tsuccess\ntest\tfailure\n")
+        self.assertEqual(result.stdout, "branch-policy\tsuccess\tjenkins\ntest\tfailure\tjenkins\n")
         request = self.request("status")
         self.assertTrue(request.strip().endswith(
             "https://api.example/repos/someone/app/commits/abc123/status?limit=50&page=1"), request)
         self.assertFalse((self.state / "status.request.2").exists(), "a page that is not full is the last")
+
+    def test_given_forgejo_statuses_when_read_then_the_creator_is_the_third_column(self):
+        self.respond("status", (0, {"statuses": [
+            {"context": "test", "status": "success", "creator": {"id": 2, "login": "jenkins"}},
+            {"context": "lint", "status": "failure", "creator": {"id": 3, "login": "someone"}}]}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([line.split("\t") for line in result.stdout.splitlines()],
+                         [["test", "success", "jenkins"], ["lint", "failure", "someone"]])
+
+    def test_given_forgejo_a_status_without_a_creator_when_read_then_the_third_column_is_empty(self):
+        self.respond("status", (0, {"statuses": [{"context": "test", "status": "success"}]}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual((result.returncode, result.stdout), (0, "test\tsuccess\t\n"), result.stderr)
 
     def test_given_a_commit_without_statuses_when_reading_them_on_forgejo_then_nothing_is_printed(self):
         # What Forgejo 16 answers for a commit nobody posted a status on.
@@ -446,13 +479,15 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def test_given_more_contexts_than_a_page_when_reading_statuses_on_forgejo_then_every_page_is_read(self):
-        page = [{"context": f"deploy/env-{n:02}", "status": "success"} for n in range(50)]
-        self.respond("status", (0, {"statuses": page}), (0, {"statuses": [{"context": "test", "status": "failure"}]}))
+        page = [{"context": f"deploy/env-{n:02}", "status": "success", "creator": {"login": "jenkins"}}
+                for n in range(50)]
+        self.respond("status", (0, {"statuses": page}),
+                     (0, {"statuses": [{"context": "test", "status": "failure", "creator": {"login": "jenkins"}}]}))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 51)
-        self.assertEqual(lines[-1], "test\tfailure")
+        self.assertEqual(lines[-1], "test\tfailure\tjenkins")
         self.assertTrue(self.request("status", 2).strip().endswith("/commits/abc123/status?limit=50&page=2"))
         self.assertFalse((self.state / "status.request.3").exists())
 

@@ -80,7 +80,7 @@ so with `type: github` they have no effect.
 |---|---|---|
 | `forge.type` | `github` without a `forge` block; required inside one | `forgejo` or `github`. |
 | `forge.url` | required for `forgejo` | An `https://` address with a host and no path (`https://git.example.com`, a port is fine). A trailing `/` is dropped; the API is `<url>/api/v1`. Not allowed for `github`: GitHub Enterprise Server is not supported, `github` is always `https://github.com` (API `https://api.github.com`). |
-| `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. On Forgejo it is the only one that merges `main` and creates the `v*` version tags of applications (no effect on GitHub). A user name: letters, digits, `.`, `_` and `-`. |
+| `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. On Forgejo it is the only one that merges `main` and creates the `v*` version tags of applications (no effect on GitHub). A user name: letters, digits, `.`, `_` and `-`. It is also whose check results the pipeline reuses (see [Which checks run](#which-checks-run)): on GitHub the statuses of a GitHub App are created by its bot login (`my-app[bot]`), so a GitHub installation reuses results only when `jenkinsUser` is set to that login; otherwise every check runs again. |
 | `forge.developers` | `[]` | On Forgejo, users, besides the owner, who may merge pull requests into `develop` (no effect on GitHub). A list of user names. |
 | `forge.publishAgent` | the `agent` of the last `trigger: release` environment, over the applications in catalog order (what merges and releases today); none when no environment releases | The Jenkins agent that merges, tags, creates releases and uploads their files: the only one holding the git server's write token. An agent name: lowercase letters, digits and dashes. |
 | `mirror.github` | required with a `mirror` | The GitHub user or organisation the repositories are mirrored to. |
@@ -162,8 +162,10 @@ publish:                        # owner-tagged repositories only
 
 Every section is optional. Unknown keys at any level, and values of the wrong type, are errors that name
 the field (`checks.unit.dockr: unknown field`). `image` and `run` are required wherever they appear,
-and so is `release.windows.workflow`. `credentials` keys are environment variable names; a check may not
-be called `branch-policy`.
+and so is `release.windows.workflow`. `credentials` keys are environment variable names. A check's name is
+lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit, and may not be `branch-policy`;
+every `image` is a Docker image reference (`registry:port/name:tag` or `name@sha256:...`: no spaces, and it
+may not start with `-`).
 
 The file is also checked against the catalog entry of the repository (the application, or its
 [`repositories`](#repositories) entry):
@@ -181,6 +183,24 @@ Read the entry and check a checkout with `python3 scripts/pipeline_config.py des
 `errors` is not empty. The entry has `kind` (`application` or `repository`), `id`, `repository`,
 `credentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
 environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
+
+### Which checks run
+
+For a build of a branch the pipeline asks `python3 scripts/pipeline_config.py plan <job-id> <repo-dir>
+--statuses <file> --changed <file|-> --branch <name>` what to do with each check, and gets a JSON list in the
+file's order: `{name, action, reason, image, run, docker, credentials, junit, archive}`.
+
+- `--statuses` is the output of `forge.sh get-statuses` for the commit (`<context>`, `<state>`, `<creator>`,
+  tab separated); `--changed` lists the changed files, one path per line, or is `-` when they are unknown.
+- **reuse**: the commit already has a `success` for the check created by `forge.jenkinsUser`. A success
+  created by anyone else is not trusted, and neither is a failure or a pending: those checks `run`.
+- **skip**: the check has `paths`, the changed files are known and none matches. `*` stays in one directory,
+  `**` crosses directories (`src/**` matches `src/a/b.cs`, `docs/*.md` does not match `docs/a/b.md`, `**/*.md`
+  matches `README.md`). When the changes are unknown (`-`) the check runs.
+- **run**: everything else. On a `renovate/*` branch `credentials` is always `{}`.
+
+The branch policy is not a check of the file and is never reused. The command exits `1`, naming the
+problems, when the file is invalid or breaks the catalog rules above.
 
 ## Environments
 

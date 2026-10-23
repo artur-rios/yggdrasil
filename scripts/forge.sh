@@ -4,7 +4,7 @@
 # Needs curl, jq and (only when the environment below does not say) python3 with PyYAML.
 #
 #     scripts/forge.sh set-status     <repo> <sha> <state> <context> <description> [target-url]
-#     scripts/forge.sh get-statuses   <repo> <sha>                  -> "<context>\t<state>" per line
+#     scripts/forge.sh get-statuses   <repo> <sha>                  -> "<context>\t<state>\t<creator>" per line
 #     scripts/forge.sh merge-pr       <repo> <number> <sha> <title> -> the merge commit
 #     scripts/forge.sh create-tag     <repo> <tag> <sha>
 #     scripts/forge.sh create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]
@@ -14,8 +14,10 @@
 #     scripts/forge.sh delete-branch  <repo> <branch>
 #
 # state is pending, success, failure or error. get-statuses prints the latest state of each context
-# (the server's combined status). merge-pr makes a merge commit and fails if the pull request's head is
-# no longer <sha>. delete-branch succeeds, with a note on stderr, when the branch is already gone.
+# (the server's combined status) and the login that created it (empty when the server has none: a
+# deleted user), which is how the pipeline tells its own results from anyone else's. merge-pr makes a
+# merge commit and fails if the pull request's head is no longer <sha>. delete-branch succeeds, with a
+# note on stderr, when the branch is already gone.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
@@ -201,7 +203,7 @@ github_get_statuses() {
   local repo=$1 sha=$2 out
   # The combined status already holds one state per context, the latest. 100 is the most a page takes.
   out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status?per_page=100") || return 1
-  jq -r '.statuses[] | [.context, .state] | @tsv' <<<"$out"
+  jq -r '.statuses[] | [.context, .state, (.creator.login // "")] | @tsv' <<<"$out"
 }
 
 github_merge_pr() {
@@ -282,7 +284,7 @@ forgejo_get_statuses() {
   # The state is in the field "status" (GitHub's "state"). 100 pages is far more than any commit has.
   while ((page <= 100)); do
     out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status?limit=50&page=$page") || return 1
-    jq -r '(.statuses // [])[] | [.context, .status] | @tsv' <<<"$out"
+    jq -r '(.statuses // [])[] | [.context, .status, (.creator.login // "")] | @tsv' <<<"$out"
     count=$(jq '.statuses // [] | length' <<<"$out")
     ((count == 50)) || return 0
     page=$((page + 1))

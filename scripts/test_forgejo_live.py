@@ -312,7 +312,16 @@ class ForgejoLiveTests(unittest.TestCase):
         result = self.forge(JENKINS, "get-statuses", APP, sha)
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
-        self.assertEqual(sorted(lines), sorted(["build\tsuccess", "test\tfailure"] + [f"{c}\tsuccess" for c in many]))
+        # The third column is the login that created the status: what reuse compares with jenkinsUser.
+        self.assertEqual(sorted(lines), sorted([f"build\tsuccess\t{JENKINS}", f"test\tfailure\t{JENKINS}"]
+                                               + [f"{c}\tsuccess\t{JENKINS}" for c in many]))
+
+        # Someone else's status on the same commit carries their login, not Jenkins'.
+        self.api[CLAUDE].request("POST", f"/repos/{OWNER}/{APP}/statuses/{sha}",
+                                 {"state": "success", "context": "by-claude", "description": "x"})
+        result = self.forge(JENKINS, "get-statuses", APP, sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"by-claude\tsuccess\t{CLAUDE}", result.stdout.splitlines())
 
     def test_given_a_release_flow_when_run_then_tag_draft_upload_and_publish_work(self):
         sha = self.head(APP, "main")
@@ -407,7 +416,7 @@ class ForgejoLiveTests(unittest.TestCase):
         result = self.forge(JENKINS, "set-status", DOTTED, head, "success", "branch-policy", "ok")
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.forge(JENKINS, "get-statuses", DOTTED, head)
-        self.assertEqual((result.returncode, result.stdout), (0, "branch-policy\tsuccess\n"), result.stderr)
+        self.assertEqual((result.returncode, result.stdout), (0, f"branch-policy\tsuccess\t{JENKINS}\n"), result.stderr)
 
         number = self.open_pull_request(OWNER, DOTTED, "feature/slides", "develop")
         result = self.forge(JENKINS, "merge-pr", DOTTED, str(number), head, f"Slides (#{number})")

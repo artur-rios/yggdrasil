@@ -1144,7 +1144,7 @@ catalog):
 | Command | Does | Prints |
 |---|---|---|
 | `set-status <repo> <sha> <state> <context> <description> [target-url]` | Sets a commit status; `state` is `pending`, `success`, `failure` or `error` | nothing |
-| `get-statuses <repo> <sha>` | Reads the commit's statuses | `<context>`, a tab, `<state>`, one line per context (the latest) |
+| `get-statuses <repo> <sha>` | Reads the commit's statuses | `<context>`, a tab, `<state>`, a tab, `<creator>`, one line per context (the latest); `<creator>` is the login that set the status, empty when the server has none. The pipeline reuses a result only when its creator is `forge.jenkinsUser` |
 | `merge-pr <repo> <number> <sha> <title>` | Merges a pull request with a merge commit, and fails if its head is no longer `<sha>` | the merge commit |
 | `create-tag <repo> <tag> <sha>` | Creates a tag | nothing |
 | `create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]` | Creates a release (an unpublished draft with `--draft`) | the release id, a tab, its page address |
