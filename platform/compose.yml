@@ -387,6 +387,8 @@ services:
       # The one Jenkinsfile of the installation, loaded into Config File Provider by casc.yaml: every job
       # runs it, never the repository's own.
       - ../jenkins/Jenkinsfile.default:/etc/jenkins/Jenkinsfile.default:ro
+      # The actions-release job's script (casc.yaml's Job DSL reads it), kept in Jenkins the same way.
+      - ../jenkins/actions-release.groovy:/etc/jenkins/actions-release.groovy:ro
       # The Job DSL in casc.yaml creates one deploy job per catalog application, agents.groovy one
       # agent per host (environments sharing a host share its `agent`), and the pipeline reads each
       # application's environments from it.

@@ -227,3 +227,28 @@ jobs:
           }
         }
       }
+  - script: |
+      // actions-release: attaches the Windows files of a release that was published without them
+      // (after "Deploy without GitHub Actions checks", or a Windows run that failed). The owner runs it
+      // with "Build with Parameters": REPOSITORY, the catalog id (its yggdrasil.yml at the tag must
+      // declare release.windows), and TAG, the release's tag. Its script is kept in Jenkins like the
+      // default Jenkinsfile (jenkins/actions-release.groovy, mounted by platform/compose.yml) and only
+      // calls the pinned library, which checks both and does the work (yggdrasilPipeline.actionsRelease).
+      //
+      // Who may run it: the authorization strategy above lets every logged-in user do anything, and
+      // the only user is the owner (the local realm, signup off), so the owner alone runs it; there is
+      // no per-job permission to set without a matrix strategy.
+      pipelineJob('actions-release') {
+        description('Attach the Windows files of a release published without them (after the skip).')
+        parameters {
+          stringParam('REPOSITORY', '', 'The catalog id (an application or a repositories entry) whose release gets its Windows files.')
+          stringParam('TAG', '', 'The release tag, e.g. v1.4.0. It must exist.')
+        }
+        definition {
+          cps {
+            // In the sandbox, like the default Jenkinsfile: it only loads the library, which runs trusted.
+            script(new File('/etc/jenkins/actions-release.groovy').getText('UTF-8'))
+            sandbox(true)
+          }
+        }
+      }

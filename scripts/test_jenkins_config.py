@@ -137,6 +137,37 @@ class JenkinsJobTests(unittest.TestCase):
 
 
 @unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
+class ActionsReleaseJobTests(unittest.TestCase):
+    def script(self):
+        scripts = [entry["script"] for entry in casc()["jobs"] if "pipelineJob('actions-release')" in entry["script"]]
+        self.assertEqual(len(scripts), 1)
+        return scripts[0]
+
+    def test_given_the_job_dsl_when_read_then_actions_release_runs_the_script_kept_in_jenkins(self):
+        script = self.script()
+        self.assertIn("script(new File('/etc/jenkins/actions-release.groovy').getText('UTF-8'))", script)
+        self.assertIn("sandbox(true)", script)
+        self.assertNotIn("scm", script)
+        for parameter in ("REPOSITORY", "TAG"):
+            self.assertRegex(script, rf"stringParam\('{parameter}', ''")
+        self.assertNotIn("${", script)
+        # Who runs it: the authorization strategy has no per-job permission, and its only user is the owner.
+        self.assertIn("loggedInUsersCanDoAnything", read(CONTROLLER / "casc.yaml"))
+        self.assertIn("only user is the owner", script)
+
+    def test_given_the_actions_release_script_when_read_then_it_only_calls_the_library(self):
+        lines = [line for line in read(ROOT / "jenkins" / "actions-release.groovy").splitlines()
+                 if line.strip() and not line.lstrip().startswith("//")]
+        self.assertEqual(lines, ["@Library('yggdrasil') _", "yggdrasilActionsRelease()"])
+        entry = read(ROOT / "jenkins" / "library" / "vars" / "yggdrasilActionsRelease.groovy")
+        self.assertRegex(entry, r"def call\(\) \{\s*yggdrasilPipeline\.actionsRelease\(\)\s*\}")
+
+    def test_given_the_compose_service_when_read_then_the_actions_release_script_is_mounted(self):
+        volumes = " ".join(jenkins_service()["volumes"])
+        self.assertIn("../jenkins/actions-release.groovy:/etc/jenkins/actions-release.groovy:ro", volumes)
+
+
+@unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
 class JenkinsCredentialsTests(unittest.TestCase):
     def test_given_the_forgejo_configuration_when_read_then_it_has_the_forge_credentials_and_no_github_app(self):
         found = credentials("casc.forgejo.yaml")
