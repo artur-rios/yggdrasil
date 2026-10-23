@@ -621,6 +621,11 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
                 "jenkins.model.Jenkins.get().getAllItems(org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject)"
                 ".collectEntries { [(it.fullName): [sources: it.SCMSources.collect { s -> s.getClass().name }, "
                 "factory: it.projectFactory.getClass().name]] }"),
+            "pipeline_jobs": api.script_json(
+                "jenkins.model.Jenkins.get().getAllItems(org.jenkinsci.plugins.workflow.job.WorkflowJob)"
+                ".findAll { it.parent == jenkins.model.Jenkins.get() && !it.name.startsWith('probe-') }.collectEntries { [(it.name): [sandbox: it.definition.sandbox, "
+                "script: it.definition.script, parameters: it.getProperty(hudson.model.ParametersDefinitionProperty)"
+                "?.parameterDefinitions?.collect { d -> d.name }]] }"),
             "credentials": api.script_json(
                 "com.cloudbees.plugins.credentials.CredentialsProvider.lookupCredentials("
                 "com.cloudbees.plugins.credentials.common.StandardCredentials, jenkins.model.Jenkins.get(), "
@@ -827,7 +832,11 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         boot = self.first_boot
         # Job DSL's giteaSCMSource and pipelineBranchDefaultsProjectFactory: one job per catalog entry,
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
-        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER})
+        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS})
+        # The actions-release job: a pipeline job running the script kept in Jenkins, in the sandbox.
+        self.assertEqual(boot["pipeline_jobs"], {"actions-release": {
+            "sandbox": True, "parameters": ["REPOSITORY", "TAG"],
+            "script": (ROOT / "jenkins" / "actions-release.groovy").read_text(encoding="utf-8")}})
         for job, made in boot["jobs"].items():
             self.assertEqual(made, {"sources": ["org.jenkinsci.plugin.gitea.GiteaSCMSource"],
                                     "factory": "org.jenkinsci.plugins.pipeline.multibranch.defaults."
