@@ -20,12 +20,17 @@
 //                               actionsChecks are then copied from GitHub Actions (see
 //                               copyActionsChecks)
 //   PR release/x.y.z -> main -> (with yggdrasil.yml: branch policy and checks first, under the same
-//                               lock) wait for every GitHub Actions check on the pull request's head,
-//                               then deploy that commit to each trigger: release environment in catalog
-//                               order, setting deploy/<environment> (required on main) after each;
-//                               then merge the pull request and release vx.y.z. Applications with
-//                               releaseArtifacts: true use an immutable tag and private draft, and
-//                               wait for their artifact workflow to publish it before cleanup
+//                               lock) wait for the entry's actionsChecks on GitHub Actions (the skip
+//                               when they don't finish), then deploy the head to each trigger: release
+//                               environment in catalog order, setting deploy/<environment> (required
+//                               on main) after each; then, on the publish agent, merge the pull request
+//                               and tag vx.y.z; build the release files on the release agent (and the
+//                               Windows ones on GitHub), validate them there, and publish the release
+//                               on the git server (and its GitHub copy) with publish-release.sh (see
+//                               releasePullRequest). On GitHub, a repository without yggdrasil.yml keeps
+//                               the path it always had (release(): every GitHub Actions check waited
+//                               for, releaseArtifacts: true's artifact workflow)
+//   the actions-release job  -> the Windows files of a release published without them (actionsRelease)
 //   push to develop, main or release/* (with yggdrasil.yml)
 //                            -> the checks, then the branch's deploys only if every check passed; a
 //                               check named in deploy.inputs hands its archive to the image build
@@ -56,9 +61,14 @@
 //   - the forge's own credential ids are named in forgeCredential() only;
 //   - the ci agent never binds the GitHub App: the GitHub Actions lookup runs on the publish agent, and
 //     on GitHub the ci agent reads with github-read when it is configured;
-//   - the write credential is bound by reportStatus() only, which posts from the controller, outside
-//     any node(): neither the ci nor the release agent ever holds it. Checkouts and reads on those
-//     agents use the read credential;
+//   - the write credential is bound by reportStatus(), which posts from the controller, outside any
+//     node(), and by onPublishAgent(), on the publish agent (forge.publishAgent: merges, tags, releases,
+//     uploads), the one agent that also gets the GitHub App for a release. Neither the ci nor the
+//     release agent ever holds either: checkouts and reads there use the read credential, and the
+//     release agent's builds only the ids release.build.credentials names (allow-listed like a
+//     check's). Files cross between the agents as stashes;
+//   - nothing waits on an agent: GitHub Actions, a Windows run, a tag reaching GitHub and the skip are
+//     waited for outside node(), each look a short call on the publish agent (pollGithub);
 //   - a check binds only the ids its plan names, each one checked against the catalog entry's
 //     `credentials` again here, and never one of the forge's own (withCheckCredentials);
 //   - no value reaches a shell script through Groovy interpolation: every `sh` script is a single-
@@ -83,8 +93,57 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 // named in the catalog ("Console (Windows)").
 @Field static final String STATUS_CONTEXT = '[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,99}'
 @Field static final String WEB_URL = 'https://[^\\s"\'<>]+'
-// Seconds between two looks at GitHub Actions (copyActionsChecks).
+// Seconds between two looks at GitHub Actions (checks and workflow runs), and at GitHub for a tag the
+// mirror is pushing; how long a release tag gets to reach GitHub (publish-release.sh's GITHUB_TAG_WAIT
+// default).
 @Field static final int ACTIONS_POLL_SECONDS = 60
+@Field static final int TAG_POLL_SECONDS = 10
+@Field static final int TAG_WAIT_SECONDS = 600
+// A tag of a release (v1.4.0, 1.4.0), before it reaches git or the forge.
+@Field static final String TAG = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}'
+// A release file glob (release.build.files, release.windows.files) as the stash step takes it: Ant
+// patterns (*, **, ?), relative, with no comma or whitespace (stash splits its includes on them); a
+// `.` or `..` segment is refused separately (releaseProblem).
+@Field static final String RELEASE_GLOB = '[A-Za-z0-9_.*?+@=][A-Za-z0-9_.*?/+@=-]{0,199}'
+// A GitHub workflow file (release.windows.workflow).
+@Field static final String WORKFLOW = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}\\.ya?ml'
+// The skip (the design's words): asked when the GitHub Actions checks of a release did not finish.
+@Field static final String SKIP_QUESTION = "GitHub Actions checks didn't finish. Deploy without them?"
+@Field static final String SKIP_BUTTON = 'Deploy without GitHub Actions checks'
+@Field static final String SKIPPED = 'without GitHub Actions checks'
+// delete-branch exit 3: Forgejo keeps a protected branch, which is not a reason to fail a release.
+@Field static final String KEPT_BRANCH = 'kept: release branches are protected on Forgejo; the owner deletes them'
+
+// Run from a directory: exit 3, naming them, when a symbolic link under it leads out of it -- or, with
+// YGG_ANY_LINK set, when there is any link at all (a release's files are files). A build or a check ran as
+// root and can leave a link to anything on the agent (its own files, another workspace, @tmp with the env
+// files); archiveArtifacts can be told not to follow links, but junit, stash and the uploads cannot, so
+// this runs before them. .git is pruned (the Ant default excludes keep it out of every stash anyway).
+@Field static final String LINK_GUARD = '''
+root=$(pwd -P)
+export root
+if [ -n "${YGG_ANY_LINK:-}" ]; then
+  links=$(find . -type l | head -n 20)
+  if [ -n "$links" ]; then
+    echo "Links among the files:" >&2
+    echo "$links" >&2
+    exit 3
+  fi
+  exit 0
+fi
+outside=$(find . -path ./.git -prune -o -type l -exec sh -c '
+  for link; do
+    case "$(realpath -m -- "$link")" in
+      "$root" | "$root"/*) ;;
+      *) echo "$link" ;;
+    esac
+  done' sh {} +)
+if [ -n "$outside" ]; then
+  echo "Links that lead out of the checkout:" >&2
+  echo "$outside" | head -n 20 >&2
+  exit 3
+fi
+'''
 
 // Runs one of this repository's scripts, yggdrasil/scripts/<YGG_TOOL>, from the workspace's root with
 // the arguments YGG_ARG_1 .. YGG_ARG_<YGG_ARGC> (see tool()): the values are environment variables,
@@ -109,24 +168,10 @@ exec bash "yggdrasil/scripts/$YGG_TOOL" "${args[@]}"
 
 def call(Map config = [:]) {
   // JOB_NAME is <job>/<branch or PR-n>: the multibranch job's own name is the catalog id.
-  String app = config.stack ?: env.JOB_NAME.tokenize('/')[0]
-  if (!(app ==~ CATALOG_ID)) {
-    error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
-  }
-  Map catalog = loadCatalog()
-  Map application = findApplication(catalog, app)
-  Map repositoryEntry = application == null ? findRepositoryEntry(catalog, app) : null
-  if (application == null && repositoryEntry == null) {
-    error "'${app}' is not an application or a repositories entry in ${CATALOG}"
-  }
-  // A repositories entry (a library, yggdrasil itself) has no environments: it never deploys.
-  List plan = application != null ? resolve(catalog, app) : []
-  boolean releaseArtifacts = application?.releaseArtifacts == true
-  String owner = catalog.owner
-  String repository = catalog.repository ?: 'yggdrasil'
-  Map forge = forgeOf(catalog)
-  Map ctx = [app: app, repo: application != null ? (application.repository ?: app) : app, forge: forge,
-             mirror: mirrorOf(catalog), checksTimeout: (plan ? plan[0].checksTimeout : 3600) as int]
+  Map ctx = catalogContext(config.stack ?: env.JOB_NAME.tokenize('/')[0])
+  String app = ctx.app
+  List plan = ctx.plan
+  boolean releaseArtifacts = ctx.releaseArtifacts
 
   // Not release environments: those only ever run the head of a release pull request.
   List byHand = plan.findAll { it.trigger in ['manual', 'branch'] }.collect { it.id }
@@ -144,10 +189,7 @@ def call(Map config = [:]) {
   ])
 
   timeout(time: 4, unit: 'HOURS') {
-    // forge.sh reads the git server from these (and the token each call binds), so an agent needs no
-    // catalog of its own to talk to it.
-    withEnv(["GITHUB_OWNER=${owner}", "YGGDRASIL_REPOSITORY=${repository}", "FORGE_TYPE=${forge.type}",
-             "FORGE_URL=${forge.url}", "FORGE_API_URL=${forge.api}", "FORGE_OWNER=${owner}"]) {
+    withForgeEnvironment(ctx) {
       if (env.TAG_NAME) {
         // Owner-tagged releases are a later version of this library; a tag builds nothing here yet.
         echo "Nothing to do for the tag ${printable(env.TAG_NAME)}: this library version does not release tags."
@@ -159,6 +201,38 @@ def call(Map config = [:]) {
       }
       branchBuild(ctx, plan)
     }
+  }
+}
+
+// What the catalog says about a job: [app, repo (its git repository), forge, mirror, checksTimeout (of
+// its first environment), plan (its environments, resolved), releaseArtifacts, tags (its version tag
+// pattern), owner, repository (this repository's name)]. Fails unless `app` is a catalog id of an
+// application or a repositories entry.
+Map catalogContext(String app) {
+  if (!(app ==~ CATALOG_ID)) {
+    error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
+  }
+  Map catalog = loadCatalog()
+  Map application = findApplication(catalog, app)
+  Map repositoryEntry = application == null ? findRepositoryEntry(catalog, app) : null
+  if (application == null && repositoryEntry == null) {
+    error "'${app}' is not an application or a repositories entry in ${CATALOG}"
+  }
+  // A repositories entry (a library, yggdrasil itself) has no environments: it never deploys.
+  List plan = application != null ? resolve(catalog, app) : []
+  return [app: app, repo: application != null ? (application.repository ?: app) : app, forge: forgeOf(catalog),
+          mirror: mirrorOf(catalog), checksTimeout: (plan ? plan[0].checksTimeout : 3600) as int, plan: plan,
+          releaseArtifacts: application?.releaseArtifacts == true,
+          tags: application != null ? 'v*' : (repositoryEntry.tags ?: 'v*').toString(),
+          owner: catalog.owner.toString(), repository: (catalog.repository ?: 'yggdrasil').toString()]
+}
+
+// forge.sh reads the git server from these (and the token each call binds), so an agent needs no
+// catalog of its own to talk to it.
+def withForgeEnvironment(Map ctx, Closure body) {
+  withEnv(["GITHUB_OWNER=${ctx.owner}", "YGGDRASIL_REPOSITORY=${ctx.repository}", "FORGE_TYPE=${ctx.forge.type}",
+           "FORGE_URL=${ctx.forge.url}", "FORGE_API_URL=${ctx.forge.api}", "FORGE_OWNER=${ctx.owner}"]) {
+    body()
   }
 }
 
@@ -179,7 +253,13 @@ void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
           error "Not releasing: ${failed.join(', ')} failed."
         }
       }
-      release(app, plan.findAll { it.trigger == 'release' }, releaseArtifacts, ctx.repo)
+      List environments = plan.findAll { it.trigger == 'release' }
+      if (ctx.forge.type == 'github' && state.config == null) {
+        // A GitHub installation's repository without yggdrasil.yml releases exactly as it always did.
+        release(app, environments, releaseArtifacts, ctx.repo)
+      } else {
+        releasePullRequest(ctx, state, environments)
+      }
     }
     return
   }
@@ -271,29 +351,12 @@ Map prepare(Map ctx, String mode, boolean deploying = false) {
     node('ci') {
       try {
         checkoutCommit(ctx, state.sha)
-        String tmp = scratch()
-        // The controller's catalog, the one the job was created from, not the checkout's copy.
-        dir(tmp) {
-          writeFile file: 'catalog.yaml', text: catalogText()
-        }
-        withEnv(["YGG_TMP=${tmp}", "YGG_JOB=${ctx.app}", "YGG_CATALOG=${tmp}/catalog.yaml"]) {
-          int code = sh(script: '''
-            python3 yggdrasil/scripts/pipeline_config.py describe "$YGG_JOB" app >"$YGG_TMP/describe.json"
-          ''', returnStatus: true)
-          String text = readScratch(tmp, 'describe.json')
-          // describe exits 0 with a usable document, or 1 with the document's `errors`. Anything else
-          // (a crash with half a document, no document, exit 1 and no errors) is a failure: reading it
-          // as "no yggdrasil.yml" would let a broken describe turn every check off.
-          def document = text.trim() ? parseJson(text) : null
-          if (!(document instanceof Map) || (code != 0 && !document.errors)) {
-            error "pipeline_config.py describe failed (exit ${code}); its message is above."
-          }
-          if (document.errors) {
-            error "yggdrasil.yml cannot be used:\n${bulleted(document.errors as List)}"
-          }
-          state.entry = document.entry
-          state.config = document.config
-          if (state.config != null) {
+        Map document = describeCheckout(ctx)
+        state.entry = document.entry
+        state.config = document.config
+        if (state.config != null) {
+          String tmp = scratch()
+          withEnv(["YGG_TMP=${tmp}", "YGG_JOB=${ctx.app}", "YGG_CATALOG=${tmp}/catalog.yaml"]) {
             state.plan = planChecks(ctx, state, mode, deploying)
           }
         }
@@ -304,6 +367,37 @@ Map prepare(Map ctx, String mode, boolean deploying = false) {
     }
   }
   return state
+}
+
+// On an agent, with the repository checked out in ./app (the ci agent for a build's checks, the release
+// agent for actions-release): pipeline_config.py describe against the controller's catalog -- the one
+// the job was created from, not the checkout's copy, written to the scratch directory as catalog.yaml,
+// where planChecks reads it too. Returns the document ([entry, config]); a file the catalog does not
+// allow fails the build.
+Map describeCheckout(Map ctx) {
+  String tmp = scratch()
+  dir(tmp) {
+    writeFile file: 'catalog.yaml', text: catalogText()
+  }
+  Map described = null
+  withEnv(["YGG_TMP=${tmp}", "YGG_JOB=${ctx.app}", "YGG_CATALOG=${tmp}/catalog.yaml"]) {
+    int code = sh(script: '''
+      python3 yggdrasil/scripts/pipeline_config.py describe "$YGG_JOB" app >"$YGG_TMP/describe.json"
+    ''', returnStatus: true)
+    String text = readScratch(tmp, 'describe.json')
+    // describe exits 0 with a usable document, or 1 with the document's `errors`. Anything else (a crash
+    // with half a document, no document, exit 1 and no errors) is a failure: reading it as "no
+    // yggdrasil.yml" would let a broken describe turn every check off.
+    def document = text.trim() ? parseJson(text) : null
+    if (!(document instanceof Map) || (code != 0 && !document.errors)) {
+      error "pipeline_config.py describe failed (exit ${code}); its message is above."
+    }
+    if (document.errors) {
+      error "yggdrasil.yml cannot be used:\n${bulleted(document.errors as List)}"
+    }
+    described = [entry: document.entry, config: document.config]
+  }
+  return described
 }
 
 // Inside prepare(): the commit's statuses (who already checked what) and the changed files, then
@@ -602,29 +696,14 @@ void withCheckCredentials(Map check, Map entry, Closure body) {
 // The check wrote into that checkout as root, so it can leave a symbolic link to anything on the agent
 // (its own files, another workspace, @tmp with the env files) named like a result. archiveArtifacts
 // is told not to follow links, and junit and stash have no such switch: so before anything is
-// collected, a link in the checkout that resolves outside it refuses the whole collection.
+// collected, a link in the checkout that resolves outside it refuses the whole collection (LINK_GUARD).
 void collectResults(Map check) {
   if (!check.junit && !check.archive) {
     return
   }
   try {
     dir('app') {
-      int links = sh(script: '''
-        root=$(pwd -P)
-        export root
-        outside=$(find . -path ./.git -prune -o -type l -exec sh -c '
-          for link; do
-            case "$(realpath -m -- "$link")" in
-              "$root" | "$root"/*) ;;
-              *) echo "$link" ;;
-            esac
-          done' sh {} +)
-        if [ -n "$outside" ]; then
-          echo "Links that lead out of the checkout:" >&2
-          echo "$outside" | head -n 20 >&2
-          exit 3
-        fi
-      ''', returnStatus: true)
+      int links = sh(script: LINK_GUARD, returnStatus: true)
       if (links != 0) {
         error "a link in the checkout leads outside it (exit ${links}); nothing of ${check.name} is collected"
       }
@@ -647,29 +726,22 @@ void collectResults(Map check) {
 
 // On Forgejo with a GitHub mirror, a pull request into develop also needs the entry's actionsChecks,
 // the Windows and macOS jobs GitHub Actions runs on the mirror. Each is set pending, then looked at
-// once a minute -- each look on the publish agent (never ci: the GitHub App's token must not sit next to
-// the repositories' check code), the wait between looks outside node(), so waiting never holds an
-// agent -- until github.sh actions-status says they all passed (0) or one failed (1), or
+// once a minute (pollGithub: each look on the publish agent, never ci -- the GitHub App's token must
+// not sit next to the repositories' check code -- the wait between looks outside node(), so waiting
+// never holds an agent) until github.sh actions-status says they all passed (0) or one failed (1), or
 // checksTimeout runs out. Then each is copied to the forge with the GitHub run as its target. Not
 // finished in time (still running, or GitHub not answering: exit 2 or 3): pending, "GitHub Actions
 // didn't answer", and the build ends unstable; a rebuild looks again.
 void copyActionsChecks(Map ctx, Map state) {
   List names = state.entry.actionsChecks as List
-  if (!ctx.forge.publishAgent) {
-    error "GitHub Actions results are read on the publish agent, and catalog.yaml has none (set forge.publishAgent, or have an environment with trigger: release)."
-  }
+  requirePublishAgent(ctx)
   stage('GitHub Actions') {
     for (String name : names) {
       reportStatus(ctx.repo, state.sha, 'pending', name, 'Waiting for GitHub Actions')
     }
-    long deadline = System.currentTimeMillis() + ctx.checksTimeout * 1000L
-    Map look = actionsLook(ctx, state.sha, names)
-    while (!(look.code in [0, 1]) && System.currentTimeMillis() < deadline) {
-      echo "GitHub Actions has not finished (actions-status exit ${look.code}); looking again in ${ACTIONS_POLL_SECONDS} s."
-      sleep time: ACTIONS_POLL_SECONDS, unit: 'SECONDS'
-      look = actionsLook(ctx, state.sha, names)
-    }
-    boolean finished = look.code in [0, 1]
+    Map look = pollGithub(ctx, ctx.checksTimeout, 'GitHub Actions', ['actions-status', ctx.repo, state.sha] + names, [0, 1],
+                          ACTIONS_POLL_SECONDS)
+    boolean finished = look.finished
     Map seen = actionsResults(look.out, names)
     for (String name : names) {
       Map result = seen[name] as Map
@@ -689,30 +761,686 @@ void copyActionsChecks(Map ctx, Map state) {
   }
 }
 
-// One look at the actionsChecks on the mirror (owner mirror.github, the same repository name), on the
-// publish agent (forge.publishAgent: the agent that already holds the GitHub App for releases) with the
-// App's token. Returns [code: actions-status' exit, out: its lines].
-Map actionsLook(Map ctx, String sha, List names) {
-  Map look = [code: 2, out: '']
+// Looks at GitHub with `github.sh <arguments>` until it exits with one of `done` or `seconds` run out:
+// each look a short call on the publish agent (githubLook), the wait between two looks (`every`
+// seconds, less when the time is nearly up) outside node(), so a wait of an hour holds no executor.
+// Returns the last look, [code, out], with finished: whether its code is one of `done`.
+Map pollGithub(Map ctx, int seconds, String what, List arguments, List done, int every) {
+  long deadline = System.currentTimeMillis() + seconds * 1000L
+  Map look = githubLook(ctx, arguments)
+  while (!(look.code in done) && System.currentTimeMillis() < deadline) {
+    long left = (deadline - System.currentTimeMillis()).intdiv(1000L) + 1
+    int wait = Math.max(1L, Math.min((long) every, left)) as int
+    echo "${what}: not there yet (github.sh ${arguments[0]} exit ${look.code}); looking again in ${wait} s."
+    sleep time: wait, unit: 'SECONDS'
+    look = githubLook(ctx, arguments)
+  }
+  look.finished = look.code in done
+  return look
+}
+
+// One call of github.sh on the publish agent (forge.publishAgent: the agent that holds the GitHub App
+// for releases), with the App's token, against the repositories' GitHub owner (githubOwner). Returns
+// [code: its exit, out: its stdout].
+Map githubLook(Map ctx, List arguments) {
+  return onPublishAgent(ctx, false, true) {
+    String tmp = scratch()
+    int code = 2
+    withEnv(["GITHUB_OWNER=${githubOwner(ctx)}"]) {
+      code = toolStatus('github.sh', arguments, "${tmp}/github.out")
+    }
+    return [code: code, out: readScratch(tmp, 'github.out')]
+  }
+}
+
+// Where a repository's GitHub Actions run: on Forgejo, its push mirror (owner mirror.github, the same
+// repository name); on GitHub, the repository itself.
+String githubOwner(Map ctx) {
+  return ctx.mirror != null ? ctx.mirror.github : env.GITHUB_OWNER
+}
+
+// Whether the repositories have GitHub Actions at all: GitHub itself, or Forgejo with a mirror.
+boolean githubActions(Map ctx) {
+  return ctx.forge.type == 'github' || ctx.mirror != null
+}
+
+// ---- The publish agent ----
+
+void requirePublishAgent(Map ctx) {
+  if (!ctx.forge.publishAgent) {
+    error "Merges, tags, releases and GitHub Actions run on the publish agent, and catalog.yaml has none (set forge.publishAgent, or have an environment with trigger: release)."
+  }
+}
+
+// The body on the publish agent (forge.publishAgent), with this repository's tools in ./yggdrasil and,
+// bound for it, the git server's write token (`write`: FORGE_TOKEN, for merges, tags, releases and
+// uploads) and the GitHub App's (`github`: GH_TOKEN, for GitHub Actions and a release's GitHub copy).
+// The one place a node gets either: the ci and release agents never do (scripts/test_pipeline_library.py
+// checks it). The workspace and the scratch directory are wiped afterwards. Returns the body's value.
+def onPublishAgent(Map ctx, boolean write, boolean github, Closure body) {
+  requirePublishAgent(ctx)
+  def result = null
   node(ctx.forge.publishAgent) {
     try {
       checkoutTools()
-      String tmp = scratch()
-      withEnv(["GITHUB_OWNER=${ctx.mirror.github}"]) {
-        withForgeToken('github') {
-          look.code = toolStatus('github.sh', ['actions-status', ctx.repo, sha] + names, "${tmp}/actions-status")
-        }
-      }
-      look.out = readScratch(tmp, 'actions-status')
+      Closure withGithub = { github ? withForgeToken('github') { body() } : body() }
+      result = write ? withForgeToken('write') { withGithub() } : withGithub()
     } finally {
       cleanScratch()
       cleanWs()
     }
   }
-  return look
+  return result
 }
 
-// ---- Releases (the release pull request; unchanged apart from the statuses' helper) ----
+// ---- The release pull request (Forgejo, and GitHub repositories with yggdrasil.yml) ----
+
+// The release pull request, once its branch policy and checks passed: everything that can be found
+// wrong is looked for first, then
+//   1. the entry's actionsChecks on GitHub Actions (the commit, on the mirror for Forgejo), waited for
+//      outside node() up to the first release environment's checksTimeout: a failure fails the
+//      release; not finished (GitHub not answering, the mirror without the commit, still running) asks
+//      the skip (askToSkip);
+//   2. every trigger: release environment in catalog order, deploy/<environment> after each (with
+//      "without GitHub Actions checks" after a skip);
+//   3. on the publish agent: the merge (titled "release: v<version> (#N)", which release_notes.py
+//      leaves out of the notes) and the tag v<version> on the merge commit;
+//   4. with yggdrasil.yml's release: the release files (releaseFiles: built on the release agent,
+//      the Windows ones from GitHub, validated on the release agent);
+//   5. on the publish agent: the notes and publish-release.sh (publishRelease), which makes the
+//      drafts, uploads and checks the files and publishes the release (Forgejo, then GitHub last);
+//   6. the release branch deleted -- kept, with a note, where Forgejo protects it.
+// The build's description is v<version> (" (deployed without GitHub Actions checks)" after a skip); it
+// is unstable when Windows files are missing (published without them, listed in the notes and the
+// log; the actions-release job attaches them later).
+void releasePullRequest(Map ctx, Map state, List environments) {
+  String app = ctx.app
+  if (!environments) {
+    echo "${app} has no environment with trigger: release; nothing deploys on this pull request."
+    return
+  }
+  String version = (env.CHANGE_BRANCH =~ RELEASE_BRANCH)[0][1]
+  String tag = "v${version}"
+  if (!(env.CHANGE_ID ==~ '[0-9]+')) {
+    error "'${printable(env.CHANGE_ID)}' is not a pull request number"
+  }
+  Map releaseConfig = state.config?.release as Map
+  if (ctx.releaseArtifacts) {
+    if (releaseConfig == null) {
+      error "releaseArtifacts: true is GitHub's release-artifacts.yml path, for a repository without yggdrasil.yml on GitHub; here, declare the release files in yggdrasil.yml (release). Nothing was deployed."
+    }
+    echo "releaseArtifacts is left aside: yggdrasil.yml's release says what this release publishes."
+  }
+  if (releaseConfig != null) {
+    String problem = releaseProblem(releaseConfig)
+    if (problem) {
+      error "yggdrasil.yml's release cannot be used: ${problem}. Nothing was deployed."
+    }
+    if (releaseConfig.windows && !githubActions(ctx)) {
+      error "release.windows needs GitHub Actions, and this installation has no GitHub mirror (catalog.yaml mirror). Nothing was deployed."
+    }
+  }
+  requirePublishAgent(ctx)
+  int seconds = environments[0].checksTimeout as int
+
+  boolean skipped = waitForReleaseActions(ctx, state, seconds)
+  String note = skipped ? " (${SKIPPED})" : ''
+  for (Map environment : environments) {
+    reportStatus(ctx.repo, state.sha, 'pending', "deploy/${environment.id}", "Waiting to deploy to ${environment.name}${note}")
+  }
+  for (Map environment : environments) {
+    deployTo(app, environment, version, state.sha, false, ctx.repo, [], null, note)
+  }
+
+  String merged = mergeAndTag(ctx, state.sha, version, tag)
+  Map files = releaseConfig != null ? releaseFiles(ctx, state.entry, releaseConfig, tag, merged, skipped, seconds) : [stash: null, missing: []]
+  List urls = publishRelease(ctx, state.entry, version, tag, merged, files)
+  currentBuild.description = "${tag}${skipped ? ' (deployed without GitHub Actions checks)' : ''}"
+  echo "Released ${tag}: ${urls.join(' ')}"
+  if (files.missing) {
+    unstable "${tag} was published without its Windows files: ${files.missing.join(', ')} (${files.reason}). The actions-release job attaches them."
+  }
+  deleteReleaseBranch(ctx)
+}
+
+// Stage Wait for GitHub Actions: the entry's actionsChecks on the release's commit, for as long as
+// `seconds`. Returns whether the release goes on without them (the skip). Exit 1 fails the release;
+// exit 2 or 3 at the end (GitHub not answering, the mirror without the commit, still running) asks,
+// outside node(), whether to deploy without them: the answer is recorded in the log, and the caller
+// records it in the deploy/<environment> statuses and the build's description.
+boolean waitForReleaseActions(Map ctx, Map state, int seconds) {
+  List names = (state.entry.actionsChecks ?: []) as List
+  boolean skipped = false
+  stage('Wait for GitHub Actions') {
+    if (!names) {
+      echo 'No actionsChecks in catalog.yaml: nothing to wait for on GitHub Actions.'
+      return
+    }
+    if (!githubActions(ctx)) {
+      echo "No GitHub mirror (catalog.yaml mirror): ${names.join(', ')} cannot run, nothing to wait for."
+      return
+    }
+    Map look = pollGithub(ctx, seconds, 'GitHub Actions', ['actions-status', ctx.repo, state.sha] + names, [0, 1],
+                          ACTIONS_POLL_SECONDS)
+    if (look.out?.trim()) {
+      echo printable(look.out.trim())
+    }
+    if (look.code == 1) {
+      error "GitHub Actions: a check failed (${names.join(', ')}). Not releasing."
+    }
+    if (look.code == 0) {
+      echo "GitHub Actions: ${names.join(', ')} passed."
+      return
+    }
+    echo "GitHub Actions checks didn't finish within ${seconds} s (actions-status exit ${look.code}): ${names.join(', ')}."
+    askToSkip()
+    skipped = true
+    echo "Deploying without GitHub Actions checks: ${names.join(', ')} did not finish. This is recorded in the deploy/<environment> statuses and the build's description; Windows files are not built."
+  }
+  return skipped
+}
+
+// The skip: outside node(), like an approval. Abort fails the release (an interruption of the build
+// itself stays one).
+void askToSkip() {
+  try {
+    input id: 'SkipActions', message: SKIP_QUESTION, ok: SKIP_BUTTON
+  } catch (FlowInterruptedException interruption) {
+    if (rejected(interruption)) {
+      error 'Not released: the skip was declined, and GitHub Actions checks did not finish.'
+    }
+    throw interruption
+  }
+}
+
+// Whether an input was answered with Abort (its interruption carries a Rejection).
+@NonCPS
+boolean rejected(FlowInterruptedException interruption) {
+  return interruption.causes.any { it.getClass().simpleName == 'Rejection' }
+}
+
+// Stage Merge and tag, on the publish agent: the pull request merged at the deployed commit (merge-pr
+// refuses if its head moved) with the title release_notes.py knows, and the tag on the merge commit --
+// made unless an earlier run made it there already. Returns the merge commit.
+String mergeAndTag(Map ctx, String sha, String version, String tag) {
+  String merged = null
+  stage('Merge and tag') {
+    merged = onPublishAgent(ctx, true, false) {
+      String commit = tool('forge.sh', ['merge-pr', ctx.repo, env.CHANGE_ID, sha, "release: v${version} (#${env.CHANGE_ID})"], true)
+      if (!(commit ==~ COMMIT)) {
+        error "forge.sh merge-pr answered '${printable(commit)}', not a commit"
+      }
+      ensureTag(ctx, tag, commit)
+      return commit
+    }
+    echo "Merged as ${merged.take(7)}, tagged ${tag}."
+  }
+  return merged
+}
+
+// On the publish agent, with the write token: the tag on `sha`, created when the git server has none;
+// a tag of that name on another commit fails the release.
+void ensureTag(Map ctx, String tag, String sha) {
+  String tmp = scratch()
+  int code = toolStatus('forge.sh', ['tag-sha', ctx.repo, tag], "${tmp}/tag-sha")
+  if (code == 4) {
+    tool('forge.sh', ['create-tag', ctx.repo, tag, sha])
+    return
+  }
+  if (code != 0) {
+    error "forge.sh tag-sha exited ${code}; its message is above."
+  }
+  String tagged = readScratch(tmp, 'tag-sha').trim()
+  if (tagged != sha) {
+    error "The tag ${tag} is on ${printable(tagged).take(7)}, not on the release's ${sha.take(7)}."
+  }
+  echo "The tag ${tag} is on ${sha.take(7)} already."
+}
+
+// Stage Clean up, on the publish agent: the release branch deleted. Forgejo protects release/* (exit 3:
+// the server keeps it), which is a note, not a failure.
+void deleteReleaseBranch(Map ctx) {
+  stage('Clean up') {
+    onPublishAgent(ctx, true, false) {
+      int code = toolStatus('forge.sh', ['delete-branch', ctx.repo, env.CHANGE_BRANCH], "${scratch()}/delete-branch")
+      if (code == 3) {
+        echo "${printable(env.CHANGE_BRANCH)} ${KEPT_BRANCH}"
+      } else if (code != 0) {
+        error "forge.sh delete-branch exited ${code}; its message is above."
+      }
+    }
+  }
+}
+
+// ---- Release files (shared with the owner-tagged releases and the actions-release job) ----
+
+// Stage Release files, for yggdrasil.yml's release on the tag `tag` (commit `sha`):
+//   - release.build on the release agent: the tag checked out with the read credential, the build run
+//     with run-check.sh in its image (credentials from release.build.credentials, allow-listed like a
+//     check's), each of release.build.files stashed (buildReleaseFiles);
+//   - release.windows: the workflow dispatched on the tag, its files from GitHub (windowsFiles); after
+//     a skip, or when that fails, they are missing;
+//   - everything gathered on the release agent, release.validate run over it, and the validated set
+//     stashed as release-files (gatherReleaseFiles).
+// Returns [stash: 'release-files', missing: the missing Windows files (globs, or the workflow's name),
+// reason: why they are missing].
+Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, boolean skipped, int seconds) {
+  Map files = [stash: null, missing: [], reason: '']
+  stage('Release files') {
+    List built = releaseConfig.build ? buildReleaseFiles(ctx, entry, releaseConfig.build as Map, tag, sha) : []
+    List windows = []
+    if (releaseConfig.windows) {
+      Map got = skipped ? [stashes: null, reason: 'GitHub Actions checks were skipped'] : windowsFiles(ctx, releaseConfig.windows as Map, tag, seconds)
+      if (got.stashes == null) {
+        files.missing = windowsNames(releaseConfig.windows as Map)
+        files.reason = got.reason
+        echo "The Windows files are missing (${got.reason}): ${files.missing.join(', ')}. The release goes on without them."
+      } else {
+        windows = got.stashes
+      }
+    }
+    files.stash = gatherReleaseFiles(ctx, releaseConfig, tag, sha, built, windows)
+  }
+  return files
+}
+
+// On the release agent: the tag checked out, release.build run in its image (from the application's
+// root, with RELEASE_TAG and RELEASE_VERSION and its allow-listed credentials in its env file), then
+// each glob of release.build.files stashed (release-build-<n>) after LINK_GUARD -- a glob matching no
+// file fails the release, a link leading out of the checkout refuses all of them. Returns the stashes.
+List buildReleaseFiles(Map ctx, Map entry, Map build, String tag, String sha) {
+  List globs = (build.files ?: []) as List
+  List stashes = []
+  node('release') {
+    try {
+      checkoutTag(ctx, tag, sha)
+      withCheckCredentials([name: 'release-build', credentials: build.credentials], entry) { String envFile ->
+        withEnv(["YGG_IMAGE=${build.image}", "YGG_RUN=${build.run}", "YGG_ENV_FILE=${envFile ?: "${scratch()}/release-build.env"}",
+                 "YGG_TAG=${tag}", "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+          int code = sh(script: '''
+            umask 077
+            mkdir -p "$(dirname "$YGG_ENV_FILE")"
+            printf 'RELEASE_TAG=%s\\nRELEASE_VERSION=%s\\n' "$YGG_TAG" "$YGG_VERSION" >>"$YGG_ENV_FILE"
+            bash yggdrasil/scripts/run-check.sh release-build "$YGG_IMAGE" "$WORKSPACE/app" --env-file "$YGG_ENV_FILE" \\
+              -- sh -c "$YGG_RUN"
+          ''', returnStatus: true)
+          if (code != 0) {
+            error "release.build failed (exit ${code}): nothing is published."
+          }
+        }
+      }
+      dir('app') {
+        refuseLinks(false, 'the release build')
+        for (int i = 0; i < globs.size(); i++) {
+          String name = "release-build-${i}"
+          stashGlob(name, globs[i] as String, 'release.build.files')
+          stashes << name
+        }
+      }
+    } finally {
+      cleanScratch()
+      cleanWs()
+    }
+  }
+  return stashes
+}
+
+// The Windows files of a release from GitHub: once the mirror has pushed the tag (on GitHub itself it is
+// there), the repository's release.windows.workflow is dispatched on it with tag=<tag>, its run watched
+// until it ends or `seconds` run out, and its artifacts downloaded. Every step is a short call on the
+// publish agent -- the GitHub App's token never reaches the release agent -- and every wait between
+// them is outside node(). The files matching release.windows.files (every file without it, the
+// artifacts each in a directory of its name) are stashed there as windows-files-<n>. Returns
+// [stashes] when they are there, [stashes: null, reason] when they could not be had.
+Map windowsFiles(Map ctx, Map windows, String tag, int seconds) {
+  String workflow = windows.workflow
+  Map look = pollGithub(ctx, TAG_WAIT_SECONDS, "${tag} on GitHub", ['wait-ref', ctx.repo, "refs/tags/${tag}", '0'], [0],
+                        TAG_POLL_SECONDS)
+  if (!look.finished) {
+    return [stashes: null, reason: "${tag} did not reach GitHub within ${TAG_WAIT_SECONDS} s"]
+  }
+  look = githubLook(ctx, ['dispatch', ctx.repo, workflow, tag, "tag=${tag}"])
+  String run = (look.out ?: '').trim()
+  if (look.code != 0 || !(run ==~ '[0-9]{1,20}')) {
+    return [stashes: null, reason: "${workflow} could not be started on ${tag} (dispatch exit ${look.code})"]
+  }
+  echo "GitHub Actions: ${workflow} runs on ${tag} as run ${run}."
+  look = pollGithub(ctx, seconds, "${workflow} run ${run}", ['run-status', ctx.repo, run], [0, 1], ACTIONS_POLL_SECONDS)
+  if (look.code != 0) {
+    return [stashes: null, reason: look.finished ? "${workflow} run ${run} failed" : "${workflow} run ${run} did not finish within ${seconds} s"]
+  }
+  List globs = windows.files ? (windows.files as List) : ['**']
+  try {
+    return onPublishAgent(ctx, false, true) {
+      String downloads = "${env.WORKSPACE}/windows-download"
+      int code = 2
+      withEnv(["GITHUB_OWNER=${githubOwner(ctx)}"]) {
+        code = toolStatus('github.sh', ['download-artifacts', ctx.repo, run, downloads], '')
+      }
+      if (code != 0) {
+        return [stashes: null, reason: "the artifacts of ${workflow} run ${run} could not be downloaded (exit ${code})"]
+      }
+      List stashes = []
+      dir('windows-download') {
+        refuseLinks(true, 'the Windows files')
+        for (int i = 0; i < globs.size(); i++) {
+          String name = "windows-files-${i}"
+          stashGlob(name, globs[i] as String, 'release.windows.files')
+          stashes << name
+        }
+      }
+      return [stashes: stashes]
+    }
+  } catch (FlowInterruptedException interruption) {
+    throw interruption
+  } catch (Exception problem) {
+    return [stashes: null, reason: "the files of ${workflow} run ${run} could not be had: ${safeText(problem.message, 300)}"]
+  }
+}
+
+// What a release lists as missing when its Windows files could not be had: release.windows.files, or
+// the workflow's name when it declares none.
+@NonCPS
+List windowsNames(Map windows) {
+  return windows.files ? (windows.files as List).collect { it.toString() } : [windows.workflow.toString()]
+}
+
+// On the release agent: the release's files in release-files/ (release.build's under build/, at their
+// paths in the checkout; the Windows ones under windows/<artifact>/), with no link among them, then
+// release.validate run over them -- in its image, from the application's root (the tag checked out), the
+// whole workspace mounted and RELEASE_FILES, RELEASE_TAG and RELEASE_VERSION in its environment -- and
+// what it leaves there (checked for links again: it ran as root) stashed as release-files: the set the
+// uploads are checked against. A validation that fails stops the release here: publish-release.sh, which
+// is what creates the drafts, is never called, so there is nothing to publish (and no draft at all).
+// Returns the stash's name.
+String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, List built, List windows) {
+  Map validate = releaseConfig.validate as Map
+  node('release') {
+    try {
+      if (validate) {
+        checkoutTag(ctx, tag, sha)
+      }
+      dir('release-files') {
+        deleteDir()
+      }
+      sh(script: 'mkdir -p release-files/build release-files/windows')
+      dir('release-files/build') {
+        for (String name : built) {
+          unstash name
+        }
+      }
+      dir('release-files/windows') {
+        for (String name : windows) {
+          unstash name
+        }
+      }
+      dir('release-files') {
+        refuseLinks(true, 'the release files')
+      }
+      if (validate) {
+        withEnv(["YGG_IMAGE=${validate.image}", "YGG_RUN=${validate.run}", "YGG_TMP=${scratch()}", "YGG_TAG=${tag}",
+                 "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+          int code = sh(script: '''
+            umask 077
+            mkdir -p "$YGG_TMP"
+            env_file="$YGG_TMP/release-validate.env"
+            {
+              printf 'RELEASE_FILES=%s\\n' "$WORKSPACE/release-files"
+              printf 'RELEASE_TAG=%s\\n' "$YGG_TAG"
+              printf 'RELEASE_VERSION=%s\\n' "$YGG_VERSION"
+            } >"$env_file"
+            bash yggdrasil/scripts/run-check.sh release-validate "$YGG_IMAGE" "$WORKSPACE" --env-file "$env_file" \\
+              -- sh -c 'cd app && exec sh -c "$1"' sh "$YGG_RUN"
+          ''', returnStatus: true)
+          if (code != 0) {
+            error "release.validate failed (exit ${code}): nothing is published, and no draft release was made."
+          }
+        }
+        dir('release-files') {
+          refuseLinks(true, 'the validated release files')
+        }
+      }
+      dir('release-files') {
+        stash name: 'release-files', includes: '**', allowEmpty: true
+      }
+    } finally {
+      cleanScratch()
+      cleanWs()
+    }
+  }
+  return 'release-files'
+}
+
+// Stage Publish the release, on the publish agent: the notes (release_notes.py: the version's CHANGELOG.md
+// section, else the pull requests merged since the previous tag), the files (the release-files stash,
+// nothing else) and publish-release.sh, with the release's GitHub copy when the catalog's mirror.releases
+// is on (the tag waited for first, outside node(): the mirror pushes it). Returns the releases' addresses.
+List publishRelease(Map ctx, Map entry, String version, String tag, String sha, Map files) {
+  boolean mirrorReleases = mirrorsReleases(ctx)
+  List urls = []
+  stage('Publish the release') {
+    if (mirrorReleases) {
+      Map look = pollGithub(ctx, TAG_WAIT_SECONDS, "${tag} on GitHub", ['wait-ref', ctx.repo, "refs/tags/${tag}", '0'], [0],
+                            TAG_POLL_SECONDS)
+      if (!look.finished) {
+        error "${tag} did not reach GitHub within ${TAG_WAIT_SECONDS} s: its GitHub copy cannot be made. Nothing is published; start the build again once the mirror has pushed it."
+      }
+    }
+    urls = onPublishAgent(ctx, true, mirrorReleases) {
+      // The history and the tags, for the notes: the read credential, as on every other agent.
+      checkoutCommit(ctx, sha)
+      String tmp = scratch()
+      dir('release-files') {
+        deleteDir()
+      }
+      sh(script: 'mkdir -p release-files')
+      dir('release-files') {
+        if (files.stash) {
+          unstash files.stash
+        }
+        refuseLinks(true, 'the release files')
+      }
+      withEnv(["YGG_TMP=${tmp}", "YGG_TAG=${tag}", "YGG_VERSION=${version}", "YGG_TAGS=${entry?.tags ?: ctx.tags}"]) {
+        sh(script: '''
+          mkdir -p "$YGG_TMP"
+          set --
+          if previous=$(git -C app describe --tags --abbrev=0 --match "$YGG_TAGS" --exclude "$YGG_TAG" HEAD 2>/dev/null); then
+            set -- "$previous"
+          fi
+          python3 yggdrasil/scripts/release_notes.py app "$YGG_VERSION" "$@" >"$YGG_TMP/notes.md"
+        ''')
+      }
+      List arguments = [ctx.repo, tag, sha, tag, "${tmp}/notes.md", "${env.WORKSPACE}/release-files"]
+      if (mirrorReleases) {
+        arguments << '--mirror-releases'
+      }
+      if (files.missing) {
+        arguments += ['--missing', files.missing.join(',')]
+      }
+      String out = ''
+      // The tag is on GitHub already (above): publish-release.sh's own wait for it is a last look.
+      withEnv(["GITHUB_OWNER=${githubOwner(ctx)}", 'GITHUB_TAG_WAIT=30']) {
+        out = tool('publish-release.sh', arguments, true)
+      }
+      return (out ?: '').readLines().findAll { it.trim() }
+    }
+  }
+  return urls
+}
+
+// Whether a release gets a GitHub copy: Forgejo with a mirror whose releases are on (the default).
+boolean mirrorsReleases(Map ctx) {
+  return ctx.forge.type == 'forgejo' && ctx.mirror != null && ctx.mirror.releases
+}
+
+// On the release (or publish) agent: the commit `sha` in ./app (checkoutCommit, the read credential),
+// which the tag `tag` must point to.
+String checkoutTag(Map ctx, String tag, String sha) {
+  if (!(tag ==~ TAG)) {
+    error "'${printable(tag)}' is not a tag"
+  }
+  String head = checkoutCommit(ctx, sha)
+  withEnv(["YGG_TAG=${tag}"]) {
+    String tagged = sh(script: 'git -C app rev-parse --verify --quiet "refs/tags/$YGG_TAG^{commit}" || true', returnStdout: true).trim()
+    if (tagged != sha) {
+      error "The tag ${tag} is on '${printable(tagged).take(7)}', not on ${sha.take(7)}."
+    }
+  }
+  return head
+}
+
+// In the current directory: LINK_GUARD -- with `any`, no symbolic link at all, else none leading out of it.
+void refuseLinks(boolean any, String what) {
+  withEnv(["YGG_ANY_LINK=${any ? '1' : ''}"]) {
+    int code = sh(script: LINK_GUARD, returnStatus: true)
+    if (code != 0) {
+      error "${what}: refused, a symbolic link is among them (exit ${code}); nothing of them is used."
+    }
+  }
+}
+
+// One glob's files from the current directory, as the stash `name`: none fails the release (a declared
+// file that is not there is a broken release).
+void stashGlob(String name, String glob, String field) {
+  try {
+    stash name: name, includes: glob, allowEmpty: false
+  } catch (FlowInterruptedException interruption) {
+    throw interruption
+  } catch (Exception problem) {
+    error "${field}: '${printable(glob)}' matches no file (${safeText(problem.message, 200)})"
+  }
+}
+
+// What a release section must look like before anything of it is used (pipeline_config.py checks the
+// fields; this is the library's own look at what reaches a shell, a stash or GitHub). null when fine.
+@NonCPS
+String releaseProblem(Map releaseConfig) {
+  for (String part : ['build', 'validate']) {
+    Map section = releaseConfig[part] as Map
+    if (section == null) {
+      continue
+    }
+    if (!(section.image instanceof String) || !(section.image ==~ IMAGE)) {
+      return "release.${part}.image: '${printable(section.image)}' is not an image"
+    }
+    if (!(section.run instanceof String) || !section.run.trim()) {
+      return "release.${part}.run: no command to run"
+    }
+  }
+  Map build = releaseConfig.build as Map
+  Map windows = releaseConfig.windows as Map
+  if (windows != null && !(windows.workflow instanceof String && windows.workflow ==~ WORKFLOW)) {
+    return "release.windows.workflow: '${printable(windows?.workflow)}' is not a workflow file (name.yml)"
+  }
+  for (Map files : [[field: 'release.build.files', globs: build?.files], [field: 'release.windows.files', globs: windows?.files]]) {
+    for (Object glob : (files.globs ?: []) as List) {
+      if (!(glob instanceof String) || !(glob ==~ RELEASE_GLOB) || glob.split('/').any { it in ['.', '..', ''] }) {
+        return "${files.field}: '${printable(glob)}' is not a relative glob (letters, digits, . _ * ? + @ = - and /, no . or .. part)"
+      }
+    }
+  }
+  return null
+}
+
+// ---- The actions-release job ----
+
+// The actions-release job (platform/jenkins/controller/casc.yaml, its script jenkins/actions-release.groovy
+// kept in Jenkins): the Windows files of a release that was published without them (after the skip, or
+// a Windows run that failed), attached to it. Parameters REPOSITORY (a catalog id whose yggdrasil.yml at
+// the tag declares release.windows) and TAG (one of its version tags, which must exist). The workflow is
+// dispatched on the tag and waited for outside node(); its files are downloaded on the publish agent and
+// put on the release (and its GitHub copy) with publish-release.sh attach. Under the application's release
+// lock, so it never runs next to that application's release.
+void actionsRelease() {
+  String app = (params.REPOSITORY ?: '').toString().trim()
+  String tag = (params.TAG ?: '').toString().trim()
+  Map ctx = catalogContext(app)
+  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+    error "'${printable(tag)}' is not a version tag of ${app} (${ctx.tags})"
+  }
+  if (!githubActions(ctx)) {
+    error 'This installation has no GitHub mirror (catalog.yaml mirror): there is no GitHub Actions to get Windows files from.'
+  }
+  requirePublishAgent(ctx)
+  int seconds = ((ctx.plan.find { it.trigger == 'release' }?.checksTimeout) ?: 3600) as int
+  timeout(time: 4, unit: 'HOURS') {
+    withForgeEnvironment(ctx) {
+      lock(resource: "release-${app}") {
+        Map described = null
+        stage('Read the release') {
+          node('release') {
+            try {
+              checkoutTools()
+              String tmp = scratch()
+              int code = withForgeToken('read') {
+                return toolStatus('forge.sh', ['tag-sha', ctx.repo, tag], "${tmp}/tag-sha")
+              }
+              if (code == 4) {
+                error "${app} has no tag ${tag}."
+              }
+              if (code != 0) {
+                error "forge.sh tag-sha exited ${code}; its message is above."
+              }
+              String sha = readScratch(tmp, 'tag-sha').trim()
+              if (!(sha ==~ COMMIT)) {
+                error "forge.sh tag-sha answered '${printable(sha)}', not a commit"
+              }
+              checkoutTag(ctx, tag, sha)
+              Map document = describeCheckout(ctx)
+              described = [sha: sha, config: document.config]
+            } finally {
+              cleanScratch()
+              cleanWs()
+            }
+          }
+        }
+        Map releaseConfig = described.config?.release as Map
+        if (!releaseConfig?.windows) {
+          error "${app}'s yggdrasil.yml at ${tag} declares no release.windows: there are no Windows files to attach."
+        }
+        String problem = releaseProblem(releaseConfig)
+        if (problem) {
+          error "yggdrasil.yml's release cannot be used: ${problem}"
+        }
+        Map got = null
+        stage('Windows files') {
+          got = windowsFiles(ctx, releaseConfig.windows as Map, tag, seconds)
+        }
+        if (got.stashes == null) {
+          error "No Windows files for ${tag}: ${got.reason}. Nothing was attached."
+        }
+        boolean mirrorReleases = mirrorsReleases(ctx)
+        stage('Attach') {
+          List urls = onPublishAgent(ctx, true, mirrorReleases) {
+            dir('release-files') {
+              deleteDir()
+            }
+            sh(script: 'mkdir -p release-files')
+            dir('release-files') {
+              for (String name : got.stashes) {
+                unstash name
+              }
+              refuseLinks(true, 'the Windows files')
+            }
+            List arguments = ['attach', ctx.repo, tag, "${env.WORKSPACE}/release-files"]
+            if (mirrorReleases) {
+              arguments << '--mirror-releases'
+            }
+            String out = ''
+            withEnv(["GITHUB_OWNER=${githubOwner(ctx)}"]) {
+              out = tool('publish-release.sh', arguments, true)
+            }
+            return (out ?: '').readLines().findAll { it.trim() }
+          }
+          echo "Attached the Windows files of ${tag}: ${urls.join(' ')}"
+        }
+        currentBuild.description = "${app} ${tag}: Windows files attached"
+      }
+    }
+  }
+}
+
+// ---- Releases (GitHub, a repository without yggdrasil.yml: the path it always had) ----
 
 // The release pull request: every release environment in order, then merge, package, publish and
 // clean up. A packaging failure leaves the release draft private and fails the Jenkins build.
@@ -768,9 +1496,10 @@ void release(String app, List environments, boolean releaseArtifacts, String rep
 // see deploy.sh). inputs: checks whose stashed archives go into the build context (DEPLOY_INPUTS_DIR).
 // expectedSha (a push to develop, main or release/*): the commit the checks ran on; the deploy agent's
 // checkout must be that commit or nothing is deployed -- a push that lands while the checks run must not
-// deploy a commit no check saw. Checked without a status (branch builds post none).
+// deploy a commit no check saw. Checked without a status (branch builds post none). note: appended to
+// the deploy/<environment> descriptions (" (without GitHub Actions checks)" after the skip).
 void deployTo(String app, Map environment, String version, String statusSha, boolean start = false,
-              String repo = null, List inputs = [], String expectedSha = null) {
+              String repo = null, List inputs = [], String expectedSha = null, String note = '') {
   stage("Deploy to ${environment.name}") {
     if (environment.approval) {
       // Outside node(): waiting for a person must not hold an agent.
@@ -808,10 +1537,10 @@ void deployTo(String app, Map environment, String version, String statusSha, boo
     }
     if (statusSha) {
       if (failure == null) {
-        reportStatus(repo, sha, 'success', "deploy/${environment.id}", "Deployed to ${environment.name}")
+        reportStatus(repo, sha, 'success', "deploy/${environment.id}", "Deployed to ${environment.name}${note}")
       } else {
         catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-          reportStatus(repo, statusSha, 'failure', "deploy/${environment.id}", "Deploy to ${environment.name} failed")
+          reportStatus(repo, statusSha, 'failure', "deploy/${environment.id}", "Deploy to ${environment.name} failed${note}")
         }
       }
     }
@@ -1283,10 +2012,14 @@ String releaseAgent(Map catalog) {
   return agent
 }
 
-// The Forgejo -> GitHub mirror ([github: <owner>]), or null (catalog.py mirror()).
+// The Forgejo -> GitHub mirror ([github: <owner>, releases: whether releases get a GitHub copy, default
+// true]), or null (catalog.py mirror()).
 @NonCPS
 Map mirrorOf(Map catalog) {
-  return catalog.mirror ? [github: catalog.mirror.github.toString()] : null
+  if (!catalog.mirror) {
+    return null
+  }
+  return [github: catalog.mirror.github.toString(), releases: catalog.mirror.releases == null ? true : catalog.mirror.releases == true]
 }
 
 @NonCPS
@@ -1315,6 +2048,30 @@ List resolve(Map catalog, String app) {
     plan << resolved
   }
   return plan
+}
+
+// Whether `text` matches a catalog tag pattern (a glob with * and [classes], as catalog.py's TAG_PATTERN
+// allows; the Job DSL's globToRegex reads it the same way).
+@NonCPS
+boolean globMatches(String glob, String text) {
+  StringBuilder regex = new StringBuilder()
+  boolean inClass = false
+  for (String c : glob.collect { it }) {
+    if (inClass) {
+      regex.append(c)
+      inClass = c != ']'
+    } else if (c == '*') {
+      regex.append('.*')
+    } else if (c == '?') {
+      regex.append('.')
+    } else if (c == '[') {
+      regex.append(c)
+      inClass = true
+    } else {
+      regex.append(java.util.regex.Pattern.quote(c))
+    }
+  }
+  return text ==~ regex.toString()
 }
 
 @NonCPS

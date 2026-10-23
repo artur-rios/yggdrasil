@@ -39,7 +39,7 @@ LIBRARY = ROOT / "jenkins" / "library" / "vars" / "yggdrasilPipeline.groovy"
 FORGE_CREDENTIAL_IDS = ("forge-read", "forge-write", "forge-webhook", "github-app", "github-read")
 # Constants whose value is a shell script, accepted as `sh(script: <NAME>, ...)` when the constant itself
 # is a single-quoted literal (checked below).
-SCRIPT_CONSTANTS = ("TOOL",)
+SCRIPT_CONSTANTS = ("TOOL", "LINK_GUARD")
 # A top-level function definition: a return type (or def) at the start of a line, then name(.
 FUNCTION = re.compile(r"^(?:def|void|String|Map|List|boolean|int|long|Object)\s+([A-Za-z_]\w*)\s*\(", re.M)
 CALL = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
@@ -215,6 +215,30 @@ class Library:
             blocks.append((self.code[paren + 1:close].strip(), brace, matching(self.masked, brace, "{", "}")))
         return blocks
 
+    def call_blocks(self, name):
+        """[(block start, block end)] for every call `name(...) { ... }` (the closure given as its last
+        argument), the function's own definition left out."""
+        blocks = []
+        for match in re.finditer(rf"\b{name}\s*\(", self.masked):
+            if re.search(r"(?:def|void|String|Map|List|boolean|int)\s+$", self.masked[max(0, match.start() - 20):match.start()]):
+                continue
+            paren = match.end() - 1
+            close = matching(self.masked, paren, "(", ")")
+            brace = close + 1
+            while self.masked[brace] in " \t":
+                brace += 1
+            if self.masked[brace] == "{":
+                blocks.append((brace, matching(self.masked, brace, "{", "}")))
+        return blocks
+
+    def agent_blocks(self):
+        """[(label, start, end)]: every node(...) block, and every closure given to onPublishAgent(), which
+        runs it inside that function's node(ctx.forge.publishAgent) -- lexically outside any node block."""
+        return self.node_blocks() + [("publish agent closure", start, end) for start, end in self.call_blocks("onPublishAgent")]
+
+    def inside(self, offset, blocks):
+        return any(start <= offset <= end for start, end in blocks)
+
     def string_at(self, offset):
         for start, end, quote, body in self.strings:
             if start == offset:
@@ -224,6 +248,27 @@ class Library:
 
 def library():
     return Library(LIBRARY.read_text(encoding="utf-8"))
+
+
+def field_literal(lib, name):
+    """(quote, body) of a @Field static final String constant's literal."""
+    match = re.search(rf"@Field static final String {name}\s*=\s*", lib.masked)
+    assert match, name
+    return lib.string_at(match.end())
+
+
+def link_guard(lib):
+    """LINK_GUARD's script."""
+    quote, body = field_literal(lib, "LINK_GUARD")
+    assert quote == "'''"
+    return body
+
+
+def field_pattern(lib, name):
+    """A single-quoted @Field regex constant as Python's re reads it (Groovy's escaped backslashes undone)."""
+    quote, body = field_literal(lib, name)
+    assert quote == "'", name
+    return body.replace("\\\\", "\\")
 
 
 class LexerTests(unittest.TestCase):
@@ -288,10 +333,11 @@ class PipelineLibraryTests(unittest.TestCase):
 
     def test_given_the_library_when_read_then_the_write_credential_is_asked_for_only_by_report_status(self):
         lib = self.lib
-        # forge-write only in forgeCredential (above); the 'write' access only in reportStatus.
+        # forge-write only in forgeCredential (above); the 'write' access only in reportStatus (the
+        # controller) and onPublishAgent (inside its node on the publish agent: tested below).
         for match in re.finditer(r"\b(?:forgeCredential|withForgeToken)\s*\(\s*'write'", lib.code):
-            self.assertEqual(lib.function_at(match.start()), "reportStatus",
-                             f"line {lib.line(match.start())}: the write credential outside reportStatus()")
+            self.assertIn(lib.function_at(match.start()), ("reportStatus", "onPublishAgent"),
+                          f"line {lib.line(match.start())}: the write credential outside reportStatus()/onPublishAgent()")
         self.assertRegex(lib.code[slice(*lib.functions["reportStatus"])], r"withForgeToken\(\s*'write'")
         # reportStatus posts with httpRequest, and nothing else does.
         for match in re.finditer(r"\bhttpRequest\s*\(", lib.masked):
@@ -313,8 +359,9 @@ class PipelineLibraryTests(unittest.TestCase):
             self.assertNotIn("'github-app'", code, where)
             self.assertNotIn("github", lib.reachable(start, end), f"{where} runs github.sh with the App")
         # The Actions lookup is where the App is bound for a check build: on the publish agent.
-        (label, start, end), = [block for block in lib.node_blocks()
-                                if lib.function_at(block[1]) == "actionsLook"]
+        start, end = lib.functions["githubLook"]
+        self.assertRegex(lib.code[start:end], r"onPublishAgent\(ctx, false, true\)")
+        (label, start, end), = [block for block in lib.node_blocks() if lib.function_at(block[1]) == "onPublishAgent"]
         self.assertEqual(label, "ctx.forge.publishAgent")
         self.assertIn("withForgeToken('github')", lib.code[start:end])
 
@@ -347,15 +394,18 @@ class PipelineLibraryTests(unittest.TestCase):
     def test_given_the_library_when_read_then_no_wait_loop_sleeps_inside_a_node(self):
         lib = self.lib
         self.assertIsNotNone(re.search(r"\bsleep\b", lib.masked), "no sleep at all: the GitHub Actions wait loop is missing")
-        for label, start, end in lib.node_blocks():
+        # Every node block, and every closure run on the publish agent (onPublishAgent), never waits.
+        for label, start, end in lib.agent_blocks():
             reached = lib.words_reached(start, end)
-            for waiting in ("sleep", "input"):
-                self.assertNotIn(waiting, reached, f"line {lib.line(start)}: node({label}) reaches {waiting}")
-        # The loop itself: a sleep of the poll interval in the function that looks at GitHub Actions.
-        start, end = lib.functions["copyActionsChecks"]
+            for waiting in ("sleep", "input", "pollGithub", "askToSkip"):
+                self.assertNotIn(waiting, reached, f"line {lib.line(start)}: {label} reaches {waiting}")
+        # The loop itself: a sleep of the poll interval between looks, each look on the publish agent.
+        start, end = lib.functions["pollGithub"]
         self.assertRegex(lib.masked[start:end], r"\bwhile\s*\(")
         self.assertRegex(lib.masked[start:end], r"\bsleep\b")
-        self.assertIn("actionsLook", lib.calls["copyActionsChecks"])
+        self.assertIn("githubLook", lib.calls["pollGithub"])
+        self.assertIn("onPublishAgent", lib.calls["githubLook"])
+        self.assertIn("pollGithub", lib.calls["copyActionsChecks"])
 
     def test_given_sh_steps_when_read_then_no_script_is_an_interpolated_groovy_string(self):
         # Every script is a single-quoted literal ('...' or '''...''', where Groovy interpolates nothing),
@@ -446,7 +496,7 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertRegex(body, r"checkedSha = state\.sha")
         self.assertRegex(body, r"deployTo\([^\n]*, inputs, checkedSha\)")
         self.assertLess(body.index("checkedSha = state.sha"), body.index("deployTo("))
-        self.assertIsNotNone(re.search(r"void deployTo\([^)]*String expectedSha = null\)", lib.code))
+        self.assertIsNotNone(re.search(r"void deployTo\([^)]*String expectedSha = null[,)]", lib.code))
         start, end = lib.functions["deployTo"]
         body = lib.code[start:end]
         guard = body.index("sameCommit(sha, expectedSha)")
@@ -459,13 +509,16 @@ class PipelineLibraryTests(unittest.TestCase):
     def test_given_describe_when_read_then_a_failed_run_without_errors_fails_the_build(self):
         # describe exits 0 with a document, or 1 with the document's errors. A run that failed some other
         # way must not be read as "no yggdrasil.yml" (which turns every check off).
-        start, end = self.lib.functions["prepare"]
+        start, end = self.lib.functions["describeCheckout"]
         body = self.lib.code[start:end]
         self.assertIn("pipeline_config.py describe", body)
         self.assertIn("returnStatus: true", body)
         self.assertRegex(body, r"!\(document instanceof Map\) \|\| \(code != 0 && !document\.errors\)")
         failed = body.index("code != 0 && !document.errors")
-        self.assertLess(failed, body.index("state.config = document.config"))
+        self.assertLess(failed, body.index("described = [entry: document.entry, config: document.config]"))
+        start, end = self.lib.functions["prepare"]
+        body = self.lib.code[start:end]
+        self.assertLess(body.index("describeCheckout(ctx)"), body.index("state.config = document.config"))
 
     def test_given_a_plan_when_read_then_it_must_cover_every_check_of_the_file_once(self):
         start, end = self.lib.functions["planChecks"]
@@ -482,7 +535,7 @@ class PipelineLibraryTests(unittest.TestCase):
         body = lib.code[start:end]
         self.assertRegex(body, r"archiveArtifacts [^\n]*followSymlinks: false")
         # junit and stash cannot be told not to follow links: the refusal comes before all three.
-        refusal = body.index("-type l")
+        refusal = body.index("sh(script: LINK_GUARD")
         for step in ("junit testResults", "archiveArtifacts", "stash name"):
             self.assertLess(refusal, body.index(step), step)
         self.assertRegex(body, r"if \(links != 0\) \{\s*error ")
@@ -490,8 +543,7 @@ class PipelineLibraryTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix" and shutil.which("realpath"), "runs the embedded script with sh")
     def test_given_links_in_a_checkout_when_the_collect_guard_runs_then_only_links_leading_out_refuse(self):
         lib = self.lib
-        start, end = lib.functions["collectResults"]
-        script = next(body for s, _, quote, body in lib.strings if start < s < end and quote == "'''" and "-type l" in body)
+        script = link_guard(lib)
         self.assertNotIn("\\", script, "the guard has Groovy escapes this test does not undo")
         with tempfile.TemporaryDirectory() as temp:
             outside = pathlib.Path(temp) / "secret"
@@ -502,8 +554,9 @@ class PipelineLibraryTests(unittest.TestCase):
             (app / "inside.xml").symlink_to("results/a.xml")
             (app / "here").symlink_to(".")
 
-            def guard():
-                return subprocess.run(["sh", "-c", script], cwd=app, capture_output=True, text=True, timeout=30)
+            def guard(**env):
+                return subprocess.run(["sh", "-c", script], cwd=app, capture_output=True, text=True, timeout=30,
+                                      env={**os.environ, "YGG_ANY_LINK": "", **env})
 
             done = guard()
             self.assertEqual(done.returncode, 0, done.stderr)
@@ -514,13 +567,214 @@ class PipelineLibraryTests(unittest.TestCase):
                 self.assertEqual(done.returncode, 3, name)
                 self.assertIn(name, done.stderr)
                 link.unlink()
+            # A release's files (YGG_ANY_LINK): no link at all, even one that stays inside.
+            done = guard(YGG_ANY_LINK="1")
+            self.assertEqual(done.returncode, 3, done.stderr)
+            self.assertIn("inside.xml", done.stderr)
+            (app / "inside.xml").unlink()
+            (app / "here").unlink()
+            self.assertEqual(guard(YGG_ANY_LINK="1").returncode, 0)
 
     def test_given_the_release_path_when_read_then_it_still_runs_under_the_application_lock(self):
         # test_catalog pins the same; the release pull request's checks run inside it too.
         code = self.lib.code
         lock = code.index('lock(resource: "release-${app}")')
-        self.assertLess(lock, code.index("release(app, plan.findAll"))
         self.assertLess(lock, code.index("verify(ctx, state)", lock))
+        self.assertLess(lock, code.index("releasePullRequest(ctx, state, environments)", lock))
+        # The path it always had, kept for GitHub repositories without yggdrasil.yml, under the same lock.
+        self.assertLess(lock, code.index("release(app, environments, releaseArtifacts, ctx.repo)", lock))
+        self.assertRegex(code, r"if \(ctx\.forge\.type == 'github' && state\.config == null\) \{\s*(//[^\n]*\s*)*"
+                               r"release\(app, environments")
+
+
+class ReleaseLibraryTests(unittest.TestCase):
+    """The release pull request, its files and the actions-release job: who holds which token, where
+    the waits are, and what goes into a release."""
+
+    def setUp(self):
+        self.lib = library()
+
+    def release_blocks(self):
+        blocks = [(label, start, end) for label, start, end in self.lib.node_blocks() if label == "'release'"]
+        self.assertGreaterEqual(len(blocks), 3, "the release build, the gathering and actions-release's reading")
+        return blocks
+
+    def only_on_publish_agent(self, function, publish, depth=0):
+        """Whether every call of the library function is inside a closure given to onPublishAgent, or in a
+        function that is itself only called there."""
+        lib = self.lib
+        own = lib.functions[function]
+        # Its calls: not inside itself, and not its definition (a return type before the name).
+        calls = [m.start() for m in re.finditer(rf"\b{function}\s*\(", lib.masked)
+                 if not own[0] <= m.start() <= own[1]
+                 and not re.search(r"(?:def|void|String|Map|List|boolean|int)\s+$", lib.masked[max(0, m.start() - 20):m.start()])]
+        if not calls or depth > 5:
+            return False
+        return all(lib.inside(offset, publish)
+                   or (lib.function_at(offset) and self.only_on_publish_agent(lib.function_at(offset), publish, depth + 1))
+                   for offset in calls)
+
+    def test_given_release_agent_blocks_when_read_then_they_bind_only_the_read_token_and_allow_listed_ids(self):
+        # The release agent runs a repository's build and validation: no write token, no GitHub App, nothing
+        # posted, nothing published from there. It reads with the read credential and binds the ids of
+        # release.build.credentials through withCheckCredentials (checked against the catalog entry).
+        lib = self.lib
+        for label, start, end in self.release_blocks():
+            where = f"line {lib.line(start)}: node({label})"
+            reached = lib.reachable(start, end)
+            for forbidden in ("onPublishAgent", "github", "githubLook", "pollGithub", "reportStatus", "httpRequest",
+                              "mergeAndTag", "publishRelease", "windowsFiles"):
+                self.assertNotIn(forbidden, reached, f"{where} reaches {forbidden}")
+            code = lib.code_reached(start, end, leaving_out=("forgeCredential", "withForgeToken", "github"))
+            self.assertEqual(set(re.findall(r"withForgeToken\(\s*'(\w+)'", code)), {"read"}, where)
+            for literal in ("'write'", "'github'", "'github.sh'", "'publish-release.sh'", "'github-app'"):
+                self.assertNotIn(literal, code, f"{where} has {literal}")
+        start, end = lib.functions["buildReleaseFiles"]
+        self.assertRegex(lib.code[start:end], r"withCheckCredentials\(\[name: 'release-build', credentials: build\.credentials\], entry\)")
+
+    def test_given_the_publish_agent_when_read_then_it_alone_gets_the_write_token_and_the_github_app(self):
+        lib = self.lib
+        start, end = lib.functions["onPublishAgent"]
+        (label, node_start, node_end), = [b for b in lib.node_blocks() if start < b[1] < end]
+        self.assertEqual(label, "ctx.forge.publishAgent")
+        for access in ("write", "github"):
+            for match in re.finditer(rf"withForgeToken\(\s*'{access}'", lib.code):
+                function = lib.function_at(match.start())
+                if function == "onPublishAgent":
+                    self.assertTrue(node_start < match.start() < node_end, f"line {lib.line(match.start())}: outside its node")
+                else:
+                    # reportStatus posts from the controller; github() is the GitHub path that has always
+                    # run on the last release environment's agent (the default publish agent).
+                    self.assertIn((access, function), (("write", "reportStatus"), ("github", "github")),
+                                  f"line {lib.line(match.start())}: {access} bound in {function}")
+        self.assertEqual({name for name, calls in lib.calls.items() if "github" in calls and name in lib.functions},
+                         {"release"}, "github() is only the old GitHub path's")
+        # Every merge, tag, upload, release, branch deletion and GitHub Actions call runs in a closure given to
+        # onPublishAgent (or is the old GitHub path's github() call).
+        publish = lib.call_blocks("onPublishAgent")
+        for start, _, quote, body in lib.strings:
+            if body in ("merge-pr", "create-tag", "delete-branch", "publish-release.sh", "download-artifacts", "github.sh"):
+                function = lib.function_at(start)
+                if function in ("release", "githubLook") or (body == "github.sh" and function == "github"):
+                    continue
+                self.assertTrue(lib.inside(start, publish) or self.only_on_publish_agent(function, publish),
+                                f"line {lib.line(start)}: '{body}' outside onPublishAgent")
+        # The Windows files are downloaded and stashed there, and only unstashed on the release agent.
+        start, end = lib.functions["windowsFiles"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"onPublishAgent\(ctx, false, true\)")
+        self.assertLess(body.index("'download-artifacts'"), body.index("stashGlob("))
+
+    def test_given_the_release_waits_when_read_then_each_is_outside_node_with_short_looks(self):
+        lib = self.lib
+        # The skip: exactly the design's words, an input outside any node, Abort failing the release.
+        self.assertEqual(field_literal(lib, "SKIP_QUESTION"), ('"', "GitHub Actions checks didn't finish. Deploy without them?"))
+        self.assertEqual(field_literal(lib, "SKIP_BUTTON"), ("'", "Deploy without GitHub Actions checks"))
+        start, end = lib.functions["askToSkip"]
+        self.assertRegex(lib.code[start:end], r"input id: 'SkipActions', message: SKIP_QUESTION, ok: SKIP_BUTTON")
+        self.assertIn("rejected(interruption)", lib.code[start:end])
+        for label, start, end in lib.agent_blocks():
+            self.assertNotIn("askToSkip", lib.reachable(start, end), f"line {lib.line(start)}: {label}")
+        # The Actions checks, the tag reaching GitHub and the Windows run: each a poll, never a blocking call
+        # (wait-ref is asked with a timeout of 0: one look).
+        start, end = lib.functions["waitForReleaseActions"]
+        self.assertRegex(lib.code[start:end], r"pollGithub\(ctx, seconds, 'GitHub Actions', \['actions-status'")
+        start, end = lib.functions["windowsFiles"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"pollGithub\([^\n]*\['wait-ref', ctx\.repo, \"refs/tags/\$\{tag\}\", '0'\]")
+        self.assertRegex(body, r"pollGithub\([^\n]*\['run-status', ctx\.repo, run\]")
+        self.assertNotIn("'wait-checks'", lib.code[slice(*lib.functions["releasePullRequest"])])
+        start, end = lib.functions["publishRelease"]
+        self.assertRegex(lib.code[start:end], r"pollGithub\([^\n]*\['wait-ref', ctx\.repo, \"refs/tags/\$\{tag\}\", '0'\]")
+
+    def test_given_release_files_when_read_then_only_the_declared_globs_get_in_and_links_are_refused(self):
+        lib = self.lib
+        start, end = lib.functions["buildReleaseFiles"]
+        body = lib.code[start:end]
+        self.assertIn("List globs = (build.files ?: []) as List", body)
+        self.assertLess(body.index("refuseLinks(false"), body.index("stashGlob("))
+        self.assertRegex(lib.code[slice(*lib.functions["stashGlob"])], r"stash name: name, includes: glob, allowEmpty: false")
+        start, end = lib.functions["windowsFiles"]
+        body = lib.code[start:end]
+        self.assertIn("List globs = windows.files ? (windows.files as List) : ['**']", body)
+        self.assertLess(body.index("refuseLinks(true"), body.index("stashGlob("))
+        # Gathered on the release agent from those stashes only, no link at all before and after the
+        # validation, then stashed as the set publish-release.sh gets.
+        start, end = lib.functions["gatherReleaseFiles"]
+        body = lib.code[start:end]
+        first = body.index("refuseLinks(true, 'the release files')")
+        self.assertLess(body.index("unstash name"), first)
+        self.assertLess(first, body.index("run-check.sh release-validate"))
+        self.assertLess(body.index("run-check.sh release-validate"), body.index("refuseLinks(true, 'the validated release files')"))
+        self.assertLess(body.index("refuseLinks(true, 'the validated release files')"), body.index("stash name: 'release-files'"))
+        # publish-release.sh gets a directory emptied first, holding only that stash, checked again.
+        start, end = lib.functions["publishRelease"]
+        body = lib.code[start:end]
+        cleared = body.index("deleteDir()")
+        self.assertLess(cleared, body.index("unstash files.stash"))
+        self.assertLess(body.index("unstash files.stash"), body.index("refuseLinks(true, 'the release files')"))
+        self.assertLess(body.index("refuseLinks(true, 'the release files')"), body.index("'publish-release.sh'"))
+        self.assertIn('"${env.WORKSPACE}/release-files"]', body)
+        # A glob is relative, with nothing the stash step would split on.
+        glob = re.compile(field_pattern(lib, "RELEASE_GLOB"))
+        for good in ("dist/*.tar.gz", "*/*.msi", "**", "out/app-1.0.0+linux.zip"):
+            self.assertTrue(glob.fullmatch(good), good)
+        for bad in ("a,b", "a b", "/etc/passwd", "-x", "dist/*.zip\n", ""):
+            self.assertFalse(glob.fullmatch(bad), repr(bad))
+        start, end = lib.functions["releaseProblem"]
+        self.assertIn("glob.split('/').any { it in ['.', '..', ''] }", lib.code[start:end])
+
+    def test_given_a_failing_validation_when_read_then_publish_release_is_never_reached(self):
+        # The drafts are made by publish-release.sh: a validation that fails before it is called leaves
+        # nothing published (and no draft at all).
+        lib = self.lib
+        start, end = lib.functions["gatherReleaseFiles"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"if \(code != 0\) \{\s*error \"release\.validate failed")
+        self.assertNotIn("publish-release", body)
+        start, end = lib.functions["releasePullRequest"]
+        body = lib.code[start:end]
+        self.assertLess(body.index("deployTo("), body.index("mergeAndTag("))
+        self.assertLess(body.index("mergeAndTag("), body.index("releaseFiles("))
+        self.assertLess(body.index("releaseFiles("), body.index("publishRelease("))
+        self.assertLess(body.index("publishRelease("), body.index("deleteReleaseBranch("))
+        # The merge's title is the one release_notes.py leaves out of the notes.
+        self.assertIn('"release: v${version} (#${env.CHANGE_ID})"', lib.code[slice(*lib.functions["mergeAndTag"])])
+        notes = (ROOT / "scripts" / "release_notes.py").read_text(encoding="utf-8")
+        self.assertIn('JENKINS_RELEASE_MERGE = re.compile(r"^release: v?\\d")', notes)
+
+    def test_given_a_skip_when_read_then_it_is_recorded_and_missing_files_make_the_build_unstable(self):
+        lib = self.lib
+        start, end = lib.functions["releasePullRequest"]
+        body = lib.code[start:end]
+        self.assertIn("String note = skipped ? \" (${SKIPPED})\" : ''", body)
+        self.assertIn("deployTo(app, environment, version, state.sha, false, ctx.repo, [], null, note)", body)
+        self.assertIn("currentBuild.description = \"${tag}${skipped ? ' (deployed without GitHub Actions checks)' : ''}\"", body)
+        self.assertRegex(body, r"if \(files\.missing\) \{\s*unstable ")
+        start, end = lib.functions["releaseFiles"]
+        self.assertIn("skipped ? [stashes: null", lib.code[start:end])
+        start, end = lib.functions["publishRelease"]
+        self.assertIn("arguments += ['--missing', files.missing.join(',')]", lib.code[start:end])
+        start, end = lib.functions["deleteReleaseBranch"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"if \(code == 3\) \{\s*echo ")
+        self.assertEqual(field_literal(lib, "KEPT_BRANCH"),
+                         ("'", "kept: release branches are protected on Forgejo; the owner deletes them"))
+
+    def test_given_the_actions_release_job_when_read_then_it_checks_its_parameters_before_anything(self):
+        lib = self.lib
+        start, end = lib.functions["actionsRelease"]
+        body = lib.code[start:end]
+        context = body.index("catalogContext(app)")
+        self.assertLess(context, body.index("globMatches(ctx.tags, tag)"))
+        self.assertLess(body.index("globMatches(ctx.tags, tag)"), body.index("node('release')"))
+        self.assertLess(body.index("'tag-sha'"), body.index("checkoutTag("))
+        self.assertLess(body.index("describeCheckout(ctx)"), body.index("windowsFiles("))
+        self.assertIn("declares no release.windows", body)
+        self.assertLess(body.index("windowsFiles("), body.index("['attach', ctx.repo, tag"))
+        self.assertIn('lock(resource: "release-${app}")', body)
+        entry = (ROOT / "jenkins" / "library" / "vars" / "yggdrasilActionsRelease.groovy").read_text(encoding="utf-8")
+        self.assertIn("yggdrasilPipeline.actionsRelease()", entry)
 
 
 if __name__ == "__main__":
