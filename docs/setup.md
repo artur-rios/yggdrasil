@@ -108,7 +108,13 @@ On the machine you work from (Linux, macOS, or Windows with Git Bash):
 Check them:
 
 ```bash
-git --version && python3 -c "import yaml; print('PyYAML ok')" && gh auth status && openssl version
+git --version && python3 -c "import yaml; print('PyYAML ok')" && openssl version
+```
+
+And, for the GitHub rules only (with Forgejo you need no `gh`; step 12 uses a token):
+
+```bash
+gh auth status
 ```
 
 On Windows, use `python` if `python3` isn't on the path.
@@ -1042,7 +1048,7 @@ What the script needs, by server:
 
 | Server | Needs |
 |---|---|
-| **Forgejo** (`forge.type: forgejo`) | `FORGE_TOKEN`: the owner's token, with the `write:repository` scope (Forgejo: **Settings → Applications → Generate New Token**, signed in as the owner). `JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, together, to create the webhooks that tell Jenkins about pushes, tags and pull requests; with neither, the script says `webhooks skipped` and sets no webhook; with only one, it refuses to start. |
+| **Forgejo** (`forge.type: forgejo`) | `FORGE_TOKEN`: the owner's token, with the `write:repository` scope and no other (the live test suite runs the script with a token of that scope). Create it in Forgejo, signed in as the owner: **Settings → Applications → Generate New Token**. `JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, together, to create the webhooks that tell Jenkins about pushes, tags and pull requests; with neither, the script says `webhooks skipped` and sets no webhook; with only one, it refuses to start. |
 | **GitHub** (no `forge` block, or `github`) | An authenticated `gh` (`gh auth login`), or `GH_TOKEN`, with admin rights on the repositories. Rulesets on **private** repositories need a paid GitHub plan. |
 
 On Forgejo, set the variables for the one command, so they stay out of your shell history files and your
@@ -1064,8 +1070,8 @@ python3 scripts/rules.py --dry-run
 
 ### What each server gets
 
-Per repository, from the catalog (a `rules: basic` repository gets only the first row's `develop` and `main`
-without force push or deletion, plus the settings and, on Forgejo, the webhook):
+Per repository, from the catalog (a `rules: basic` repository gets `develop` and `main` without force push or
+deletion and nothing else of the table, plus the settings in its first row and, on Forgejo, the webhook):
 
 | Rule | Forgejo | GitHub |
 |---|---|---|
@@ -1075,7 +1081,7 @@ without force push or deletion, plus the settings and, on Forgejo, the webhook):
 | `release/*` | Only the owner pushes | No rule (none today) |
 | Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner | A `release tags` ruleset: tags cannot be moved or deleted, and for an `owner-tag` repository only the owner creates them |
 | The owner | Not bound by the protections, for emergencies (see below) | A repository administrator bypasses all the rulesets |
-| `Jenkinsfile` | **Protected file** on `develop` and `main`: a pull request that changes it can be merged only by the owner: being on the list of who may merge is not enough (this includes `jenkinsUser` and `forge.developers`; a release that changes the `Jenkinsfile` is merged by the owner) | Not applied: GitHub cannot restrict who may merge a given file. Jenkins' own trust rule on the `Jenkinsfile` covers GitHub (plan 3) |
+| `Jenkinsfile` | **Protected file** on `develop` only: a pull request that changes it can be merged only by the owner, with a forced merge (below); being on the list of who may merge is not enough (`forge.developers` included). Every change to the `Jenkinsfile` thus reaches `develop` through the owner. `main` has no protected file: it receives only snapshots of `develop`, merged by `forge.jenkinsUser`, which a release that changes the `Jenkinsfile` must not stop | Not applied: GitHub cannot restrict who may merge a given file. Jenkins' own trust rule on the `Jenkinsfile` covers GitHub (plan 3) |
 
 ### Forgejo details worth knowing
 
@@ -1086,7 +1092,8 @@ without force push or deletion, plus the settings and, on Forgejo, the webhook):
   script prints `warning: Forgejo left <user> off who may merge|push|create tags (…): give them write access to
   the repository and run again`; do that and run it again.
 - **The owner's override is a forced merge.** The protections do not bind the owner (an administrator), for
-  emergencies, but a plain merge by the owner is still refused while a required check fails. In the web
+  emergencies, but a plain merge by the owner is still refused while a required check fails, and also for a
+  pull request that changes a protected file (the `Jenkinsfile` on `develop`). In the web
   interface use **Merge anyway** on the pull request; through the API, `force_merge: true` on the merge
   call. Nobody else can.
 - **Changing the webhook secret.** Forgejo never returns a hook's secret, so the script cannot tell that

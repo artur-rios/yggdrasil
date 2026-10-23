@@ -27,7 +27,7 @@ Per repository the model is:
                  application, by the owner for a repository that tags its own releases
   release/*      only the owner pushes
   version tags   created by the Jenkins user (applications) or the owner (owner-tag repositories)
-  Jenkinsfile    protected on develop and main (Forgejo)
+  Jenkinsfile    protected on develop (Forgejo): only the owner merges a change to it
 
 A repository with `rules: basic` gets develop and main without force push or deletion, and no other
 rule. It still gets the repository settings (default branch develop, head branches deleted after
@@ -78,7 +78,7 @@ class RepoRules:
     release_pushers: tuple       # (owner,)
     tag_pattern: str             # "v*" or the repository's `tags`
     tag_creators: tuple          # (forge.jenkinsUser,) for applications, (owner,) for owner-tag repositories
-    protected_files: tuple       # ("Jenkinsfile",)
+    protected_files: tuple       # ("Jenkinsfile",): protected on develop only, see forgejo_branch_protections
     # With model "basic" the checks, mergers and protected_files are empty, and the release rules
     # (release_pushers, tag_pattern, tag_creators) keep their defaults but are not applied.
 
@@ -358,17 +358,21 @@ def forgejo_branch_protections(r):
     if r.model == "basic":
         return [{"rule_name": name, "enable_push": True, "apply_to_admins": False} for name in ("develop", "main")]
 
-    def guarded(name, mergers, checks):
+    def guarded(name, mergers, checks, files):
         # Nobody pushes: a change gets in through a pull request that the checks passed, merged by
-        # the listed users. The Jenkinsfile may only change through such a pull request too.
+        # the listed users. `files` are protected files: a pull request that changes one can be merged
+        # only by someone who may push to the branch (the owner), whoever else is on the merge list.
         return {"rule_name": name, "enable_push": False,
                 "enable_merge_whitelist": True, "merge_whitelist_usernames": list(mergers),
                 "enable_status_check": True, "status_check_contexts": list(checks),
-                "required_approvals": 0, "protected_file_patterns": ";".join(r.protected_files),
+                "required_approvals": 0, "protected_file_patterns": ";".join(files),
                 "apply_to_admins": False}
 
-    return [guarded("develop", r.develop_mergers, r.develop_checks),
-            guarded("main", r.main_mergers, r.main_checks),
+    # The Jenkinsfile is protected on develop only: every change to it reaches develop through a merge
+    # the owner makes. main receives only snapshots of develop, merged by Jenkins, which a protected
+    # file there would stop whenever a release changes the Jenkinsfile.
+    return [guarded("develop", r.develop_mergers, r.develop_checks, r.protected_files),
+            guarded("main", r.main_mergers, r.main_checks, ()),
             # Release branches are pushed to directly, by the owner alone.
             {"rule_name": "release/*", "enable_push": True, "enable_push_whitelist": True,
              "push_whitelist_usernames": list(r.release_pushers), "enable_merge_whitelist": False,

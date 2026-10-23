@@ -444,7 +444,7 @@ class ForgejoLiveTests(unittest.TestCase):
             p = protections[name]
             self.assertEqual((p["enable_push"], p["enable_merge_whitelist"], p["enable_status_check"],
                               p["protected_file_patterns"], p["apply_to_admins"]),
-                             (False, True, True, "Jenkinsfile", False), name)
+                             (False, True, True, "Jenkinsfile" if name == "develop" else "", False), name)
             self.assertEqual(set(p["merge_whitelist_usernames"]), set(mergers), name)
             self.assertEqual(set(p["status_check_contexts"]), set(checks), name)
         release = protections["release/*"]
@@ -508,6 +508,22 @@ class ForgejoLiveTests(unittest.TestCase):
                    for p in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/branch_protections")}
         self.assertEqual((merging["develop"], merging["main"]), ([OWNER], []))
 
+    def test_given_an_owner_token_with_only_write_repository_when_rules_are_applied_then_it_is_enough(self):
+        # What docs/setup.md asks the owner to create: no other scope. A repository of its own, so
+        # that everything is written (settings, protections, tag protection, webhook), not "unchanged".
+        repo = "scope-check"
+        self.create_repository(repo)
+        token = self.admin_cli("generate-access-token", "--username", OWNER, "--token-name", "scoped",
+                               "--scopes", "write:repository", "--raw").strip()
+        scoped = rules.Api(self.url + "/api/v1", token, "token")
+        lines = rules.apply_forgejo(scoped, OWNER, dataclasses.replace(self.rules[APP], repo=repo), WEBHOOK, False)
+        self.assertEqual([line for line in lines if "warning" in line], [], lines)
+        self.assertIn("  protected branch 'release/*'", lines)
+        self.assertIn("  protected tags 'v*'", lines)
+        self.assertIn("  created the Jenkins webhook", lines)
+        names = {p["rule_name"] for p in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/branch_protections")}
+        self.assertEqual(names, {"develop", "main", "release/*"})
+
     def test_given_the_rules_when_claude_merges_a_jenkinsfile_change_then_it_is_refused(self):
         checks = self.rules[APP].develop_checks
         changed = self.change_file(CLAUDE, APP, "Jenkinsfile", JENKINSFILE + "// claude was here\n", "develop",
@@ -524,6 +540,32 @@ class ForgejoLiveTests(unittest.TestCase):
         self.set_checks(APP, other, checks)
         self.merge(CLAUDE, APP, number)
         self.assertTrue(self.pull_request(APP, number)["merged"])
+
+    def test_given_the_rules_when_jenkins_merges_a_release_changing_the_jenkinsfile_into_main_then_it_is_allowed(self):
+        # The Jenkinsfile is protected on develop only: every change to it gets there through the owner,
+        # and main only ever receives snapshots of develop, which Jenkins merges.
+        changed = JENKINSFILE + "// changed through the owner\n"
+        head = self.change_file(OWNER, APP, "Jenkinsfile", changed, "develop", "feature/jenkinsfile-by-owner")
+        number = self.open_pull_request(OWNER, APP, "feature/jenkinsfile-by-owner", "develop")
+        self.set_checks(APP, head, self.rules[APP].develop_checks)
+        # A plain merge is refused even for the owner (a protected file is not covered by the owner
+        # being unbound from the protection); the owner's forced merge ("Merge anyway") is what gets it in.
+        self.assertEqual(self.refused(OWNER, "POST", f"/repos/{OWNER}/{APP}/pulls/{number}/merge", {"Do": "merge"}).message,
+                         "not allowed to merge [reason: Changed protected files]")
+        self.merge(OWNER, APP, number, force_merge=True)
+        self.assertTrue(self.pull_request(APP, number)["merged"])
+
+        self.api[OWNER].request("POST", f"/repos/{OWNER}/{APP}/branches",
+                                {"new_branch_name": "release/7.0.0", "old_branch_name": "develop"})
+        sha = self.head(APP, "release/7.0.0")
+        number = self.open_pull_request(OWNER, APP, "release/7.0.0", "main")
+        self.set_checks(APP, sha, self.rules[APP].main_checks)
+        result = self.forge(JENKINS, "merge-pr", APP, str(number), sha, "release 7.0.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.pull_request(APP, number)["merged"])
+        self.assertEqual(result.stdout.strip(), self.head(APP, "main"))
+        contents = self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/contents/Jenkinsfile?ref=main")
+        self.assertEqual(base64.b64decode(contents["content"]).decode(), changed)
 
     def test_given_the_rules_when_the_owner_merges_with_failing_checks_then_it_is_allowed(self):
         checks = self.rules[APP].develop_checks

@@ -418,14 +418,16 @@ class ForgejoRulesTests(unittest.TestCase):
         self.assertEqual((develop["enable_push"], develop["merge_whitelist_usernames"]),
                          (False, ["artur-rios", "alice", "bob"]))
 
-    def test_given_any_release_model_repository_when_applied_then_jenkinsfile_is_a_protected_file(self):
+    def test_given_any_release_model_repository_when_applied_then_jenkinsfile_is_protected_on_develop_only(self):
+        # main only receives snapshots of develop, merged by Jenkins: a protected file there would stop it
+        # from merging any release that changes the Jenkinsfile.
         for r in rules.desired_rules(CATALOG):
             if r.model != "release":
                 continue
             api = FakeForgejo()
             rules.apply_forgejo(api, OWNER, r, None, False)
-            for name in ("develop", "main"):
-                self.assertEqual(protection(api, name)["protected_file_patterns"], "Jenkinsfile", (r.repo, name))
+            self.assertEqual(protection(api, "develop")["protected_file_patterns"], "Jenkinsfile", r.repo)
+            self.assertEqual(protection(api, "main")["protected_file_patterns"], "", r.repo)
 
     def test_given_release_branches_when_applied_then_only_the_owner_may_push_them(self):
         api = FakeForgejo()

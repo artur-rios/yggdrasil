@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   again later", and `delete-branch` leaves a protected branch alone (exit 3). See
   [docs/setup.md](docs/setup.md#the-git-server-commands).
 - **`scripts/rules.py`** applies the branching model to every repository of the catalog, on GitHub (rulesets) or
-  Forgejo (settings, branch and tag protections, the `Jenkinsfile` as a protected file, and Jenkins' webhook), with
+  Forgejo (settings, branch and tag protections, the `Jenkinsfile` as a protected file on `develop`, and Jenkins' webhook), with
   `--dry-run`. `github/rulesets.py` is now a shim that says it moved and runs it. Forgejo needs `FORGE_TOKEN`, and
   `JENKINS_URL` with `FORGE_WEBHOOK_SECRET` for webhooks; the users it names must have write access to the
   repository, or Forgejo drops them (the script warns). [docs/setup.md](docs/setup.md#12-apply-the-branch-rules)
