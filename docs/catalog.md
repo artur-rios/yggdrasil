@@ -40,9 +40,50 @@ The catalog is read from each host's checkout when the containers start. After c
 ```yaml
 owner: acme            # GitHub user or organisation of the application repositories and of this one
 repository: yggdrasil  # this repository's name under the owner (default yggdrasil)
+forge: {...}           # the git server: forgejo or github (default: github, see below)
+mirror: {...}          # optional, with forgejo: mirror the repositories to GitHub
 environments: [...]    # at least one, in promotion order
 systems: [...]
 ```
+
+## Git server
+
+The repositories live on one git server: **Forgejo** (the default for new installations) or
+**GitHub**. A catalog **without a `forge` block is GitHub**, exactly as before the git server
+became configurable, so an existing catalog needs no change.
+
+```yaml
+# Forgejo, self-hosted
+forge:
+  type: forgejo
+  url: https://git.example.com   # the server's address
+  jenkinsUser: jenkins           # default jenkins
+  developers: [claude]           # default []
+mirror:                          # optional
+  github: acme                   # the GitHub user or organisation to mirror to
+  releases: true                 # default true
+```
+
+```yaml
+# GitHub (the same as having no forge block)
+forge:
+  type: github
+  jenkinsUser: jenkins
+  developers: [claude]
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `forge.type` | `github` without a `forge` block; required inside one | `forgejo` or `github`. |
+| `forge.url` | required for `forgejo` | An `https://` address with a host and no path (`https://git.example.com`, a port is fine). A trailing `/` is dropped; the API is `<url>/api/v1`. Not allowed for `github`: GitHub Enterprise Server is not supported, `github` is always `https://github.com` (API `https://api.github.com`). |
+| `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. It is the only one that merges `main` and creates the `v*` version tags of applications. A user name: letters, digits, `.`, `_` and `-`. |
+| `forge.developers` | `[]` | Users, besides the owner, who may merge pull requests into `develop`. A list of user names. |
+| `mirror.github` | required with a `mirror` | The GitHub user or organisation the repositories are mirrored to. |
+| `mirror.releases` | `true` | Whether releases are mirrored as well. `true` or `false`. |
+
+`mirror` is only allowed with `forge.type: forgejo`; any other key in `forge` or `mirror` is an
+error. Read them with `python3 scripts/catalog.py forge` / `mirror` (see
+[Command line](#command-line)).
 
 ## Environments
 
@@ -248,6 +289,8 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py get <app> <environment> <option>` | One resolved option. Lists are space-separated, booleans `true`/`false`: `get heimdall-api development onDemand` prints `true` |
 | `python3 scripts/catalog.py environment <environment> [<option>]` | JSON: the environment's own options, defaults applied but no application's override; with an option, only its value, printed as `get` does |
 | `python3 scripts/catalog.py owner` / `repository` | The GitHub owner; this repository's name (default `yggdrasil`) |
+| `python3 scripts/catalog.py forge [type\|url\|api\|jenkins-user]` | The git server: JSON of `type`, `url`, `api`, `jenkinsUser` and `developers` with defaults applied (GitHub when there is no `forge` block), or one value |
+| `python3 scripts/catalog.py mirror [github\|releases]` | The mirror: JSON, or one value (booleans `true`/`false`). Exits `1` with `catalog.yaml has no mirror` when there is none |
 | `python3 scripts/catalog.py systems` | `<id><TAB><name>`, one system per line |
 | `python3 scripts/catalog.py show <app>` | JSON: the application's fields, plus `system`, its system's id |
 | `python3 scripts/catalog.py add-application < new.json` | Adds an application, keeping every comment of `catalog.yaml`. Reads `{"system": {"id", "name", "description"}, "application": {...}}`: the application goes at the end of that system, or of a new one (then `name` and `description` count), placed before the `yggdrasil` system. Refuses anything that would make the catalog invalid. [`ygg add`](cli.md) writes the JSON for you |

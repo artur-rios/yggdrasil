@@ -10,13 +10,15 @@
     python3 scripts/catalog.py systems                    id<TAB>name, one per line
     python3 scripts/catalog.py show <app>                 JSON: the application's fields and its system
     python3 scripts/catalog.py owner | repository         the GitHub owner, this repository's name
+    python3 scripts/catalog.py forge [type|url|api|jenkins-user]  the git server (JSON without an argument)
+    python3 scripts/catalog.py mirror [github|releases]    the Forgejo -> GitHub mirror (exit 1 without one)
     python3 scripts/catalog.py add-application < new.json adds an application, keeping the comments
 
 add-application reads {"system": {"id", "name", "description"}, "application": {...}} on stdin. The
 application goes at the end of that system, or of a new system (name and description only count
 then), inserted before the yggdrasil system if it is the last one.
 
-Used by scripts/deploy.sh, scripts/ygg.sh and github/rulesets.py, and by CI to reject a broken catalog. The Jenkins
+Used by scripts/deploy.sh, scripts/ygg.sh, github/rulesets.py, scripts/forge.sh and scripts/rules.py, and by CI to reject a broken catalog. The Jenkins
 shared library resolves the same options itself (it cannot run Python on the controller); keep
 resolve() and jenkins/library/vars/yggdrasilPipeline.groovy in step. Reference: docs/catalog.md.
 
@@ -28,6 +30,7 @@ import json
 import pathlib
 import re
 import sys
+import urllib.parse
 
 import yaml
 
@@ -42,6 +45,9 @@ HOST_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 HOST_SUFFIX = re.compile(r"^([a-z0-9-]*[a-z0-9])?$")
 HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+$")
+# A git server user name (Forgejo and GitHub both accept letters, digits, dots, dashes and underscores).
+USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+FORGES = ("forgejo", "github")
 KINDS = {"api", "web", "worker", "platform"}
 MODES = {"proxy", "ports"}
 TRIGGERS = {"manual", "branch", "release"}
@@ -80,6 +86,8 @@ def validate(catalog):
         errors.append("owner: required (the GitHub user or organisation of the repositories)")
     if "repository" in catalog and (not isinstance(catalog["repository"], str) or not catalog["repository"]):
         errors.append("repository: the name of this repository under the owner (default yggdrasil)")
+
+    errors += _forge_errors(catalog)
 
     environments = catalog.get("environments")
     if not isinstance(environments, list) or not environments:
@@ -167,6 +175,72 @@ def validate(catalog):
                         errors.append(f"{where}.environments.{env_id}.branches: required when trigger is branch "
                                       "(neither the application nor the environment sets them)")
     errors += _project_errors(systems, env_ids)
+    return errors
+
+
+def _forge_url(value):
+    """The URL's problem as a sentence, or None when it is a Forgejo base URL: https, a host, no path
+    beyond a lone slash (the API is appended to it), no query, fragment or credentials."""
+    what = "an https:// URL of the Forgejo server without a path (e.g. https://git.example.com)"
+    if not isinstance(value, str):
+        return what
+    try:
+        parts = urllib.parse.urlsplit(value.strip())
+        parts.port  # raises ValueError for a malformed port
+    except ValueError:
+        return what
+    if parts.scheme != "https" or not parts.hostname or parts.path not in ("", "/") \
+            or parts.query or parts.fragment or parts.username is not None or parts.password is not None:
+        return what
+    return None
+
+
+def _forge_errors(catalog):
+    errors = []
+    forge_type = "github"  # no forge block: GitHub, as before the git server was configurable
+    if "forge" in catalog:
+        block = catalog["forge"]
+        if not isinstance(block, dict):
+            errors.append("forge: a mapping with type, and url, jenkinsUser, developers")
+        else:
+            unknown = set(block) - {"type", "url", "jenkinsUser", "developers"}
+            if unknown:
+                errors.append(f"forge: unknown key(s) {sorted(unknown)}")
+            if block.get("type") not in FORGES:
+                errors.append(f"forge.type: required, one of {list(FORGES)}")
+            else:
+                forge_type = block["type"]
+            if forge_type == "forgejo":
+                if "url" not in block:
+                    errors.append("forge.url: required for forgejo, e.g. https://git.example.com")
+                elif _forge_url(block["url"]):
+                    errors.append(f"forge.url: {_forge_url(block['url'])}")
+            elif "url" in block and block.get("type") == "github":
+                errors.append("forge.url: only for forgejo (GitHub Enterprise Server is not supported: "
+                              "github is always github.com)")
+            if "jenkinsUser" in block and not (isinstance(block["jenkinsUser"], str)
+                                               and USER_NAME.match(block["jenkinsUser"])):
+                errors.append("forge.jenkinsUser: a user name (letters, digits, '.', '_' and '-'; default jenkins)")
+            developers = block.get("developers")
+            if "developers" in block and not (isinstance(developers, list) and all(
+                    isinstance(d, str) and USER_NAME.match(d) for d in developers)):
+                errors.append("forge.developers: a list of user names (letters, digits, '.', '_' and '-')")
+    if "mirror" in catalog:
+        block = catalog["mirror"]
+        if forge_type != "forgejo":
+            errors.append("mirror: only with forge.type forgejo (it mirrors Forgejo repositories to GitHub)")
+        if not isinstance(block, dict):
+            errors.append("mirror: a mapping with github, and releases")
+        else:
+            unknown = set(block) - {"github", "releases"}
+            if unknown:
+                errors.append(f"mirror: unknown key(s) {sorted(unknown)}")
+            if "github" not in block:
+                errors.append("mirror.github: required, the GitHub user or organisation to mirror to")
+            elif not (isinstance(block["github"], str) and REPOSITORY.match(block["github"])):
+                errors.append("mirror.github: a GitHub user or organisation name (letters, digits, '.', '_' and '-')")
+            if "releases" in block and not isinstance(block["releases"], bool):
+                errors.append("mirror.releases: true or false (default true)")
     return errors
 
 
@@ -280,6 +354,28 @@ def _branch_list(value):
     if isinstance(value, list) and value and all(isinstance(v, str) and v for v in value):
         return value
     return None
+
+
+def forge(catalog):
+    """The git server, every field resolved. Without a forge block it is GitHub, as it was before the
+    git server became configurable. `url` is the web base without a trailing slash, `api` the REST base."""
+    block = catalog.get("forge") or {}
+    forge_type = block.get("type", "github")
+    if forge_type == "forgejo":
+        url = block["url"].strip().rstrip("/")
+        api = f"{url}/api/v1"
+    else:
+        url, api = "https://github.com", "https://api.github.com"
+    return {"type": forge_type, "url": url, "api": api,
+            "jenkinsUser": block.get("jenkinsUser", "jenkins"), "developers": list(block.get("developers") or [])}
+
+
+def mirror(catalog):
+    """The Forgejo -> GitHub mirror ({github, releases}, releases defaulting to true), or None."""
+    block = catalog.get("mirror")
+    if block is None:
+        return None
+    return {"github": block["github"], "releases": block.get("releases", True)}
 
 
 def applications(catalog, deployable=False):
@@ -476,6 +572,27 @@ def main(argv):
             print(catalog["owner"])
         elif command == "repository":
             print(catalog.get("repository") or "yggdrasil")
+        elif command == "forge" and len(args) <= 1:
+            resolved = forge(catalog)
+            fields = {"type": "type", "url": "url", "api": "api", "jenkins-user": "jenkinsUser"}
+            if not args:
+                print(json.dumps(resolved, indent=2))
+            elif args[0] in fields:
+                print(resolved[fields[args[0]]])
+            else:
+                print(__doc__, file=sys.stderr)
+                return 2
+        elif command == "mirror" and len(args) <= 1:
+            resolved = mirror(catalog)
+            if resolved is None:
+                raise CatalogError("catalog.yaml has no mirror")
+            if not args:
+                print(json.dumps(resolved, indent=2))
+            elif args[0] in resolved:
+                _print_value(resolved[args[0]])
+            else:
+                print(__doc__, file=sys.stderr)
+                return 2
         elif command == "applications":
             print("\n".join(a["id"] for _, a in applications(catalog, deployable="--deployable" in args)))
         elif command == "systems":

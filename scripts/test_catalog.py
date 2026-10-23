@@ -1,7 +1,10 @@
 """Tests for scripts/catalog.py.   python3 -m unittest discover -s scripts"""
 
+import contextlib
 import copy
+import io
 import unittest
+from unittest import mock
 
 import catalog as c
 
@@ -295,6 +298,142 @@ class ChimeraCatalogTests(unittest.TestCase):
             ports["services"]["web"]["ports"],
             ["${CHIMERA_PORT:-127.0.0.1:8083}:8080"],
         )
+
+
+class ForgeTests(unittest.TestCase):
+    """The git server: forge (forgejo or github, github when absent) and mirror (forgejo -> GitHub)."""
+
+    FORGEJO = {"type": "forgejo", "url": "https://git.techcraftsmen.net"}
+
+    def errors(self, **changes):
+        return c.validate(catalog(**changes))
+
+    def run_cli(self, value, *argv):
+        """main(argv) against `value` instead of the repository's catalog: (exit status, stdout, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        out.reconfigure = lambda **_: None  # main() asks stdout for plain LF line endings
+        with mock.patch.object(c, "load", return_value=value), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = c.main(list(argv))
+        return status, out.getvalue(), err.getvalue()
+
+    def test_given_no_forge_block_when_read_then_it_is_github_as_before(self):
+        self.assertEqual(c.forge(catalog())["type"], "github")
+        self.assertEqual(c.forge(catalog())["api"], "https://api.github.com")
+        self.assertEqual(c.forge(catalog()), {"type": "github", "url": "https://github.com",
+                                             "api": "https://api.github.com", "jenkinsUser": "jenkins",
+                                             "developers": []})
+
+    def test_given_the_repository_catalog_when_read_then_it_is_github_without_a_mirror(self):
+        self.assertEqual(c.forge(c.load())["type"], "github")
+        self.assertIsNone(c.mirror(c.load()))
+
+    def test_given_forgejo_when_read_then_the_api_is_under_its_url(self):
+        v = catalog(forge={"type": "forgejo", "url": "https://git.techcraftsmen.net/"})
+        self.assertEqual(c.forge(v)["url"], "https://git.techcraftsmen.net")
+        self.assertEqual(c.forge(v)["api"], "https://git.techcraftsmen.net/api/v1")
+
+    def test_given_github_with_a_forge_block_when_read_then_the_urls_are_githubs(self):
+        v = catalog(forge={"type": "github", "jenkinsUser": "ci", "developers": ["ann"]})
+        self.assertEqual(c.validate(v), [])
+        self.assertEqual(c.forge(v), {"type": "github", "url": "https://github.com",
+                                      "api": "https://api.github.com", "jenkinsUser": "ci", "developers": ["ann"]})
+
+    def test_given_forgejo_without_a_url_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("forge.url: required" in e for e in self.errors(forge={"type": "forgejo"})))
+
+    def test_given_a_url_for_github_when_validated_then_it_is_an_error(self):
+        errors = self.errors(forge={"type": "github", "url": "https://github.example.com"})
+        self.assertTrue(any("forge.url" in e and "Enterprise" in e for e in errors))
+
+    def test_given_a_plain_http_forgejo_url_when_validated_then_it_is_an_error(self):
+        errors = self.errors(forge={"type": "forgejo", "url": "http://git.techcraftsmen.net"})
+        self.assertTrue(any("forge.url" in e and "https" in e for e in errors))
+
+    def test_given_a_forgejo_url_with_a_path_or_no_host_when_validated_then_it_is_an_error(self):
+        for url in ("https://example.com/forgejo", "https://example.com/?a=1", "https://", "example.com", 3):
+            with self.subTest(url=url):
+                self.assertTrue(any("forge.url" in e for e in self.errors(forge={"type": "forgejo", "url": url})))
+
+    def test_given_a_forgejo_url_with_a_port_or_a_lone_slash_when_validated_then_it_is_valid(self):
+        for url in ("https://git.example.com:3000", "https://git.example.com/"):
+            with self.subTest(url=url):
+                self.assertEqual(self.errors(forge={"type": "forgejo", "url": url}), [])
+
+    def test_given_an_unknown_or_missing_forge_type_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("forge.type" in e for e in self.errors(forge={"type": "gitlab"})))
+        self.assertTrue(any("forge.type" in e for e in self.errors(forge={})))
+
+    def test_given_a_forge_that_is_not_a_mapping_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any(e.startswith("forge:") for e in self.errors(forge="forgejo")))
+
+    def test_given_an_unknown_forge_key_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("forge" in e and "token" in e for e in self.errors(forge=dict(self.FORGEJO, token="x"))))
+
+    def test_given_bad_user_names_when_validated_then_the_fields_are_named(self):
+        errors = self.errors(forge=dict(self.FORGEJO, jenkinsUser="-bad user", developers=["ok", "no way"]))
+        self.assertTrue(any("forge.jenkinsUser" in e for e in errors))
+        self.assertTrue(any("forge.developers" in e for e in errors))
+        self.assertTrue(any("forge.developers" in e for e in self.errors(forge=dict(self.FORGEJO, developers="claude"))))
+
+    def test_given_a_mirror_on_github_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("mirror" in e and "forgejo" in e for e in self.errors(mirror={"github": "acme"})))
+        errors = self.errors(forge={"type": "github"}, mirror={"github": "acme"})
+        self.assertTrue(any("mirror" in e and "forgejo" in e for e in errors))
+
+    def test_given_a_mirror_without_a_valid_github_owner_when_validated_then_it_is_an_error(self):
+        errors = self.errors(forge=self.FORGEJO, mirror={"releases": True})
+        self.assertTrue(any("mirror.github: required" in e for e in errors))
+        self.assertTrue(any("mirror.github" in e for e in self.errors(forge=self.FORGEJO, mirror={"github": "a b"})))
+
+    def test_given_a_mirror_with_a_bad_releases_when_validated_then_it_is_an_error(self):
+        errors = self.errors(forge=self.FORGEJO, mirror={"github": "acme", "releases": "yes"})
+        self.assertTrue(any("mirror.releases" in e for e in errors))
+
+    def test_given_an_unknown_mirror_key_when_validated_then_it_is_an_error(self):
+        errors = self.errors(forge=self.FORGEJO, mirror={"github": "acme", "tags": True})
+        self.assertTrue(any("mirror" in e and "tags" in e for e in errors))
+
+    def test_given_a_mirror_when_read_then_releases_default_to_true(self):
+        v = catalog(forge=self.FORGEJO, mirror={"github": "acme"})
+        self.assertEqual(c.validate(v), [])
+        self.assertEqual(c.mirror(v), {"github": "acme", "releases": True})
+        v["mirror"]["releases"] = False
+        self.assertEqual(c.mirror(v), {"github": "acme", "releases": False})
+
+    def test_given_no_mirror_when_read_then_it_is_none(self):
+        self.assertIsNone(c.mirror(catalog(forge=self.FORGEJO)))
+
+    def test_given_developers_when_read_then_they_are_listed(self):
+        v = catalog(forge=dict(self.FORGEJO, developers=["claude"]))
+        self.assertEqual(c.forge(v)["developers"], ["claude"])
+        self.assertEqual(c.forge(v)["jenkinsUser"], "jenkins")
+
+    def test_given_the_cli_when_asked_for_the_forge_type_then_it_prints_it(self):
+        v = catalog(forge=dict(self.FORGEJO, jenkinsUser="ci"))
+        self.assertEqual(self.run_cli(v, "forge", "type"), (0, "forgejo\n", ""))
+        self.assertEqual(self.run_cli(v, "forge", "url")[1], "https://git.techcraftsmen.net\n")
+        self.assertEqual(self.run_cli(v, "forge", "api")[1], "https://git.techcraftsmen.net/api/v1\n")
+        self.assertEqual(self.run_cli(v, "forge", "jenkins-user")[1], "ci\n")
+
+    def test_given_the_cli_when_asked_for_the_forge_then_it_prints_json(self):
+        status, out, _ = self.run_cli(catalog(), "forge")
+        self.assertEqual(status, 0)
+        self.assertEqual(c.json.loads(out), c.forge(catalog()))
+
+    def test_given_the_cli_when_asked_for_an_unknown_forge_field_then_it_fails(self):
+        self.assertEqual(self.run_cli(catalog(), "forge", "token")[0], 2)
+
+    def test_given_the_cli_when_asked_for_the_mirror_then_it_prints_it(self):
+        v = catalog(forge=self.FORGEJO, mirror={"github": "acme", "releases": False})
+        self.assertEqual(self.run_cli(v, "mirror", "github"), (0, "acme\n", ""))
+        self.assertEqual(self.run_cli(v, "mirror", "releases")[1], "false\n")
+        self.assertEqual(c.json.loads(self.run_cli(v, "mirror")[1]), {"github": "acme", "releases": False})
+
+    def test_given_the_cli_and_no_mirror_when_asked_then_it_exits_with_one(self):
+        status, out, err = self.run_cli(catalog(), "mirror")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("catalog.yaml has no mirror", err)
 
 
 class DeployableTests(unittest.TestCase):
