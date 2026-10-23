@@ -24,7 +24,7 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines backup-timer role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines backup-timer renovate-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -271,6 +271,7 @@ machine_secret_files() {
   case $1 in
     ygg) printf '%s\n' platform.env.example:platform.env acme.env.example:acme.env ;;
     ci | release) printf '%s\n' agent.env.example:agent.env ;;
+    renovate) printf '%s\n' renovate.env.example:renovate.env ;;
   esac
 }
 
@@ -406,6 +407,13 @@ machine_wait_for_user_manager() {
 # own systemd directory, which is where its manager looks.
 MACHINE_BACKUP_UNITS=(yggdrasil-backup.service yggdrasil-backup.timer)
 machine_backup_unit_dir() { echo "$(passwd_field ygg 6)/.config/systemd/user"; }
+
+# ---- The renovate timer -------------------------------------------------------------------------
+
+# The user units of Renovate's daily run (scripts/renovate.sh), dev machine only: the same way, into the
+# systemd directory of the renovate user, which runs it in its own engine.
+MACHINE_RENOVATE_UNITS=(yggdrasil-renovate.service yggdrasil-renovate.timer)
+machine_renovate_unit_dir() { echo "$(passwd_field renovate 6)/.config/systemd/user"; }
 
 # ---- Firewall -----------------------------------------------------------------------------------
 
@@ -1055,6 +1063,74 @@ machine_check_backup_timer() {
   machine_check_backup_health
 }
 
+# machine_check_renovate_timer: dev only. renovate's two units are the checkout's copies, and its timer is
+# enabled; asked of renovate itself (its home is closed to the admin), through sudo without a password.
+machine_check_renovate_timer() {
+  [[ "$machine_current_role" == dev ]] || return 0
+  title "Renovate"
+  local dir unit held stale=() unit_state
+  if ! user_exists renovate; then
+    row missing "renovate timer" "no renovate user yet: install creates it, then the timer of its daily run"
+    machine_need renovate-timer
+    return 0
+  fi
+  if ! machine_can_read_as_users; then
+    row warn "renovate timer" "the home of renovate is closed to you and sudo would ask for a password: not checked (run check with sudo)"
+    for unit in renovate.env "last renovate run"; do
+      row warn "$unit" "asking renovate needs sudo without a password: not checked"
+    done
+    return 0
+  fi
+  dir=$(machine_renovate_unit_dir)
+  for unit in "${MACHINE_RENOVATE_UNITS[@]}"; do
+    if ! held=$(read_as_user renovate cat "$dir/$unit" 2>/dev/null) || [[ "$held" != "$(<"$root/platform/systemd/$unit")" ]]; then
+      stale+=("$unit")
+    fi
+  done
+  if ((${#stale[@]})); then
+    row missing "renovate timer" "$dir: ${stale[*]} not there or not the checkout's copy: install writes them"
+    machine_need renovate-timer
+  elif ! unit_state=$(read_as_user renovate systemctl --user is-enabled yggdrasil-renovate.timer 2>/dev/null); then
+    row missing "renovate timer" "yggdrasil-renovate.timer is ${unit_state:-not enabled}: install enables it (every day at 05:00)"
+    machine_need renovate-timer
+  else
+    row ok "renovate timer" "yggdrasil-renovate.timer enabled for renovate, every day at 05:00 ($dir)"
+  fi
+  machine_check_renovate_health
+}
+
+# machine_check_renovate_health: whether Renovate can run and did, which the units being there doesn't say:
+# renovate.env has a token, and the last run succeeded. Warnings for the owner; none is install's to repair.
+machine_check_renovate_health() {
+  local env_file shown result="" started="" key value
+  env_file="$(secrets_dir_of renovate)/renovate.env"
+  if ! read_as_user renovate test -f "$env_file" 2>/dev/null; then
+    row warn "renovate.env" "$env_file is not there: copy env/renovate.env.example and fill it in, as renovate (docs/hosts.md): every daily run fails until then"
+  elif read_as_user renovate grep -q '^RENOVATE_TOKEN=.' "$env_file" 2>/dev/null; then
+    row ok "renovate.env" "$env_file, with a token"
+  else
+    row warn "renovate.env" "RENOVATE_TOKEN is empty in $env_file: put the renovate user's Forgejo token there (docs/hosts.md): every daily run fails until then"
+  fi
+
+  if shown=$(read_as_user renovate systemctl --user show yggdrasil-renovate.service -p Result -p ExecMainStartTimestamp 2>/dev/null); then
+    while IFS='=' read -r key value; do
+      case $key in
+        Result) result=$value ;;
+        ExecMainStartTimestamp) started=$value ;;
+      esac
+    done <<<"$shown"
+    if [[ -z "$started" ]]; then
+      row warn "last renovate run" "never run yet: the timer runs it at 05:00, or 'scripts/renovate.sh run' as renovate now"
+    elif [[ "$result" == success ]]; then
+      row ok "last renovate run" "succeeded, started $started"
+    else
+      row warn "last renovate run" "failed (Result=${result:-unknown}), started $started: journalctl --user -u yggdrasil-renovate, as renovate"
+    fi
+  else
+    row warn "last renovate run" "systemctl --user show yggdrasil-renovate.service failed as renovate: not checked"
+  fi
+}
+
 # Backups older than this are a warning: the timer runs every night, so a day and a half without one is
 # a night missed.
 MACHINE_BACKUP_MAX_AGE_HOURS=36
@@ -1154,6 +1230,7 @@ machine_step_text() {
       ;;
     engines) echo "Give each service user ($(role_users "$machine_current_role" | paste -sd' ' -)) its own rootless Docker engine: linger on, slirp4netns network and port driver, started now and at boot, and DOCKER_HOST in its .profile." ;;
     backup-timer) echo "Install the nightly backup for ygg: the units yggdrasil-backup.service and .timer into $(machine_backup_unit_dir) (as ygg), and enable the timer (03:30). What is backed up, and where to, is in $(secrets_dir_of ygg)/backup.conf (env/backup.conf.example)." ;;
+    renovate-timer) echo "Install the daily Renovate run for renovate (dev machine): the units yggdrasil-renovate.service and .timer into $(machine_renovate_unit_dir) (as renovate), and enable the timer (05:00). Its Forgejo token goes in $(secrets_dir_of renovate)/renovate.env (env/renovate.env.example)." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
   esac
 }
@@ -1481,6 +1558,27 @@ step_backup_timer() {
   done
   run_as_user ygg systemctl --user daemon-reload
   run_as_user ygg systemctl --user enable --now yggdrasil-backup.timer
+}
+
+# The same for renovate, on the dev machine only: its units are copied by renovate itself into its own home,
+# and the timer is enabled now and at boot after its engine (the run happens in it). It runs whether or not
+# renovate.env has its token yet: a day without one fails loudly in the journal instead of being silently
+# missing.
+step_renovate_timer() {
+  if ! user_exists renovate; then
+    warn "there is no renovate user yet: its timer is left for the next install."
+    return 0
+  fi
+  local dir unit
+  dir=$(machine_renovate_unit_dir)
+  machine_wait_for_user_manager renovate
+  run_as_user renovate mkdir -p "$dir"
+  for unit in "${MACHINE_RENOVATE_UNITS[@]}"; do
+    [[ -f "$root/platform/systemd/$unit" ]] || die "$root/platform/systemd/$unit is missing from the checkout"
+    run_as_user renovate tee "$dir/$unit" <"$root/platform/systemd/$unit" >/dev/null
+  done
+  run_as_user renovate systemctl --user daemon-reload
+  run_as_user renovate systemctl --user enable --now yggdrasil-renovate.timer
 }
 
 step_role_file() {

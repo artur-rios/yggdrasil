@@ -544,6 +544,20 @@ class RepositoryTests(unittest.TestCase):
     def test_given_the_repository_catalog_when_read_then_it_has_no_repositories_yet(self):
         self.assertEqual(c.repositories(c.load()), [])
 
+    def test_given_applications_and_repositories_when_names_are_asked_then_every_git_repository_is_listed_once(self):
+        # What a tool that visits every repository (Renovate) needs: an application's `repository`, else its
+        # id, once even when two applications share one; no platform component (it lives in this
+        # repository's own entry); then the `repositories` entries.
+        value = catalog(repositories=[{"id": "dotnet-util"}])
+        value["systems"][0]["applications"][0]["repository"] = "shop"
+        value["systems"][0]["applications"][1]["repository"] = "shop"
+        self.assertEqual(c.repository_names(value), ["shop", "dotnet-util"])
+        status, out, _ = run_cli(catalog(repositories=[{"id": "dotnet-util"}]), "repository-names")
+        self.assertEqual((status, out), (0, "shop-api\nshop-web\ndotnet-util\n"))
+
+    def test_given_no_repositories_when_names_are_asked_then_only_the_applications_are_listed(self):
+        self.assertEqual(c.repository_names(catalog()), ["shop-api", "shop-web"])
+
     def test_given_repositories_that_is_not_a_list_when_validated_then_it_is_an_error(self):
         self.assertTrue(any(e.startswith("repositories:") for e in self.errors(repositories={"id": "x"})))
 

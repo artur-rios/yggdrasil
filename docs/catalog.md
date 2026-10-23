@@ -416,6 +416,7 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py forge [type\|url\|api\|jenkins-user\|publish-agent]` | The git server: JSON of `type`, `url`, `api`, `jenkinsUser`, `developers` and `publishAgent` (`null` when nothing releases) with defaults applied (GitHub when there is no `forge` block), or one value; `publish-agent` exits `1` when there is none |
 | `python3 scripts/catalog.py mirror [github\|releases]` | The mirror: JSON, or one value (booleans `true`/`false`). Exits `1` with `catalog.yaml has no mirror` when there is none |
 | `python3 scripts/catalog.py repositories` | The ids of the [`repositories`](#repositories) that are not applications, one per line (nothing when there are none) |
+| `python3 scripts/catalog.py repository-names` | Every git repository under the owner, once each and one per line: the deployable applications' (their `repository`, else their `id`) and then the `repositories` entries. What `scripts/renovate.sh` visits |
 | `python3 scripts/catalog.py repository-entry <id>` | JSON of one such repository with defaults applied (`id`, `checks`, `actionsChecks`, `credentials`, `release`, `tags`, `rules`). Exits `1` when the id is not listed |
 | `python3 scripts/catalog.py systems` | `<id><TAB><name>`, one system per line |
 | `python3 scripts/catalog.py show <app>` | JSON: the application's fields, plus `system`, its system's id |

@@ -225,8 +225,8 @@ over that engine's `edge` network, and the deploy agent drives the engine they r
 | `dev` | SSH key | No | AI development sessions and the containers they run | its own Forgejo account's token |
 
 `ygg install --role dev` creates all five and gives each its own engine, its own `/etc/yggdrasil-<user>`
-directory and its own linger. What `renovate` and `dev` run, and what is in their directories,
-comes with later plans.
+directory and its own linger. What `dev` runs, and what is in its directory, comes with a later plan;
+`renovate`'s daily run is [below](#renovate-the-daily-run).
 
 **Why a separate `release` user.** Release files ship through the apps' built-in updaters and to
 nuget.org. If they were built in the `ci` engine, a check from a pull request by `claude` or Renovate
@@ -451,13 +451,41 @@ RandomizedDelaySec=15m
 WantedBy=timers.target
 ```
 
+### Renovate: the daily run
+
+Dev machine only. `ygg install` (step `renovate-timer`) copies [platform/systemd](../platform/systemd)'s
+`yggdrasil-renovate.service` and `yggdrasil-renovate.timer` into `~renovate/.config/systemd/user/`, as
+`renovate`, and enables the timer, the same way as the backup's. The timer fires every day at 05:00 (plus a
+random delay of up to 30 minutes; `Persistent=true`, so a machine that was off at 05:00 runs it when it is next
+on). The service runs `/opt/yggdrasil/scripts/renovate.sh run` after `renovate`'s own `docker.service`.
+
+`renovate.sh` runs the pinned `renovate/renovate` image (an exact version and its digest, both written in the
+script) in `renovate`'s own engine: **never the `ci` engine and never Jenkins**, because Renovate runs
+package-manager code while holding a token that can push. It visits only the repositories of
+[`catalog.yaml`](catalog.md) (`python3 scripts/catalog.py repository-names`, as `<owner>/<repository>`),
+opens pull requests from `renovate/*` branches into `develop`, and skips a repository that has no Renovate
+configuration of its own (no onboarding pull requests).
+
+Its settings are `/etc/yggdrasil-renovate/renovate.env` (`ygg install` copies
+[env/renovate.env.example](../env/renovate.env.example) there: `renovate:renovate`, mode `600`). Fill in as `renovate`
+(`RENOVATE_TOKEN`, the `renovate` Forgejo user's token with `write:repository` and `write:issue`;
+`RENOVATE_ENDPOINT` can stay empty, it is then `<forge url>/api/v1` from the catalog). The container gets the file
+as `--env-file`, a copy made for the run in `renovate`'s runtime directory (mode `600`, removed afterwards), so
+the token is never an argument of any command. `ygg check` shows whether the token is set and how the last
+run went; `journalctl --user -u yggdrasil-renovate` (as `renovate`) has its log, and
+`scripts/renovate.sh run` starts one by hand.
+
+To update Renovate, change `RENOVATE_IMAGE` in `scripts/renovate.sh` to a newer version and its digest
+(`docker buildx imagetools inspect renovate/renovate:<version>`) in a pull request, after reading the release
+notes.
+
 ### Other files and rules
 
 | What | Content |
 |---|---|
 | `/etc/yggdrasil-role` | The role: `dev` or `apps`. `ygg check` and `ygg install` without `--role` use it. Written before the first step that changes anything, so an install that stops halfway keeps its role. |
 | `/opt/yggdrasil` | Owned by `ygg`, mode `755`: `ygg` deploys from this checkout, and the backup unit runs its `scripts/backup.sh`. `ygg install` refuses to run from a checkout anywhere else. |
-| `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`. Files `600`. A file that is already there is never touched. |
+| `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`; `renovate` gets `renovate.env`. Files `600`. A file that is already there is never touched. |
 | `/etc/yggdrasil/cloudflare-ips` (apps machine) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
 | `/etc/yggdrasil/traefik.yml` | Not written by `ygg install`: `platform.sh up` renders Traefik's static configuration there (as `ygg`, mode `600`) once the engine is checked, and Traefik's container mounts it. The other commands (`down`, `ps`, `logs`, `config`) render a throwaway copy and leave this one alone. It stays there so that Traefik starts again after a crash or a reboot; deleting it takes ingress down at the next restart of the container, until the next `platform.sh up`. `platform.sh` refuses to run as root, since a root-owned file here is one the rootless Traefik can't read. |
 | `ufw` rules | Dev: `OpenSSH`, `80,443/tcp`, `2222/tcp`. Apps: `OpenSSH`, and for each Cloudflare range `allow proto tcp from <range> to any port 80,443 comment yggdrasil-cloudflare`. The defaults: `deny incoming`, `allow outgoing`. Then `ufw` is turned on, with SSH allowed first so the session that runs the install is not cut. `ygg check` reports any other rule that lets everyone in. |
@@ -531,6 +559,7 @@ Jenkins: nothing creates it yet, and the table says where it will live.
 | Forgejo `jenkins` bot token | Jenkins controller (`ygg`, dev); deploy agent (`ygg`, apps) | Write every repository; the only account allowed to merge into an application's `main` and create its `v*` tags; post statuses | later |
 | Forgejo `jenkins-ci` bot token | CI agent (`ci`) and release agent (`release`) | Read every repository | later |
 | Forgejo `renovate` bot token | The `renovate` user (dev) | Push branches that are not protected (in practice `renovate/*`) and open pull requests | later |
+| Forgejo `renovate` bot token (`write:repository`, `write:issue`), `RENOVATE_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Push `renovate/*` branches (and any unprotected branch) and open pull requests | now: [Renovate](#renovate-the-daily-run) |
 | Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
 | Forgejo owner token (`write:repository`), `FORGE_TOKEN` | The operator's shell, for the one run of `python3 scripts/rules.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules) |

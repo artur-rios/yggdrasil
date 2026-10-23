@@ -1,0 +1,13 @@
+# Starts yggdrasil-renovate.service every day. Persistent: a machine that was off at 05:00 runs it when it is
+# next on. The random delay spreads the run over half an hour after 05:00, so it does not meet the nightly
+# backup's catch-up or the other timers of the machine at the same second.
+[Unit]
+Description=Run Renovate every day
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

@@ -18,6 +18,8 @@
     python3 scripts/catalog.py mirror [github|releases]    the Forgejo -> GitHub mirror (exit 1 without one)
     python3 scripts/catalog.py repositories                ids of the repositories that are not applications
     python3 scripts/catalog.py repository-entry <id>       JSON: one of them, defaults applied (exit 1 if unknown)
+    python3 scripts/catalog.py repository-names           every git repository under the owner, once each (applications'
+                                                           repository or id, then the repositories entries)
     python3 scripts/catalog.py add-application < new.json adds an application, keeping the comments
 
 add-application reads {"system": {"id", "name", "description"}, "application": {...}} on stdin. The
@@ -514,6 +516,17 @@ def repositories(catalog):
              "rules": entry.get("rules", "release")} for entry in catalog.get("repositories") or []]
 
 
+def repository_names(catalog):
+    """Every git repository of the catalog under the owner, once each, in catalog order: the deployable
+    applications' (their `repository`, else their id; applications can share one) and then the
+    `repositories` entries. The same set scripts/rules.py applies rules to, and what Renovate visits."""
+    names = []
+    for _, app in applications(catalog, deployable=True):
+        names.append(app.get("repository") or app["id"])
+    names += [entry["id"] for entry in repositories(catalog)]
+    return list(dict.fromkeys(names))
+
+
 def applications(catalog, deployable=False):
     for system in catalog.get("systems") or []:
         for app in system.get("applications") or []:
@@ -767,6 +780,9 @@ def main(argv):
             # Nothing at all (not a blank line) when there are none: a `while read` loop must not run once.
             for entry in repositories(catalog):
                 print(entry["id"])
+        elif command == "repository-names" and not args:
+            for name in repository_names(catalog):
+                print(name)
         elif command == "repository-entry" and len(args) == 1:
             for entry in repositories(catalog):
                 if entry["id"] == args[0]:
