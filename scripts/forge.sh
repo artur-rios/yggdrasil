@@ -14,10 +14,11 @@
 #     scripts/forge.sh delete-branch  <repo> <branch>
 #
 # state is pending, success, failure or error. get-statuses prints the latest state of each context
-# (the server's combined status) and the login that created it (empty when the server has none: a
-# deleted user), which is how the pipeline tells its own results from anyone else's. merge-pr makes a
-# merge commit and fails if the pull request's head is no longer <sha>. delete-branch succeeds, with a
-# note on stderr, when the branch is already gone.
+# (GitHub: the newest status in the commit's list of statuses; Forgejo: its combined status) and the
+# login that created it (empty when the server has none: a deleted user), which is how the pipeline
+# tells its own results from anyone else's. merge-pr makes a merge commit and fails if the pull
+# request's head is no longer <sha>. delete-branch succeeds, with a note on stderr, when the branch
+# is already gone.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
@@ -200,10 +201,21 @@ release_options() {
 github_set_status() { set_status "$@"; }
 
 github_get_statuses() {
-  local repo=$1 sha=$2 out
-  # The combined status already holds one state per context, the latest. 100 is the most a page takes.
-  out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status?per_page=100") || return 1
-  jq -r '.statuses[] | [.context, .state, (.creator.login // "")] | @tsv' <<<"$out"
+  local repo=$1 sha=$2 out page=1 count pages=()
+  # The list of statuses, not the combined status: only the list's items carry the creator (the
+  # combined status' items are "simple" statuses without one). The list is the commit's whole history,
+  # the newest first, 100 to a page at most, so the first one seen of a context is its latest. 100
+  # pages is far more than the 1000 statuses GitHub keeps per commit and context.
+  while ((page <= 100)); do
+    out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/statuses?per_page=100&page=$page") || return 1
+    pages+=("$out")
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || break
+    page=$((page + 1))
+  done
+  printf '%s\n' "${pages[@]}" | jq -rs 'add // [] | reduce .[] as $s ({seen: {}, lines: []};
+      if .seen[$s.context] then . else .seen[$s.context] = true | .lines += [$s] end)
+    | .lines[] | [.context, .state, (.creator.login // "")] | @tsv'
 }
 
 github_merge_pr() {

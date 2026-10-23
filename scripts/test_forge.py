@@ -147,31 +147,74 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertIn("unknown state", result.stderr)
         self.assertEqual(list(self.state.iterdir()), [])
 
+    # GitHub's list endpoint (GET .../commits/<sha>/statuses) answers an array of statuses, the newest
+    # first, each with its creator. The combined status (.../status) has no creator in its items, which
+    # is why it is not used.
+    @staticmethod
+    def listed(context, state, login="jenkins"):
+        return {"id": 1, "context": context, "state": state, "description": "x",
+                "creator": None if login is None else {"login": login, "id": 5, "type": "Bot"}}
+
     def test_given_github_when_reading_statuses_then_the_latest_per_context_is_printed(self):
-        self.respond("status", (0, {"state": "failure", "statuses": [
-            {"context": "branch-policy", "state": "success", "creator": {"login": "jenkins"}},
-            {"context": "test", "state": "failure", "creator": {"login": "jenkins"}}]}))
+        # Newest first: the failure of "test" is the latest, the success under it is history.
+        self.respond("statuses", (0, [self.listed("test", "failure"), self.listed("branch-policy", "success"),
+                                      self.listed("test", "success")]))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "branch-policy\tsuccess\tjenkins\ntest\tfailure\tjenkins\n")
-        self.assertIn("https://api.example/repos/someone/app/commits/abc123/status", self.request("status"))
+        self.assertEqual(result.stdout, "test\tfailure\tjenkins\nbranch-policy\tsuccess\tjenkins\n")
+        self.assertTrue(self.request("statuses").strip().endswith(
+            "https://api.example/repos/someone/app/commits/abc123/statuses?per_page=100&page=1"),
+            self.request("statuses"))
+        self.assertFalse((self.state / "statuses.request.2").exists(), "a page that is not full is the last")
 
     def test_given_github_statuses_when_read_then_the_creator_is_the_third_column(self):
         # On GitHub an App's statuses are created by its bot login: reuse compares this column with
         # forge.jenkinsUser, so it must be printed as the server gives it.
-        self.respond("status", (0, {"state": "success", "statuses": [
-            {"context": "test", "state": "success", "creator": {"login": "my-app[bot]"}},
-            {"context": "lint", "state": "success", "creator": {"login": "someone"}}]}))
+        self.respond("statuses", (0, [self.listed("test", "success", "my-app[bot]"),
+                                      self.listed("lint", "success", "someone")]))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([line.split("\t") for line in result.stdout.splitlines()],
                          [["test", "success", "my-app[bot]"], ["lint", "success", "someone"]])
 
+    def test_given_github_a_context_set_by_two_users_when_read_then_the_latest_ones_creator_is_printed(self):
+        # Somebody else posted "test" after Jenkins did: the creator column must be theirs, not Jenkins'.
+        self.respond("statuses", (0, [self.listed("test", "success", "mallory"),
+                                      self.listed("test", "success", "jenkins")]))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.stdout, "test\tsuccess\tmallory\n")
+
     def test_given_github_a_status_without_a_creator_when_read_then_the_third_column_is_empty(self):
         # A deleted user's statuses have "creator": null; the line must keep its three columns.
-        self.respond("status", (0, {"statuses": [{"context": "test", "state": "success", "creator": None}]}))
+        self.respond("statuses", (0, [self.listed("test", "success", None)]))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual((result.returncode, result.stdout), (0, "test\tsuccess\t\n"), result.stderr)
+
+    def test_given_a_commit_without_statuses_when_reading_them_on_github_then_nothing_is_printed(self):
+        self.respond("statuses", (0, []))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_given_more_statuses_than_a_page_when_reading_them_on_github_then_every_page_is_read(self):
+        # 100 is the most a page takes. The second page holds older statuses: a context already seen
+        # keeps its newer state, and a new one is added.
+        first = [self.listed(f"deploy/env-{n:02}", "success") for n in range(99)] + [self.listed("test", "failure")]
+        second = [self.listed("test", "success"), self.listed("lint", "success", "someone")]
+        self.respond("statuses", (0, first), (0, second))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 101)
+        self.assertEqual(lines[99:], ["test\tfailure\tjenkins", "lint\tsuccess\tsomeone"])
+        self.assertTrue(self.request("statuses", 2).strip().endswith("/commits/abc123/statuses?per_page=100&page=2"))
+        self.assertFalse((self.state / "statuses.request.3").exists(), "a page that is not full is the last")
+
+    def test_given_exactly_a_page_of_statuses_when_reading_them_on_github_then_the_next_page_is_asked_for(self):
+        self.respond("statuses", (0, [self.listed(f"c{n:03}", "success") for n in range(100)]), (0, []))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 100)
+        self.assertTrue(self.request("statuses", 2).strip().endswith("/commits/abc123/statuses?per_page=100&page=2"))
 
     def test_given_github_when_merging_then_it_prints_the_merge_commit(self):
         self.respond("merge", (0, {"sha": "def456", "merged": True}))
@@ -289,6 +332,7 @@ class ForgeGitHubTests(ForgeTestCase):
     def test_given_any_command_when_run_then_the_token_is_not_in_curls_arguments(self):
         self.respond("abc123", (0, {}))
         self.respond("status", (0, {"statuses": []}))
+        self.respond("statuses", (0, []))
         self.respond("merge", (0, {"sha": "def456"}))
         self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "u"}))
         self.respond("17", (0, {"draft": False, "html_url": "u"}))
