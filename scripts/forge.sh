@@ -73,29 +73,53 @@ encode_path() { jq -rn --arg text "$1" '$text | split("/") | map(@uri) | join("/
 # The repository's URL under the API: <api>/repos/<owner>/<repo>
 repo_url() { printf '%s/repos/%s/%s' "$api_url" "$(encode "$owner")" "$(encode "$1")"; }
 
-# request <what> <method> <url> [--json <body> | --file <path>]
+# send <method> <url> [--json <body> | --file <path> | --form <field=@path>]
+#
+# Does the call and leaves what came back in three variables, for the callers that must tell failures
+# apart (delete-branch): answer (the body), http_status (000 when there was no answer at all) and, when
+# curl failed, failure (the server's message: the JSON .message, else the raw body). Returns curl's status.
+#
+# curl reads its headers, the token among them, from a config on stdin: arguments are readable by
+# every user of the machine (ps), stdin is not. A body is an argument, which is fine: none holds a secret.
+# --write-out puts the HTTP status on a line of its own after the body, split off again below.
+send() {
+  local method=$1 url=$2 out status=0
+  shift 2
+  local args=(--silent --show-error --fail-with-body --write-out '\n%{http_code}' --request "$method" --config -)
+  case "${1:-}" in
+    --json) args+=(--header "Content-Type: application/json" --data "$2") ;;
+    --file) args+=(--header "Content-Type: application/octet-stream" --data-binary "@$2") ;;
+    --form) args+=(--form "$2") ;; # curl makes the multipart Content-Type, boundary included
+  esac
+  out=$(curl "${args[@]}" "$url" <<<"$(headers)") || status=$?
+  if [[ "$out" == *$'\n'* ]]; then
+    answer=${out%$'\n'*}
+    http_status=${out##*$'\n'}
+  else
+    answer=$out
+    http_status=000
+  fi
+  failure=""
+  if ((status)); then
+    failure=$(jq -r '.message // empty' <<<"$answer" 2>/dev/null) || failure=""
+    [[ -n "$failure" ]] || failure=$answer
+  fi
+  return "$status"
+}
+
+# request <what> <method> <url> [--json <body> | --file <path> | --form <field=@path>]
 #
 # Prints the answer. On an error answer, --fail-with-body puts the server's explanation on stdout,
 # where a caller's jq would swallow it ("merge-pr" would print null): it goes to stderr, in the
 # error line "forge: <what> failed: <message>", into the build log, instead.
-#
-# curl reads its headers, the token among them, from a config on stdin: arguments are readable by
-# every user of the machine (ps), stdin is not. A body is an argument, which is fine: none holds a secret.
 request() {
-  local what=$1 method=$2 url=$3 out message
-  shift 3
-  local args=(--silent --show-error --fail-with-body --request "$method" --config -)
-  case "${1:-}" in
-    --json) args+=(--header "Content-Type: application/json" --data "$2") ;;
-    --file) args+=(--header "Content-Type: application/octet-stream" --data-binary "@$2") ;;
-  esac
-  if ! out=$(curl "${args[@]}" "$url" <<<"$(headers)"); then
-    message=$(jq -r '.message // empty' <<<"$out" 2>/dev/null) || message=""
-    [[ -n "$message" ]] || message=$out
-    echo "forge: $what failed${message:+: $message}" >&2
+  local what=$1
+  shift
+  if ! send "$@"; then
+    echo "forge: $what failed${failure:+: $failure}" >&2
     return 1
   fi
-  [[ -z "$out" ]] || printf '%s\n' "$out"
+  [[ -z "$answer" ]] || printf '%s\n' "$answer"
 }
 
 # The curl config with the request's headers.
@@ -106,12 +130,17 @@ headers() {
       printf 'header = "Accept: application/vnd.github+json"\n'
       printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
       ;;
+    forgejo)
+      # Forgejo's own scheme; "Bearer" is for OAuth2 tokens.
+      printf 'header = "Authorization: token %s"\n' "$token"
+      printf 'header = "Accept: application/json"\n'
+      ;;
   esac
 }
 
-# ---- GitHub ----
-
-github_set_status() {
+# set_status <repo> <sha> <state> <context> <description> [target-url]: GitHub and Forgejo take the
+# same body on the same path.
+set_status() {
   local repo=$1 sha=$2 state=$3 context=$4 description=$5 target=${6:-}
   case "$state" in
     pending | success | failure | error) ;;
@@ -121,6 +150,24 @@ github_set_status() {
     --arg state "$state" --arg context "$context" --arg description "$description" --arg target "$target" \
     '{state: $state, context: $context, description: $description} + (if $target == "" then {} else {target_url: $target} end)')" >/dev/null
 }
+
+# release_options <create-release's options>: sets draft (true or false) and notes_file ("" for none).
+release_options() {
+  draft=false notes_file=""
+  while (($#)); do
+    case "$1" in
+      --draft) draft=true ;;
+      --notes-file) notes_file=${2:?--notes-file needs a file}; shift ;;
+      *) die "create-release: unknown option '$1'" ;;
+    esac
+    shift
+  done
+  [[ -z "$notes_file" || -f "$notes_file" ]] || die "create-release: no notes file $notes_file"
+}
+
+# ---- GitHub ----
+
+github_set_status() { set_status "$@"; }
 
 github_get_statuses() {
   local repo=$1 sha=$2 out
@@ -146,20 +193,12 @@ github_create_tag() {
 }
 
 github_create_release() {
-  local repo=$1 tag=$2 sha=$3 title=$4 out draft=false notes_file=""
+  local repo=$1 tag=$2 sha=$3 title=$4 out draft notes_file
   shift 4
-  while (($#)); do
-    case "$1" in
-      --draft) draft=true ;;
-      --notes-file) notes_file=${2:?--notes-file needs a file}; shift ;;
-      *) die "create-release: unknown option '$1'" ;;
-    esac
-    shift
-  done
+  release_options "$@"
   # Without notes of our own GitHub writes them from the merged pull requests.
   local notes=(--argjson generate true --arg notes "")
   if [[ -n "$notes_file" ]]; then
-    [[ -f "$notes_file" ]] || die "create-release: no notes file $notes_file"
     notes=(--argjson generate false --rawfile notes "$notes_file")
   fi
   out=$(request "create-release $tag" POST "$(repo_url "$repo")/releases" --json "$(jq -n \
@@ -199,6 +238,87 @@ github_delete_branch() {
     echo "$out" >&2
     return 1
   fi
+}
+
+# ---- Forgejo ----
+
+forgejo_set_status() { set_status "$@"; }
+
+forgejo_get_statuses() {
+  local repo=$1 sha=$2 out
+  out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status") || return 1
+  jq -r '.statuses[] | [.context, .status] | @tsv' <<<"$out"
+}
+
+forgejo_merge_pr() {
+  local repo=$1 number=$2 sha=$3 title=$4 out
+  # A merge commit, never squash or rebase (see github_merge_pr). head_commit_id makes the merge fail
+  # if the pull request moved on since it was deployed. Unlike GitHub's, the answer is empty: the merge
+  # commit is read from the pull request afterwards.
+  request "merge-pr #$number" POST "$(repo_url "$repo")/pulls/$(encode "$number")/merge" --json "$(jq -n \
+    --arg sha "$sha" --arg title "$title" '{Do: "merge", MergeTitleField: $title, head_commit_id: $sha}')" >/dev/null || return 1
+  out=$(request "merge-pr #$number" GET "$(repo_url "$repo")/pulls/$(encode "$number")") || return 1
+  jq -er '.merge_commit_sha | select(. != null and . != "")' <<<"$out" || die "merge-pr failed: the pull request has no merge commit"
+}
+
+forgejo_create_tag() {
+  local repo=$1 tag=$2 sha=$3
+  request "create-tag $tag" POST "$(repo_url "$repo")/tags" --json "$(jq -n \
+    --arg tag "$tag" --arg sha "$sha" '{tag_name: $tag, target: $sha}')" >/dev/null
+}
+
+forgejo_create_release() {
+  local repo=$1 tag=$2 sha=$3 title=$4 out draft notes_file
+  shift 4
+  release_options "$@"
+  # Without notes of our own the body stays empty: Forgejo does not write release notes.
+  local notes=(--arg notes "")
+  [[ -z "$notes_file" ]] || notes=(--rawfile notes "$notes_file")
+  out=$(request "create-release $tag" POST "$(repo_url "$repo")/releases" --json "$(jq -n \
+    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" "${notes[@]}" \
+    '{tag_name: $tag, target_commitish: $sha, name: $title, body: $notes, draft: $draft, prerelease: false}')") || return 1
+  if [[ "$draft" == true ]]; then
+    jq -e '.draft == true' <<<"$out" >/dev/null || die "create-release failed: the server did not create an unpublished draft release for $tag"
+  fi
+  jq -er '[.id, .html_url] | @tsv' <<<"$out" || die "create-release failed: the answer has no release id and URL"
+}
+
+forgejo_upload_release_file() {
+  local repo=$1 id=$2 file=$3 out
+  [[ -f "$file" ]] || die "upload-release-file: no file $file"
+  # A multipart form with the file in the field "attachment"; the file's own name is the asset's.
+  out=$(request "upload-release-file $(basename "$file")" POST \
+    "$(repo_url "$repo")/releases/$(encode "$id")/assets?name=$(encode "$(basename "$file")")" \
+    --form "attachment=@$file") || return 1
+  jq -er '.browser_download_url' <<<"$out" || die "upload-release-file failed: the answer has no download URL"
+}
+
+forgejo_publish_release() {
+  local repo=$1 id=$2 out
+  out=$(request "publish-release $id" PATCH "$(repo_url "$repo")/releases/$(encode "$id")" --json '{"draft": false}') || return 1
+  jq -er 'select(.draft == false) | .html_url' <<<"$out" || die "publish-release failed: the release is still a draft"
+}
+
+forgejo_delete_branch() {
+  local repo=$1 branch=$2
+  send DELETE "$(repo_url "$repo")/branches/$(encode_path "$branch")" && return 0
+  case "$http_status" in
+    # Delete head branch after merge (rules.py turns it on) means Forgejo has usually deleted the
+    # branch already by the time this runs: that is done.
+    404)
+      echo "forge: $branch was already deleted" >&2
+      return 0
+      ;;
+    # A protected branch is a decision of the owner's, not a failure of the release: exit 3.
+    403)
+      if grep -qi 'protected' <<<"$failure"; then
+        echo "forge: kept: $branch is protected" >&2
+        return 3
+      fi
+      ;;
+  esac
+  echo "forge: delete-branch $branch failed${failure:+: $failure}" >&2
+  return 1
 }
 
 # ---- Dispatch ----
