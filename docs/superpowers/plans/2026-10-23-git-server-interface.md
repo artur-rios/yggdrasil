@@ -41,7 +41,9 @@ stays GitHub until then); sites' stack files and Traefik routing (plan 5).
     `deploy/<environment>` for each release environment; merges only by `forge.jenkinsUser` (applications)
     or the owner (repositories released by owner tags).
   - `release/*`: only the owner may push.
-  - Protected file `Jenkinsfile` on `develop` and `main` (Forgejo): only the owner can merge a change to it.
+  - Protected file `Jenkinsfile` on `develop` only (Forgejo): only the owner can merge a change to it (a
+    forced merge). Not on `main`, which receives only release snapshots of `develop` that Jenkins merges: a
+    protected file there would stop every release that changes the Jenkinsfile.
   - Version tags: in applications only `forge.jenkinsUser` creates `v*`; in owner-tagged repositories only the
     owner creates their pattern (`v*`, or `[0-9]*` for libraries); nobody moves or deletes them.
   - Repository settings: default branch `develop`; delete head branch after merge.
@@ -496,7 +498,8 @@ git commit -m "feat: apply the branch rules on github"
     - `develop`: `enable_push: false`, `enable_merge_whitelist: true`, `merge_whitelist_usernames`:
       `develop_mergers`, `enable_status_check: true`, `status_check_contexts`: `develop_checks`,
       `required_approvals: 0`, `protected_file_patterns: "Jenkinsfile"`, `apply_to_admins: false`.
-    - `main`: the same with `main_mergers` and `main_checks`.
+    - `main`: the same with `main_mergers` and `main_checks`, and `protected_file_patterns: ""` (the
+      `Jenkinsfile` is protected on `develop` only, see the rules above).
     - `release/*`: `enable_push: true`, `enable_push_whitelist: true`, `push_whitelist_usernames`:
       `release_pushers`, `enable_merge_whitelist: false`, `apply_to_admins: false`.
     - basic model: `develop` and `main` with `enable_push: true` (force push and deletion are blocked by any

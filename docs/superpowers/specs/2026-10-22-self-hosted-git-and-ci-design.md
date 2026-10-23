@@ -101,8 +101,9 @@ credential lives where.
 - **Releases are published on GitHub too**, with the same files, so Chimera's built-in updater (which reads
   GitHub releases and accepts downloads only from `github.com`) and anyone downloading from GitHub keep
   working. Chimera's update code doesn't change.
-- **Only the owner changes pipelines.** Changes to a `Jenkinsfile` reach `develop` or `main` only through a
-  merge by the owner, and pull requests by anyone else are built with the target branch's Jenkinsfile.
+- **Only the owner changes pipelines.** Changes to a `Jenkinsfile` reach `develop` only through the owner's
+  (forced) merge; `main` receives them only as part of a release snapshot of `develop`, which Jenkins merges.
+  Pull requests by anyone else are built with the target branch's Jenkinsfile.
   `claude` keeps everything else.
 - **The apps machine is a new VPS.** Production can be off during the move.
 - **yggdrasil keeps supporting GitHub** as a git server for those who want it; Forgejo is the default.
@@ -364,7 +365,7 @@ API (idempotent, with `--dry-run`, like today's). Names are glob patterns.
 |---|---|
 | `develop` | No direct push, no force push, no deletion. Merge through a pull request whose required checks pass: `branch-policy`, the catalog's `checks`, and its `actionsChecks`. Merge allowed for the owner and `claude`. Squash or merge commit. |
 | `main` | No direct push, no force push, no deletion. Required: `branch-policy`, `checks`, `deploy/<environment>` for each release environment. Merge allowed only for `jenkins` (applications) or the owner (yggdrasil, which isn't deployed by Jenkins). Merge commit only (Jenkins merges with a merge commit; Forgejo's merge styles are per repository, so the rule is "only Jenkins merges"). |
-| Protected files, on `develop` and `main` | `Jenkinsfile`: a pull request that changes it can be merged only by the owner (owner's decision). Renovate's updates to check images in a Jenkinsfile therefore wait for the owner. |
+| Protected files, on `develop` only | `Jenkinsfile`: a pull request that changes it can be merged only by the owner (owner's decision), with a forced merge (Forgejo holds a protected file even for the owner otherwise). Renovate's updates to check images in a Jenkinsfile therefore wait for the owner. Not on `main`: it receives only release snapshots of `develop`, which Jenkins merges, and a protected file there would stop every release that changes a Jenkinsfile. |
 | `release/*` | Only the owner may push. A push deploys to the branch environments, so the bots and `claude` must not be able to create one. |
 | Version tags | Protected: in applications, only `jenkins` may create `v*`; in owner-tagged repositories (yggdrasil, maestro, orpheus, alexandria-ui, personal-lab, the libraries), only the owner may create their version tags (`v*`, or `[0-9]*` for the libraries). Nobody may move or delete them. |
 | Repository settings | Default branch `develop`; delete the head branch after merge. |
