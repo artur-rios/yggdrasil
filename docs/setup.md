@@ -1598,10 +1598,13 @@ release published after the skip, and for a tag that was never built.
 Two cautions. It **rebuilds** the files from the tag instead of copying the published ones, so a build that is
 not reproducible can give a file with the same size and other bytes than the one already on Forgejo, and the
 GitHub copy would then differ in content; a different size stops the run. And if the merge went through but the
-tag did not (the message says *merged, but not tagged*), create the tag on the merge commit as the Jenkins user,
-the only one Forgejo lets create an application's `v*` tags (`scripts/forge.sh create-tag <repository> <tag>
-<sha>` with the `forge-write` token, see [The git server commands](#the-git-server-commands)), then run
-`release-resume`.
+tag did not, the message says *merged as `<sha>`, but not tagged* and names a third parameter: run
+`release-resume` with `COMMIT=<sha>` too. Only the Jenkins user may create an application's `v*` tags (on
+Forgejo not even you), so the job makes it: it checks that the commit is on `main`, is a merge commit and is
+titled `release: vx.y.z (#N)` for that very `TAG` (only Jenkins merges into an application's `main`, and only a
+release pull request's merge has that title, so no other commit can be tagged this way), then tags it on the
+publish agent and goes on as above. A tag of that name already on the commit is kept; one on another commit
+stops the job. `COMMIT` is refused for an `owner-tag` repository, whose tags are yours to make.
 
 The **`actions-release`** job (`REPOSITORY`, `TAG`) runs the Windows workflow again for a tag and attaches its
 files to a release that was published without them.
@@ -1768,6 +1771,7 @@ A service's log, as `ygg`: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, 
 | Every build fails loading the library (`yggdrasil` not found at a version) | `YGGDRASIL_LIBRARY_VERSION` is not a tag of your fork that Jenkins' read credential can read (`git tag --list 'v*'`); fix it in `platform.env` and `platform.sh up` ([How a build runs](#how-a-build-runs)) |
 | A check starts but its container has an empty workspace, or a build waits for a `ci` executor forever | The `ci` agent is offline, or its `YGG_AGENT_WORKDIR` differs from `CI_AGENT_WORKDIR` in the controller's `platform.env` ([9.8](#98-the-ci-and-release-agents)) |
 | `Not released: the pull request is merged and tagged …` | The release failed after its merge. Run the `release-resume` job with the repository and the tag it names ([Finishing a release that stopped](#finishing-a-release-that-stopped)) |
+| `Not released: the pull request is merged as <sha>, but not tagged …` | The merge went through and the tag did not. Run `release-resume` with the repository, the tag and `COMMIT=<sha>`, as the message says: it tags the merge commit, then releases ([Finishing a release that stopped](#finishing-a-release-that-stopped)) |
 | The build waits at **Deploy without GitHub Actions checks** | The GitHub Actions checks did not finish; click the button to go on without them (Forgejo only publication, `release-resume` later) or **Abort** ([GitHub Actions and the skip](#github-actions-and-the-skip)) |
 | An owner's tag built nothing | The tag is lightweight and on a commit older than a day, or does not match the entry's `tags`, or the repository is not `release: owner-tag`. Tag with `git tag -a`, or run `release-resume` ([Owner tags and NuGet](#owner-tags-and-nuget)) |
 | A stack trace with `403` at every checkout in a build log | The Gitea plugin posting a status with the read token. Harmless ([Accepted risks](#accepted-risks)) |

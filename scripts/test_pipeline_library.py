@@ -843,8 +843,13 @@ class ReleaseLibraryTests(unittest.TestCase):
                                r"throw interruption")
         self.assertIn('error "${failureText(problem)}\\n${untaggedNote(ctx, tag, commit)}"', body)
         start, end = lib.functions["untaggedNote"]
-        self.assertIn("the pull request is merged as ${merge}, but not tagged; tag ${tag} on the merge commit ${merge}, then "
-                      "finish the release with the release-resume job (REPOSITORY=${ctx.app}, TAG=${tag})", lib.code[start:end])
+        # On Forgejo only forge.jenkinsUser may create the v* tags: the note never says to tag by hand, it
+        # names the release-resume run that tags the merge commit and finishes the release.
+        note = lib.code[start:end]
+        self.assertIn("the pull request is merged as ${merge}, but not tagged ${tag}; finish the release with the "
+                      "release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}, COMMIT=${merge}), which tags the merge "
+                      "commit first", note)
+        self.assertNotIn("tag ${tag} on the merge commit", note)
         # A failure without a message (a NullPointerException) still says what it was.
         start, end = lib.functions["failureText"]
         self.assertIn("problem.message ?: problem.toString()", lib.code[start:end])
@@ -1052,8 +1057,39 @@ class TagReleaseLibraryTests(unittest.TestCase):
         self.assertLess(lock, body.index("readReleaseTag(ctx, tag)"))
         self.assertLess(body.index("readReleaseTag(ctx, tag)"), body.index("releaseTag(ctx, tag, described)"))
         self.assertNotIn("node(", body)
+        # COMMIT (optional): checked before the lock, only for an application (Jenkins makes its tags);
+        # under the lock the merge is tagged before the tag is read.
+        commit = body.index("(params.COMMIT ?: '').toString().trim()")
+        self.assertLess(commit, lock)
+        self.assertRegex(body, r"if \(commit && !\(commit ==~ COMMIT\)\) \{\s*error ")
+        self.assertRegex(body, r"if \(commit && ctx\.release != 'deploy'\) \{\s*error ")
+        self.assertLess(lock, body.index("tagReleaseMerge(ctx, tag, commit)"))
+        self.assertLess(body.index("tagReleaseMerge(ctx, tag, commit)"), body.index("readReleaseTag(ctx, tag)"))
         entry = (ROOT / "jenkins" / "library" / "vars" / "yggdrasilReleaseResume.groovy").read_text(encoding="utf-8")
         self.assertRegex(entry, r"def call\(\) \{\s*yggdrasilPipeline\.releaseResume\(\)\s*\}")
+
+    def test_given_a_commit_to_tag_when_read_then_only_a_release_merge_on_main_is_tagged_and_on_the_publish_agent(self):
+        lib = self.lib
+        body = self.body("tagReleaseMerge")
+        # Read on the release agent with the read credential (nothing of the repository runs there).
+        reading = body.index("node('release')")
+        self.assertLess(reading, body.index("checkoutCommit(ctx, commit)"))
+        self.assertIn("toolStatus('forge.sh', ['tag-sha', ctx.repo, tag]", body)
+        # On main, a merge commit (two parents), titled as mergeAndTag titles the release's merge.
+        for wanted in ('merge-base --is-ancestor "$YGG_SHA" refs/remotes/origin/main',
+                       'git -C app rev-list --parents -n 1 "$YGG_SHA"', 'git -C app log -1 --format=%s "$YGG_SHA"',
+                       "java.util.regex.Pattern.quote(tag)"):
+            self.assertIn(wanted, body)
+        self.assertIn(r"'release: ' + java.util.regex.Pattern.quote(tag) + ' \\(#[0-9]+\\)'", body)
+        # The checks come before the tag, which is made by ensureTag on the publish agent, with the write
+        # token (onPublishAgent's write), and nowhere else.
+        tagging = body.index("onPublishAgent(ctx, true, false)")
+        for check in ("merge-base", "rev-list --parents", "log -1 --format=%s"):
+            self.assertLess(body.index(check), tagging)
+        self.assertLess(tagging, body.index("ensureTag(ctx, tag, commit)"))
+        self.assertNotIn("create-tag", body)
+        calls = {lib.function_at(m.start()) for m in re.finditer(r"\btagReleaseMerge\(", lib.masked)} - {None}
+        self.assertEqual(calls, {"releaseResume"})
 
 
 if __name__ == "__main__":

@@ -119,6 +119,9 @@ RELEASE, DESKTOP, TOOLS, BROKEN = "shop-release", "shop-desktop", "shop-tools", 
 # A release that fails after its merge (its release build binds a credential Jenkins does not have yet),
 # then finished by the release-resume job.
 RESUME = "shop-resume"
+# A release merged but never tagged (its tag was taken while it waited for approval), then tagged and
+# finished by the release-resume job given its merge commit.
+UNTAGGED = "shop-untagged"
 # Owner-tagged repositories (tag builds): one releasing files, one library publishing NuGet packages to a
 # local feed (BaGet).
 OWNED, LIBRARY = "ygg-tool", "dotnet-lib"
@@ -304,6 +307,9 @@ def test_catalog():
             {"id": BROKEN, "name": "Broken", "kind": "web", "health": "http://shop-broken:8080/"},
             {"id": RESUME, "name": "Resume", "kind": "web", "health": "http://shop-resume:8080/",
              "releaseCredentials": ["shop-resume-key"]},
+            # Production asks before it deploys, which is when the test takes the release's tag.
+            {"id": UNTAGGED, "name": "Untagged", "kind": "web", "health": "http://shop-untagged:8080/",
+             "environments": {"development": {}, "production": {"approval": True}}},
         ]}],
         "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"},
                          {"id": OWNED, "release": "owner-tag", "tags": "v*"},
@@ -313,7 +319,7 @@ def test_catalog():
 
 
 RELEASE_APPLICATIONS = {RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
-                        BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE}
+                        BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE, UNTAGGED: {"checks": {"unit": UNIT}}}
 # The owner-tagged repositories with a yggdrasil.yml on main (and develop, cut from it), and their files.
 OWNER_TAGGED = {OWNED: {"yggdrasil.yml": yaml.safe_dump(OWNED_PIPELINE, sort_keys=False)},
                 LIBRARY: {"yggdrasil.yml": yaml.safe_dump(LIBRARY_PIPELINE, sort_keys=False), **LIBRARY_FILES},
@@ -1001,7 +1007,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # The actions-release and release-resume jobs: pipeline jobs running the scripts kept in Jenkins, in
         # the sandbox.
         self.assertEqual(boot["pipeline_jobs"], {name: {
-            "sandbox": True, "parameters": ["REPOSITORY", "TAG"],
+            "sandbox": True, "parameters": ["REPOSITORY", "TAG"] + (["COMMIT"] if name == "release-resume" else []),
             "script": (ROOT / "jenkins" / f"{name}.groovy").read_text(encoding="utf-8")}
             for name in ("actions-release", "release-resume")})
         for job, made in boot["jobs"].items():
@@ -1555,9 +1561,10 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             self.tag_runs[key] = (sha, self.wait_for_build(repo, tag, after=0, timeout=1200))
         return self.tag_runs[key]
 
-    def release_resume(self, repository, tag):
+    def release_resume(self, repository, tag, commit=""):
         before = self.last_number("release-resume", None)
-        self.jenkins.post(job_path("release-resume") + "/buildWithParameters", {"REPOSITORY": repository, "TAG": tag})
+        self.jenkins.post(job_path("release-resume") + "/buildWithParameters",
+                          {"REPOSITORY": repository, "TAG": tag, "COMMIT": commit})
         return self.wait_for_build("release-resume", None, after=before, timeout=1200)
 
     def add_secret_text(self, credential, secret):
@@ -1686,6 +1693,63 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         again = self.release_resume(RESUME, "v1.0.0")
         self.assertEqual(again.result, "SUCCESS", again.console[-6000:])
         self.assertEqual(self.release_of(RESUME, "v1.0.0")["assets"], release["assets"])
+
+    def test_given_a_release_merged_but_not_tagged_when_release_resume_gets_its_commit_then_it_is_tagged_and_released(self):
+        # The release pull request waits for the owner's approval before production. Meanwhile jenkins (the
+        # only user who may create v* tags) puts v1.0.0 on develop's head; approved, the release deploys and
+        # merges, then cannot tag its merge commit: merged, not tagged.
+        branch = "release/1.0.0"
+        develop = self.head(UNTAGGED, "develop")
+        self.api[OWNER].request("POST", f"/repos/{OWNER}/{UNTAGGED}/branches",
+                                {"new_branch_name": branch, "old_branch_name": "develop"})
+        number = self.open_pull_request(OWNER, UNTAGGED, branch, "main")
+        job = f"{UNTAGGED}/PR-{number}"
+        deadline = time.monotonic() + 900
+        inputs = []
+        while not inputs:
+            self.assertLess(time.monotonic(), deadline, self.console(UNTAGGED, f"PR-{number}", 1)[-4000:])
+            time.sleep(3)
+            inputs = self.jenkins.script_json(
+                f"(jenkins.model.Jenkins.get().getItemByFullName('{job}')?.getBuildByNumber(1)"
+                "?.getAction(org.jenkinsci.plugins.workflow.support.steps.input.InputAction)?.executions ?: [])"
+                ".collect { it.id }")
+        self.api[JENKINS].request("POST", f"/repos/{OWNER}/{UNTAGGED}/tags", {"tag_name": "v1.0.0", "target": develop})
+        self.jenkins.post(f"{job_path(UNTAGGED, f'PR-{number}')}/1/input/{inputs[0]}/proceedEmpty")
+        build = self.wait_for_build(UNTAGGED, f"PR-{number}", after=0, timeout=1200)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        merge = self.pull_request(UNTAGGED, number)["merge_commit_sha"]
+        self.assertTrue(self.pull_request(UNTAGGED, number)["merged"])
+        self.assertIn(f"The tag v1.0.0 is on {develop[:7]}, not on the release's {merge[:7]}.", build.console)
+        self.assertIn(f"Not released: the pull request is merged as {merge}, but not tagged v1.0.0; finish the release "
+                      f"with the release-resume job (REPOSITORY={UNTAGGED}, TAG=v1.0.0, COMMIT={merge}), which tags "
+                      "the merge commit first", build.console)
+        # The tag in the way is removed (by jenkins: nobody else may touch a v* tag).
+        self.api[JENKINS].request("DELETE", f"/repos/{OWNER}/{UNTAGGED}/tags/v1.0.0")
+        self.assertIsNone(self.tag_commit(UNTAGGED, "v1.0.0"))
+
+        # Refused: a COMMIT that is not hex; an owner-tagged repository (its tags are the owner's to make);
+        # develop's head, on main but not the release's merge; and no COMMIT at all, since there is no tag.
+        for repository, commit, message in (
+                (UNTAGGED, "main", "'main' is not a commit"),
+                (OWNED, merge, f"COMMIT is only for an application's release"),
+                (UNTAGGED, develop, f"{develop[:7]} is not the merge of the release v1.0.0"),
+                (UNTAGGED, "", f"{UNTAGGED} has no tag v1.0.0.")):
+            refused = self.release_resume(repository, "v1.0.0", commit)
+            self.assertEqual(refused.result, "FAILURE", (repository, commit, refused.console[-3000:]))
+            self.assertIn(message, refused.console)
+        self.assertIsNone(self.tag_commit(UNTAGGED, "v1.0.0"))
+
+        # Given the merge commit: tagged by jenkins on it, then released.
+        resumed = self.release_resume(UNTAGGED, "v1.0.0", merge)
+        self.assertEqual(resumed.result, "SUCCESS", resumed.console[-8000:])
+        self.assertIn(f"{merge[:7]} is the merge of the release v1.0.0, on main.", resumed.console)
+        self.assertEqual(self.tag_commit(UNTAGGED, "v1.0.0"), merge)
+        self.assertIn(f"v1.0.0 is on {merge[:7]}, on main.", resumed.console)
+        release = self.release_of(UNTAGGED, "v1.0.0")
+        self.assertFalse(release["draft"])
+        self.assertEqual(release["author"]["login"], JENKINS)
+        self.assertEqual(self.description("release-resume", None, resumed.number), f"{UNTAGGED} v1.0.0: released")
+        self.assert_no_secret(resumed.console, "the release-resume log")
 
     # --- The library's own pieces -----------------------------------------------------------------
 

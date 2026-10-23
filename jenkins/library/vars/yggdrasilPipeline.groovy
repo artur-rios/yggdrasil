@@ -981,9 +981,11 @@ void releasePullRequest(Map ctx, Map state, List environments) {
   deleteReleaseBranch(ctx)
 }
 
-// What a release whose merge went through but whose tag did not tells the owner.
+// What a release whose merge went through but whose tag did not tells the owner. Only forge.jenkinsUser
+// may create an application's v* tags (on Forgejo not even the owner), so the owner does not tag it by
+// hand: release-resume, given the merge commit, tags it (tagReleaseMerge) and finishes the release.
 String untaggedNote(Map ctx, String tag, String merge) {
-  return "Not released: the pull request is merged as ${merge}, but not tagged; tag ${tag} on the merge commit ${merge}, then finish the release with the release-resume job (REPOSITORY=${ctx.app}, TAG=${tag})."
+  return "Not released: the pull request is merged as ${merge}, but not tagged ${tag}; finish the release with the release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}, COMMIT=${merge}), which tags the merge commit first."
 }
 
 // A failure's text for a message: its message, or the exception itself when it has none.
@@ -1544,9 +1546,16 @@ void tagBuild(Map ctx) {
 // pushes the packages a tag build did not get to. Everything is idempotent (publish-release.sh reuses the
 // tag, the releases and the files there; nuget-push.sh skips the versions the feed has), so running it
 // twice is harmless. Under the repository's release lock, like a release pull request.
+//
+// COMMIT, optional: an application's release whose pull request was merged but never tagged (the build
+// said so, naming the merge commit). The commit is tagged TAG first, when it is that release's merge on
+// main (tagReleaseMerge), then the job goes on as above. Not for an owner-tagged repository: its tags are
+// the owner's to make.
 void releaseResume() {
   String app = (params.REPOSITORY ?: '').toString().trim()
   String tag = (params.TAG ?: '').toString().trim()
+  // A job made before the parameter existed has no COMMIT at all.
+  String commit = (params.COMMIT ?: '').toString().trim()
   Map ctx = catalogContext(app)
   if (!(ctx.release in ['deploy', 'owner-tag'])) {
     error "${app} does not release (catalog.yaml: an application with no trigger: release environment, or a repositories entry without release: owner-tag)."
@@ -1554,9 +1563,18 @@ void releaseResume() {
   if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
     error "'${printable(tag)}' is not a version tag of ${app} (${ctx.tags})"
   }
+  if (commit && !(commit ==~ COMMIT)) {
+    error "COMMIT '${printable(commit)}' is not a commit (the full 40-character hash the build log named)."
+  }
+  if (commit && ctx.release != 'deploy') {
+    error "COMMIT is only for an application's release whose merge Jenkins did not tag; ${app}'s tags are its owner's to make."
+  }
   timeout(time: 4, unit: 'HOURS') {
     withForgeEnvironment(ctx) {
       lock(resource: "release-${app}") {
+        if (commit) {
+          tagReleaseMerge(ctx, tag, commit)
+        }
         Map described = readReleaseTag(ctx, tag)
         // An application releases without a yggdrasil.yml too (a release with its notes only, as its
         // release pull request did on Forgejo); an owner-tagged repository does not, and on GitHub such an
@@ -1565,6 +1583,57 @@ void releaseResume() {
           error "${app} has no yggdrasil.yml at ${tag}: there is nothing this job releases."
         }
         reportTagRelease(tag, releaseTag(ctx, tag, described), "${app} ${tag}")
+      }
+    }
+  }
+}
+
+// Stage Tag the merge, for release-resume's COMMIT. On the release agent with the read token (nothing of
+// the repository runs): the commit checked out with every branch, and it must be on main, a merge commit
+// (two parents) and titled as mergeAndTag titles a release's merge, "release: <tag> (#N)". Only
+// forge.jenkinsUser merges into an application's main, and only mergeAndTag writes that title, so such a
+// commit is the merge of that release -- not any commit of main the owner names. A tag already there is
+// left as it is when it is on the commit, and fails the job on any other. Then the tag is made on the
+// publish agent, by ensureTag, the release pull request's own step.
+void tagReleaseMerge(Map ctx, String tag, String commit) {
+  stage('Tag the merge') {
+    boolean tagged = false
+    node('release') {
+      try {
+        checkoutCommit(ctx, commit)
+        String tmp = scratch()
+        int code = withForgeToken('read') {
+          return toolStatus('forge.sh', ['tag-sha', ctx.repo, tag], "${tmp}/tag-sha")
+        }
+        if (code == 0) {
+          String sha = readScratch(tmp, 'tag-sha').trim()
+          if (sha != commit) {
+            error "Not released: ${tag} exists already, on ${printable(sha).take(7)}, not on ${commit.take(7)}."
+          }
+          tagged = true
+        } else if (code != 4) {
+          error "forge.sh tag-sha exited ${code}; its message is above."
+        }
+        withEnv(["YGG_SHA=${commit}"]) {
+          int onMain = sh(script: 'git -C app merge-base --is-ancestor "$YGG_SHA" refs/remotes/origin/main', returnStatus: true)
+          if (onMain != 0) {
+            error "Not released: ${commit.take(7)} is not on main (git merge-base exit ${onMain})."
+          }
+          List parents = sh(script: 'git -C app rev-list --parents -n 1 "$YGG_SHA"', returnStdout: true).trim().split(/\s+/) as List
+          String subject = sh(script: 'git -C app log -1 --format=%s "$YGG_SHA"', returnStdout: true).trim()
+          if (parents.size() != 3 || !(subject ==~ ('release: ' + java.util.regex.Pattern.quote(tag) + ' \\(#[0-9]+\\)'))) {
+            error "Not released: ${commit.take(7)} is not the merge of the release ${tag} (a merge commit titled 'release: ${tag} (#N)'; it is '${printable(subject)}')."
+          }
+        }
+        echo "${commit.take(7)} is the merge of the release ${tag}, on main."
+      } finally {
+        cleanScratch()
+        cleanWs()
+      }
+    }
+    if (!tagged) {
+      onPublishAgent(ctx, true, false) {
+        ensureTag(ctx, tag, commit)
       }
     }
   }

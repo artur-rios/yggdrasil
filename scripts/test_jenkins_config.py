@@ -179,7 +179,8 @@ class ReleaseResumeJobTests(unittest.TestCase):
         self.assertIn("script(new File('/etc/jenkins/release-resume.groovy').getText('UTF-8'))", script)
         self.assertIn("sandbox(true)", script)
         self.assertNotIn("scm", script)
-        for parameter in ("REPOSITORY", "TAG"):
+        # COMMIT: an application's release merged but never tagged, which the job tags first.
+        for parameter in ("REPOSITORY", "TAG", "COMMIT"):
             self.assertRegex(script, rf"stringParam\('{parameter}', ''")
         self.assertNotIn("${", script)
         self.assertIn("only user is the owner", script)

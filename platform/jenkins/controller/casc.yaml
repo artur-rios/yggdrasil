@@ -260,7 +260,9 @@ jobs:
       // GitHub Actions checks", a library's packages a tag build did not push. The owner runs it with
       // "Build with Parameters": REPOSITORY, the catalog id (an application with a trigger: release
       // environment, or a repositories entry with release: owner-tag), and TAG, the tag (it must exist and
-      // be on main). Its script is kept in Jenkins like the default Jenkinsfile
+      // be on main). COMMIT, optional, is for an application's release whose pull request was merged but
+      // never tagged (only Jenkins may create its v* tags): the merge commit, which the job tags TAG first
+      // when it is the release's merge on main. Its script is kept in Jenkins like the default Jenkinsfile
       // (jenkins/release-resume.groovy, mounted by platform/compose.yml) and only calls the pinned
       // library, which checks both and runs the steps a release runs after its merge
       // (yggdrasilPipeline.releaseResume).
@@ -271,6 +273,7 @@ jobs:
         parameters {
           stringParam('REPOSITORY', '', 'The catalog id (an application with a release environment, or an owner-tagged repositories entry).')
           stringParam('TAG', '', 'The tag, e.g. v1.4.0 (1.4.0 for a library). It must exist and be on main.')
+          stringParam('COMMIT', '', 'Only for a release merged but not tagged: the merge commit the build log named. It is tagged TAG first.')
         }
         definition {
           cps {
