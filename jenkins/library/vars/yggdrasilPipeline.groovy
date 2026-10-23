@@ -261,11 +261,12 @@ void branchBuild(Map ctx, List plan) {
 // checks passed). deploying: the build deploys afterwards, so the checks named in deploy.inputs run
 // even when they could be reused or skipped -- their archive goes into the image.
 Map prepare(Map ctx, String mode, boolean deploying = false) {
-  Map state = [:]
+  // The build's commit, known before any checkout: every ci step fetches exactly this one.
+  Map state = [sha: buildCommit()]
   stage('Read yggdrasil.yml') {
     node('ci') {
       try {
-        state.sha = checkoutAll(true)
+        checkoutCommit(ctx, state.sha)
         String tmp = scratch()
         // The controller's catalog, the one the job was created from, not the checkout's copy.
         dir(tmp) {
@@ -397,7 +398,7 @@ boolean branchPolicy(Map ctx, Map state) {
     try {
       node('ci') {
         try {
-          sameCommit(checkoutAll(true), state.sha)
+          checkoutCommit(ctx, state.sha)
           String tmp = scratch()
           withEnv(["YGG_TMP=${tmp}", "YGG_HEAD_REF=${env.CHANGE_BRANCH}", "YGG_BASE_REF=${env.CHANGE_TARGET}",
                    "YGG_HEAD_SHA=${state.sha}"]) {
@@ -494,7 +495,7 @@ boolean runCheck(Map ctx, Map state, Map check) {
   try {
     node('ci') {
       try {
-        sameCommit(checkoutAll(true), state.sha)
+        checkoutCommit(ctx, state.sha)
         withCheckCredentials(check, state.entry) { String envFile ->
           withEnv(["YGG_CHECK_NAME=${check.name}", "YGG_CHECK_IMAGE=${check.image}", "YGG_CHECK_RUN=${check.run}",
                    "YGG_CHECK_DOCKER=${check.docker == true ? '1' : ''}", "YGG_CHECK_ENV_FILE=${envFile}"]) {
@@ -695,7 +696,7 @@ void release(String app, List environments, boolean releaseArtifacts, String rep
   stage('Wait for GitHub checks') {
     node(environments[0].agent) {
       try {
-        sha = checkoutAll()
+        sha = checkoutBuild()
         github(['wait-checks', repo, sha, "${environments[0].checksTimeout}"])
       } finally {
         cleanWs()
@@ -713,7 +714,7 @@ void release(String app, List environments, boolean releaseArtifacts, String rep
   stage('Merge, package, publish and clean up') {
     node(environments[-1].agent) {
       try {
-        checkoutAll()
+        checkoutBuild()
         String mergeSha = github(['merge-pr', repo, env.CHANGE_ID, sha, "release: v${version} (#${env.CHANGE_ID})"], true)
         String url = releaseArtifacts
           ? github(['publish-release', repo, version, mergeSha], true)
@@ -745,7 +746,7 @@ void deployTo(String app, Map environment, String version, String statusSha, boo
     def failure = null
     node(environment.agent) {
       try {
-        sha = checkoutAll()
+        sha = checkoutBuild()
         if (statusSha && sha != statusSha) {
           error "The pull request moved from ${statusSha.take(7)} to ${sha.take(7)} during the release; start it again."
         }
@@ -785,22 +786,99 @@ void deployTo(String app, Map environment, String version, String statusSha, boo
 
 // ---- Checkouts ----
 
-// The application at the build's commit in ./app, and this repository in ./yggdrasil for its
-// scripts, stack files and catalog. Returns the application commit. fullHistory (the ci agent): the
-// whole history, develop, main and the tags as well (fetchHistory).
-String checkoutAll(boolean fullHistory = false) {
+// On a deploy agent: the application at the build's commit in ./app (checkout scm, with the job's
+// own credential, as always), and this repository in ./yggdrasil for its scripts, stack files and
+// catalog. Returns the application commit. Never on the ci or release agent: there, checkoutCommit().
+String checkoutBuild() {
   dir('app') {
     checkout scm
   }
   checkoutTools()
-  if (fullHistory) {
-    fetchHistory()
+  return headCommit()
+}
+
+// On the ci agent: the application at `sha` in ./app with the read credential only, and this
+// repository in ./yggdrasil. Not `checkout scm`: that checks out with the job's branch-source
+// credential, which on GitHub is the main GitHub App, and the ci agent runs the repositories' check
+// code. A plain git fetch of the whole repository instead: every branch (origin/develop and
+// origin/main among them), the pull request's head (refs/pull/<n>/head, so a head the branch has
+// already moved past is still there), the tags, and the full history -- what branch-policy.sh compares
+// with (on a shallow clone or without the tags it would pass what it should fail) and the base of a
+// pull request's diff. The token reaches git through a credential helper reading the environment,
+// never an argument or the remote's URL. Returns the commit, checked to be `sha`.
+String checkoutCommit(Map ctx, String sha) {
+  if (!(sha ==~ COMMIT)) {
+    error "checkoutCommit: '${printable(sha)}' is not a commit"
   }
+  String change = env.CHANGE_ID ?: ''
+  if (!(change ==~ '[0-9]*')) {
+    error "checkoutCommit: '${printable(change)}' is not a pull request number"
+  }
+  withForgeToken('read') {
+    withEnv(["YGG_REPO_URL=${env.FORGE_URL}/${env.FORGE_OWNER}/${ctx.repo}.git", "YGG_SHA=${sha}", "YGG_CHANGE_ID=${change}"]) {
+      sh(script: '''
+        set +x
+        # A refused token fails the fetch instead of waiting for someone to type a password.
+        export GIT_TERMINAL_PROMPT=0
+        helper='!f() { test "$1" = get || exit 0; echo "username=$FORGE_USER"; echo "password=$FORGE_TOKEN"; }; f'
+        rm -rf app
+        git init --quiet app
+        cd app
+        git remote add origin "$YGG_REPO_URL"
+        set -- '+refs/heads/*:refs/remotes/origin/*'
+        if [ -n "$YGG_CHANGE_ID" ]; then
+          set -- "$@" "+refs/pull/$YGG_CHANGE_ID/head:refs/remotes/origin/PR-$YGG_CHANGE_ID"
+        fi
+        git -c credential.helper= -c "credential.helper=$helper" fetch --quiet --tags origin "$@"
+        git -c advice.detachedHead=false checkout --quiet --detach "$YGG_SHA"
+      ''')
+    }
+  }
+  checkoutTools()
+  String head = headCommit()
+  sameCommit(head, sha)
+  return head
+}
+
+// The commit checked out in ./app.
+String headCommit() {
   String sha = sh(script: 'git -C app rev-parse HEAD', returnStdout: true).trim()
   if (!(sha ==~ COMMIT)) {
     error "The checkout's HEAD is not a commit: ${printable(sha)}"
   }
   return sha
+}
+
+// The commit this build is for, as the branch source chose it when the build started (the build's
+// SCMRevisionAction), read on the controller without checking anything out: what the ci agent then
+// fetches by hash.
+String buildCommit() {
+  String sha = revisionHash(currentBuild.rawBuild)
+  if (!(sha && sha ==~ COMMIT)) {
+    error "Cannot tell which commit this build is for: the build has no usable branch-source revision (${printable(sha)})."
+  }
+  return sha
+}
+
+// The hash of the build's revision: a pull request's head (GitHub's PullRequestSCMRevision.pullHash,
+// the Gitea plugin's PullRequestSCMRevision.origin.hash), else a branch's or tag's own hash. Duck-typed:
+// the two plugins' classes need not both be installed.
+@NonCPS
+String revisionHash(def run) {
+  def revision = run.getAction(jenkins.scm.api.SCMRevisionAction)?.revision
+  if (revision == null) {
+    return null
+  }
+  if (revision.hasProperty('pullHash')) {
+    return revision.pullHash as String
+  }
+  if (revision.hasProperty('origin') && revision.origin != null && revision.origin.hasProperty('hash')) {
+    return revision.origin.hash as String
+  }
+  if (revision.hasProperty('hash')) {
+    return revision.hash as String
+  }
+  return null
 }
 
 // This repository (its main branch, from the same git server) in ./yggdrasil, with the read credential.
@@ -811,40 +889,8 @@ void checkoutTools() {
   }
 }
 
-// In ./app: the full history (a shallow checkout is deepened), origin/develop and origin/main, and the
-// tags -- what branch-policy.sh compares with (on a shallow clone or without the tags it would pass
-// what it should fail) and the base of a pull request's diff. The checkout scm did may have fetched
-// only the build's own ref, so this fetches explicitly, with the read credential through a credential
-// helper reading the environment: the token is never in an argument or the remote's URL. A branch the
-// server does not have is only noted (branch-policy.sh then fails, as it should).
-void fetchHistory() {
-  withForgeToken('read') {
-    sh(script: '''
-      set +x
-      cd app
-      # A refused token fails the fetch instead of waiting for someone to type a password.
-      export GIT_TERMINAL_PROMPT=0
-      helper='!f() { test "$1" = get || exit 0; echo "username=$FORGE_USER"; echo "password=$FORGE_TOKEN"; }; f'
-      git_remote() { git -c credential.helper= -c "credential.helper=$helper" "$@"; }
-      if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-        git_remote fetch --quiet --unshallow origin
-      fi
-      for branch in develop main; do
-        found=0
-        git_remote ls-remote --exit-code --heads origin "$branch" >/dev/null || found=$?
-        case "$found" in
-          0) git_remote fetch --quiet --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch" ;;
-          2) echo "The repository has no $branch branch." >&2 ;;
-          *) exit "$found" ;;
-        esac
-      done
-      git_remote fetch --quiet --tags origin
-    ''')
-  }
-}
-
-// The checkout of an earlier step and this one must be the same commit (a multibranch build checks out
-// one revision every time; this says so loudly if that ever changes).
+// The checkout of an earlier step and this one must be the same commit (every step of a build works on
+// the one revision the build started with; this says so loudly if that ever changes).
 void sameCommit(String sha, String expected) {
   if (sha != expected) {
     error "The commit moved from ${expected.take(7)} to ${sha.take(7)} during the build; start it again."

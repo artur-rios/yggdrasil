@@ -388,11 +388,36 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIsNotNone(re.search(signature, self.lib.code), "reportStatus' signature")
 
     def test_given_the_ci_checkouts_when_read_then_history_branches_and_tags_are_fetched_with_the_read_token(self):
-        start, end = self.lib.functions["fetchHistory"]
+        start, end = self.lib.functions["checkoutCommit"]
         body = self.lib.code[start:end]
         self.assertIn("withForgeToken('read')", body)
-        for wanted in ("--unshallow", "refs/heads/$branch:refs/remotes/origin/$branch", "--tags"):
+        # Every branch (origin/develop and origin/main with them), the pull request's head, the tags, and
+        # no depth: a shallow clone or missing tags would make branch-policy.sh pass what it should fail.
+        for wanted in ("+refs/heads/*:refs/remotes/origin/*", "+refs/pull/$YGG_CHANGE_ID/head:", "--tags",
+                       'checkout --quiet --detach "$YGG_SHA"'):
             self.assertIn(wanted, body)
+        self.assertNotIn("--depth", body)
+        self.assertIn("sameCommit(head, sha)", body)
+
+    def test_given_ci_node_blocks_when_read_then_none_checks_out_with_the_jobs_credential(self):
+        # checkout scm uses the job's branch-source credential (the main GitHub App on GitHub): on the ci
+        # agent the build's commit is fetched by checkoutCommit() with the read credential instead. The
+        # word scm must not occur at all in what a ci block reaches (no checkout scm, no checkout(scm),
+        # no GitSCM built from scm's remotes).
+        lib = self.lib
+        ci_blocks = [(label, start, end) for label, start, end in lib.node_blocks() if re.search(r"\bci\b", label)]
+        self.assertTrue(ci_blocks)
+        for label, start, end in ci_blocks:
+            where = f"line {lib.line(start)}: node({label})"
+            self.assertNotIn("scm", lib.words_reached(start, end), f"{where} reaches the job's scm")
+            self.assertNotIn("checkoutBuild", lib.reachable(start, end), where)
+            self.assertIn("checkoutCommit", lib.reachable(start, end), f"{where} checks out nothing")
+        # The commit is known on the controller, from the build's revision, before any ci checkout.
+        start, end = lib.functions["prepare"]
+        self.assertRegex(lib.masked[start:end], r"sha:\s*buildCommit\(\)")
+        # checkout scm is left only where the deploy agents check out.
+        for match in re.finditer(r"\bcheckout\s+scm\b|\bcheckout\s*\(\s*scm\b", lib.masked):
+            self.assertEqual(lib.function_at(match.start()), "checkoutBuild", f"line {lib.line(match.start())}")
 
     def test_given_the_release_path_when_read_then_it_still_runs_under_the_application_lock(self):
         # test_catalog pins the same; the release pull request's checks run inside it too.
