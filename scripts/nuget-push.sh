@@ -21,8 +21,9 @@
 #
 # The key is NUGET_API_KEY in this script's environment (the pipeline binds the Jenkins credential
 # nuget-api-key for this step only). It reaches docker as `-e NUGET_API_KEY`, a name without a value, so
-# docker takes it from its own environment: never on a command line here or in the process list. The
-# container's shell puts it on dotnet's command line, inside the container.
+# docker takes it from its own environment: it is not on docker's command line, nor in the host's process
+# list for it. Inside the container it is on dotnet's command line (`--api-key`), so a process list of the
+# container's engine shows it: that engine is the release user's, which runs only builds the owner started.
 #
 # One `docker run` per package, sorted, with --skip-duplicate: a version the feed has already is not an
 # error, so a push that stopped half way is run again as it is (the release-resume job).

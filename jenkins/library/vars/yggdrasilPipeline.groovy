@@ -4,6 +4,12 @@
 //     @Library('yggdrasil') _
 //     yggdrasilPipeline()
 //
+// A repository's own Jenkinsfile is never read: a branch pushed by someone who is not the owner would
+// otherwise run its own pipeline code with every credential in reach. What a repository says is data, its
+// yggdrasil.yml, and this library -- loaded at the tag YGGDRASIL_LIBRARY_VERSION, a release of this
+// repository -- decides what to do with it. docs/setup.md ("The pipeline") tells the same story for the
+// operator, with the statuses, the skip and the accepted risks.
+//
 // The job's name is the catalog id (the Job DSL in platform/jenkins/controller/casc.yaml names each
 // multibranch job after an application or a `repositories` entry); `stack:`, what older Jenkinsfiles
 // passed, still wins when given. What a build deploys, and where, comes from catalog.yaml (mounted on
@@ -20,22 +26,32 @@
 //                               actionsChecks are then copied from GitHub Actions (see
 //                               copyActionsChecks)
 //   PR release/x.y.z -> main -> (with yggdrasil.yml: branch policy and checks first, under the same
-//                               lock) wait for the entry's actionsChecks on GitHub Actions (the skip
-//                               when they don't finish), then deploy the head to each trigger: release
-//                               environment in catalog order, setting deploy/<environment> (required
-//                               on main) after each; then, on the publish agent, merge the pull request
-//                               and tag vx.y.z; build the release files on the release agent (and the
-//                               Windows ones on GitHub), validate them there, and publish the release
-//                               on the git server (and its GitHub copy) with publish-release.sh (see
-//                               releasePullRequest). On GitHub, a repository without yggdrasil.yml keeps
-//                               the path it always had (release(): every GitHub Actions check waited
-//                               for, releaseArtifacts: true's artifact workflow)
+//                               per-repository lock) wait for the entry's actionsChecks on GitHub Actions
+//                               (the skip when they don't finish: "GitHub Actions checks didn't finish.
+//                               Deploy without them?", recorded in the log, the build's description and
+//                               the deploy/<environment> descriptions, and the release then goes out on
+//                               the git server only, "GitHub copy pending"), then deploy the head to
+//                               each trigger: release environment in catalog order, setting
+//                               deploy/<environment> (required on main) after each; then, on the publish
+//                               agent, merge the pull request and tag vx.y.z; build the release files on
+//                               the release agent (and the Windows ones on GitHub), validate them there
+//                               (pass or fail only: validation cannot change what is uploaded), and
+//                               publish the release with publish-release.sh -- drafts on the git server
+//                               and, with a mirror, GitHub, the files uploaded and checked, then the git
+//                               server's published and GitHub's last (see releasePullRequest). A failure
+//                               after the merge says how to finish: the release-resume job. On GitHub, a
+//                               repository without yggdrasil.yml keeps the path it always had (release():
+//                               every GitHub Actions check waited for, releaseArtifacts: true's artifact
+//                               workflow)
 //   the actions-release job  -> the Windows files of a release published without them (actionsRelease)
 //   a version tag pushed by the owner (a repositories entry with release: owner-tag, the tag matching
-//                               its `tags`) -> the tag's commit checked to be on main, then, from its
-//                               yggdrasil.yml, publish.nuget's packages packed and pushed (the NuGet key
-//                               bound for the push only, on the release agent) and/or the release, as a
-//                               release pull request makes it after its merge (tagBuild, releaseTag)
+//                               its `tags`; the Job DSL discovers only tags at most a day old, and dates
+//                               a lightweight tag by its commit, so the owner tags with `git tag -a`)
+//                            -> the tag's commit checked to be on main, then, from its yggdrasil.yml,
+//                               the release files built and validated, publish.nuget's packages packed
+//                               and pushed (the NuGet key bound for the push only, on the release agent)
+//                               and/or the release, as a release pull request makes it after its merge
+//                               (tagBuild, releaseTag)
 //   the release-resume job   -> the same for a tag that exists already: a release that failed after its
 //                               merge, the GitHub copy of a release published after the skip, a push of
 //                               packages that stopped half way (releaseResume)
@@ -62,7 +78,8 @@
 // The work itself is in scripts/ of this repository, checked out next to the application (./app and
 // ./yggdrasil in the workspace), so a deploy or a check by hand runs the same code: deploy.sh,
 // branch-policy.sh, run-check.sh, pipeline_config.py, forge.sh (the git server's interface for Forgejo
-// and GitHub alike) and github.sh (GitHub Actions). YGG_GITHUB_SH, in an agent's environment (set by
+// and GitHub alike), github.sh (GitHub Actions), publish-release.sh with release_notes.py (a release and
+// its notes) and nuget-push.sh (a library's packages). YGG_GITHUB_SH, in an agent's environment (set by
 // the live tests only), replaces scripts/github.sh.
 //
 // Credentials, the rules this file keeps (scripts/test_pipeline_library.py checks them):

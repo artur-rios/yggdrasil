@@ -7,7 +7,7 @@ credentials:
       - credentials:
           # One GitHub App gives Jenkins everything: repository scans, webhooks, checkout, and the
           # installation token the pipeline uses to read checks, set the deploy status, merge, tag
-          # and delete branches. The key must be PKCS#8 (see the README).
+          # and delete branches. The key must be PKCS#8 (docs/setup.md, 9.1).
           - gitHubApp:
               id: "github-app"
               description: "yggdrasil GitHub App"

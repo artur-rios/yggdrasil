@@ -397,7 +397,7 @@ services:
       # application's environments from it.
       - ../catalog.yaml:/etc/jenkins/catalog.yaml:ro
       - ./jenkins/controller/init.groovy.d/agents.groovy:/var/jenkins_home/init.groovy.d/agents.groovy:ro
-      # The GitHub App private key, converted to PKCS#8 (see the README). Read by casc.yaml.
+      # The GitHub App private key, converted to PKCS#8 (docs/setup.md, 9.1). Read by casc.github-app.yaml.
       - ${GITHUB_APP_KEY_FILE:-/etc/yggdrasil/github-app.pem}:/run/secrets/github-app.pem:ro
       # The read-only GitHub App's key (PKCS#8 too), read by casc.github-read.yaml; /dev/null when unset.
       - ${GITHUB_READ_APP_KEY_FILE:-/dev/null}:/run/secrets/github-read.pem:ro
