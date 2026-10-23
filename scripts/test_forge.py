@@ -44,6 +44,8 @@ FAKE_CURL = textwrap.dedent(r"""
       http=${BASH_REMATCH[1]}
       body=${BASH_REMATCH[3]}
     fi
+    # What curl itself would say on stderr ("curl: (22) ..."), when the test sets it.
+    [[ -z "${FAKE_CURL_STDERR:-}" ]] || echo "$FAKE_CURL_STDERR" >&2
     printf '%s' "$body"
     [[ " $* " != *" --write-out "* ]] || printf '\n%s' "$http"
     exit "$status"
@@ -384,7 +386,26 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "branch-policy\tsuccess\ntest\tfailure\n")
         request = self.request("status")
-        self.assertTrue(request.strip().endswith("https://api.example/repos/someone/app/commits/abc123/status"), request)
+        self.assertTrue(request.strip().endswith(
+            "https://api.example/repos/someone/app/commits/abc123/status?limit=50&page=1"), request)
+        self.assertFalse((self.state / "status.request.2").exists(), "a page that is not full is the last")
+
+    def test_given_a_commit_without_statuses_when_reading_them_on_forgejo_then_nothing_is_printed(self):
+        # What Forgejo 16 answers for a commit nobody posted a status on.
+        self.respond("status", (0, {"state": "", "sha": "", "total_count": 0, "statuses": None}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_given_more_contexts_than_a_page_when_reading_statuses_on_forgejo_then_every_page_is_read(self):
+        page = [{"context": f"deploy/env-{n:02}", "status": "success"} for n in range(50)]
+        self.respond("status", (0, {"statuses": page}), (0, {"statuses": [{"context": "test", "status": "failure"}]}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 51)
+        self.assertEqual(lines[-1], "test\tfailure")
+        self.assertTrue(self.request("status", 2).strip().endswith("/commits/abc123/status?limit=50&page=2"))
+        self.assertFalse((self.state / "status.request.3").exists())
 
     def test_given_forgejo_when_merging_then_the_merge_commit_comes_from_the_pull_request(self):
         self.respond("merge", (0, None))
@@ -414,6 +435,26 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("no merge commit", result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_given_forgejo_still_checking_when_merging_then_it_tries_again(self):
+        # Forgejo refuses a merge while it works out again whether the pull request merges, which a new
+        # commit status sets off (seen on the real server right after the deploy statuses).
+        self.fake("sleep", '#!/usr/bin/env bash\necho "$*" >>"$FAKE_CURL_DIR/sleeps"\n')
+        self.respond("merge", (22, {"message": "Please try again later"}, 405),
+                     (22, {"message": "Please try again later"}, 405), (0, None))
+        self.respond("7", (0, {"merged": True, "merge_commit_sha": "def456"}))
+        result = self.forge("merge-pr", "app", "7", "abc123", "title")
+        self.assertEqual((result.returncode, result.stdout), (0, "def456\n"), result.stderr)
+        self.assertEqual((self.state / "merge.count").read_text().strip(), "3")
+        self.assertEqual((self.state / "sleeps").read_text(), "3\n3\n")
+
+    def test_given_forgejo_checking_for_too_long_when_merging_then_it_gives_up(self):
+        self.fake("sleep", "#!/usr/bin/env bash\ntrue\n")
+        self.respond("merge", last=(22, {"message": "Please try again later"}, 405))
+        result = self.forge("merge-pr", "app", "7", "abc123", "title")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("merge-pr #7 failed: Please try again later", result.stderr)
+        self.assertEqual((self.state / "merge.count").read_text().strip(), "20")
 
     def test_given_forgejo_when_creating_a_tag_then_it_posts_the_name_and_target(self):
         self.respond("tags", (0, {"name": "v1.2.3"}))
@@ -505,11 +546,35 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertTrue(self.request("b").strip().endswith("/branches/feature/a%20b%231/b"))
 
     def test_given_a_missing_branch_when_deleting_on_forgejo_then_it_succeeds(self):
-        self.respond("1.0.0", (22, {"message": "branch does not exist"}, 404))
+        # Forgejo 16 answers a 500 with an empty message (only administrators see "object does not
+        # exist"): the branch is looked up, and is gone from a repository that is there.
+        self.respond("1.0.0", (22, {"message": "", "url": "https://example/api/swagger"}, 500),
+                     (22, {"message": "The target couldn't be found.", "errors": []}, 404))
+        self.respond("app", (0, {"name": "app"}))
         result = self.forge("delete-branch", "app", "release/1.0.0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
-        self.assertIn("already deleted", result.stderr)
+        self.assertEqual(result.stderr, "forge: release/1.0.0 was already deleted\n")
+        self.assertIn("--request GET", self.request("1.0.0", 2))
+        self.assertTrue(self.request("1.0.0", 2).strip().endswith("/repos/someone/app/branches/release/1.0.0"))
+        self.assertIn("--request GET", self.request("app"))
+        self.assertTrue(self.request("app").strip().endswith("/repos/someone/app"))
+
+    def test_given_a_missing_repository_when_deleting_on_forgejo_then_it_fails(self):
+        # A repository that is not there, or that the token cannot see, is not "already deleted".
+        missing = {"message": "The target couldn't be found.", "errors": []}
+        self.respond("1.0.0", (22, missing, 404), (22, missing, 404))
+        self.respond("app", (22, missing, 404))
+        result = self.forge("delete-branch", "app", "release/1.0.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("forge: delete-branch release/1.0.0 failed: The target couldn't be found.", result.stderr)
+        self.assertNotIn("already deleted", result.stderr)
+
+    def test_given_a_server_error_on_a_branch_that_is_there_when_deleting_on_forgejo_then_it_fails(self):
+        self.respond("1.0.0", (22, {"message": ""}, 500), (0, {"name": "release/1.0.0"}))
+        result = self.forge("delete-branch", "app", "release/1.0.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("delete-branch release/1.0.0 failed: HTTP 500, without a message", result.stderr)
 
     def test_given_a_protected_branch_when_deleting_on_forgejo_then_it_exits_3_and_says_it_is_kept(self):
         self.respond("develop", (22, {"message": "branch protected"}, 403))
@@ -517,12 +582,27 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertEqual(result.returncode, 3)
         self.assertEqual(result.stdout, "")
         self.assertIn("kept: develop is protected", result.stderr)
+        self.assertFalse((self.state / "develop.request.2").exists(), "a protected branch is not looked up")
 
     def test_given_forbidden_for_another_reason_when_deleting_on_forgejo_then_it_fails(self):
-        self.respond("1.0.0", (22, {"message": "token does not have write access"}, 403))
+        self.respond("1.0.0", (22, {"message": "token does not have write access"}, 403), (0, {"name": "release/1.0.0"}))
         result = self.forge("delete-branch", "app", "release/1.0.0")
         self.assertEqual(result.returncode, 1)
         self.assertIn("delete-branch release/1.0.0 failed: token does not have write access", result.stderr)
+
+    def test_given_an_http_error_when_any_command_fails_then_curls_own_line_stays_out_of_the_log(self):
+        self.respond("abc123", (22, {"message": "sha not found"}, 404))
+        env = dict(self.env, FAKE_CURL_STDERR="curl: (22) The requested URL returned error: 404")
+        result = self.forge("set-status", "app", "abc123", "success", "ctx", "description", env=env)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "forge: set-status on abc123 failed: sha not found\n")
+
+    def test_given_no_answer_when_any_command_fails_then_curls_error_is_the_message(self):
+        self.respond("abc123", (7, None, "000"))
+        env = dict(self.env, FAKE_CURL_STDERR="curl: (7) Failed to connect to api.example port 443")
+        result = self.forge("set-status", "app", "abc123", "success", "ctx", "description", env=env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("set-status on abc123 failed: curl: (7) Failed to connect to api.example port 443", result.stderr)
 
     def test_given_forgejo_when_any_command_runs_then_the_token_is_not_in_curls_arguments(self):
         artifact = self.temp / "app.zip"

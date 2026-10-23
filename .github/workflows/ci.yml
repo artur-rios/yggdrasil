@@ -103,6 +103,12 @@ jobs:
         env:
           YGG_DOCKER_TESTS: "1"
         run: python3 -m unittest scripts.test_socket_proxies -v
+      - name: Test forge.sh and rules.py against Forgejo
+        # The pinned Forgejo image, its API answers and the protections rules.py applies, with real
+        # users and repositories (scripts/test_forgejo_live.py). discover: the tests import flat.
+        env:
+          YGG_FORGEJO_TESTS: "1"
+        run: python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
       - name: Check the catalog
         # The same validation deploy.sh, platform.sh and rulesets.py run before using it.
         run: python3 scripts/catalog.py validate

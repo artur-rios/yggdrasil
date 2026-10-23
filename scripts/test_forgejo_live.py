@@ -1,0 +1,590 @@
+"""Tests of scripts/forge.sh and scripts/rules.py against a real Forgejo.
+
+    YGG_FORGEJO_TESTS=1 python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
+
+test_forge.py and test_rules.py check what the two send against fakes; these check that the fakes are
+right: that Forgejo 16.0.6 (the image platform/compose.yml pins) takes those requests, answers the way
+the scripts read it, and that the protections rules.py applies really hold -- `claude` cannot merge a
+Jenkinsfile change, push a release branch or create a version tag, and the owner, an administrator,
+can still merge past failing checks.
+
+Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
+container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
+compose file's sign-in settings; creates the users artur-rios (the owner, an administrator), jenkins
+and claude, with tokens, and the repositories shop-api (an application) and reveal.js (a `rules:
+basic` repository, with a dot in its name), each with main, develop and a Jenkinsfile; applies the
+rules once (one more test makes a repository of its own); and removes the container at the end, also
+when the setup fails. It touches no other container. The passwords and tokens are throwaway values of
+that container. CI runs it (job platform).
+"""
+
+import base64
+import dataclasses
+import json
+import os
+import pathlib
+import re
+import shutil
+import socket
+import subprocess
+import tempfile
+import time
+import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+import catalog as catalog_module
+import rules
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+FORGE_SH = ROOT / "scripts" / "forge.sh"
+
+
+def pinned_image():
+    """The Forgejo image of platform/compose.yml, version and digest: what production runs."""
+    found = re.search(r"^\s*image:\s*(codeberg\.org/forgejo/forgejo:\S+)\s*$",
+                      (ROOT / "platform" / "compose.yml").read_text(encoding="utf-8"), re.MULTILINE)
+    if not found:
+        raise AssertionError("platform/compose.yml has no codeberg.org/forgejo/forgejo image")
+    return found.group(1)
+
+
+OWNER, JENKINS, CLAUDE = "artur-rios", "jenkins", "claude"
+APP, DOTTED = "shop-api", "reveal.js"
+WEBHOOK = {"url": "http://jenkins.invalid/gitea-webhook/post", "secret": "a-throwaway-webhook-secret"}
+
+JENKINSFILE = "pipeline {\n  agent any\n  stages { stage('test') { steps { sh 'true' } } }\n}\n"
+
+
+def test_catalog():
+    """The catalog of the installation under test: claude is a developer (it merges into develop),
+    jenkins the Jenkins user; shop-api has a check, an Actions check and a release environment."""
+    return {
+        "owner": OWNER,
+        # rules.py only reads forge.jenkinsUser and developers from it; the API is the container's.
+        "forge": {"type": "forgejo", "url": "https://git.example.com", "jenkinsUser": JENKINS, "developers": [CLAUDE]},
+        "environments": [
+            {"id": "staging", "name": "Staging", "trigger": "branch", "branches": "release/*"},
+            {"id": "production", "name": "Production", "trigger": "release"},
+        ],
+        "systems": [{"id": "shop", "name": "Shop", "applications": [
+            {"id": APP, "name": "API", "kind": "api", "health": "http://shop-api:8080/healthz",
+             "checks": ["test"], "actionsChecks": ["lint"]},
+        ]}],
+        "repositories": [{"id": DOTTED, "rules": "basic"}],
+    }
+
+
+def docker(*arguments, check=True, timeout=300):
+    return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=check, timeout=timeout)
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class RecordingApi(rules.Api):
+    """rules.Api that keeps the method and path of every request, to see what a run sent."""
+
+    def __init__(self, *arguments, **keywords):
+        super().__init__(*arguments, **keywords)
+        self.calls = []
+
+    def request(self, method, path, body=None):
+        self.calls.append((method, path))
+        return super().request(method, path, body)
+
+    def writes(self):
+        return [call for call in self.calls if call[0] != "GET"]
+
+
+def _can_run():
+    return (os.environ.get("YGG_FORGEJO_TESTS") == "1" and os.name == "posix"
+            and all(shutil.which(tool) for tool in ("docker", "bash", "jq", "git", "curl")))
+
+
+@unittest.skipUnless(_can_run(), "set YGG_FORGEJO_TESTS=1 to run against a Forgejo container "
+                                 "(needs Docker, bash, jq, git and curl on a POSIX system)")
+class ForgejoLiveTests(unittest.TestCase):
+    """One Forgejo for the whole class. Every test works on branches, tags and pull requests of its
+    own, so they do not depend on each other's order."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.container = f"ygg-forgejo-test-{uuid.uuid4().hex[:8]}"
+        # Class cleanups also run when setUpClass fails halfway: the container never outlives the suite.
+        cls.addClassCleanup(docker, "rm", "--force", "--volumes", cls.container, check=False)
+        cls.temp = pathlib.Path(tempfile.mkdtemp(prefix="forgejo-live-"))
+        cls.addClassCleanup(shutil.rmtree, cls.temp, ignore_errors=True)
+
+        port = free_port()
+        cls.url = f"http://127.0.0.1:{port}"
+        docker("run", "--detach", f"--name={cls.container}", f"--publish=127.0.0.1:{port}:3000", "--memory=1g",
+               "--env=FORGEJO__security__INSTALL_LOCK=true",
+               "--env=FORGEJO__database__DB_TYPE=sqlite3",
+               f"--env=FORGEJO__server__ROOT_URL={cls.url}/",
+               # As in compose.yml: nothing is visible signed out, so a wrong token or repository is a 404.
+               "--env=FORGEJO__service__DISABLE_REGISTRATION=true",
+               "--env=FORGEJO__service__REQUIRE_SIGNIN_VIEW=true",
+               pinned_image())
+        cls.wait_for_health()
+
+        cls.tokens = {}
+        for user in (OWNER, JENKINS, CLAUDE):
+            cls.admin_cli("create", "--username", user, "--password", f"throwaway-{uuid.uuid4().hex}",
+                          "--email", f"{user}@example.com", *(["--admin"] if user == OWNER else []),
+                          "--must-change-password=false")
+            cls.tokens[user] = cls.admin_cli("generate-access-token", "--username", user, "--token-name", "tests",
+                                             "--scopes", "all", "--raw").strip()
+        cls.api = {user: rules.Api(cls.url + "/api/v1", token, "token") for user, token in cls.tokens.items()}
+
+        for repo in (APP, DOTTED):
+            cls.create_repository(repo)
+
+        cls.rules = {r.repo: r for r in rules.desired_rules(test_catalog())}
+        cls.first_run = {repo: rules.apply_forgejo(cls.api[OWNER], OWNER, r, WEBHOOK, False)
+                         for repo, r in cls.rules.items()}
+
+    @classmethod
+    def wait_for_health(cls, seconds=180):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(cls.url + "/api/healthz", timeout=5) as answer:
+                    if json.loads(answer.read()).get("status") == "pass":
+                        return
+            except (OSError, ValueError):
+                pass
+            time.sleep(1)
+        logs = docker("logs", "--tail=50", cls.container, check=False)
+        raise AssertionError(f"Forgejo did not become healthy:\n{logs.stdout}{logs.stderr}")
+
+    @classmethod
+    def admin_cli(cls, *arguments):
+        done = docker("exec", cls.container, "forgejo", "admin", "user", *arguments, check=False, timeout=120)
+        if done.returncode:
+            raise AssertionError(f"forgejo admin user {arguments[0]} failed: {done.stdout}{done.stderr}")
+        return done.stdout
+
+    @classmethod
+    def create_repository(cls, repo):
+        """A private repository of the owner's: main with a Jenkinsfile, develop from it, and jenkins
+        and claude as collaborators with write access (Forgejo drops users without it from a
+        protection's whitelists)."""
+        owner = cls.api[OWNER]
+        owner.request("POST", "/user/repos", {"name": repo, "auto_init": True, "default_branch": "main",
+                                              "private": True})
+        cls.change_file(OWNER, repo, "Jenkinsfile", JENKINSFILE, "main")
+        owner.request("POST", f"/repos/{OWNER}/{repo}/branches", {"new_branch_name": "develop",
+                                                                   "old_branch_name": "main"})
+        for user in (JENKINS, CLAUDE):
+            owner.request("PUT", f"/repos/{OWNER}/{repo}/collaborators/{user}", {"permission": "write"})
+
+    # --- Helpers -----------------------------------------------------------------------------------
+
+    @classmethod
+    def change_file(cls, user, repo, path, text, branch, new_branch=None):
+        """A commit by `user` writing `path` on `branch` (or on `new_branch`, made from it); its sha."""
+        api = cls.api[user]
+        contents = f"/repos/{OWNER}/{repo}/contents/{urllib.parse.quote(path)}"
+        try:
+            existing = api.request("GET", f"{contents}?ref={urllib.parse.quote(branch, safe='')}")
+        except rules.ApiError as error:
+            if error.status != 404:
+                raise
+            existing = None
+        body = {"content": base64.b64encode(text.encode()).decode(), "message": f"change {path}", "branch": branch}
+        if new_branch:
+            body["new_branch"] = new_branch
+        if existing:
+            answer = api.request("PUT", contents, {**body, "sha": existing["sha"]})
+        else:
+            answer = api.request("POST", contents, body)
+        return answer["commit"]["sha"]
+
+    def head(self, repo, branch):
+        return self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/branches/{urllib.parse.quote(branch, safe='')}"
+                                       )["commit"]["id"]
+
+    def branch_exists(self, repo, branch):
+        try:
+            self.head(repo, branch)
+            return True
+        except rules.ApiError as error:
+            if error.status == 404:
+                return False
+            raise
+
+    def open_pull_request(self, user, repo, head, base):
+        number = self.api[user].request("POST", f"/repos/{OWNER}/{repo}/pulls",
+                                        {"head": head, "base": base, "title": f"{head} into {base}"})["number"]
+        # Forgejo works out whether it merges in the background; merging before that is refused.
+        deadline = time.monotonic() + 60
+        while not self.pull_request(repo, number).get("mergeable"):
+            if time.monotonic() > deadline:
+                self.fail(f"pull request #{number} of {repo} never became mergeable")
+            time.sleep(0.5)
+        return number
+
+    def pull_request(self, repo, number):
+        return self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/pulls/{number}")
+
+    def set_checks(self, repo, sha, contexts, state="success"):
+        for context in contexts:
+            self.api[JENKINS].request("POST", f"/repos/{OWNER}/{repo}/statuses/{sha}",
+                                      {"state": state, "context": context, "description": state})
+
+    def send(self, user, method, path, body=None):
+        """The request, tried again while Forgejo is still working out whether a pull request can be
+        merged (405 "Please try again later", which a new commit status sets off): a refusal must be
+        the rule's, not that one."""
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                return self.api[user].request(method, path, body)
+            except rules.ApiError as error:
+                if error.status != 405 or "try again later" not in error.message or time.monotonic() > deadline:
+                    raise
+            time.sleep(1)
+
+    def merge(self, user, repo, number, **fields):
+        self.send(user, "POST", f"/repos/{OWNER}/{repo}/pulls/{number}/merge", {"Do": "merge", **fields})
+
+    def refused(self, user, method, path, body=None):
+        """The ApiError of a request that must be refused."""
+        with self.assertRaises(rules.ApiError, msg=f"{user}: {method} {path} was allowed") as caught:
+            self.send(user, method, path, body)
+        return caught.exception
+
+    def download(self, url):
+        # REQUIRE_SIGNIN_VIEW: a release file of a private repository needs a token too.
+        request = urllib.request.Request(url, headers={"Authorization": f"token {self.tokens[JENKINS]}"})
+        with urllib.request.urlopen(request, timeout=30) as answer:
+            return answer.read()
+
+    def forge(self, user, *arguments):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("FORGE_", "GITHUB_")) and k != "GH_TOKEN"}
+        env.update(FORGE_TYPE="forgejo", FORGE_API_URL=f"{self.url}/api/v1", FORGE_OWNER=OWNER,
+                   FORGE_TOKEN=self.tokens[user])
+        return subprocess.run(["bash", str(FORGE_SH), *arguments], env=env, capture_output=True, text=True,
+                              timeout=120, stdin=subprocess.DEVNULL)
+
+    def git(self, user, *arguments, cwd=None):
+        """git as `user` over HTTP. The credentials go in an extra header set through the environment
+        (never an argument), and the machine's own git configuration is left out."""
+        credentials = base64.b64encode(f"{user}:{self.tokens[user]}".encode()).decode()
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_TERMINAL_PROMPT="0",
+                   GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader",
+                   GIT_CONFIG_VALUE_0=f"Authorization: Basic {credentials}",
+                   GIT_AUTHOR_NAME=user, GIT_AUTHOR_EMAIL=f"{user}@example.com",
+                   GIT_COMMITTER_NAME=user, GIT_COMMITTER_EMAIL=f"{user}@example.com")
+        return subprocess.run(["git", *arguments], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
+
+    def clone(self, user, repo):
+        target = pathlib.Path(tempfile.mkdtemp(dir=self.temp, prefix=f"{user}-"))
+        done = self.git(user, "clone", "--quiet", f"{self.url}/{OWNER}/{repo}.git", str(target))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return target
+
+    # --- forge.sh ----------------------------------------------------------------------------------
+
+    def test_given_a_commit_when_statuses_are_set_and_read_then_the_latest_per_context_comes_back(self):
+        sha = self.change_file(OWNER, APP, "statuses.txt", "statuses\n", "develop", "test/statuses")
+
+        # A commit without any status: Forgejo answers "statuses": null, which is nothing to print.
+        result = self.forge(JENKINS, "get-statuses", APP, sha)
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
+        for state, context in (("pending", "build"), ("success", "build"), ("failure", "test")):
+            result = self.forge(JENKINS, "set-status", APP, sha, state, context, f"{context} {state}",
+                                "https://jenkins.example.com/job/1")
+            self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+        # More contexts than one page holds (Forgejo's largest is 50): none may be cut off.
+        many = [f"deploy/env-{n:02}" for n in range(55)]
+        self.set_checks(APP, sha, many)
+
+        result = self.forge(JENKINS, "get-statuses", APP, sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(sorted(lines), sorted(["build\tsuccess", "test\tfailure"] + [f"{c}\tsuccess" for c in many]))
+
+    def test_given_a_release_flow_when_run_then_tag_draft_upload_and_publish_work(self):
+        sha = self.head(APP, "main")
+        result = self.forge(JENKINS, "create-tag", APP, "v1.0.0", sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/tags/v1.0.0")["commit"]["sha"], sha)
+
+        notes = self.temp / "notes.md"
+        notes.write_text("The first release.\n")
+        result = self.forge(JENKINS, "create-release", APP, "v1.0.0", sha, "v1.0.0", "--draft", "--notes-file", str(notes))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        release_id, html_url = result.stdout.strip().split("\t")
+        release = self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/{release_id}")
+        self.assertEqual((release["draft"], release["body"], release["tag_name"], release["name"]),
+                         (True, "The first release.\n", "v1.0.0", "v1.0.0"))
+        self.assertEqual(html_url, release["html_url"])
+
+        artifact = self.temp / "shop-api 1.0.0.zip"
+        artifact.write_bytes(b"the release's bytes")
+        result = self.forge(JENKINS, "upload-release-file", APP, release_id, str(artifact))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        download = result.stdout.strip()
+        # The upload's answer links the file as <server>/attachments/<uuid>; the release's list of files
+        # links it as .../releases/download/<tag>/<name>, as GitHub does. Both serve it.
+        assets = self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/{release_id}/assets")
+        self.assertEqual([(a["name"], a["size"]) for a in assets], [(artifact.name, artifact.stat().st_size)])
+        self.assertRegex(download, rf"^{re.escape(self.url)}/attachments/[0-9a-f-]+$")
+        for url in (download, assets[0]["browser_download_url"]):
+            self.assertEqual(self.download(url), artifact.read_bytes(), url)
+
+        result = self.forge(JENKINS, "publish-release", APP, release_id)
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, html_url), result.stderr)
+        self.assertFalse(self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/{release_id}")["draft"])
+
+    def test_given_a_pull_request_when_jenkins_merges_it_then_the_merge_commit_is_printed(self):
+        head = self.change_file(OWNER, APP, "CHANGELOG.md", "## 3.0.0\n", "develop", "release/3.0.0")
+        number = self.open_pull_request(OWNER, APP, "release/3.0.0", "main")
+        self.set_checks(APP, head, self.rules[APP].main_checks)
+
+        # The pull request moved on since that commit was deployed: refused, still open.
+        stale = self.head(APP, "develop")
+        result = self.forge(JENKINS, "merge-pr", APP, str(number), stale, "release: v3.0.0")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn(f"merge-pr #{number} failed: head out of date", result.stderr)
+        self.assertFalse(self.pull_request(APP, number)["merged"])
+
+        title = f"release: v3.0.0 (#{number})"
+        result = self.forge(JENKINS, "merge-pr", APP, str(number), head, title)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        merge = result.stdout.strip()
+        self.assertEqual(merge, self.head(APP, "main"))
+        commit = self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/git/commits/{merge}")
+        # A merge commit (develop and main keep sharing history), titled as asked.
+        self.assertEqual(len(commit["parents"]), 2)
+        self.assertEqual(commit["commit"]["message"].splitlines()[0], title)
+
+    def test_given_a_branch_with_a_slash_when_deleted_then_it_is_gone(self):
+        # reveal.js has `rules: basic`: release/* is not protected there.
+        self.api[OWNER].request("POST", f"/repos/{OWNER}/{DOTTED}/branches",
+                                {"new_branch_name": "release/1.2.3", "old_branch_name": "develop"})
+        result = self.forge(JENKINS, "delete-branch", DOTTED, "release/1.2.3")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertFalse(self.branch_exists(DOTTED, "release/1.2.3"))
+
+        # Deleted already (as "delete head branch after merge" does): done, with a note.
+        result = self.forge(JENKINS, "delete-branch", DOTTED, "release/1.2.3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("release/1.2.3 was already deleted", result.stderr)
+
+        # A repository that is not there (or that jenkins cannot see) is an error, not "already gone".
+        result = self.forge(JENKINS, "delete-branch", "no-such-repository", "release/1.2.3")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("delete-branch release/1.2.3 failed", result.stderr)
+
+    def test_given_a_protected_release_branch_when_jenkins_deletes_it_then_forge_sh_exits_3(self):
+        self.api[OWNER].request("POST", f"/repos/{OWNER}/{APP}/branches",
+                                {"new_branch_name": "release/2.0.0", "old_branch_name": "develop"})
+        result = self.forge(JENKINS, "delete-branch", APP, "release/2.0.0")
+        self.assertEqual((result.returncode, result.stdout), (3, ""), result.stderr)
+        self.assertIn("kept: release/2.0.0 is protected", result.stderr)
+        self.assertTrue(self.branch_exists(APP, "release/2.0.0"))
+
+    def test_given_a_repository_with_a_dot_when_the_commands_run_then_they_work(self):
+        head = self.change_file(OWNER, DOTTED, "slides.md", "# Slides\n", "develop", "feature/slides")
+        result = self.forge(JENKINS, "set-status", DOTTED, head, "success", "branch-policy", "ok")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.forge(JENKINS, "get-statuses", DOTTED, head)
+        self.assertEqual((result.returncode, result.stdout), (0, "branch-policy\tsuccess\n"), result.stderr)
+
+        number = self.open_pull_request(OWNER, DOTTED, "feature/slides", "develop")
+        result = self.forge(JENKINS, "merge-pr", DOTTED, str(number), head, f"Slides (#{number})")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        merge = result.stdout.strip()
+        self.assertEqual(merge, self.head(DOTTED, "develop"))
+
+        result = self.forge(JENKINS, "create-tag", DOTTED, "v0.1.0", merge)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.forge(JENKINS, "create-release", DOTTED, "v0.1.0", merge, "v0.1.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        release_id = result.stdout.split("\t")[0]
+        artifact = self.temp / "slides.pdf"
+        artifact.write_bytes(b"%PDF slides")
+        result = self.forge(JENKINS, "upload-release-file", DOTTED, release_id, str(artifact))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.download(result.stdout.strip()), artifact.read_bytes())
+        result = self.forge(JENKINS, "publish-release", DOTTED, release_id)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        self.api[OWNER].request("POST", f"/repos/{OWNER}/{DOTTED}/branches",
+                                {"new_branch_name": "feature/old", "old_branch_name": "develop"})
+        result = self.forge(JENKINS, "delete-branch", DOTTED, "feature/old")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.branch_exists(DOTTED, "feature/old"))
+
+    # --- rules.py ----------------------------------------------------------------------------------
+
+    def test_given_rules_applied_when_read_back_then_protections_match_and_a_rerun_changes_nothing(self):
+        owner = self.api[OWNER]
+        r = self.rules[APP]
+        self.assertIn("  protected branch 'release/*'", self.first_run[APP])
+        self.assertIn("  created the Jenkins webhook", self.first_run[DOTTED])
+
+        for repo in (APP, DOTTED):
+            settings = owner.request("GET", f"/repos/{OWNER}/{repo}")
+            self.assertEqual({k: settings[k] for k in rules.forgejo_settings()}, rules.forgejo_settings(), repo)
+
+        protections = {p["rule_name"]: p for p in owner.request("GET", f"/repos/{OWNER}/{APP}/branch_protections")}
+        self.assertEqual(set(protections), {"develop", "main", "release/*"})
+        for name, mergers, checks in (("develop", r.develop_mergers, r.develop_checks),
+                                      ("main", r.main_mergers, r.main_checks)):
+            p = protections[name]
+            self.assertEqual((p["enable_push"], p["enable_merge_whitelist"], p["enable_status_check"],
+                              p["protected_file_patterns"], p["apply_to_admins"]),
+                             (False, True, True, "Jenkinsfile", False), name)
+            self.assertEqual(set(p["merge_whitelist_usernames"]), set(mergers), name)
+            self.assertEqual(set(p["status_check_contexts"]), set(checks), name)
+        release = protections["release/*"]
+        self.assertEqual((release["enable_push"], release["enable_push_whitelist"], release["push_whitelist_usernames"],
+                          release["apply_to_admins"]), (True, True, [OWNER], False))
+        tags = owner.request("GET", f"/repos/{OWNER}/{APP}/tag_protections")
+        self.assertEqual([(t["name_pattern"], t["whitelist_usernames"]) for t in tags], [("v*", [JENKINS])])
+        basic = {p["rule_name"]: p for p in owner.request("GET", f"/repos/{OWNER}/{DOTTED}/branch_protections")}
+        self.assertEqual({name: (p["enable_push"], p["enable_merge_whitelist"], p["enable_status_check"])
+                          for name, p in basic.items()}, {"develop": (True, False, False), "main": (True, False, False)})
+        for repo in (APP, DOTTED):
+            hooks = owner.request("GET", f"/repos/{OWNER}/{repo}/hooks")
+            self.assertEqual([(h["type"], h["config"]["url"], h["config"]["content_type"], h["active"]) for h in hooks],
+                             [("gitea", WEBHOOK["url"], "json", True)], repo)
+
+        # A second run finds everything as it should be: it only reads.
+        for repo in (APP, DOTTED):
+            api = RecordingApi(self.url + "/api/v1", self.tokens[OWNER], "token")
+            lines = rules.apply_forgejo(api, OWNER, self.rules[repo], WEBHOOK, False)
+            self.assertEqual(api.writes(), [], f"{repo}: {lines}")
+
+        # Something changed by hand is put back by updating it in place -- the release/* protection
+        # through its encoded name, the tag protection and the hook by id -- and only that is written.
+        owner.request("PATCH", f"/repos/{OWNER}/{APP}/branch_protections/release%2F%2A",
+                      {"push_whitelist_usernames": [OWNER, CLAUDE]})
+        owner.request("PATCH", f"/repos/{OWNER}/{APP}/tag_protections/{tags[0]['id']}",
+                      {"name_pattern": "v*", "whitelist_usernames": [CLAUDE]})
+        hook = owner.request("GET", f"/repos/{OWNER}/{APP}/hooks")[0]
+        owner.request("PATCH", f"/repos/{OWNER}/{APP}/hooks/{hook['id']}", {"active": False})
+        api = RecordingApi(self.url + "/api/v1", self.tokens[OWNER], "token")
+        rules.apply_forgejo(api, OWNER, r, WEBHOOK, False)
+        self.assertEqual(sorted(api.writes()), sorted([
+            ("PATCH", f"/repos/{OWNER}/{APP}/branch_protections/release%2F%2A"),
+            ("PATCH", f"/repos/{OWNER}/{APP}/tag_protections/{tags[0]['id']}"),
+            ("PATCH", f"/repos/{OWNER}/{APP}/hooks/{hook['id']}"),
+        ]))
+        self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{APP}/branch_protections/release%2F%2A"
+                                       )["push_whitelist_usernames"], [OWNER])
+        self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{APP}/tag_protections/{tags[0]['id']}"
+                                       )["whitelist_usernames"], [JENKINS])
+        self.assertTrue(owner.request("GET", f"/repos/{OWNER}/{APP}/hooks/{hook['id']}")["active"])
+        api = RecordingApi(self.url + "/api/v1", self.tokens[OWNER], "token")
+        rules.apply_forgejo(api, OWNER, r, WEBHOOK, False)
+        self.assertEqual(api.writes(), [])
+
+    def test_given_users_without_write_access_when_rules_are_applied_then_the_run_names_them(self):
+        # A repository nobody else was given access to: Forgejo leaves claude and jenkins off the
+        # whitelists without an error, and rules.py says so.
+        repo = "no-collaborators"
+        self.api[OWNER].request("POST", "/user/repos", {"name": repo, "auto_init": True, "default_branch": "main",
+                                                        "private": True})
+        self.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/branches",
+                                {"new_branch_name": "develop", "old_branch_name": "main"})
+        lines = rules.apply_forgejo(self.api[OWNER], OWNER, dataclasses.replace(self.rules[APP], repo=repo), None, False)
+        warnings = [line for line in lines if "warning" in line]
+        self.assertEqual(len(warnings), 3, lines)
+        self.assertIn("left claude off who may merge (branch 'develop')", warnings[0])
+        self.assertIn("left jenkins off who may merge (branch 'main')", warnings[1])
+        self.assertIn("left jenkins off who may create tags (tags 'v*')", warnings[2])
+        merging = {p["rule_name"]: p["merge_whitelist_usernames"]
+                   for p in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/branch_protections")}
+        self.assertEqual((merging["develop"], merging["main"]), ([OWNER], []))
+
+    def test_given_the_rules_when_claude_merges_a_jenkinsfile_change_then_it_is_refused(self):
+        checks = self.rules[APP].develop_checks
+        changed = self.change_file(CLAUDE, APP, "Jenkinsfile", JENKINSFILE + "// claude was here\n", "develop",
+                                   "feature/claude-jenkinsfile")
+        number = self.open_pull_request(CLAUDE, APP, "feature/claude-jenkinsfile", "develop")
+        self.set_checks(APP, changed, checks)
+        error = self.refused(CLAUDE, "POST", f"/repos/{OWNER}/{APP}/pulls/{number}/merge", {"Do": "merge"})
+        self.assertEqual((error.status, error.message), (405, "not allowed to merge [reason: Changed protected files]"))
+        self.assertFalse(self.pull_request(APP, number)["merged"])
+
+        # The same developer merges any other change: it is the Jenkinsfile that is refused.
+        other = self.change_file(CLAUDE, APP, "docs/claude.md", "notes\n", "develop", "feature/claude-docs")
+        number = self.open_pull_request(CLAUDE, APP, "feature/claude-docs", "develop")
+        self.set_checks(APP, other, checks)
+        self.merge(CLAUDE, APP, number)
+        self.assertTrue(self.pull_request(APP, number)["merged"])
+
+    def test_given_the_rules_when_the_owner_merges_with_failing_checks_then_it_is_allowed(self):
+        checks = self.rules[APP].develop_checks
+        head = self.change_file(OWNER, APP, "hotfix.txt", "urgent\n", "develop", "fix/owner-override")
+        number = self.open_pull_request(OWNER, APP, "fix/owner-override", "develop")
+        self.set_checks(APP, head, [c for c in checks if c != "test"])
+        self.set_checks(APP, head, ["test"], "failure")
+        merge = f"/repos/{OWNER}/{APP}/pulls/{number}/merge"
+
+        # The checks hold for a developer, who cannot force the merge ...
+        failing = "not allowed to merge [reason: Not all required status checks successful]"
+        for body in ({"Do": "merge"}, {"Do": "merge", "force_merge": True}):
+            self.assertEqual(self.refused(CLAUDE, "POST", merge, body).message, failing, body)
+        self.assertFalse(self.pull_request(APP, number)["merged"])
+        # ... and the owner, an administrator the protection does not bind, can: by forcing it, so a
+        # failing check is never merged past by accident.
+        self.assertEqual(self.refused(OWNER, "POST", merge, {"Do": "merge"}).message, failing)
+        self.merge(OWNER, APP, number, force_merge=True)
+        self.assertTrue(self.pull_request(APP, number)["merged"])
+
+    def test_given_the_rules_when_claude_creates_a_v_tag_then_it_is_refused(self):
+        sha = self.head(APP, "develop")
+        result = self.forge(CLAUDE, "create-tag", APP, "v9.9.9", sha)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("create-tag v9.9.9 failed: user not allowed to create protected tag", result.stderr)
+
+        clone = self.clone(CLAUDE, APP)
+        self.assertEqual(self.git(CLAUDE, "tag", "v9.9.8", cwd=clone).returncode, 0)
+        pushed = self.git(CLAUDE, "push", "origin", "refs/tags/v9.9.8", cwd=clone)
+        self.assertNotEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertIn("Tag v9.9.8 is protected", pushed.stderr)
+
+        tags = [t["name"] for t in self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/tags")]
+        self.assertNotIn("v9.9.9", tags)
+        self.assertNotIn("v9.9.8", tags)
+        # Only the version tags are Jenkins': claude may tag otherwise.
+        result = self.forge(CLAUDE, "create-tag", APP, "claude-experiment", sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_given_the_rules_when_claude_pushes_a_release_branch_then_it_is_refused(self):
+        clone = self.clone(CLAUDE, APP)
+        pushed = self.git(CLAUDE, "push", "origin", "HEAD:refs/heads/release/9.0.0", cwd=clone)
+        self.assertNotEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertIn("Not allowed to push to protected branch release/9.0.0", pushed.stderr)
+        self.assertFalse(self.branch_exists(APP, "release/9.0.0"))
+        # Nor through the API, which pushes on the user's behalf.
+        self.refused(CLAUDE, "POST", f"/repos/{OWNER}/{APP}/branches",
+                     {"new_branch_name": "release/9.0.1", "old_branch_name": "develop"})
+        self.assertFalse(self.branch_exists(APP, "release/9.0.1"))
+
+        # claude pushes its own branches, and nothing protects them.
+        pushed = self.git(CLAUDE, "push", "origin", "HEAD:refs/heads/feature/claude-push", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertTrue(self.branch_exists(APP, "feature/claude-push"))
+
+
+class CatalogTests(unittest.TestCase):
+    def test_given_the_live_suites_catalog_when_validated_then_it_is_a_valid_catalog(self):
+        # So the rules applied above are the ones a real installation would get.
+        self.assertEqual(catalog_module.validate(test_catalog()), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

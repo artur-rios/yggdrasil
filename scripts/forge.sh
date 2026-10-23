@@ -76,14 +76,19 @@ repo_url() { printf '%s/repos/%s/%s' "$api_url" "$(encode "$owner")" "$(encode "
 # send <method> <url> [--json <body> | --file <path> | --form <field=@path>]
 #
 # Does the call and leaves what came back in three variables, for the callers that must tell failures
-# apart (delete-branch): answer (the body), http_status (000 when there was no answer at all) and, when
-# curl failed, failure (the server's message: the JSON .message, else the raw body). Returns curl's status.
+# apart (delete-branch, merge-pr): answer (the body), http_status (000 when there was no answer at all)
+# and, when curl failed, failure: the server's message (the JSON .message, else the raw body, else just
+# the status: Forgejo shows the message of a 500 to administrators only), or curl's own error when
+# nothing answered. Returns curl's status.
 #
 # curl reads its headers, the token among them, from a config on stdin: arguments are readable by
 # every user of the machine (ps), stdin is not. A body is an argument, which is fine: none holds a secret.
-# --write-out puts the HTTP status on a line of its own after the body, split off again below.
+# --write-out puts the HTTP status on a line of its own after the body, split off again below. curl's
+# own error line is kept out of the log unless nothing answered: for an HTTP error, the server's
+# message says more ("curl: (22) ... error: 500" would also stand in a log where the delete of a
+# branch that is already gone succeeded).
 send() {
-  local method=$1 url=$2 out status=0
+  local method=$1 url=$2 out status=0 errors
   shift 2
   local args=(--silent --show-error --fail-with-body --write-out '\n%{http_code}' --request "$method" --config -)
   case "${1:-}" in
@@ -91,7 +96,8 @@ send() {
     --file) args+=(--header "Content-Type: application/octet-stream" --data-binary "@$2") ;;
     --form) args+=(--form "$2") ;; # curl makes the multipart Content-Type, boundary included
   esac
-  out=$(curl "${args[@]}" "$url" <<<"$(headers)") || status=$?
+  errors=$(mktemp)
+  out=$(curl "${args[@]}" "$url" <<<"$(headers)" 2>"$errors") || status=$?
   if [[ "$out" == *$'\n'* ]]; then
     answer=${out%$'\n'*}
     http_status=${out##*$'\n'}
@@ -101,9 +107,18 @@ send() {
   fi
   failure=""
   if ((status)); then
-    failure=$(jq -r '.message // empty' <<<"$answer" 2>/dev/null) || failure=""
-    [[ -n "$failure" ]] || failure=$answer
+    if [[ -n "$answer" ]]; then
+      failure=$(jq -er '.message' <<<"$answer" 2>/dev/null) || failure=$answer
+    fi
+    if [[ -z "$failure" && "$http_status" != 000 ]]; then
+      failure="HTTP $http_status, without a message"
+    fi
+    if [[ -z "$failure" ]]; then
+      failure=$(<"$errors")
+      [[ -n "$failure" ]] || failure="no answer (curl exit $status)"
+    fi
   fi
+  rm -f "$errors"
   return "$status"
 }
 
@@ -245,18 +260,37 @@ github_delete_branch() {
 forgejo_set_status() { set_status "$@"; }
 
 forgejo_get_statuses() {
-  local repo=$1 sha=$2 out
-  out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status") || return 1
-  jq -r '.statuses[] | [.context, .status] | @tsv' <<<"$out"
+  local repo=$1 sha=$2 out page=1 count
+  # The combined status holds one state per context, the latest, in pages of at most 50 (Forgejo's
+  # largest; its default is 30); a commit without any status has "statuses": null, i.e. no line.
+  # The state is in the field "status" (GitHub's "state"). 100 pages is far more than any commit has.
+  while ((page <= 100)); do
+    out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status?limit=50&page=$page") || return 1
+    jq -r '(.statuses // [])[] | [.context, .status] | @tsv' <<<"$out"
+    count=$(jq '.statuses // [] | length' <<<"$out")
+    ((count == 50)) || return 0
+    page=$((page + 1))
+  done
 }
 
 forgejo_merge_pr() {
-  local repo=$1 number=$2 sha=$3 title=$4 out
+  local repo=$1 number=$2 sha=$3 title=$4 out body attempt=1
   # A merge commit, never squash or rebase (see github_merge_pr). head_commit_id makes the merge fail
   # if the pull request moved on since it was deployed. Unlike GitHub's, the answer is empty: the merge
-  # commit is read from the pull request afterwards.
-  request "merge-pr #$number" POST "$(repo_url "$repo")/pulls/$(encode "$number")/merge" --json "$(jq -n \
-    --arg sha "$sha" --arg title "$title" '{Do: "merge", MergeTitleField: $title, head_commit_id: $sha}')" >/dev/null || return 1
+  # commit is read from the pull request afterwards (Forgejo fills it in before it answers).
+  body=$(jq -n --arg sha "$sha" --arg title "$title" '{Do: "merge", MergeTitleField: $title, head_commit_id: $sha}')
+  # Forgejo works out again in the background whether a pull request can be merged, after a new commit
+  # status among other things, and meanwhile refuses with 405 "Please try again later". The pipeline
+  # merges right after posting the last deploy status, so that refusal is tried again for a minute.
+  until send POST "$(repo_url "$repo")/pulls/$(encode "$number")/merge" --json "$body"; do
+    if [[ "$http_status" == 405 && "$failure" == *"try again later"* ]] && ((attempt < 20)); then
+      attempt=$((attempt + 1))
+      sleep 3
+      continue
+    fi
+    echo "forge: merge-pr #$number failed${failure:+: $failure}" >&2
+    return 1
+  done
   out=$(request "merge-pr #$number" GET "$(repo_url "$repo")/pulls/$(encode "$number")") || return 1
   jq -er '.merge_commit_sha | select(. != null and . != "")' <<<"$out" || die "merge-pr failed: the pull request has no merge commit"
 }
@@ -300,24 +334,26 @@ forgejo_publish_release() {
 }
 
 forgejo_delete_branch() {
-  local repo=$1 branch=$2
-  send DELETE "$(repo_url "$repo")/branches/$(encode_path "$branch")" && return 0
-  case "$http_status" in
-    # Delete head branch after merge (rules.py turns it on) means Forgejo has usually deleted the
-    # branch already by the time this runs: that is done.
-    404)
-      echo "forge: $branch was already deleted" >&2
-      return 0
-      ;;
-    # A protected branch is a decision of the owner's, not a failure of the release: exit 3.
-    403)
-      if grep -qi 'protected' <<<"$failure"; then
-        echo "forge: kept: $branch is protected" >&2
-        return 3
-      fi
-      ;;
-  esac
-  echo "forge: delete-branch $branch failed${failure:+: $failure}" >&2
+  local repo=$1 branch=$2 url refused
+  url="$(repo_url "$repo")/branches/$(encode_path "$branch")"
+  send DELETE "$url" && return 0
+  # A protected branch is a decision of the owner's, not a failure of the release: exit 3. Forgejo
+  # answers 403 "branch protected".
+  if [[ "$http_status" == 403 ]] && grep -qi 'protected' <<<"$failure"; then
+    echo "forge: kept: $branch is protected" >&2
+    return 3
+  fi
+  refused=$failure
+  # Delete head branch after merge (rules.py turns it on) means Forgejo has usually deleted the branch
+  # already by the time this runs: that is done. Forgejo 16 answers the delete of a missing branch with
+  # a 500 whose message ("object does not exist") only an administrator sees, so the answer cannot
+  # tell: the branch is looked up instead. Gone (404) from a repository that is there (a repository
+  # that is not, or that the token cannot see, is a 404 too) means done.
+  if ! send GET "$url" && [[ "$http_status" == 404 ]] && send GET "$(repo_url "$repo")"; then
+    echo "forge: $branch was already deleted" >&2
+    return 0
+  fi
+  echo "forge: delete-branch $branch failed${refused:+: $refused}" >&2
   return 1
 }
 

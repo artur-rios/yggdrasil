@@ -299,13 +299,23 @@ SECRET = "wh-s3cret-value"
 HOOK_URL = "https://jenkins.example.com/gitea-webhook/post"
 
 
+# What Forgejo 16 answers for a hook created with the event "pull_request": the whole group, spelled out
+# (seen on the real server, test_forgejo_live.py).
+PULL_REQUEST_EVENTS = ["pull_request", "pull_request_assign", "pull_request_label", "pull_request_milestone",
+                       "pull_request_comment", "pull_request_review_approved", "pull_request_review_rejected",
+                       "pull_request_review_comment", "pull_request_sync", "pull_request_review_request"]
+
+
 class FakeForgejo:
     """Stands in for rules.Api: records every call and keeps one repository's settings, branch and tag
     protections and hooks like a Forgejo server would -- with the extra fields it answers, whitelists
-    in another order, and no hook secret -- so applying twice shows what the second run does."""
+    in another order, no hook secret, "pull_request" answered as its whole group of events, and users
+    without write access (not in `writers`, when given) left off the whitelists -- so applying twice
+    shows what the second run does."""
 
-    def __init__(self, hooks=(), protections=(), tags=()):
+    def __init__(self, hooks=(), protections=(), tags=(), writers=None):
         self.calls = []
+        self.writers = writers
         self.repo = {"id": 1, "name": "shop-api", "default_branch": "main", "private": True,
                      "default_delete_branch_after_merge": False, "allow_merge_commits": True,
                      "allow_squash_merge": True, "allow_rebase": True, "allow_rebase_explicit": True,
@@ -342,7 +352,7 @@ class FakeForgejo:
             entry = {"id": ident, **copy.deepcopy(body)}
             if kind == "hooks":
                 self.secrets[ident] = entry["config"].pop("secret")
-            store[ident] = entry
+            store[ident] = self._stored(entry)
             return self._out(entry)
         ident = key if kind == "branch_protections" else int(key)
         entry = store[ident]  # a PATCH of something that is not there is a KeyError: the test fails
@@ -353,7 +363,18 @@ class FakeForgejo:
                 entry["config"] = {**entry["config"], **value}
             else:
                 entry[field] = value
+        self._stored(entry)
         return self._out(entry)
+
+    def _stored(self, entry):
+        """The entry as the server keeps it: whitelists without users lacking write access, a hook's
+        "pull_request" spelled out."""
+        for field in ("merge_whitelist_usernames", "push_whitelist_usernames", "whitelist_usernames"):
+            if field in entry and self.writers is not None:
+                entry[field] = [user for user in entry[field] if user in self.writers]
+        if "pull_request" in entry.get("events", []):
+            entry["events"] = [e for e in entry["events"] if e not in PULL_REQUEST_EVENTS] + PULL_REQUEST_EVENTS
+        return entry
 
     def writes(self):
         return [c for c in self.calls if c[0] != "GET"]
@@ -474,8 +495,8 @@ class ForgejoRulesTests(unittest.TestCase):
         self.assertEqual([(m, p) for m, p, _ in api.written("hooks")], [("PATCH", f"/repos/{OWNER}/shop-api/hooks/7")])
         self.assertEqual(sorted(api.hooks), [7, 8])
         hook = api.hooks[7]
-        self.assertEqual((hook["active"], sorted(hook["events"]), hook["branch_filter"], hook["config"]["content_type"]),
-                         (True, ["create", "delete", "pull_request", "push"], "*", "json"))
+        self.assertEqual((hook["active"], set(hook["events"]), hook["branch_filter"], hook["config"]["content_type"]),
+                         (True, {"create", "delete", "push", *PULL_REQUEST_EVENTS}, "*", "json"))
         self.assertEqual(api.secrets[7], SECRET)
         self.assertEqual(api.hooks[8]["events"], ["push"])
 
@@ -491,12 +512,39 @@ class ForgejoRulesTests(unittest.TestCase):
     def test_given_a_webhook_with_the_right_fields_when_applied_then_it_is_left_alone(self):
         # Forgejo never returns the secret, so a changed one cannot be seen: the hook has to be deleted.
         hook = {"id": 7, "type": "gitea", "active": True, "branch_filter": "*",
-                "events": ["push", "create", "delete", "pull_request"],
+                "events": ["push", "create", "delete", *PULL_REQUEST_EVENTS],
                 "config": {"url": HOOK_URL, "content_type": "json"}}
         api = FakeForgejo(hooks=[hook])
         lines = forgejo_apply(api, "shop-api", {"url": HOOK_URL, "secret": "a-new-secret"})
         self.assertEqual(api.written("hooks"), [])
         self.assertTrue(any("delete the hook" in line for line in lines), lines)
+
+    def test_given_a_webhook_with_only_some_pull_request_events_when_applied_then_it_is_updated(self):
+        # A sub-event alone is not the group Jenkins needs: the hook is rewritten with "pull_request".
+        hook = {"id": 7, "type": "gitea", "active": True, "branch_filter": "*",
+                "events": ["push", "create", "delete", "pull_request_sync"],
+                "config": {"url": HOOK_URL, "content_type": "json"}}
+        api = FakeForgejo(hooks=[hook])
+        forgejo_apply(api, "shop-api", {"url": HOOK_URL, "secret": SECRET})
+        self.assertEqual([(m, p) for m, p, _ in api.written("hooks")], [("PATCH", f"/repos/{OWNER}/shop-api/hooks/7")])
+        self.assertIn("pull_request", api.hooks[7]["events"])
+
+    def test_given_a_developer_without_write_access_when_applied_then_the_run_names_them(self):
+        # Forgejo leaves such a user off the whitelist without an error (seen on the real server).
+        api = FakeForgejo(writers={"artur-rios", "alice", "jenkins-bot"})
+        lines = forgejo_apply(api, "shop-api")
+        self.assertEqual(protection(api, "develop")["merge_whitelist_usernames"], ["artur-rios", "alice"])
+        warnings = [line for line in lines if "warning" in line]
+        self.assertEqual(warnings, ["  warning: Forgejo left bob off who may merge (branch 'develop'): "
+                                    "give them write access to the repository and run again"])
+
+    def test_given_jenkins_without_write_access_when_applied_then_the_tag_protection_names_it(self):
+        api = FakeForgejo(writers={"artur-rios", "alice", "bob"})
+        lines = forgejo_apply(api, "shop-api")
+        warnings = [line for line in lines if "warning" in line]
+        self.assertEqual(len(warnings), 2, warnings)
+        self.assertIn("jenkins-bot off who may merge (branch 'main')", warnings[0])
+        self.assertIn("jenkins-bot off who may create tags (tags 'v*')", warnings[1])
 
     def test_given_no_webhook_when_applied_then_hooks_are_not_touched(self):
         api = FakeForgejo()

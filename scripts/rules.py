@@ -29,7 +29,15 @@ Per repository the model is:
   version tags   created by the Jenkins user (applications) or the owner (owner-tag repositories)
   Jenkinsfile    protected on develop and main (Forgejo)
 
-A repository with `rules: basic` gets develop and main without force push or deletion, and nothing else.
+A repository with `rules: basic` gets develop and main without force push or deletion, and no other
+rule. It still gets the repository settings (default branch develop, head branches deleted after
+merge; on Forgejo the merge styles too) and, on Forgejo when configured, the Jenkins webhook: Jenkins
+builds it too.
+
+On Forgejo a user is kept on a whitelist (merging, pushing, creating tags) only while they have write
+access to the repository: Forgejo leaves anyone else out without an error. The run says so, by name,
+when the server's answer is missing someone it was sent -- give that user write access (a
+collaborator) and run again.
 
 GitHub cannot restrict who may merge a given file, so `protected_files` (the Jenkinsfile) is not
 applied there; Jenkins' trust rule (plan 3) covers it. Nor does GitHub get a release/* rule: there
@@ -387,16 +395,35 @@ def _differs(current, desired):
     return False
 
 
-def _write_step(api, dry_run, method, path, body, done, would, shown=None):
+def _write_step(api, dry_run, method, path, body, done, would, shown=None, what=None):
     """One write as lines: sent (and `done` reported), or with dry_run only described. `shown` is the
-    body to print when it differs from the one sent (so a secret can be masked)."""
+    body to print when it differs from the one sent (so a secret can be masked). `what` names the
+    protection, for the warning about users the server left off its whitelists."""
     if dry_run:
         yield f"  would {would}: {method} {path}"
         if body is not None:
             yield "    " + json.dumps(body if shown is None else shown)
     else:
-        api.request(method, path, body)
+        answer = api.request(method, path, body)
         yield f"  {done}"
+        if what is not None:
+            yield from _left_out(body, answer or {}, what)
+
+
+# The whitelists of branch and tag protections: Forgejo keeps only users with write access on them.
+WHITELISTS = {"merge_whitelist_usernames": "merge", "push_whitelist_usernames": "push",
+              "whitelist_usernames": "create tags"}
+
+
+def _left_out(sent, answer, what):
+    """A warning for each whitelist the server's answer is missing a user of. Forgejo drops a user
+    without write access to the repository without saying so; the protection would then look changed
+    on every run, and the user could not do what the model says they do."""
+    for field, verb in WHITELISTS.items():
+        missing = sorted(set(sent.get(field) or []) - set(answer.get(field) or []))
+        if missing:
+            yield (f"  warning: Forgejo left {', '.join(missing)} off who may {verb} ({what}): "
+                   "give them write access to the repository and run again")
 
 
 def _forgejo_steps(api, owner, r, webhook, dry_run):
@@ -422,11 +449,12 @@ def _forgejo_steps(api, owner, r, webhook, dry_run):
         body = {k: v for k, v in payload.items() if k != "rule_name"}
         if name not in existing:
             yield from write("POST", f"{base}/branch_protections", payload, f"protected branch '{name}'",
-                             f"protect branch '{name}'")
+                             f"protect branch '{name}'", what=f"branch '{name}'")
         elif _differs(existing[name], body):
             # The pattern goes in the path as one segment: release/* must not read as a sub-path.
             yield from write("PATCH", f"{base}/branch_protections/{urllib.parse.quote(name, safe='')}", body,
-                             f"updated protection of branch '{name}'", f"update the protection of branch '{name}'")
+                             f"updated protection of branch '{name}'", f"update the protection of branch '{name}'",
+                             what=f"branch '{name}'")
         else:
             yield f"  protection of branch '{name}' unchanged"
 
@@ -435,15 +463,24 @@ def _forgejo_steps(api, owner, r, webhook, dry_run):
         found = {t["name_pattern"]: t for t in api.request("GET", f"{base}/tag_protections") or []}.get(r.tag_pattern)
         if found is None:
             yield from write("POST", f"{base}/tag_protections", tag, f"protected tags '{r.tag_pattern}'",
-                             f"protect tags '{r.tag_pattern}'")
+                             f"protect tags '{r.tag_pattern}'", what=f"tags '{r.tag_pattern}'")
         elif _differs(found, tag):
             yield from write("PATCH", f"{base}/tag_protections/{found['id']}", tag,
-                             f"updated tag protection '{r.tag_pattern}'", f"update the tag protection '{r.tag_pattern}'")
+                             f"updated tag protection '{r.tag_pattern}'", f"update the tag protection '{r.tag_pattern}'",
+                             what=f"tags '{r.tag_pattern}'")
         else:
             yield f"  tag protection '{r.tag_pattern}' unchanged"
 
     if webhook is not None:
         yield from _webhook_steps(api, base, webhook, write)
+
+
+def _hook_events(answered, sent):
+    """A hook's events as they were sent. Forgejo stores "pull_request" as the whole group and answers
+    with it spelled out (pull_request, pull_request_assign, pull_request_sync, ...): an event that is a
+    sent one's sub-event is folded back into it, so an unchanged hook does not look changed."""
+    return [event for event in answered
+            if event in sent or not any(event.startswith(f"{group}_") for group in sent)]
 
 
 def _webhook_steps(api, base, webhook, write):
@@ -460,7 +497,8 @@ def _webhook_steps(api, base, webhook, write):
     # decide whether the hook is rewritten (and the secret with it).
     owned = {k: desired[k] for k in ("active", "events", "branch_filter")}
     owned["content_type"] = desired["config"]["content_type"]
-    seen = {**found, "content_type": (found.get("config") or {}).get("content_type")}
+    seen = {**found, "content_type": (found.get("config") or {}).get("content_type"),
+            "events": _hook_events(found.get("events") or [], desired["events"])}
     if _differs(seen, owned):
         yield from write("PATCH", f"{base}/hooks/{found['id']}", desired, "updated the Jenkins webhook",
                          "update the Jenkins webhook", shown=shown)
