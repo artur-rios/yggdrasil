@@ -49,7 +49,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: flutter build apk --release
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: yggdrasil-console-android
           path: console/build/app/outputs/flutter-apk/app-release.apk
@@ -83,7 +83,7 @@ jobs:
         run: |
           $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
           & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DAppVersion=$version" windows/installer/yggdrasil.iss
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: yggdrasil-console-windows
           path: console/build/windows/installer/*.exe
