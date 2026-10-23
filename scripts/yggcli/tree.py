@@ -51,6 +51,7 @@ SOURCE_OVERRIDES = {
     ("catalog", "get", "environment"): "app-environment",
     ("catalog", "get", "option"): "app-option",
     ("catalog", "environment", "option"): "environment-option",
+    ("catalog", "repository-entry", "entry"): "repository",
 }
 
 FLAG_ACTIONS = (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse._StoreConstAction)

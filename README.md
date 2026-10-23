@@ -51,7 +51,7 @@ an agent that dials out to the one controller.
 | **Environment** | A stage applications run in, such as local, development, homologation or production. Options: exposure (`proxy` through Traefik or host `ports`), `trigger` (`manual`, `branch` or `release`), which Jenkins `agent` deploys it, whether it needs `approval`, `hostSuffix` (its host names, `heimdall-dev.<domain>`), `onDemand` (runs only while used), timeouts and rollback depth. Each application deploys to all environments or to its own list, and can override any option per environment. |
 | **Host** | A machine (a VPS, a VM) with a role, `dev` or `apps` ([docs/hosts.md](docs/hosts.md)): Ubuntu 24.04, where every service user runs its own rootless Docker engine. An **apps** host runs one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins agent and one or more domains for all of them; each application runs once per environment, as its own Compose project. The **dev** host runs Forgejo, the Jenkins controller and the build agents. A workstation's `ports` environment needs no platform. |
 | **Variables store** | An encrypted SQLite database per machine that holds the platform's and every application's environment variables and secrets, in layers (a value shared by several applications or environments is defined once), with history and rollback. Opt-in: without it the scripts read env files. Reference: [docs/variables.md](docs/variables.md). |
-| **Catalog** | [`catalog.yaml`](catalog.yaml): the environments, systems and applications. Jenkins jobs and agents, GitHub rulesets, deploys, the status API, Prometheus and the console all read it. Reference: [docs/catalog.md](docs/catalog.md). |
+| **Catalog** | [`catalog.yaml`](catalog.yaml): the environments, systems and applications. Jenkins jobs and agents, the git server's branch rules, deploys, the status API, Prometheus and the console all read it. Reference: [docs/catalog.md](docs/catalog.md). |
 
 ### Branches and releases
 
@@ -183,7 +183,7 @@ first release. In short:
 | | Add the [`templates/application/`](templates/application) files to each application repository | [5](docs/setup.md#5-prepare-each-application-repository) |
 | **Accounts** | A domain and its DNS (Cloudflare, or free with DuckDNS), and a GitHub App for Jenkins | [6–7](docs/setup.md#6-domain-and-dns), [dns.md](docs/dns.md) |
 | **Hosts** | Prepare each machine with `ygg install --role dev\|apps`, bring up the dev machine (the controller host) and the apps machine, then the application env files | [8–11](docs/setup.md#8-prepare-each-machine), [hosts.md](docs/hosts.md) |
-| **Finish** | Apply the GitHub rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-github-rules) |
+| **Finish** | Apply the branch rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-branch-rules) |
 
 On an Ubuntu host, [`ygg`](docs/cli.md) does the host steps, as a command or from an arrow-key
 menu: it installs the tools, sets up and deploys applications, shows what runs, and shows, changes
@@ -207,10 +207,12 @@ default setup worked through on real hardware:
 | `scripts/deploy.sh` | Build, label, deploy, health-wait and roll back one application in one environment, as the Compose project `<application>-<environment>`. Jenkins runs it; so can you |
 | `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
 | `scripts/platform.sh` | Brings a host's platform up or down: one per host, for all its environments |
-| `scripts/github.sh` | The GitHub side of a release: wait for checks, set status, merge, create the tag and draft, dispatch packaging, wait for publication, delete the branch |
+| `scripts/forge.sh` | The git server's side of a release, the same commands on Forgejo and GitHub: set and read statuses, merge, tag, create, upload and publish releases, delete the branch ([docs/setup.md](docs/setup.md#the-git-server-commands)) |
+| `scripts/github.sh` | The GitHub Actions side of a release: wait for checks, dispatch packaging, wait for publication. The rest it hands to `forge.sh` |
+| `scripts/rules.py` | Applies the branching model (protected branches, tags, required checks, webhooks) to every catalog repository, on Forgejo or GitHub |
 | `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, and the Jenkins controller and agent |
 | `jenkins/library/` | The shared pipeline every application's `Jenkinsfile` calls |
-| `github/rulesets.py` | Rulesets, required checks and settings of every catalog repository |
+| `github/rulesets.py` | Moved: runs `scripts/rules.py` with the same arguments |
 | `status/` | The status API (.NET 10) |
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads) |
@@ -232,7 +234,7 @@ default setup worked through on real hardware:
 | Read a secret | `ygg vars get heimdall-api@production KEY --reveal`, or `ygg` › Applications › heimdall-api › production › the variable › Show value |
 | See who changed a variable, or undo it | `ygg vars history`, then `vars rollback <id>` |
 | Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
-| Change GitHub rules | `python3 github/rulesets.py --dry-run`, then without |
+| Change the branch rules | `python3 scripts/rules.py --dry-run`, then without ([setup.md, step 12](docs/setup.md#12-apply-the-branch-rules)); on an existing GitHub installation, wait for plan 3 ([why](docs/setup.md#an-existing-github-installation)) |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |
 
 ## Upgrading

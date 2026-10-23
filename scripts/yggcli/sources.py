@@ -16,7 +16,7 @@ TYPED = {"directory", "file", "version", "number"}
 OPEN = {"scope", "key", "assignment", "change"}
 KNOWN = TYPED | OPEN | {"application", "host-application", "app-of-environment", "environment",
                         "host-environment", "app-environment", "app-host-environment", "service",
-                        "app-option", "environment-option", "command"}
+                        "app-option", "environment-option", "command", "repository"}
 
 KEY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -108,6 +108,11 @@ def _applications(ctx, values):
         yield Choice(application)
 
 
+def _repositories(ctx, values):
+    for repository in ctx.repositories():
+        yield Choice(repository)
+
+
 def _host_applications(ctx, values):
     for application in ctx.host_applications():
         yield Choice(application, ", ".join(ctx.app_host_environments(application)))
@@ -165,7 +170,7 @@ _CHOICES = {
     "app-of-environment": _apps_of_environment, "environment": _environments,
     "host-environment": _host_environments, "app-environment": _app_environments,
     "app-host-environment": _app_host_environments, "environment-option": _environment_options,
-    "app-option": _app_options, "command": _commands,
+    "app-option": _app_options, "command": _commands, "repository": _repositories,
 }
 
 

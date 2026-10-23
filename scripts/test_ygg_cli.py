@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 import test_ygg
@@ -100,6 +101,42 @@ class HostShTests(unittest.TestCase):
         result = subprocess.run(["bash", str(SCRIPTS / "host.sh"), "menu"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("ygg help", result.stderr)
+
+    def git_server_step(self, forge_type):
+        """What `ygg add` says to do on the git server for a new repository, for a catalog whose
+        forge.type is `forge_type`: host.sh's git_server_step, with catalog.py answering for it."""
+        text = (SCRIPTS / "host.sh").read_text(encoding="utf-8")
+        function = re.search(r"^git_server_step\(\) \{\n.*?^\}\n", text, re.MULTILINE | re.DOTALL).group(0)
+        script = textwrap.dedent(f"""
+            say() {{ printf '%s\\n' "$*"; }}
+            catalog() {{
+              case "$*" in
+                "forge type") echo {forge_type} ;;
+                "forge jenkins-user") echo jenkins-bot ;;
+                *) return 1 ;;
+              esac
+            }}
+            {{function}}
+            git_server_step shop-api
+        """).replace("{function}", function)
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
+    def test_given_a_github_catalog_when_a_repository_is_added_then_the_github_app_is_the_step(self):
+        out = self.git_server_step("github")
+        self.assertIn("Install the GitHub App on shop-api", out)
+        self.assertIn("python3 scripts/rules.py shop-api", out)
+
+    @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
+    def test_given_a_forgejo_catalog_when_a_repository_is_added_then_the_collaborators_are_the_step(self):
+        out = self.git_server_step("forgejo")
+        self.assertNotIn("GitHub App", out)
+        self.assertIn("jenkins-bot", out)
+        self.assertIn("forge.developers", out)
+        self.assertIn("write access to shop-api", out)
+        self.assertIn("python3 scripts/rules.py shop-api", out)
 
 
 class Exec(Exception):

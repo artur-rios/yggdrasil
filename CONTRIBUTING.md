@@ -111,6 +111,21 @@ YGG_DOCKER_TESTS=1 python3 -m unittest scripts.test_socket_proxies -v
 It creates an internal network and a few `ygg-sp-test-*` containers, removes them, and never mounts the real Docker
 socket. When Traefik or Alloy is upgraded, run it: a request the new version makes that its proxy refuses fails it.
 
+`scripts/test_forge.py` and `scripts/test_rules.py` check `scripts/forge.sh` and `scripts/rules.py` against fake
+servers. `scripts/test_forgejo_live.py` checks that the fakes are right, against a real Forgejo: it starts the
+image `platform/compose.yml` pins in one `ygg-forgejo-test-*` container (SQLite, a free local port), makes the
+users and repositories, applies the rules and tries them (a developer cannot merge a `Jenkinsfile` change, push
+`release/*` or create, move or delete a `v*` tag; a `rules: basic` repository refuses force pushes and deletions;
+the owner can still merge past failing checks). One test pins a known gap instead: the Jenkins user, which creates
+the `v*` tags, can also move and delete them (docs/setup.md, step 12). With Docker, bash, jq and git:
+
+```bash
+YGG_FORGEJO_TESTS=1 python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
+```
+
+It takes about 20 seconds and removes its container at the end, also when it fails. CI runs it (job `platform`).
+When Forgejo is upgraded, run it: a changed answer of the API fails it.
+
 ## Branching and pull requests
 
 This repository follows the same branching model it enforces on application repositories (see
@@ -127,8 +142,8 @@ request into `develop` or `main`:
   is already on `develop`, and the version has no `v<version>` tag yet. A release carries no changes of its own; a fix
   goes to `develop` through a `fix/` branch and a new release is cut.
 
-Repository rulesets, the same ones [`github/rulesets.py`](github/rulesets.py) applies to application repositories,
-hold this in place:
+Repository rulesets, the same ones [`scripts/rules.py`](scripts/rules.py) applies to application repositories on
+GitHub (on Forgejo it applies equivalent branch and tag protections), hold this in place:
 
 | Ruleset | Rules |
 |---|---|
@@ -136,8 +151,8 @@ hold this in place:
 | `main` | The same, merge commit only. No `deploy/<environment>` status: Jenkins does not deploy or merge this repository |
 | `release tags` | `v*` tags can't be created, moved or deleted, except by the repository owner |
 
-The owner (repository admin role) can bypass all three, for emergencies. `develop` is the default branch, and head
-branches are deleted when their pull request merges.
+The owner (repository admin role) can bypass all three, for emergencies (on Forgejo, with a forced merge).
+`develop` is the default branch, and head branches are deleted when their pull request merges.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) with a lowercase subject, e.g.
 `feat: add a host helper menu for ubuntu hosts` or `fix: accept a release branch github already deleted`.
