@@ -30,6 +30,17 @@ at the tag v0.0.0-live (YGGDRASIL_LIBRARY_VERSION), next to this checkout's scri
 the protections and the webhooks to the controller (http://jenkins:8080/gitea-webhook/post), so pull
 requests and pushes reach Jenkins the way they will in production.
 
+Releases: the test catalog has a `production` environment (trigger: release, on vps, which is therefore
+the publish agent) and a GitHub mirror (mirror.releases off: there is no GitHub to copy releases to). No
+GitHub is reachable, so GitHub is a test double: GITHUB_DOUBLE, a script in this file, is YGG_GITHUB_SH on
+the vps and release agents only (the library and publish-release.sh run it instead of scripts/github.sh)
+and answers actions-status, wait-ref, dispatch, run-status and download-artifacts from a state directory
+the tests write, logging every call with the agent that made it and whether a GitHub token was bound. The
+github-app credential (a GitHubAppCredentials, which would ask GitHub for a token) is replaced, after the
+boots were inspected, by a plain username/password one under the same id. The skip is answered through
+Jenkins' REST API (the input's proceedEmpty), and the actions-release job (casc.yaml, its script mounted
+as compose.yml mounts it) is started with buildWithParameters.
+
 Differences from production worth knowing when reading a result: the engine here is not rootless (the
 agents' root is the machine's root, and a check's TESTCONTAINERS_HOST_OVERRIDE is the agent's gateway on
 a plain bridge network, not a rootless network namespace); Jenkins is plain HTTP on the test network;
@@ -93,11 +104,87 @@ APP, WEB, PLAIN, LIB = "shop-api", "shop-web", "plain-site", "ygg-lib"
 # Pushes to develop whose check is slow when the commit carries a file named `slow`: the window in which
 # develop moves on during a build.
 WORKER = "shop-worker"
+# Releases (the production environment): a plain release; release files built, from "GitHub" and
+# validated; an application whose GitHub Actions check never answers (the skip, then actions-release); a
+# release whose validation fails.
+RELEASE, DESKTOP, TOOLS, BROKEN = "shop-release", "shop-desktop", "shop-tools", "shop-broken"
+MIRROR_OWNER = "artur-rios-mirror"
+GITHUB_TOKEN = "a-throwaway-github-token"
+SKIP_QUESTION = "GitHub Actions checks didn't finish. Deploy without them?"
+KEPT = "kept: release branches are protected on Forgejo; the owner deletes them"
+
+# The GitHub test double (YGG_GITHUB_SH on the vps and release agents), mounted at /opt/github-double with
+# its state: state/<repo>/actions (an exit code; none: GitHub does not answer), state/<repo>/run
+# (success, failure or pending; default success), state/<repo>/artifacts/<artifact>/<files>. Every call is
+# logged to state/calls.log with the agent, whether GH_TOKEN was bound, and GITHUB_OWNER.
+GITHUB_DOUBLE = """\
+#!/usr/bin/env bash
+# test_jenkins_live.py's stand-in for scripts/github.sh: no GitHub is reachable from the test network.
+set -euo pipefail
+state=/opt/github-double/state
+command=${1:-}
+shift || true
+token=unset
+if [[ -n "${GH_TOKEN:-}" ]]; then token=set; fi
+printf '%s agent=%s token=%s owner=%s args=%s\\n' "$command" "${JENKINS_AGENT_NAME:-?}" "$token" "${GITHUB_OWNER:-}" "$*" \\
+  >>"$state/calls.log"
+repo=${1:-}
+case "$command" in
+  actions-status)
+    if [[ ! -f "$state/$repo/actions" ]]; then
+      echo "github: GitHub did not answer about the checks (test double)" >&2
+      exit 2
+    fi
+    exit "$(cat "$state/$repo/actions")"
+    ;;
+  wait-ref) exit 0 ;;
+  dispatch) echo 4242 ;;
+  run-status)
+    result=$(cat "$state/$repo/run" 2>/dev/null || echo success)
+    echo "$result"
+    case "$result" in success) exit 0 ;; failure) exit 1 ;; *) exit 3 ;; esac
+    ;;
+  download-artifacts)
+    mkdir -p "$3"
+    cp -R "$state/$repo/artifacts/." "$3/"
+    ;;
+  *)
+    echo "github double: $command is not faked" >&2
+    exit 2
+    ;;
+esac
+"""
+
+# The release applications' yggdrasil.yml. The markers are computed by the shell, so the log shows them
+# only when the command ran (the trace shows the command's text).
+DESKTOP_PIPELINE = {"release": {
+    "build": {"image": "alpine:3",
+              "run": 'mkdir -p dist && printf "shop-desktop %s\\n" "$RELEASE_VERSION" >"dist/shop-desktop-$RELEASE_VERSION.tar.gz"'
+                     ' && sha256sum dist/*.tar.gz >dist/shop-desktop.sha256 && echo stray >dist/notes.txt'
+                     ' && echo "BUILD-KEY $(printf %s "$SIGNING_KEY" | sha256sum | cut -c1-64)"',
+              "files": ["dist/*.tar.gz", "dist/*.sha256"],
+              "credentials": {"SIGNING_KEY": "shop-db-password"}},
+    "windows": {"workflow": "release-windows.yml", "files": ["*/*.msi"]},
+    "validate": {"image": "alpine:3",
+                 "run": 'test -f "$RELEASE_FILES/windows/shop-desktop-windows/shop-desktop-setup.msi"'
+                        ' && echo "VALIDATED-$(find "$RELEASE_FILES" -type f | wc -l | tr -d " ")-FILES"'},
+}}
+TOOLS_PIPELINE = {"release": {
+    "build": {"image": "alpine:3", "run": "mkdir -p dist && echo tools >dist/shop-tools.tar.gz",
+              "files": ["dist/shop-tools.tar.gz"]},
+    "windows": {"workflow": "release-windows.yml", "files": ["*/*.msi"]},
+}}
+BROKEN_PIPELINE = {"release": {
+    "build": {"image": "alpine:3", "run": "mkdir -p dist && echo broken >dist/shop-broken.tar.gz",
+              "files": ["dist/*.tar.gz"]},
+    "validate": {"image": "alpine:3", "run": 'echo "VALIDATION-$((1 + 2))-FAILED"; exit 3'},
+}}
 
 # A check's command whose output differs from its text: the shell trace (sh -x) prints the command, so
 # the marker in the log proves the check ran, not that it was planned.
 UNIT_RAN = "UNIT-42-RAN"
 UNIT = {"image": "alpine:3", "run": 'echo "UNIT-$((40 + 2))-RAN"'}
+RELEASE_PIPELINE = {"checks": {"unit": UNIT}}
 
 HOSTILE_JENKINSFILE = """\
 // A branch's own Jenkinsfile: Jenkins must never run it (casc.yaml, globalConfigFiles).
@@ -114,24 +201,39 @@ echo "DEPLOY-STUB environment=$1 stack=$2 checkout=$3 version=$4 inputs=${DEPLOY
 
 
 def test_catalog():
-    """The installation under test: one branch environment on the agent vps; shop-api requires the
+    """The installation under test: a branch environment and a release one (its checksTimeout short, for
+    the skip), both on the agent vps, and a GitHub mirror without release copies; shop-api requires the
     check unit and may bind shop-db-password; shop-web requires unit; plain-site has no checks; ygg-lib
-    is tagged by its owner."""
+    is tagged by its owner; the release applications (shop-desktop may bind shop-db-password for its
+    release build; shop-tools requires a GitHub Actions check)."""
     return {
         "owner": OWNER,
         "repository": "yggdrasil",
         "forge": {"type": "forgejo", "url": FORGE_URL, "jenkinsUser": JENKINS, "developers": [CLAUDE]},
+        "mirror": {"github": MIRROR_OWNER, "releases": False},
         "environments": [{"id": "development", "name": "Development", "trigger": "branch", "branches": "develop",
-                          "agent": "vps"}],
+                          "agent": "vps"},
+                         {"id": "production", "name": "Production", "trigger": "release", "agent": "vps",
+                          "checksTimeout": 20}],
         "systems": [{"id": "shop", "name": "Shop", "applications": [
             {"id": APP, "name": "API", "kind": "api", "health": "http://shop-api:8080/healthz", "checks": ["unit"],
              "credentials": ["shop-db-password"]},
             {"id": WEB, "name": "Web", "kind": "web", "health": "http://shop-web:8080/", "checks": ["unit"]},
             {"id": PLAIN, "name": "Site", "kind": "web", "health": "http://plain-site:8080/"},
             {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/"},
+            {"id": RELEASE, "name": "Release", "kind": "web", "health": "http://shop-release:8080/", "checks": ["unit"]},
+            {"id": DESKTOP, "name": "Desktop", "kind": "web", "health": "http://shop-desktop:8080/",
+             "credentials": ["shop-db-password"]},
+            {"id": TOOLS, "name": "Tools", "kind": "web", "health": "http://shop-tools:8080/",
+             "actionsChecks": ["Console (Windows)"]},
+            {"id": BROKEN, "name": "Broken", "kind": "web", "health": "http://shop-broken:8080/"},
         ]}],
         "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"}],
     }
+
+
+RELEASE_APPLICATIONS = {RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
+                        BROKEN: BROKEN_PIPELINE}
 
 
 def pipeline_file(**checks):
@@ -294,14 +396,18 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         cls.start_controller(casc=["casc.yaml", "casc.forgejo.yaml", "casc.github-app.yaml", "casc.test.yaml"],
                              ci_workdir=cls.ci_workdir)
         cls.second_boot = cls.inspect_controller()
+        cls.stand_in_for_the_github_app()
+        cls.write_github_double()
         cls.start_agents()
 
         cls.create_repositories()
         cls.apply_rules()
         cls.first_builds = {}
-        for job in (APP, WEB, PLAIN, LIB, WORKER):
+        cls.release_runs = {}
+        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS)
+        for job in jobs:
             cls.jenkins.post(job_path(job) + "/build", {"delay": "0"})
-        for job in (APP, WEB, PLAIN, LIB, WORKER):
+        for job in jobs:
             for branch in ("develop", "main"):
                 cls.first_builds[(job, branch)] = cls.wait_for_build(job, branch, after=0, timeout=900)
 
@@ -449,6 +555,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         mounts += [
             (cls.controller_files / "casc.test.yaml", "/etc/jenkins/casc.test.yaml"),
             (ROOT / "jenkins" / "Jenkinsfile.default", "/etc/jenkins/Jenkinsfile.default"),
+            (ROOT / "jenkins" / "actions-release.groovy", "/etc/jenkins/actions-release.groovy"),
             (cls.controller_files / "catalog.yaml", "/etc/jenkins/catalog.yaml"),
             (CONTROLLER_DIR / "init.groovy.d" / "agents.groovy", "/var/jenkins_home/init.groovy.d/agents.groovy"),
             (cls.certificates / "github-app.pem", "/run/secrets/github-app.pem"),
@@ -538,9 +645,50 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         }
 
     @classmethod
+    def stand_in_for_the_github_app(cls):
+        """github-app is a GitHubAppCredentials (casc.github-app.yaml, a dummy key): binding it asks GitHub
+        for an installation token, which no test can get. After the boots were inspected, it is replaced,
+        under its id, by a username/password credential whose password the GitHub double sees as GH_TOKEN."""
+        answer = cls.jenkins.script(
+            "import com.cloudbees.plugins.credentials.CredentialsScope\n"
+            "import com.cloudbees.plugins.credentials.SystemCredentialsProvider\n"
+            "import com.cloudbees.plugins.credentials.domains.Domain\n"
+            "import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl\n"
+            "def store = SystemCredentialsProvider.getInstance().getStore()\n"
+            "def old = store.getCredentials(Domain.global()).find { it.id == 'github-app' }\n"
+            "def stand_in = new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, 'github-app', "
+            f"'GitHub test double', 'x-access-token', '{GITHUB_TOKEN}')\n"
+            "println(store.updateCredentials(Domain.global(), old, stand_in))\n")
+        if answer.strip() != "true":
+            raise AssertionError(f"github-app was not replaced: {answer}")
+
+    @classmethod
+    def write_github_double(cls):
+        """GITHUB_DOUBLE and its state: shop-desktop's run succeeds with an installer and a file the
+        release does not declare; shop-tools' GitHub Actions never answers, its run has an installer."""
+        cls.github_double = cls.temp / "github-double"
+        state = cls.github_double / "state"
+        state.mkdir(parents=True)
+        (cls.github_double / "github.sh").write_text(GITHUB_DOUBLE)
+        (cls.github_double / "github.sh").chmod(0o755)
+        (state / "calls.log").write_text("")
+        (state / "calls.log").chmod(0o666)
+        for repo, files in ((DESKTOP, {"shop-desktop-setup.msi": "desktop installer\n", "debug.pdb": "symbols\n"}),
+                            (TOOLS, {"shop-tools-setup.msi": "tools installer\n"})):
+            artifact = state / repo / "artifacts" / f"{repo}-windows"
+            artifact.mkdir(parents=True)
+            for name, text in files.items():
+                (artifact / name).write_text(text)
+
+    def github_calls(self, repo=None):
+        """The GitHub double's log, one call per line (of `repo` only, when given)."""
+        lines = (self.github_double / "state" / "calls.log").read_text().splitlines()
+        return [line for line in lines if repo is None or f" args={repo} " in f"{line} "]
+
+    @classmethod
     def start_agents(cls):
         """ci and release as platform/build-agent.yml runs them, vps as a deploy agent; waits until all
-        three are online."""
+        three are online. vps and release get the GitHub double as YGG_GITHUB_SH."""
         socket_path = "/var/run/docker.sock"
         if os.environ.get("DOCKER_HOST", "").startswith("unix://"):
             socket_path = os.environ["DOCKER_HOST"][len("unix://"):]
@@ -549,6 +697,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             arguments = ["run", "--detach", f"--name={cls.names[name]}", f"--network={cls.network}", "--init",
                          "--user=0:0", "--env=JENKINS_URL=http://jenkins:8080", "--env=JENKINS_WEB_SOCKET=true",
                          f"--env=JENKINS_AGENT_NAME={name}", f"--env=JENKINS_SECRET={secret}"]
+            if name in ("vps", "release"):
+                arguments += ["--env=YGG_GITHUB_SH=/opt/github-double/github.sh",
+                              f"--volume={cls.github_double}:/opt/github-double"]
             if workdir is None:
                 arguments += ["--env=JENKINS_AGENT_WORKDIR=/home/jenkins/agent"]
             else:
@@ -580,6 +731,12 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             "image": "alpine:3",
             "run": 'if [ -f slow ]; then echo "SLOW-$((1 + 1))-CHECK"; sleep 60; fi; echo "WORKER-$((40 + 2))-RAN"'}),
             "develop")
+        # The release applications: yggdrasil.yml on develop, which a release branch is a snapshot of.
+        for repo, pipeline in RELEASE_APPLICATIONS.items():
+            cls.new_repository(repo)
+            cls.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/branches",
+                                   {"new_branch_name": "develop", "old_branch_name": "main"})
+            cls.change_file(OWNER, repo, "yggdrasil.yml", yaml.safe_dump(pipeline, sort_keys=False), "develop")
 
     @classmethod
     def apply_rules(cls):
@@ -979,6 +1136,192 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             scan = self.jenkins.request("GET", job_path(LIB) + "/indexing/consoleText")[1]
         self.assertIn("No automatic build triggered for v1.0.0", scan)
         self.assertEqual(self.builds(LIB, "v1.0.0"), [], scan)
+
+    # --- Releases ---------------------------------------------------------------------------------
+
+    def release_run(self, repo, version="1.0.0", skip=False):
+        """The owner's release pull request release/<version> -> main (the branch cut from develop) and its
+        build, once finished: (pull request number, Build, the GitHub double's log and the release of
+        v<version> at that moment -- later tests may change both). With
+        `skip`, the skip is answered "Deploy without GitHub Actions checks" once the build asks. Each
+        release is built once for the whole class: several tests look at the same one."""
+        key = (repo, version)
+        if key not in self.release_runs:
+            branch = f"release/{version}"
+            self.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/branches",
+                                    {"new_branch_name": branch, "old_branch_name": "develop"})
+            number = self.open_pull_request(OWNER, repo, branch, "main")
+            job_branch = f"PR-{number}"
+            if skip:
+                deadline = time.monotonic() + 900
+                while SKIP_QUESTION not in self.console(repo, job_branch, 1):
+                    finished = [b for b in self.builds(repo, job_branch) if b["number"] == 1 and not b["building"]]
+                    self.assertFalse(finished, self.console(repo, job_branch, 1)[-4000:])
+                    self.assertLess(time.monotonic(), deadline, "the build never asked to skip")
+                    time.sleep(3)
+                self.jenkins.post(f"{job_path(repo, job_branch)}/1/input/SkipActions/proceedEmpty")
+            build = self.wait_for_build(repo, job_branch, after=0, timeout=1200)
+            self.release_runs[key] = (number, build, self.github_calls(), self.release_of(repo, f"v{version}"))
+        return self.release_runs[key]
+
+    def release_of(self, repo, tag):
+        """The release of the tag, a draft too (the owner sees drafts), or None."""
+        found = [r for r in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/releases?limit=50") or []
+                 if r["tag_name"] == tag]
+        return found[0] if found else None
+
+    def tag_commit(self, repo, tag):
+        try:
+            return self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/tags/{tag}")["commit"]["sha"]
+        except rules.ApiError as error:
+            if error.status == 404:
+                return None
+            raise
+
+    def description(self, job, branch, number):
+        return self.jenkins.json(f"{job_path(job, branch)}/{number}/api/json?tree=description")["description"]
+
+    def test_given_a_release_pull_request_when_built_then_it_deploys_merges_tags_and_publishes(self):
+        number, build, _, _ = self.release_run(RELEASE)
+        self.assertEqual(build.result, "SUCCESS", build.console[-6000:])
+        pull = self.pull_request(RELEASE, number)
+        head, merge = pull["head"]["sha"], pull["merge_commit_sha"]
+        self.assertTrue(pull["merged"])
+        # Checked (unit reused when develop's build checked the same commit), then deployed (the head), then
+        # merged and tagged on the publish agent, then published.
+        self.assertRegex(build.console, r"Check unit: (run|reuse) ")
+        self.assertLess(build.console.index("(Branch policy)"), build.console.index("DEPLOY-STUB"))
+        deployed = build.console.index(f"DEPLOY-STUB environment=production stack={RELEASE} checkout=app version=1.0.0-{head[:7]}")
+        self.assertLess(deployed, build.console.index(f"Merged as {merge[:7]}, tagged v1.0.0."))
+        self.assertLess(build.console.index("Merged as"), build.console.index("Released v1.0.0:"))
+        latest = self.latest_statuses(RELEASE, head)
+        self.assertEqual(latest["deploy/production"][1:4], ("success", JENKINS, "Deployed to Production"))
+        self.assertEqual([s[1] for s in self.statuses(RELEASE, head) if s[0] == "deploy/production"], ["pending", "success"])
+        self.assertEqual(latest["branch-policy"][1], "success")
+        # The merge's title is the one release_notes.py leaves out; the tag is on the merge commit.
+        message = self.api[OWNER].request("GET", f"/repos/{OWNER}/{RELEASE}/git/commits/{merge}")["commit"]["message"]
+        self.assertTrue(message.startswith(f"release: v1.0.0 (#{number})"), message)
+        self.assertEqual(self.tag_commit(RELEASE, "v1.0.0"), merge)
+        release = self.release_of(RELEASE, "v1.0.0")
+        self.assertIsNotNone(release)
+        self.assertEqual((release["name"], release["draft"], release["assets"]), ("v1.0.0", False, []))
+        self.assertEqual(release["author"]["login"], JENKINS)
+        self.assertEqual(self.description(RELEASE, f"PR-{number}", build.number), "v1.0.0")
+        self.assert_no_secret(build.console, "the build log")
+
+    def test_given_the_release_branch_when_released_then_it_is_kept_with_a_note(self):
+        number, build, _, _ = self.release_run(RELEASE)
+        self.assertEqual(build.result, "SUCCESS", build.console[-6000:])
+        # Forgejo protects release/* (rules.py): delete-branch exits 3, which is a note, not a failure.
+        self.assertIn(f"release/1.0.0 {KEPT}", build.console)
+        self.assertTrue(self.branch_exists(RELEASE, "release/1.0.0"))
+
+    def test_given_release_files_when_released_then_the_forgejo_release_has_them_and_is_published(self):
+        number, build, calls, _ = self.release_run(DESKTOP)
+        self.assertEqual(build.result, "SUCCESS", build.console[-8000:])
+        release = self.release_of(DESKTOP, "v1.0.0")
+        self.assertIsNotNone(release)
+        self.assertFalse(release["draft"])
+        assets = {asset["name"]: asset["size"] for asset in release["assets"]}
+        # The declared globs' files only: not dist/notes.txt, not the artifact's debug.pdb.
+        self.assertEqual(set(assets), {"shop-desktop-1.0.0.tar.gz", "shop-desktop.sha256", "shop-desktop-setup.msi"})
+        self.assertEqual(assets["shop-desktop-1.0.0.tar.gz"], len("shop-desktop 1.0.0\n"))
+        self.assertEqual(assets["shop-desktop-setup.msi"], len("desktop installer\n"))
+        # The validation ran on the release agent over the whole set (both files and the installer).
+        self.assertIn("VALIDATED-3-FILES", build.console)
+        # The allow-listed credential reached the release build (its digest; the log masks the value).
+        self.assertIn(f"BUILD-KEY {hashlib.sha256(DB_PASSWORD.encode()).hexdigest()}", build.console)
+        self.assertNotIn(DB_PASSWORD, build.console)
+        # GitHub: the tag waited for, the workflow dispatched on it, its run watched and its files
+        # downloaded -- every call on the publish agent (vps), with the App's token; none on release.
+        mine = [line for line in calls if f" args={DESKTOP} " in f"{line} "]
+        self.assertEqual([line.split()[0] for line in mine], ["wait-ref", "dispatch", "run-status", "download-artifacts"],
+                         mine)
+        self.assertIn(f"args={DESKTOP} release-windows.yml v1.0.0 tag=v1.0.0", mine[1])
+        for line in mine:
+            self.assertIn(f"agent=vps token=set owner={MIRROR_OWNER} ", line)
+        self.assertEqual([line for line in calls if "agent=release" in line], [])
+        self.assertEqual(self.description(DESKTOP, f"PR-{number}", build.number), "v1.0.0")
+
+    def test_given_a_failing_validation_when_released_then_the_draft_stays_unpublished(self):
+        number, build, _, _ = self.release_run(BROKEN)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn("VALIDATION-3-FAILED", build.console)
+        self.assertIn("release.validate failed (exit 3): nothing is published", build.console)
+        self.assertNotIn("(Publish the release)", build.console)
+        # publish-release.sh, which makes the drafts, never ran: no release at all, draft or not. The merge
+        # and the tag came before the files (the release's commit is the merge).
+        self.assertIsNone(self.release_of(BROKEN, "v1.0.0"))
+        self.assertTrue(self.pull_request(BROKEN, number)["merged"])
+        self.assertIsNotNone(self.tag_commit(BROKEN, "v1.0.0"))
+
+    def test_given_github_not_answering_when_released_then_the_skip_is_offered_and_recorded(self):
+        # The release as this build left it (the actions-release test may have attached files since).
+        number, build, calls, release = self.release_run(TOOLS, skip=True)
+        self.assertEqual(build.result, "UNSTABLE", build.console[-8000:])
+        console = build.console
+        # Asked after checksTimeout (20 s), outside any agent, answered by the owner; then recorded.
+        self.assertIn("GitHub Actions checks didn't finish within 20 s (actions-status exit 2): Console (Windows).", console)
+        self.assertIn(SKIP_QUESTION, console)
+        self.assertIn("Approved by admin", console)
+        self.assertIn("Deploying without GitHub Actions checks: Console (Windows) did not finish.", console)
+        self.assertEqual(self.description(TOOLS, f"PR-{number}", build.number),
+                         "v1.0.0 (deployed without GitHub Actions checks)")
+        head = self.pull_request(TOOLS, number)["head"]["sha"]
+        deploys = [s for s in self.statuses(TOOLS, head) if s[0] == "deploy/production"]
+        self.assertEqual([(s[1], s[3]) for s in deploys],
+                         [("pending", "Waiting to deploy to Production (without GitHub Actions checks)"),
+                          ("success", "Deployed to Production (without GitHub Actions checks)")])
+        # Published without the Windows files, which are listed as missing; never asked for.
+        self.assertIsNotNone(release)
+        self.assertFalse(release["draft"])
+        self.assertEqual([asset["name"] for asset in release["assets"]], ["shop-tools.tar.gz"])
+        self.assertIn("## Missing files", release["body"])
+        self.assertIn("- */*.msi", release["body"])
+        self.assertIn("v1.0.0 was published without its Windows files: */*.msi (GitHub Actions checks were skipped)", console)
+        mine = [line for line in calls if f" args={TOOLS} " in f"{line} "]
+        self.assertTrue(mine)
+        self.assertEqual({line.split()[0] for line in mine}, {"actions-status"})
+        for line in mine:
+            self.assertIn(f"agent=vps token=set owner={MIRROR_OWNER} ", line)
+
+    def test_given_a_skipped_release_when_actions_release_runs_then_the_files_are_attached(self):
+        number, build, _, published = self.release_run(TOOLS, skip=True)
+        self.assertEqual(build.result, "UNSTABLE", build.console[-6000:])
+        self.assertEqual([a["name"] for a in published["assets"]], ["shop-tools.tar.gz"])
+
+        def actions_release(repository, tag):
+            before = self.last_number("actions-release", None)
+            self.jenkins.post(job_path("actions-release") + "/buildWithParameters", {"REPOSITORY": repository, "TAG": tag})
+            return self.wait_for_build("actions-release", None, after=before, timeout=900)
+
+        # REPOSITORY must be a catalog entry, TAG one of its tags that exists, and the entry must declare
+        # release.windows: each checked before anything is asked of GitHub.
+        unknown = actions_release("not-in-catalog", "v1.0.0")
+        self.assertEqual(unknown.result, "FAILURE")
+        self.assertIn("'not-in-catalog' is not an application or a repositories entry", unknown.console)
+        absent = actions_release(TOOLS, "v9.9.9")
+        self.assertEqual(absent.result, "FAILURE")
+        self.assertIn(f"{TOOLS} has no tag v9.9.9.", absent.console)
+        self.release_run(RELEASE)  # its v1.0.0 exists; its yggdrasil.yml has no release at all
+        no_windows = actions_release(RELEASE, "v1.0.0")
+        self.assertEqual(no_windows.result, "FAILURE")
+        self.assertIn("declares no release.windows", no_windows.console)
+
+        before = len(self.github_calls(TOOLS))
+        attached = actions_release(TOOLS, "v1.0.0")
+        self.assertEqual(attached.result, "SUCCESS", attached.console[-8000:])
+        self.assertIn(f"Loading library yggdrasil@{LIBRARY_VERSION}", attached.console)
+        release = self.release_of(TOOLS, "v1.0.0")
+        self.assertEqual(sorted(a["name"] for a in release["assets"]), ["shop-tools-setup.msi", "shop-tools.tar.gz"])
+        self.assertFalse(release["draft"])
+        calls = self.github_calls(TOOLS)[before:]
+        self.assertEqual([line.split()[0] for line in calls], ["wait-ref", "dispatch", "run-status", "download-artifacts"],
+                         calls)
+        self.assertIn(f"args={TOOLS} release-windows.yml v1.0.0 tag=v1.0.0", calls[1])
+        for line in calls:
+            self.assertIn(f"agent=vps token=set owner={MIRROR_OWNER} ", line)
+        self.assertEqual(self.description("actions-release", None, attached.number), f"{TOOLS} v1.0.0: Windows files attached")
 
     # --- The library's own pieces -----------------------------------------------------------------
 
