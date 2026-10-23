@@ -269,7 +269,9 @@ FAKES = {
     # $FAKE_STATE/ufw-on exists while the firewall is enabled. Like ufw, it skips a rule it already has,
     # gives a rule for "Anywhere" an IPv6 twin, lists nothing while it is off, and deletes by what the
     # rule says (not by its comment). The default for incoming is $FAKE_STATE/ufw-default-incoming (deny,
-    # as on a fresh Ubuntu, when there is none), shown by `status verbose` and set by `default`.
+    # as on a fresh Ubuntu, when there is none), shown by `status verbose` and set by `default`. Like real
+    # ufw, `status verbose` shows an application profile's rule by its ports with the profile's name after
+    # them ("22/tcp (OpenSSH)", its twin "22/tcp (OpenSSH (v6))"), where plain `status` shows the name.
     "ufw": r"""
         echo "ufw $*" >>"$FAKE_STATE/calls"
         rules="$FAKE_STATE/ufw-rules"
@@ -299,6 +301,14 @@ FAKES = {
             fi
             printf '\nTo                         Action      From\n--                         ------      ----\n'
             while IFS=$'\t' read -r to from comment; do
+              if [[ "${2:-}" == verbose ]]; then
+                app=${to% (v6)} v6=""
+                [[ "$app" == "$to" ]] || v6=" (v6)"
+                case $app in
+                  OpenSSH) to="22/tcp ($app$v6)" ;;
+                  "Nginx Full" | "WWW Full") to="80,443/tcp ($app$v6)" ;;
+                esac
+              fi
               printf '%-26s %-11s %-26s' "$to" "$action" "$from"
               [[ -z "$comment" ]] || printf ' # %s' "$comment"
               echo
@@ -1194,6 +1204,22 @@ class MachineRoleTests(unittest.TestCase):
         stdout, rows = self.rows("apps")
         self.assertIn("only from Cloudflare", self.row(rows, "ports"))
         self.assertTrue(self.row(rows, "cloudflare ranges").startswith("  ok "), stdout)
+
+    def assert_openssh_seen_in(self, role):
+        # Real ufw: `status verbose` says "22/tcp (OpenSSH)" and "22/tcp (OpenSSH (v6))" for the rule
+        # `ufw allow OpenSSH` made; the rules are read from plain `status`, which says "OpenSSH".
+        self.install(role)
+        stdout, rows = self.rows(role)
+        self.assertTrue(self.row(rows, "ports").startswith("  ok "), stdout)
+        self.assertNotIn("OpenSSH", self.row(rows, "ports"))
+        self.assertIn("ufw status", self.calls())
+        self.assertIn("ufw status verbose", self.calls())
+
+    def test_given_ufw_showing_openssh_by_its_ports_in_verbose_when_dev_is_checked_then_ssh_is_allowed(self):
+        self.assert_openssh_seen_in("dev")
+
+    def test_given_ufw_showing_openssh_by_its_ports_in_verbose_when_apps_is_checked_then_ssh_is_allowed(self):
+        self.assert_openssh_seen_in("apps")
 
     def test_given_role_apps_when_the_firewall_is_set_then_cloudflare_ips_is_written_for_traefik(self):
         result = self.install("apps")

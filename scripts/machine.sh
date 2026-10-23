@@ -485,7 +485,7 @@ machine_root_read() {
   if ((EUID == 0)); then "$@"; else sudo -n "$@"; fi
 }
 
-# machine_ufw_rules <ufw status output>: the allow rules, one per line, as "<to><TAB><from><TAB><comment>",
+# machine_ufw_rules <plain ufw status output, not verbose>: the allow rules, one per line, as "<to><TAB><from><TAB><comment>",
 # the IPv6 twin of a rule folded into it. ufw's columns have spaces in them ("Anywhere (v6)",
 # "ALLOW IN") and a trailing "# comment", so the fields are found around ALLOW.
 machine_ufw_rules() {
@@ -828,14 +828,18 @@ machine_check_secrets() {
 
 machine_check_firewall() {
   title "Firewall"
-  local status rules spec incoming open_plain=() others=() missing=()
+  local status listing rules spec incoming open_plain=() others=() missing=()
   if ! has ufw; then
     row missing "ufw" "not installed: install adds it, then sets the firewall"
     machine_need firewall
     return 0
   fi
-  # verbose: the default policy is only in that form of the output.
-  if ! status=$(machine_root_read ufw status verbose 2>/dev/null); then
+  # Two reads. The default policy is only in `status verbose`; the rules come from plain `status`,
+  # because verbose shows an application profile's rule by its ports ("22/tcp (OpenSSH)", and
+  # "22/tcp (OpenSSH (v6))" for its twin) rather than the name `ufw allow OpenSSH` gave it, the name
+  # step_firewall reads and writes.
+  if ! status=$(machine_root_read ufw status verbose 2>/dev/null) \
+    || ! listing=$(machine_root_read ufw status 2>/dev/null); then
     row warn "ufw" "its status needs root to read: not checked (run check with sudo)"
     return 0
   fi
@@ -853,7 +857,7 @@ machine_check_firewall() {
       machine_need firewall
       ;;
   esac
-  rules=$(machine_ufw_rules "$status")
+  rules=$(machine_ufw_rules "$listing")
 
   for spec in $(machine_firewall_allows "$machine_current_role"); do
     machine_ufw_has "$rules" "$spec" Anywhere "" || missing+=("$spec")
