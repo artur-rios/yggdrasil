@@ -42,6 +42,22 @@ dispatch_timeout=${GITHUB_DISPATCH_TIMEOUT:-120}
 die() { echo "github: $*" >&2; exit 1; }
 [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN is not set"
 
+# How long curl waits, so a GitHub that hangs cannot hold an agent forever (forge.sh does the same):
+# an API call 10 s to connect and 60 s in all; an artifact download, which may be large, only when it
+# stalls under 1 KiB/s for a minute, or after an hour. YGG_CURL_CONNECT_TIMEOUT, YGG_CURL_MAX_TIME and
+# YGG_CURL_TRANSFER_MAX_TIME (seconds) change them.
+seconds() {
+  local name=$1 value
+  value=${!name-$2}
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a whole number of seconds, not '$value'"
+  printf '%s' "$value"
+}
+connect_timeout=$(seconds YGG_CURL_CONNECT_TIMEOUT 10) || exit 1
+max_time=$(seconds YGG_CURL_MAX_TIME 60) || exit 1
+transfer_max_time=$(seconds YGG_CURL_TRANSFER_MAX_TIME 3600) || exit 1
+api_timeouts=(--connect-timeout "$connect_timeout" --max-time "$max_time")
+transfer_timeouts=(--connect-timeout "$connect_timeout" --speed-limit 1024 --speed-time 60 --max-time "$transfer_max_time")
+
 # forge.sh learns everything from here, not from the catalog: this runs on agents that only know
 # the environment the pipeline gives them.
 export FORGE_TYPE=github FORGE_API_URL=$api_url FORGE_OWNER=$owner FORGE_TOKEN=$GH_TOKEN
@@ -57,7 +73,7 @@ api() {
   local method=$1 path=$2 body=${3:-}
   local config
   config=$(auth_config)
-  local args=(--silent --show-error --fail-with-body --request "$method" --config -)
+  local args=(--silent --show-error --fail-with-body --request "$method" --config - "${api_timeouts[@]}")
   [[ -n "$body" ]] && args+=(--header "Content-Type: application/json" --data "$body")
   local out
   # On an error answer, --fail-with-body puts GitHub's explanation on stdout, where a caller's jq
@@ -167,7 +183,7 @@ publish_release() {
 http_code=000 http_body=""
 raw_api() {
   local method=$1 path=$2 body=${3:-}
-  local args=(--silent --show-error --request "$method" --config - --write-out $'\n%{http_code}')
+  local args=(--silent --show-error --request "$method" --config - --write-out $'\n%{http_code}' "${api_timeouts[@]}")
   [[ -n "$body" ]] && args+=(--header "Content-Type: application/json" --data "$body")
   local config out
   config=$(auth_config)
@@ -369,7 +385,7 @@ download_artifacts() {
       fi
 
       zip_file=$work/$id.zip
-      out=$(curl --silent --show-error --config - --output "$zip_file" \
+      out=$(curl --silent --show-error --config - --output "$zip_file" "${transfer_timeouts[@]}" \
         --write-out '%{http_code} %{redirect_url}' "$url" <<<"$(auth_config)") \
         || { echo "github: GitHub did not answer the download of artifact '$name'" >&2; return 2; }
       read -r code redirect <<<"$out"
@@ -377,7 +393,8 @@ download_artifacts() {
         200) ;;
         301 | 302 | 303 | 307 | 308)
           [[ -n "$redirect" ]] || { echo "github: artifact '$name' redirected nowhere" >&2; return 2; }
-          curl --silent --show-error --fail --location --proto '=https' --output "$zip_file" "$redirect" </dev/null \
+          curl --silent --show-error --fail --location --proto '=https' --output "$zip_file" "${transfer_timeouts[@]}" \
+            "$redirect" </dev/null \
             || { echo "github: downloading artifact '$name' from its storage failed" >&2; return 2; }
           ;;
         *)

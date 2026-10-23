@@ -42,11 +42,29 @@
 #   FORGE_OWNER        the owner of the repositories      (else, for GitHub, GITHUB_OWNER, else catalog.py owner)
 #   FORGE_TOKEN        the access token, required         (else, for GitHub, GH_TOKEN)
 #   GITHUB_UPLOADS_URL where GitHub takes release files   (default https://uploads.github.com)
+# and curl's limits, in seconds: YGG_CURL_CONNECT_TIMEOUT (10), YGG_CURL_MAX_TIME (60, an API call),
+# YGG_CURL_TRANSFER_MAX_TIME (3600, an upload, which also stops when stalled under 1 KiB/s for 60 s).
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 die() { echo "forge: $*" >&2; exit 1; }
+
+# How long curl waits, so a server that hangs cannot hold an agent (and the release lock) forever.
+# An API call: 10 s to connect, 60 s in all. An upload, which may be large: given up on only when
+# it stalls under 1 KiB/s for a minute, or after an hour. YGG_CURL_CONNECT_TIMEOUT, YGG_CURL_MAX_TIME
+# and YGG_CURL_TRANSFER_MAX_TIME (seconds) change them.
+seconds() {
+  local name=$1 value
+  value=${!name-$2}
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a whole number of seconds, not '$value'"
+  printf '%s' "$value"
+}
+connect_timeout=$(seconds YGG_CURL_CONNECT_TIMEOUT 10) || exit 1
+max_time=$(seconds YGG_CURL_MAX_TIME 60) || exit 1
+transfer_max_time=$(seconds YGG_CURL_TRANSFER_MAX_TIME 3600) || exit 1
+api_timeouts=(--connect-timeout "$connect_timeout" --max-time "$max_time")
+transfer_timeouts=(--connect-timeout "$connect_timeout" --speed-limit 1024 --speed-time 60 --max-time "$transfer_max_time")
 
 catalog() { python3 "$root/scripts/catalog.py" "$@"; }
 
@@ -119,6 +137,11 @@ send() {
       ;;
     --file) args+=(--header "Content-Type: application/octet-stream" --data-binary "@$2") ;;
     --form) args+=(--form "$2") ;; # curl makes the multipart Content-Type, boundary included
+  esac
+  # A file going up (--file, --form) is a transfer; everything else an API call.
+  case "${1:-}" in
+    --file | --form) args+=("${transfer_timeouts[@]}") ;;
+    *) args+=("${api_timeouts[@]}") ;;
   esac
   errors=$(mktemp)
   out=$(curl "${args[@]}" "$url" <<<"$(headers)" 2>"$errors") || status=$?

@@ -1343,6 +1343,7 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
 | `FORGE_OWNER` | The owner of the repositories (else, for GitHub, `GITHUB_OWNER`, else the catalog's `owner`) |
 | `FORGE_TOKEN` | The access token, required (else, for GitHub, `GH_TOKEN`) |
 | `GITHUB_UPLOADS_URL` | Where GitHub takes release files (default `https://uploads.github.com`) |
+| `YGG_CURL_CONNECT_TIMEOUT`, `YGG_CURL_MAX_TIME`, `YGG_CURL_TRANSFER_MAX_TIME` | How long `curl` waits, in seconds, so a server that hangs cannot hold an agent and the release lock: `10` to connect; `60` in all for an API call; `3600` for an upload (and for `github.sh download-artifacts`), which also stops when it stalls under 1 KiB/s for a minute. `scripts/github.sh` reads the same three |
 
 - The **token is passed to `curl` on its standard input**, never as an argument, so no other user of the
   machine sees it in the process list, and it is never printed.

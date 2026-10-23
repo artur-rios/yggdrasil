@@ -279,6 +279,41 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertIn("Content-Type: application/octet-stream", request)
         self.assertIn(f"--data-binary @{artifact}", request)
 
+    def test_given_an_api_call_when_made_then_curl_gives_up_on_a_server_that_hangs(self):
+        # A hung server must not hold the agent, and the lock, forever: 10 s to connect, 60 s in all.
+        self.respond("abc123", (0, {"id": 1}))
+        self.assertEqual(self.forge("set-status", "app", "abc123", "success", "ctx", "d").returncode, 0)
+        request = self.request("abc123")
+        self.assertIn("--connect-timeout 10 ", request)
+        self.assertIn("--max-time 60 ", request)
+        self.assertNotIn("--speed-limit", request)
+
+    def test_given_an_upload_when_made_then_curl_gives_up_only_on_a_stalled_transfer(self):
+        # A large file may take long: only a transfer under 1 KiB/s for a minute (or an hour in all) stops.
+        artifact = self.temp / "big.zip"
+        artifact.write_bytes(b"zip bytes")
+        self.respond("assets", (0, {"browser_download_url": "https://example/download/big.zip"}))
+        self.assertEqual(self.forge("upload-release-file", "app", "17", str(artifact)).returncode, 0)
+        request = self.request("assets")
+        self.assertIn("--connect-timeout 10 ", request)
+        self.assertIn("--speed-limit 1024 --speed-time 60 ", request)
+        self.assertIn("--max-time 3600 ", request)
+        self.assertNotIn("--max-time 60 ", request)
+
+    def test_given_other_timeouts_in_the_environment_when_calling_then_curl_gets_them(self):
+        self.respond("abc123", (0, {"id": 1}))
+        env = dict(self.env, YGG_CURL_CONNECT_TIMEOUT="3", YGG_CURL_MAX_TIME="7")
+        self.assertEqual(self.forge("set-status", "app", "abc123", "success", "ctx", "d", env=env).returncode, 0)
+        request = self.request("abc123")
+        self.assertIn("--connect-timeout 3 ", request)
+        self.assertIn("--max-time 7 ", request)
+        for bad in ("", "ten", "-1", "1 --insecure"):
+            with self.subTest(bad=bad):
+                result = self.forge("set-status", "app", "abc123", "success", "ctx", "d",
+                                    env=dict(self.env, YGG_CURL_MAX_TIME=bad))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("YGG_CURL_MAX_TIME", result.stderr)
+
     def test_given_a_missing_file_when_uploading_then_it_fails_before_any_request(self):
         result = self.forge("upload-release-file", "app", "17", str(self.temp / "nothing.zip"))
         self.assertEqual(result.returncode, 1)
@@ -707,6 +742,8 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertIn("--request POST", request)
         self.assertIn(f"--form attachment=@{artifact}", request)
         self.assertNotIn("Content-Type", request, "curl must make the multipart Content-Type with its boundary")
+        # An upload: given up on only when it stalls (or after an hour).
+        self.assertIn("--connect-timeout 10 --speed-limit 1024 --speed-time 60 --max-time 3600 ", request)
 
     def test_given_a_missing_file_when_uploading_to_forgejo_then_it_fails_before_any_request(self):
         result = self.forge("upload-release-file", "app", "17", str(self.temp / "nothing.zip"))

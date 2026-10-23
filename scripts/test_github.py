@@ -497,6 +497,35 @@ class GitHubTests(unittest.TestCase):
         self.assertNotIn("Authorization", self.request("one"))
         self.assertNotIn("--location", self.request("zip"))
 
+    def test_given_a_download_when_made_then_curl_gives_up_only_on_a_stalled_transfer(self):
+        # The listing is an API call (10 s to connect, 60 s in all); both legs of the download may take
+        # long and stop only when stalled under 1 KiB/s for a minute, or after an hour.
+        self.respond("artifacts", (0, {"total_count": 1, "artifacts": [self.artifact(1, "win-x64")]}))
+        self.respond("zip", ("0:302", None))
+        (self.state / "zip.redirect.1").write_text("https://storage.example/blobs/one?sig=abc")
+        (self.state / "one.1").write_text(f"0 @{self.zip_of('one', **{'app.exe': 'x64'})}\n")
+
+        result = self.github("download-artifacts", "app", "99", str(self.temp / "out"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        listing = self.request("artifacts")
+        self.assertIn("--connect-timeout 10 --max-time 60 ", listing)
+        for key in ("zip", "one"):
+            request = self.request(key)
+            self.assertIn("--connect-timeout 10 --speed-limit 1024 --speed-time 60 --max-time 3600 ", request, key)
+
+    def test_given_an_api_call_when_made_then_curl_gives_up_on_a_github_that_hangs(self):
+        self.respond("77", last=(0, {"status": "completed", "conclusion": "success"}))
+        self.assertEqual(self.github("run-status", "app", "77").returncode, 0)
+        self.assertIn("--connect-timeout 10 --max-time 60 ", self.request("77"))
+        self.env["YGG_CURL_CONNECT_TIMEOUT"], self.env["YGG_CURL_MAX_TIME"] = "2", "5"
+        self.assertEqual(self.github("run-status", "app", "77").returncode, 0)
+        self.assertIn("--connect-timeout 2 --max-time 5 ", self.request("77", 2))
+        self.env["YGG_CURL_MAX_TIME"] = "soon"
+        result = self.github("run-status", "app", "77")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("YGG_CURL_MAX_TIME", result.stderr)
+
     def test_given_an_expired_artifact_when_downloaded_then_it_is_skipped_with_a_note(self):
         self.respond("artifacts", (0, {"total_count": 1, "artifacts": [self.artifact(1, "win-x64", expired=True)]}))
         result = self.github("download-artifacts", "app", "99", str(self.temp / "out"))
