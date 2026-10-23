@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import unittest
+import urllib.parse
 from unittest import mock
 
 import rules
@@ -273,14 +274,6 @@ class GitHubRulesetsTests(unittest.TestCase):
                 rules.main(["--dry-run", "shop-api", "ghost", "phantom"])
         self.assertIn("ghost, phantom", str(raised.exception))
 
-    def test_given_a_forgejo_catalog_when_run_then_the_command_says_that_side_is_not_there_yet(self):
-        err = io.StringIO()
-        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG), mock.patch("sys.stderr", err):
-            with self.assertRaises(SystemExit) as raised:
-                rules.main(["--dry-run"])
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("Forgejo side arrives in a later task", err.getvalue())
-
     def test_given_todays_catalog_when_built_then_only_the_binding_changed(self):
         # The fixture is what github/rulesets.py built before it became a shim, for a catalog of two
         # applications: shop-api (checks test and docker, a production release environment) and
@@ -299,6 +292,336 @@ class GitHubRulesetsTests(unittest.TestCase):
                         for check in rule["parameters"]["required_status_checks"]:
                             check.pop("integration_id", None)
             self.assertEqual(built[repo], old, repo)
+
+
+OWNER = "artur-rios"
+SECRET = "wh-s3cret-value"
+HOOK_URL = "https://jenkins.example.com/gitea-webhook/post"
+
+
+class FakeForgejo:
+    """Stands in for rules.Api: records every call and keeps one repository's settings, branch and tag
+    protections and hooks like a Forgejo server would -- with the extra fields it answers, whitelists
+    in another order, and no hook secret -- so applying twice shows what the second run does."""
+
+    def __init__(self, hooks=(), protections=(), tags=()):
+        self.calls = []
+        self.repo = {"id": 1, "name": "shop-api", "default_branch": "main", "private": True,
+                     "default_delete_branch_after_merge": False, "allow_merge_commits": True,
+                     "allow_squash_merge": True, "allow_rebase": True, "allow_rebase_explicit": True,
+                     "default_merge_style": "squash"}
+        self.protections = {p["rule_name"]: dict(p) for p in protections}
+        self.tags = {i + 1: {"id": i + 1, **t} for i, t in enumerate(tags)}
+        self.hooks = {h["id"]: dict(h) for h in hooks}
+        self.secrets = {}  # hook id -> the secret last sent (never returned)
+        self.next_id = 100
+
+    @staticmethod
+    def _out(value):
+        """What the server answers: lists come back in another order."""
+        if isinstance(value, dict):
+            return {k: FakeForgejo._out(v) for k, v in value.items()}
+        return list(reversed(value)) if isinstance(value, list) else value
+
+    def request(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        segments = path.split("/")  # ["", "repos", owner, repo, ...]
+        assert segments[:3] == ["", "repos", OWNER], path
+        parts = [urllib.parse.unquote(p) for p in segments[4:]]
+        if not parts:
+            if method == "PATCH":
+                self.repo.update(body)
+            return self._out(self.repo)
+        kind, key = parts[0], (parts[1] if len(parts) > 1 else None)
+        store = {"branch_protections": self.protections, "tag_protections": self.tags, "hooks": self.hooks}[kind]
+        if method == "GET":
+            return self._out(list(store.values()))
+        if method == "POST":
+            ident = body["rule_name"] if kind == "branch_protections" else self.next_id
+            self.next_id += 1
+            entry = {"id": ident, **copy.deepcopy(body)}
+            if kind == "hooks":
+                self.secrets[ident] = entry["config"].pop("secret")
+            store[ident] = entry
+            return self._out(entry)
+        ident = key if kind == "branch_protections" else int(key)
+        entry = store[ident]  # a PATCH of something that is not there is a KeyError: the test fails
+        for field, value in body.items():
+            if kind == "hooks" and field == "config":
+                value = dict(value)
+                self.secrets[ident] = value.pop("secret")
+                entry["config"] = {**entry["config"], **value}
+            else:
+                entry[field] = value
+        return self._out(entry)
+
+    def writes(self):
+        return [c for c in self.calls if c[0] != "GET"]
+
+    def written(self, kind):
+        """The bodies POSTed or PATCHed under one collection (branch_protections, tag_protections, hooks)."""
+        return [(m, p, b) for m, p, b in self.writes() if f"/{kind}" in p]
+
+
+def forgejo_apply(api, repo, webhook=None, dry_run=False):
+    return rules.apply_forgejo(api, OWNER, by_repo()[repo], webhook, dry_run)
+
+
+def protection(api, name):
+    return api.protections[name]
+
+
+class ForgejoRulesTests(unittest.TestCase):
+    def test_given_the_repository_settings_when_applied_then_develop_is_default_and_merges_are_set(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api")
+        self.assertEqual(api.writes()[0], ("PATCH", f"/repos/{OWNER}/shop-api", {
+            "default_branch": "develop", "default_delete_branch_after_merge": True, "allow_merge_commits": True,
+            "allow_squash_merge": True, "allow_rebase": False, "allow_rebase_explicit": False,
+            "default_merge_style": "merge"}))
+
+    def test_given_an_application_when_applied_on_forgejo_then_main_is_merged_only_by_jenkins(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api")
+        main = protection(api, "main")
+        self.assertEqual((main["enable_push"], main["enable_merge_whitelist"], main["merge_whitelist_usernames"]),
+                         (False, True, ["jenkins-bot"]))
+        self.assertEqual(main["status_check_contexts"], ["branch-policy", "test", "docker", "deploy/production"])
+        self.assertEqual((main["enable_status_check"], main["required_approvals"]), (True, 0))
+
+    def test_given_develop_when_applied_then_its_checks_include_the_actions_checks(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api")
+        develop = protection(api, "develop")
+        self.assertEqual(develop["status_check_contexts"], ["branch-policy", "test", "docker", "lint"])
+        self.assertEqual((develop["enable_push"], develop["merge_whitelist_usernames"]),
+                         (False, ["artur-rios", "alice", "bob"]))
+
+    def test_given_any_release_model_repository_when_applied_then_jenkinsfile_is_a_protected_file(self):
+        for r in rules.desired_rules(CATALOG):
+            if r.model != "release":
+                continue
+            api = FakeForgejo()
+            rules.apply_forgejo(api, OWNER, r, None, False)
+            for name in ("develop", "main"):
+                self.assertEqual(protection(api, name)["protected_file_patterns"], "Jenkinsfile", (r.repo, name))
+
+    def test_given_release_branches_when_applied_then_only_the_owner_may_push_them(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api")
+        release = protection(api, "release/*")
+        self.assertEqual((release["enable_push"], release["enable_push_whitelist"], release["push_whitelist_usernames"],
+                          release["enable_merge_whitelist"]), (True, True, ["artur-rios"], False))
+
+    def test_given_admins_when_applied_then_the_rules_do_not_bind_them(self):
+        for repo in ("shop-api", "toolkit", "scratch"):
+            api = FakeForgejo()
+            forgejo_apply(api, repo)
+            self.assertTrue(api.protections)
+            for name, entry in api.protections.items():
+                self.assertIs(entry["apply_to_admins"], False, (repo, name))
+
+    def test_given_a_library_when_applied_then_only_the_owner_creates_its_numeric_tags(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "toolkit")
+        self.assertEqual([b for _, _, b in api.written("tag_protections")],
+                         [{"name_pattern": "[0-9]*", "whitelist_usernames": ["artur-rios"]}])
+
+    def test_given_an_application_when_applied_then_only_jenkins_creates_its_v_tags(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api")
+        self.assertEqual([b for _, _, b in api.written("tag_protections")],
+                         [{"name_pattern": "v*", "whitelist_usernames": ["jenkins-bot"]}])
+
+    def test_given_a_basic_repository_when_applied_then_no_checks_or_whitelists_are_set(self):
+        api = FakeForgejo()
+        lines = forgejo_apply(api, "scratch")
+        self.assertEqual(sorted(api.protections), ["develop", "main"])
+        for entry in api.protections.values():
+            self.assertEqual({k: v for k, v in entry.items() if k not in ("id", "rule_name")},
+                             {"enable_push": True, "apply_to_admins": False})
+        self.assertEqual(api.written("tag_protections"), [])
+        self.assertFalse(any("release/*" in line or "tag" in line for line in lines), lines)
+
+    def test_given_rules_applied_twice_when_nothing_changed_then_the_second_run_sends_no_write(self):
+        webhook = {"url": HOOK_URL, "secret": SECRET}
+        for repo in ("shop-api", "toolkit", "scratch"):
+            api = FakeForgejo()
+            forgejo_apply(api, repo, webhook)
+            self.assertGreater(len(api.writes()), 0)
+            api.calls.clear()
+            forgejo_apply(api, repo, webhook)
+            self.assertEqual(api.writes(), [], repo)
+
+    def test_given_a_protection_that_differs_when_applied_then_only_that_one_is_patched_by_name(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api")
+        api.protections["release/*"]["push_whitelist_usernames"] = ["someone-else"]
+        api.protections["develop"]["merge_whitelist_usernames"] = ["bob", "alice", "artur-rios"]  # same set
+        api.calls.clear()
+        forgejo_apply(api, "shop-api")
+        self.assertEqual([(m, p) for m, p, _ in api.writes()],
+                         [("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/release%2F%2A")])
+        self.assertEqual(protection(api, "release/*")["push_whitelist_usernames"], ["artur-rios"])
+
+    def test_given_an_existing_webhook_for_jenkins_when_applied_then_it_is_updated_not_duplicated(self):
+        old = {"id": 7, "type": "gitea", "active": False, "events": ["push"], "branch_filter": "main",
+               "config": {"url": HOOK_URL, "content_type": "form"}}
+        other = {"id": 8, "type": "gitea", "active": True, "events": ["push"], "branch_filter": "*",
+                 "config": {"url": "https://elsewhere.example.com/hook", "content_type": "json"}}
+        api = FakeForgejo(hooks=[old, other])
+        forgejo_apply(api, "shop-api", {"url": HOOK_URL, "secret": SECRET})
+        self.assertEqual([(m, p) for m, p, _ in api.written("hooks")], [("PATCH", f"/repos/{OWNER}/shop-api/hooks/7")])
+        self.assertEqual(sorted(api.hooks), [7, 8])
+        hook = api.hooks[7]
+        self.assertEqual((hook["active"], sorted(hook["events"]), hook["branch_filter"], hook["config"]["content_type"]),
+                         (True, ["create", "delete", "pull_request", "push"], "*", "json"))
+        self.assertEqual(api.secrets[7], SECRET)
+        self.assertEqual(api.hooks[8]["events"], ["push"])
+
+    def test_given_no_webhook_yet_when_applied_then_one_is_created_for_jenkins(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api", {"url": HOOK_URL, "secret": SECRET})
+        (method, path, body), = api.written("hooks")
+        self.assertEqual((method, path), ("POST", f"/repos/{OWNER}/shop-api/hooks"))
+        self.assertEqual(body, {"type": "gitea", "active": True, "events": ["create", "delete", "push", "pull_request"],
+                                "branch_filter": "*",
+                                "config": {"url": HOOK_URL, "content_type": "json", "secret": SECRET}})
+
+    def test_given_a_webhook_with_the_right_fields_when_applied_then_it_is_left_alone(self):
+        # Forgejo never returns the secret, so a changed one cannot be seen: the hook has to be deleted.
+        hook = {"id": 7, "type": "gitea", "active": True, "branch_filter": "*",
+                "events": ["push", "create", "delete", "pull_request"],
+                "config": {"url": HOOK_URL, "content_type": "json"}}
+        api = FakeForgejo(hooks=[hook])
+        lines = forgejo_apply(api, "shop-api", {"url": HOOK_URL, "secret": "a-new-secret"})
+        self.assertEqual(api.written("hooks"), [])
+        self.assertTrue(any("delete the hook" in line for line in lines), lines)
+
+    def test_given_no_webhook_when_applied_then_hooks_are_not_touched(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api", None)
+        self.assertFalse([c for c in api.calls if "/hooks" in c[1]])
+
+    def test_given_a_webhook_secret_when_dry_run_then_it_is_not_printed(self):
+        api = FakeForgejo()
+        lines = forgejo_apply(api, "shop-api", {"url": HOOK_URL, "secret": SECRET}, dry_run=True)
+        self.assertEqual(api.writes(), [])
+        text = "\n".join(lines)
+        self.assertNotIn(SECRET, text)
+        self.assertIn('"secret": "***"', text)
+        self.assertIn(HOOK_URL, text)
+        self.assertIn("would", text)
+
+    def test_given_a_webhook_secret_when_applied_then_no_line_shows_it(self):
+        api = FakeForgejo()
+        lines = forgejo_apply(api, "shop-api", {"url": HOOK_URL, "secret": SECRET})
+        self.assertNotIn(SECRET, "\n".join(lines))
+        self.assertEqual(list(api.secrets.values()), [SECRET])  # sent to the server, shown nowhere
+
+    def test_given_dry_run_when_applied_then_nothing_is_written_and_what_would_be_is_listed(self):
+        api = FakeForgejo()
+        lines = forgejo_apply(api, "shop-api", dry_run=True)
+        self.assertEqual(api.writes(), [])
+        self.assertTrue(all(m == "GET" for m, _, _ in api.calls))
+        text = "\n".join(lines)
+        for expected in ("release/*", "develop", "main", "protect tags", "v*"):
+            self.assertIn(expected, text)
+
+
+class ForgejoCommandTests(unittest.TestCase):
+    ENV = {"FORGE_TOKEN": "fg-tok-123"}
+
+    def run_main(self, args, env, catalog=CATALOG, fake=None):
+        """Runs the command with the environment given (and nothing of the real one), the API faked."""
+        fake = fake or FakeForgejo()
+        made = []
+
+        def make_api(base, token, scheme, headers=None):
+            made.append((base, token, scheme))
+            return fake
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(rules.catalog_module, "load", return_value=catalog), \
+                mock.patch.dict(os.environ, env, clear=True), mock.patch.object(rules, "Api", make_api), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            try:
+                rules.main(args)
+                exit_ = None
+            except SystemExit as raised:
+                exit_ = raised
+        return fake, made, out.getvalue(), err.getvalue(), exit_
+
+    def test_given_a_forgejo_catalog_when_run_then_the_forgejo_api_is_used_with_the_token_scheme(self):
+        fake, made, out, err, exit_ = self.run_main(["--dry-run", "shop-api"], self.ENV)
+        self.assertIsNone(exit_)
+        self.assertEqual(made, [("https://git.example.com/api/v1", "fg-tok-123", "token")])
+        self.assertIn("artur-rios/shop-api", out)
+        self.assertEqual(fake.writes(), [])
+        self.assertNotIn("fg-tok-123", out + err)
+
+    def test_given_no_forge_token_when_run_then_it_is_refused_before_any_request(self):
+        fake, made, out, err, exit_ = self.run_main(["--dry-run"], {})
+        self.assertIn("FORGE_TOKEN", str(exit_))
+        self.assertEqual((made, fake.calls), ([], []))
+
+    def test_given_neither_jenkins_url_nor_secret_when_run_then_webhooks_are_skipped_and_it_says_so(self):
+        fake, _, out, _, exit_ = self.run_main(["shop-api"], self.ENV)
+        self.assertIsNone(exit_)
+        self.assertIn("webhook", out.lower())
+        self.assertIn("skipped", out)
+        self.assertFalse([c for c in fake.calls if "/hooks" in c[1]])
+
+    def test_given_jenkins_url_without_a_secret_when_run_then_it_is_refused(self):
+        env = {**self.ENV, "JENKINS_URL": "https://jenkins.example.com"}
+        fake, made, _, _, exit_ = self.run_main(["--dry-run"], env)
+        self.assertIn("FORGE_WEBHOOK_SECRET", str(exit_))
+        self.assertEqual((made, fake.calls), ([], []))
+
+    def test_given_a_secret_without_jenkins_url_when_run_then_it_is_refused_without_printing_it(self):
+        env = {**self.ENV, "FORGE_WEBHOOK_SECRET": SECRET}
+        fake, made, out, err, exit_ = self.run_main(["--dry-run"], env)
+        self.assertIn("JENKINS_URL", str(exit_))
+        self.assertNotIn(SECRET, str(exit_) + out + err)
+        self.assertEqual((made, fake.calls), ([], []))
+
+    def test_given_both_when_run_then_the_hook_url_has_no_double_slash_and_the_secret_stays_hidden(self):
+        env = {**self.ENV, "JENKINS_URL": "https://jenkins.example.com/", "FORGE_WEBHOOK_SECRET": SECRET}
+        fake, _, out, err, exit_ = self.run_main(["--dry-run", "shop-api"], env)
+        self.assertIsNone(exit_)
+        self.assertIn(HOOK_URL, out)
+        self.assertNotIn(SECRET, out + err)
+        env = {**env, "JENKINS_URL": "https://jenkins.example.com/jenkins///"}
+        fake, _, out, _, _ = self.run_main(["shop-api"], env)
+        self.assertEqual(next(iter(fake.hooks.values()))["config"]["url"],
+                         "https://jenkins.example.com/jenkins/gitea-webhook/post")
+
+    def test_given_a_server_error_that_echoes_the_secret_when_run_then_it_is_scrubbed(self):
+        class Failing(FakeForgejo):
+            def request(self, method, path, body=None):
+                if method == "POST" and path.endswith("/hooks"):
+                    raise rules.ApiError(method, path, 422, f"bad secret {SECRET}")
+                return super().request(method, path, body)
+
+        env = {**self.ENV, "JENKINS_URL": "https://jenkins.example.com", "FORGE_WEBHOOK_SECRET": SECRET}
+        _, _, out, err, exit_ = self.run_main(["shop-api"], env, fake=Failing())
+        self.assertIn("422", str(exit_))
+        self.assertNotIn(SECRET, str(exit_) + out + err)
+        self.assertIn("***", str(exit_))
+
+    def test_given_help_when_run_then_the_usage_is_printed_and_nothing_is_asked_of_the_server(self):
+        fake, made, out, _, exit_ = self.run_main(["--help"], {})
+        self.assertEqual(exit_.code, 0)
+        self.assertIn("usage:", out)
+        for word in ("--dry-run", "FORGE_TOKEN", "JENKINS_URL", "FORGE_WEBHOOK_SECRET", "GH_TOKEN"):
+            self.assertIn(word, out)
+        self.assertEqual((made, fake.calls), ([], []))
+
+    def test_given_help_on_the_real_command_when_run_then_it_exits_zero(self):
+        done = subprocess.run([sys.executable, str(ROOT / "scripts" / "rules.py"), "--help"],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("usage:", done.stdout)
 
 
 class ApiTests(unittest.TestCase):

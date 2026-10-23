@@ -4,11 +4,18 @@
     python3 scripts/rules.py [--dry-run] [<repo>...]
 
 This file holds the model: what the rules are, worked out from the catalog (desired_rules), and
-the git servers' sides that apply it: GitHub rulesets (github_rulesets, apply_github) and, in a
-later change, Forgejo branch and tag protections. Importing it needs no network or token; the
-token is read when the command runs (GitHub: GH_TOKEN, else `gh auth token`) and goes only in the
-Authorization header, never in a process argument, a log or the --dry-run output. --dry-run still
-reads (GET) from the server, so it needs the token, but sends no write.
+the git servers' sides that apply it: GitHub rulesets (github_rulesets, apply_github) and Forgejo
+settings, branch and tag protections and the Jenkins webhook (apply_forgejo). Importing it needs no
+network or token; the token is read when the command runs (GitHub: GH_TOKEN, else `gh auth token`;
+Forgejo: FORGE_TOKEN) and goes only in the Authorization header, never in a process argument, a log
+or the --dry-run output. --dry-run still reads (GET) from the server, so it needs the token, but
+sends no write.
+
+On Forgejo, JENKINS_URL and FORGE_WEBHOOK_SECRET (both or neither) add the webhook that tells
+Jenkins about pushes, tags and pull requests: <JENKINS_URL>/gitea-webhook/post, one per repository,
+updated in place. Forgejo never returns a webhook's secret, so it cannot be compared: an existing
+hook is updated only when its url, events, content type, branch filter or active flag differ, and a
+changed secret needs the hook deleted (the next run creates it again). The secret is never printed.
 
 Per repository the model is:
 
@@ -36,6 +43,7 @@ import pathlib
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -316,13 +324,197 @@ def apply_github(api, owner, r, dry_run):
     return list(_github_steps(api, owner, r, dry_run))
 
 
+# --- Forgejo: settings, protections, tags, webhook ----------------------------------------------------
+
+# What Jenkins is told about: branches and tags appearing and disappearing, pushes, pull requests.
+WEBHOOK_EVENTS = ["create", "delete", "push", "pull_request"]
+
+
+def forgejo_settings():
+    """The repository settings this script owns: develop is the default branch, merged branches are
+    deleted, merge commits (and squashes, for develop) are allowed, rebasing is not."""
+    return {"default_branch": "develop", "default_delete_branch_after_merge": True, "allow_merge_commits": True,
+            "allow_squash_merge": True, "allow_rebase": False, "allow_rebase_explicit": False,
+            "default_merge_style": "merge"}
+
+
+def forgejo_branch_protections(r):
+    """The branch protections of one repository, `rule_name` being the branch pattern. Every one leaves
+    the owner (an administrator) unbound -- `apply_to_admins: false` -- for emergencies. Forgejo blocks
+    force push and deletion under any protection."""
+    if r.model == "basic":
+        return [{"rule_name": name, "enable_push": True, "apply_to_admins": False} for name in ("develop", "main")]
+
+    def guarded(name, mergers, checks):
+        # Nobody pushes: a change gets in through a pull request that the checks passed, merged by
+        # the listed users. The Jenkinsfile may only change through such a pull request too.
+        return {"rule_name": name, "enable_push": False,
+                "enable_merge_whitelist": True, "merge_whitelist_usernames": list(mergers),
+                "enable_status_check": True, "status_check_contexts": list(checks),
+                "required_approvals": 0, "protected_file_patterns": ";".join(r.protected_files),
+                "apply_to_admins": False}
+
+    return [guarded("develop", r.develop_mergers, r.develop_checks),
+            guarded("main", r.main_mergers, r.main_checks),
+            # Release branches are pushed to directly, by the owner alone.
+            {"rule_name": "release/*", "enable_push": True, "enable_push_whitelist": True,
+             "push_whitelist_usernames": list(r.release_pushers), "enable_merge_whitelist": False,
+             "apply_to_admins": False}]
+
+
+def forgejo_tag_protection(r):
+    """Who may create the repository's version tags (release model only: a basic repository has none)."""
+    return {"name_pattern": r.tag_pattern, "whitelist_usernames": list(r.tag_creators)}
+
+
+def forgejo_webhook(webhook):
+    """The hook Jenkins' Gitea plugin listens to: `webhook` is {"url", "secret"}."""
+    return {"type": "gitea", "active": True, "events": list(WEBHOOK_EVENTS), "branch_filter": "*",
+            "config": {"url": webhook["url"], "content_type": "json", "secret": webhook["secret"]}}
+
+
+def _differs(current, desired):
+    """Whether the server's object differs from the desired one in a field the desired one sets. The
+    server answers with many more fields, and lists (whitelists, events) in any order, so only the
+    desired fields are compared, lists as sets."""
+    for key, want in desired.items():
+        have = current.get(key)
+        if isinstance(want, list):
+            if set(have or []) != set(want):
+                return True
+        elif have != want:
+            return True
+    return False
+
+
+def _write_step(api, dry_run, method, path, body, done, would, shown=None):
+    """One write as lines: sent (and `done` reported), or with dry_run only described. `shown` is the
+    body to print when it differs from the one sent (so a secret can be masked)."""
+    if dry_run:
+        yield f"  would {would}: {method} {path}"
+        if body is not None:
+            yield "    " + json.dumps(body if shown is None else shown)
+    else:
+        api.request(method, path, body)
+        yield f"  {done}"
+
+
+def _forgejo_steps(api, owner, r, webhook, dry_run):
+    """What applying one repository does, as lines, as it happens (a generator, like _github_steps).
+    A write is sent only when the server's object differs in a field this script owns."""
+    base = f"/repos/{owner}/{r.repo}"
+    yield f"{owner}/{r.repo}"
+
+    def write(*args, **kwargs):
+        return _write_step(api, dry_run, *args, **kwargs)
+
+    settings = forgejo_settings()
+    if _differs(api.request("GET", base) or {}, settings):
+        yield from write("PATCH", base, settings, "default branch develop, delete head branches on merge, merge settings",
+                         "set the default branch to develop, delete head branches on merge and set the merge settings")
+    else:
+        yield "  repository settings unchanged"
+
+    existing = {p.get("rule_name") or p.get("branch_name"): p
+                for p in api.request("GET", f"{base}/branch_protections") or []}
+    for payload in forgejo_branch_protections(r):
+        name = payload["rule_name"]
+        body = {k: v for k, v in payload.items() if k != "rule_name"}
+        if name not in existing:
+            yield from write("POST", f"{base}/branch_protections", payload, f"protected branch '{name}'",
+                             f"protect branch '{name}'")
+        elif _differs(existing[name], body):
+            # The pattern goes in the path as one segment: release/* must not read as a sub-path.
+            yield from write("PATCH", f"{base}/branch_protections/{urllib.parse.quote(name, safe='')}", body,
+                             f"updated protection of branch '{name}'", f"update the protection of branch '{name}'")
+        else:
+            yield f"  protection of branch '{name}' unchanged"
+
+    if r.model == "release":
+        tag = forgejo_tag_protection(r)
+        found = {t["name_pattern"]: t for t in api.request("GET", f"{base}/tag_protections") or []}.get(r.tag_pattern)
+        if found is None:
+            yield from write("POST", f"{base}/tag_protections", tag, f"protected tags '{r.tag_pattern}'",
+                             f"protect tags '{r.tag_pattern}'")
+        elif _differs(found, tag):
+            yield from write("PATCH", f"{base}/tag_protections/{found['id']}", tag,
+                             f"updated tag protection '{r.tag_pattern}'", f"update the tag protection '{r.tag_pattern}'")
+        else:
+            yield f"  tag protection '{r.tag_pattern}' unchanged"
+
+    if webhook is not None:
+        yield from _webhook_steps(api, base, webhook, write)
+
+
+def _webhook_steps(api, base, webhook, write):
+    desired = forgejo_webhook(webhook)
+    # Shown instead of the body when describing a write: the secret is never printed.
+    shown = {**desired, "config": {**desired["config"], "secret": "***"}}
+    found = next((h for h in api.request("GET", f"{base}/hooks") or []
+                  if (h.get("config") or {}).get("url") == webhook["url"]), None)
+    if found is None:
+        yield from write("POST", f"{base}/hooks", desired, "created the Jenkins webhook", "create the Jenkins webhook",
+                         shown=shown)
+        return
+    # Forgejo does not return a hook's secret, so it cannot be compared: only the fields it does return
+    # decide whether the hook is rewritten (and the secret with it).
+    owned = {k: desired[k] for k in ("active", "events", "branch_filter")}
+    owned["content_type"] = desired["config"]["content_type"]
+    seen = {**found, "content_type": (found.get("config") or {}).get("content_type")}
+    if _differs(seen, owned):
+        yield from write("PATCH", f"{base}/hooks/{found['id']}", desired, "updated the Jenkins webhook",
+                         "update the Jenkins webhook", shown=shown)
+    else:
+        yield "  Jenkins webhook unchanged (its secret cannot be read: to change it, delete the hook and run again)"
+
+
+def apply_forgejo(api, owner, r, webhook, dry_run):
+    """Sets one repository's settings, branch protections, tag protection and (webhook given as
+    {"url", "secret"}) Jenkins webhook on Forgejo. Returns the lines of what it did (or, with dry_run,
+    would do: no write is sent). The secret is not in any of them."""
+    return list(_forgejo_steps(api, owner, r, webhook, dry_run))
+
+
 # --- Command line -------------------------------------------------------------------------------------
 
-USAGE = "usage: python3 scripts/rules.py [--dry-run] [<repo>...]"
+USAGE = """usage: python3 scripts/rules.py [--dry-run] [<repo>...]
+
+Applies the branching model's rules to every repository of catalog.yaml (or only the <repo>s given) on
+the catalog's git server. --dry-run reads from the server but sends no write.
+
+  GitHub (no forge block, or forge.type github)
+    GH_TOKEN         a token with repository administration; else `gh auth token` is used
+  Forgejo (forge.type forgejo)
+    FORGE_TOKEN      a token with write:repository (required)
+    JENKINS_URL, FORGE_WEBHOOK_SECRET
+                     both or neither: they add the Jenkins webhook <JENKINS_URL>/gitea-webhook/post;
+                     with neither, webhooks are skipped. A hook's secret cannot be read back, so to
+                     change it delete the hook in Forgejo and run again.
+
+The tokens and the secret are never printed."""
+
+
+def _forgejo_connection(forge):
+    """(api, webhook, secret): the Forgejo client and, when JENKINS_URL and FORGE_WEBHOOK_SECRET are
+    set, the webhook to apply (else None). Refuses before any request on a missing token or only one of
+    the two webhook variables."""
+    token = os.environ.get("FORGE_TOKEN", "").strip()
+    if not token:
+        sys.exit("no Forgejo token: set FORGE_TOKEN")
+    jenkins = os.environ.get("JENKINS_URL", "").strip()
+    secret = os.environ.get("FORGE_WEBHOOK_SECRET", "").strip()
+    if bool(jenkins) != bool(secret):
+        sys.exit("set JENKINS_URL and FORGE_WEBHOOK_SECRET together (or neither, to skip webhooks): "
+                 + ("FORGE_WEBHOOK_SECRET" if jenkins else "JENKINS_URL") + " is missing")
+    webhook = {"url": jenkins.rstrip("/") + "/gitea-webhook/post", "secret": secret} if jenkins else None
+    return Api(forge["api"], token, "token"), webhook, secret
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if "--help" in argv or "-h" in argv:
+        print(USAGE)
+        sys.exit(0)
     bad_options = [a for a in argv if a.startswith("-") and a != "--dry-run"]
     if bad_options:
         sys.exit(f"unknown option: {', '.join(bad_options)}\n{USAGE}")
@@ -340,19 +532,29 @@ def main(argv=None):
         sys.exit(f"not repositories in catalog.yaml: {', '.join(sorted(unknown))}")
 
     forge = catalog_module.forge(catalog)
-    if forge["type"] != "github":
-        print("the Forgejo side arrives in a later task", file=sys.stderr)
-        sys.exit(2)
+    secret = ""
+    if forge["type"] == "forgejo":
+        api, webhook, secret = _forgejo_connection(forge)
+        if webhook is None:
+            print("webhooks skipped: JENKINS_URL and FORGE_WEBHOOK_SECRET are not set", flush=True)
 
-    api = Api(forge["api"], github_token(), "Bearer", GITHUB_HEADERS)
+        def steps(r):
+            return _forgejo_steps(api, catalog["owner"], r, webhook, dry_run)
+    else:
+        api = Api(forge["api"], github_token(), "Bearer", GITHUB_HEADERS)
+
+        def steps(r):
+            return _github_steps(api, catalog["owner"], r, dry_run)
+
     for r in modelled:
         if only and r.repo not in only:
             continue
         try:
-            for line in _github_steps(api, catalog["owner"], r, dry_run):
+            for line in steps(r):
                 print(line, flush=True)
         except ApiError as error:
-            sys.exit(f"{r.repo}: {error}")
+            # A server may echo what it was sent: the webhook secret is masked like the token is.
+            sys.exit(f"{r.repo}: {str(error).replace(secret, '***') if secret else error}")
 
 
 if __name__ == "__main__":
