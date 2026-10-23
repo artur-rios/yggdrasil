@@ -5,7 +5,7 @@
 here=$(dirname "${BASH_SOURCE[0]}")
 if ! command -v python3 >/dev/null 2>&1; then
   case ${1:-} in
-    check | install) exec bash "$here/host.sh" "$1" ;;
+    check | install) exec bash "$here/host.sh" "$@" ;;
     *) echo "ygg: python3 is needed: run scripts/ygg.sh install" >&2; exit 1 ;;
   esac
 fi

@@ -16,9 +16,14 @@
 # and production on one VPS, say): one platform per host, never one per environment. What differs is
 # the env file (env/platform.env.example) and which profiles COMPOSE_PROFILES turns on:
 #
-#   jenkins,agent   the one host that runs the Jenkins controller, plus the host's own agent
-#   agent           every other host Jenkins deploys to: only an agent, dialling out to the controller
-#   (none)          a host with the platform but nothing deployed by Jenkins
+#   apps            the status API, its socket proxy and the console: a host that runs applications
+#   forge           Forgejo, the git forge, on the development machine
+#   jenkins         the Jenkins controller, on the one host that runs it
+#   agent           the Jenkins agent that deploys to this host's engine, dialling out to the controller
+#   (none)          the proxy, the observability stack and nothing else
+#
+# The whole stack runs on the rootless Docker engine of the user who runs scripts/platform.sh, which
+# exports that engine's socket as DOCKER_SOCKET and refuses a rootful one.
 #
 # A ports environment (local, on a developer's Docker Desktop) does not run this stack; see the
 # README.
@@ -30,6 +35,8 @@ name: yggdrasil
 # Variables used only by a profile (Jenkins, agent) are not marked required here, because Compose
 # interpolates the whole file whatever the active profiles are: an agent-only host would otherwise have to
 # define the controller's GitHub App settings. scripts/platform.sh checks them per profile instead.
+# DOCKER_SOCKET, PROMETHEUS_CONFIG_FILE, YGG_TRAEFIK_CONFIG_FILE and YGG_TRAEFIK_CONFIG_HASH are exported by
+# scripts/platform.sh, not set in the env file.
 
 x-logging: &logging
   # Docker's default json-file driver never rotates. Alloy reads the same files, so rotation here is
@@ -39,12 +46,13 @@ x-logging: &logging
     max-size: 10m
     max-file: "5"
 
-# The Docker socket is root on the host: whoever can create a container can mount / into it. So no
-# service that faces the network holds it. Traefik, Alloy and the status API each reach Docker through
-# their own wollomatic/socket-proxy, on an internal network shared with that one client, and each proxy
-# lets through only the requests its client makes (-allowGET, -allowHEAD; every other method is
-# refused). The proxy anchors each pattern itself (^pattern$), so an alternation must stay inside a
-# group, and Compose would interpolate a $ in it. scripts/test_socket_proxies.py checks these lists.
+# The Docker socket is the service user's: whoever can create a container can mount into it anything
+# that user can reach (its home, its secrets). So no service that faces the network holds it. Traefik,
+# Alloy and the status API each reach Docker through their own wollomatic/socket-proxy, on an internal
+# network shared with that one client, and each proxy lets through only the requests its client makes
+# (-allowGET, -allowHEAD; every other method is refused). The proxy anchors each pattern itself
+# (^pattern$), so an alternation must stay inside a group, and Compose would interpolate a $ in it.
+# scripts/test_socket_proxies.py checks these lists.
 x-socket-proxy: &socket-proxy
   image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
   restart: unless-stopped
@@ -52,9 +60,10 @@ x-socket-proxy: &socket-proxy
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
-  # The image runs as nobody; the socket belongs to the host's docker group.
-  group_add:
-    - "${DOCKER_GID:?set DOCKER_GID in the env file to the docker group id (getent group docker)}"
+  # The image runs as nobody, which cannot open the socket. Root in a container of a rootless engine
+  # is the user who owns the socket on the host (and no one else), so this is not host root; the
+  # dropped capabilities and the read-only root still apply.
+  user: "0:0"
   environment:
     SP_LISTENIP: 0.0.0.0
     SP_LOGJSON: "true"
@@ -63,7 +72,7 @@ x-socket-proxy: &socket-proxy
     SP_WATCHDOGINTERVAL: "60"
     SP_STOPONWATCHDOG: "true"
   volumes:
-    - /var/run/docker.sock:/var/run/docker.sock:ro
+    - ${DOCKER_SOCKET:?run through scripts/platform.sh}:/var/run/docker.sock:ro
   healthcheck:
     test: ["CMD", "/healthcheck"]
     interval: 15s
@@ -77,58 +86,11 @@ services:
     image: traefik:v3.6
     restart: unless-stopped
     logging: *logging
+    # The static configuration is a file, rendered by scripts/platform.sh from the platform's settings
+    # (scripts/traefik_config.py, which also explains each setting): one wildcard certificate per
+    # domain in DOMAIN and EXTRA_DOMAINS cannot be written as flags.
     command:
-      - --log.format=json
-      - --log.level=INFO
-      - --accesslog=true
-      - --accesslog.format=json
-      - --ping=true
-      # /ping on the internal metrics port, where the status API probes it; the container health
-      # check below uses the same entry point.
-      - --ping.entrypoint=metrics
-
-      - --providers.docker=true
-      # Through traefik-docker-proxy, never the socket itself: Traefik faces the internet.
-      - --providers.docker.endpoint=tcp://traefik-docker-proxy:2375
-      # Nothing is routed unless it opts in with traefik.enable=true.
-      - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=edge
-      - --providers.file.directory=/etc/traefik/dynamic
-      - --providers.file.watch=true
-
-      - --entrypoints.web.address=:80
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.websecure.address=:443
-      - --entrypoints.websecure.http.tls.certresolver=letsencrypt
-      # No tls.options here: the options named `default` in traefik/dynamic apply to every router by
-      # themselves, and have no provider namespace -- `default@file` is an unknown name, and Traefik
-      # then builds no HTTPS router at all.
-      # One wildcard certificate for the whole host instead of one per host name: it covers every
-      # environment of the host too, as their host names differ by hostSuffix (heimdall-dev.DOMAIN),
-      # not by a sub-domain. It is what makes DNS-01 worth it -- and a host behind NAT can never
-      # answer an HTTP-01 challenge anyway.
-      - --entrypoints.websecure.http.tls.domains[0].main=${DOMAIN:?set DOMAIN in the env file}
-      - --entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN}
-
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL in the env file}
-      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
-      # Point at https://acme-staging-v02.api.letsencrypt.org/directory while trying things out:
-      # the production Let's Encrypt service rate-limits failed validations per hour.
-      - --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
-      # Any provider Traefik supports (https://doc.traefik.io/traefik/https/acme/#providers): its
-      # code here, and its credentials in acme.env next to platform.env.
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${ACME_DNS_PROVIDER:?set ACME_DNS_PROVIDER in the env file}
-      # Check propagation against public resolvers, not the host's, which on a home network may
-      # cache the old answer for longer than the challenge waits.
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=${ACME_DNS_RESOLVERS:-1.1.1.1:53,8.8.8.8:53}
-
-      - --entrypoints.metrics.address=:8082
-      - --metrics.prometheus=true
-      - --metrics.prometheus.entrypoint=metrics
-      - --metrics.prometheus.addrouterslabels=true
-
-      - --api.dashboard=true
+      - --configFile=/etc/traefik/traefik.yml
     # The DNS provider's credentials (CF_DNS_API_TOKEN for Cloudflare, AWS_* for Route 53, ...),
     # kept out of platform.env so no other container ever sees them. Template: env/acme.env.example.
     # (Rendered by platform.sh from the variables store, or acme.env next to platform.env.)
@@ -138,6 +100,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
+      - ${YGG_TRAEFIK_CONFIG_FILE:?run through scripts/platform.sh}:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
       - letsencrypt:/letsencrypt
     networks:
@@ -147,13 +110,17 @@ services:
     depends_on:
       - traefik-docker-proxy
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entrypoint=metrics", "--entrypoints.metrics.address=:8082"]
+      # Reads the ping entry point from the same file.
+      test: ["CMD", "traefik", "healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 5
     labels:
+      # The hash of traefik.yml (scripts/platform.sh): the file's path is the same at every run, so this
+      # is what changes the service's configuration, and makes `up` recreate Traefik, when the file does.
+      yggdrasil.traefik-config-hash: ${YGG_TRAEFIK_CONFIG_HASH:?run through scripts/platform.sh}
       traefik.enable: "true"
-      traefik.http.routers.dashboard.rule: Host(`traefik.${DOMAIN}`)
+      traefik.http.routers.dashboard.rule: Host(`traefik${PLATFORM_HOST_SUFFIX:-}.${DOMAIN}`)
       traefik.http.routers.dashboard.entrypoints: websecure
       traefik.http.routers.dashboard.service: api@internal
       traefik.http.routers.dashboard.middlewares: dashboard-auth,secure-headers@file
@@ -178,6 +145,7 @@ services:
     # Not the inspect: it carries every container's environment, i.e. every application's secrets,
     # and the status API answers the internet. Nor logs, archives, exec or any write.
     <<: *socket-proxy
+    profiles: [apps]
     command:
       - -allowfrom=status
       - -allowGET=(/v1\.[0-9]+)?/containers/json
@@ -188,6 +156,7 @@ services:
     # Probes every catalog application of every environment of the host and serves the console
     # (/api/ under yggdrasil.DOMAIN) and Prometheus' target discovery (port 8081, internal).
     # Contract: docs/status-api.md.
+    profiles: [apps]
     build: ../status
     image: yggdrasil/status:local
     restart: unless-stopped
@@ -218,6 +187,7 @@ services:
 
   console:
     # The Flutter web console, at yggdrasil.DOMAIN. It calls the status API on its own origin.
+    profiles: [apps]
     build:
       context: ../console
       args:
@@ -246,7 +216,9 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # platform.sh picks the file: discovery through the status API with the apps profile, else the
+      # platform's own targets written out.
+      - ./prometheus/${PROMETHEUS_CONFIG_FILE:-prometheus.yml}:/etc/prometheus/prometheus.yml:ro
       - prometheus:/prometheus
     # Not routed and not published: only Grafana reads it, over the telemetry network.
     networks:
@@ -302,7 +274,7 @@ services:
     restart: unless-stopped
     logging: *logging
     environment:
-      GF_SERVER_ROOT_URL: https://grafana.${DOMAIN}/
+      GF_SERVER_ROOT_URL: https://grafana${PLATFORM_HOST_SUFFIX:-}.${DOMAIN}/
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in the env file}
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -320,10 +292,57 @@ services:
       - loki
     labels:
       traefik.enable: "true"
-      traefik.http.routers.grafana.rule: Host(`grafana.${DOMAIN}`)
+      traefik.http.routers.grafana.rule: Host(`grafana${PLATFORM_HOST_SUFFIX:-}.${DOMAIN}`)
       traefik.http.routers.grafana.entrypoints: websecure
       traefik.http.routers.grafana.middlewares: secure-headers@file
       traefik.http.services.grafana.loadbalancer.server.port: "3000"
+
+  forgejo:
+    # The git forge of the development machine, at git.DOMAIN: the repositories Jenkins builds from.
+    # The rootless image, pinned by version and digest (it runs as uid 1000 in the container, i.e. as
+    # the service user's subuid on the host, never as root). SQLite, so there is no database to run.
+    # Registration is closed and nothing is readable signed out: the accounts are created by hand
+    # (`forgejo admin user create`, see env/platform.env.example). It writes its own configuration (app.ini, under the data volume:
+    # the rootless image keeps it in /var/lib/gitea/custom/conf), so the filesystem is not read-only.
+    # Git over SSH is Forgejo's own server on 2222, published on the host (FORGEJO_SSH_PORT); the web
+    # side goes through Traefik. No Docker socket, directly or through a proxy.
+    profiles: [forge]
+    image: codeberg.org/forgejo/forgejo:16.0.6-rootless@sha256:51b47921660e1ec7127f094208fe06901ba57df4fe6d59fcccc3a2419514a77f
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      FORGEJO__server__ROOT_URL: https://git.${DOMAIN}/
+      FORGEJO__server__DOMAIN: git.${DOMAIN}
+      FORGEJO__server__SSH_DOMAIN: git.${DOMAIN}
+      FORGEJO__server__START_SSH_SERVER: "true"
+      # What clone URLs show (the host port) and what the server listens on in the container.
+      FORGEJO__server__SSH_PORT: ${FORGEJO_SSH_PORT:-2222}
+      FORGEJO__server__SSH_LISTEN_PORT: "2222"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      # Without it the first visit is the install wizard, which anyone could complete.
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__log__MODE: console
+    ports:
+      - "${FORGEJO_SSH_PORT:-2222}:2222"
+    volumes:
+      - forgejo-data:/var/lib/gitea
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:3000/api/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # The first start creates the database and the keys.
+      start_period: 30s
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.forgejo.rule: Host(`git.${DOMAIN}`)
+      traefik.http.routers.forgejo.entrypoints: websecure
+      traefik.http.routers.forgejo.middlewares: secure-headers@file
+      traefik.http.services.forgejo.loadbalancer.server.port: "3000"
 
   jenkins:
     profiles: [jenkins]
@@ -362,7 +381,7 @@ services:
       traefik.http.services.jenkins.loadbalancer.server.port: "8080"
 
   agent:
-    # The only thing on a host that deploys. It drives the host's Docker engine through the socket,
+    # The only thing on a host that deploys. It drives the user's Docker engine through the socket,
     # so the applications run as siblings of this container, not inside it.
     profiles: [agent]
     build: ./jenkins/agent
@@ -379,12 +398,11 @@ services:
       JENKINS_SECRET: ${JENKINS_AGENT_SECRET:-}
       JENKINS_AGENT_WORKDIR: /home/jenkins/agent
       YGG_SECRETS_DIR: /etc/yggdrasil
-    # The agent runs as the image's jenkins user; the socket belongs to the host's docker group.
-    # (Required on every host: the socket proxies need it too, see x-socket-proxy.)
-    group_add:
-      - ${DOCKER_GID}
+    # The image's jenkins user could not open the socket. Root here is the service user on the host
+    # (rootless Docker, see x-socket-proxy), so the agent can do what that user can and no more.
+    user: "0:0"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_SOCKET:?run through scripts/platform.sh}:/var/run/docker.sock
       # The application env files of every environment of the host (<environment>/<application>.env).
       # Secrets, so on the host only, never in git.
       - ${YGG_SECRETS_DIR:-/etc/yggdrasil}:/etc/yggdrasil:ro
@@ -415,5 +433,6 @@ volumes:
   loki:
   alloy:
   grafana:
+  forgejo-data:
   jenkins:
   agent:

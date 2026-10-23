@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler
 
 try:
     import yaml
+    from traefik_config import render  # needs PyYAML too
 except ImportError:  # CI installs it; the static tests need it.
     yaml = None
 
@@ -232,13 +233,37 @@ class AllowlistTests(unittest.TestCase):
                 self.assertTrue(service["read_only"])
                 self.assertEqual(service["cap_drop"], ["ALL"])
                 self.assertIn("no-new-privileges:true", service["security_opt"])
-                self.assertEqual(service["volumes"], ["/var/run/docker.sock:/var/run/docker.sock:ro"])
                 self.assertNotIn("ports", service)
                 [network] = service["networks"]
                 self.assertTrue(self.compose["networks"][network]["internal"])
                 on_network = sorted(name for name, other in self.services.items() if network in (other.get("networks") or []))
                 self.assertEqual(on_network, sorted([proxy, client]))
         self.assertEqual(len(images), 1)
+
+    def test_given_each_socket_proxy_when_read_then_it_runs_as_container_root_without_group_add(self):
+        # Under rootless Docker, container root is the service user on the host, which owns the socket.
+        for proxy in PROXIES:
+            with self.subTest(proxy=proxy):
+                service = self.services[proxy]
+                self.assertEqual(service["user"], "0:0")
+                self.assertNotIn("group_add", service)
+
+    def test_given_each_socket_proxy_when_read_then_it_mounts_the_docker_socket_variable_read_only(self):
+        for proxy in PROXIES:
+            with self.subTest(proxy=proxy):
+                self.assertEqual(self.services[proxy]["volumes"],
+                                 ["${DOCKER_SOCKET:?run through scripts/platform.sh}:/var/run/docker.sock:ro"])
+
+    def test_given_the_agent_when_read_then_it_runs_as_container_root_with_the_socket_read_write(self):
+        agent = self.services["agent"]
+        self.assertEqual(agent["user"], "0:0")
+        self.assertNotIn("group_add", agent)
+        self.assertIn("${DOCKER_SOCKET:?run through scripts/platform.sh}:/var/run/docker.sock", agent["volumes"])
+
+    def test_given_the_apps_services_then_they_are_in_the_apps_profile(self):
+        for name in ("status", "docker-proxy", "console"):
+            with self.subTest(service=name):
+                self.assertEqual(self.services[name]["profiles"], ["apps"])
 
     def test_given_the_platform_then_only_the_proxies_and_the_agent_mount_the_socket(self):
         # The agent deploys (docker compose up), so it needs the whole API; it faces no network
@@ -249,7 +274,9 @@ class AllowlistTests(unittest.TestCase):
 
     def test_given_each_client_then_it_talks_to_its_own_proxy(self):
         self.assertEqual(self.services["status"]["environment"]["YGGDRASIL_DOCKER_URL"], "http://docker-proxy:2375")
-        self.assertIn("--providers.docker.endpoint=tcp://traefik-docker-proxy:2375", self.services["traefik"]["command"])
+        # Traefik's configuration is a file now (scripts/traefik_config.py renders it).
+        rendered = render({"DOMAIN": "example.com", "ACME_EMAIL": "ops@example.com", "ACME_DNS_PROVIDER": "cloudflare"}, None)
+        self.assertEqual(rendered["providers"]["docker"]["endpoint"], "tcp://traefik-docker-proxy:2375")
         alloy = ALLOY_CONFIG.read_text()
         self.assertNotIn("unix://", alloy)
         self.assertEqual(re.findall(r'host\s*=\s*"([^"]+)"', alloy), ["tcp://alloy-docker-proxy:2375"] * 2)
@@ -386,7 +413,9 @@ class ProxyContainerTests(unittest.TestCase):
                 environment = [f"--env={name}={value}" for name, value in service["environment"].items()]
                 cls.run_container(
                     proxy, proxy, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
-                    # The socket's group, as DOCKER_GID is on a host.
+                    # The engine here is the CI runner's rootful one and the fake socket is the runner's:
+                    # the image's own user joins its group. (On a host, rootless, the proxy runs as
+                    # container root, which is the user who owns the real socket.)
                     f"--group-add={socket_path.stat().st_gid}",
                     f"--volume={socket_path}:/var/run/docker.sock:ro", *environment,
                     service["image"], *service["command"])

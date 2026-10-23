@@ -109,7 +109,7 @@ if [[ -f "$secrets/vars.db" ]]; then
     || die "$stack has no variables in $environment in the variables store: set them with scripts/ygg.sh config $stack $environment (or scripts/ygg.sh vars set $stack@$environment KEY=value)"
 else
   env_file="$secrets/$environment/$stack.env"
-  [[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"
+  [[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the user running the agent's engine"
   echo "deploy: reading $env_file; move to the variables store with scripts/ygg.sh vars init && scripts/ygg.sh vars import --all" >&2
 fi
 

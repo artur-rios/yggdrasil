@@ -118,8 +118,14 @@ def run(argv):
     if command == "self-install":
         from . import install
         return install.self_install(ctx)
-    if command in ("status", "check", "install", "add"):
+    if command in ("check", "install"):
+        host(command, *(["--role", args.role] if args.role else []))
+    if command in ("status", "add"):
         host(command)
+    if command == "agent":
+        host("agent", args.action, args.user)
+    if command == "backup":
+        host("backup", args.action)
     if command == "config":
         # The menu's variables screen, for an application and environment of this host; host.sh's
         # config says why any other is refused.

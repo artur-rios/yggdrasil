@@ -22,7 +22,7 @@ GROUP_SUMMARIES = {
     "Environments": "start, stop and list this host's environments",
     "Variables and secrets": "any scope of the variables store, and every vars command",
     "Platform": "the platform stack: up, down, ps, logs, config",
-    "Host": "check and install the tools, and the ygg command",
+    "Host": "check and install the tools and the machine's role; build agents, backups, the ygg command",
     "Catalog": "what catalog.yaml declares",
     "Help and version": "the commands, the version, tab completion",
 }
@@ -30,6 +30,7 @@ GROUP_SUMMARIES = {
 MENU = {("status",): "Status", ("config",): "Applications", ("deploy",): "Applications",
         ("add",): "Applications", ("env",): "Environments", ("vars",): "Variables and secrets",
         ("platform",): "Platform", ("check",): "Host", ("install",): "Host", ("self-install",): "Host",
+        ("agent",): "Host", ("backup",): "Host",
         ("catalog",): "Catalog", ("version",): "Help and version", ("help",): "Help and version",
         ("completion",): "Help and version"}
 

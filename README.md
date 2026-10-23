@@ -49,7 +49,7 @@ an agent that dials out to the one controller.
 | **Application** | One deployable unit (an API, a web UI, a worker) with its own repository, container image and release cycle. |
 | **System** | What users think of as one product: a group of applications that work together. The console shows a system's status and, expanded, each of its applications. |
 | **Environment** | A stage applications run in, such as local, development, homologation or production. Options: exposure (`proxy` through Traefik or host `ports`), `trigger` (`manual`, `branch` or `release`), which Jenkins `agent` deploys it, whether it needs `approval`, `hostSuffix` (its host names, `heimdall-dev.<domain>`), `onDemand` (runs only while used), timeouts and rollback depth. Each application deploys to all environments or to its own list, and can override any option per environment. |
-| **Host** | A machine with a Docker engine (a VPS, a VM) running one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins agent and one domain for all of them. Each application runs once per environment, as its own Compose project. A workstation's `ports` environment needs no platform. |
+| **Host** | A machine (a VPS, a VM) with a role, `dev` or `apps` ([docs/hosts.md](docs/hosts.md)): Ubuntu 24.04, where every service user runs its own rootless Docker engine. An **apps** host runs one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins agent and one or more domains for all of them; each application runs once per environment, as its own Compose project. The **dev** host runs Forgejo, the Jenkins controller and the build agents. A workstation's `ports` environment needs no platform. |
 | **Variables store** | An encrypted SQLite database per machine that holds the platform's and every application's environment variables and secrets, in layers (a value shared by several applications or environments is defined once), with history and rollback. Opt-in: without it the scripts read env files. Reference: [docs/variables.md](docs/variables.md). |
 | **Catalog** | [`catalog.yaml`](catalog.yaml): the environments, systems and applications. Jenkins jobs and agents, GitHub rulesets, deploys, the status API, Prometheus and the console all read it. Reference: [docs/catalog.md](docs/catalog.md). |
 
@@ -123,25 +123,29 @@ If a deploy fails, it rolls back to the image that was running, `deploy/<environ
 
 ```mermaid
 flowchart TB
-    net([Internet]) -- ":443" --> traefik[Traefik<br/>Let's Encrypt *.DOMAIN]
-    traefik --> apps[Applications<br/>one Compose project per environment]
-    traefik --> console[Console web]
-    traefik -- "/api/" --> status[Status API]
-    status -- probes health --> apps
-    status -- container list only --> proxy[Docker socket proxies<br/>read-only, one per client]
-    traefik -- containers, events --> proxy
-    alloy -- containers, logs --> proxy
-    prom[Prometheus] -- targets --> status
-    prom -- scrapes /metrics --> apps
-    alloy[Alloy] -- container logs --> loki[Loki]
-    grafana[Grafana] --> prom
-    grafana --> loki
-    agent[Jenkins agent] -- deploy.sh --> apps
+    net([Internet]) -- ":443 (apps machine: from Cloudflare only)" --> traefik
+    gitnet([git over SSH]) -- ":2222 (dev machine)" --> forgejo
+    subgraph engine [One rootless Docker engine, run by the service user ygg]
+        traefik[Traefik<br/>Let's Encrypt *.DOMAIN] --> apps[Applications<br/>one Compose project per environment]
+        traefik --> console[Console web]
+        traefik -- "/api/" --> status[Status API]
+        traefik -- "git.DOMAIN" --> forgejo[Forgejo<br/>dev machine]
+        status -- probes health --> apps
+        status -- container list only --> proxy[Docker socket proxies<br/>read-only, one per client]
+        traefik -- containers, events --> proxy
+        alloy -- containers, logs --> proxy
+        prom[Prometheus] -- targets --> status
+        prom -- scrapes /metrics --> apps
+        alloy[Alloy] -- container logs --> loki[Loki]
+        grafana[Grafana] --> prom
+        grafana --> loki
+        agent[Jenkins agent] -- deploy.sh --> apps
+    end
 ```
 
-Two Docker networks connect them: `edge` (Traefik, applications, status API) and `telemetry` (Prometheus and everything it scrapes). On both, an application is `<application>.<environment>` (`heimdall-api.production`), so the environments of a host never mix. No container publishes a port except Traefik (80, 443). Metrics are served on a private port that is neither published nor routed.
+Two Docker networks connect them: `edge` (Traefik, applications, status API) and `telemetry` (Prometheus and everything it scrapes). On both, an application is `<application>.<environment>` (`heimdall-api.production`), so the environments of a host never mix. No container publishes a port except Traefik (80, 443) and, on the dev machine, Forgejo's git over SSH (2222). Metrics are served on a private port that is neither published nor routed.
 
-Only the Jenkins agent holds the Docker socket, since it deploys. Traefik, Alloy and the status API each read Docker through a socket proxy of their own, on a private network, that allows only the read-only requests that client makes. The status API, the one behind a token on the internet, gets the container list and nothing else: not the container inspect, which carries every application's secrets.
+The engine is **rootless**: it runs as the service user `ygg`, and "root" inside a container is that user on the host, so a compromised container reaches only what `ygg` can. Only the Jenkins agent holds the Docker socket, since it deploys. Traefik, Alloy and the status API each read Docker through a socket proxy of their own, on a private network, that allows only the read-only requests that client makes. The status API, the one behind a token on the internet, gets the container list and nothing else: not the container inspect, which carries every application's secrets. The two machines, their users and their firewall are in [docs/hosts.md](docs/hosts.md).
 
 ## The console
 
@@ -178,7 +182,7 @@ first release. In short:
 | | Write `catalog.yaml` and the stack files | [3–4](docs/setup.md#3-write-the-catalog), [catalog.md](docs/catalog.md) |
 | | Add the [`templates/application/`](templates/application) files to each application repository | [5](docs/setup.md#5-prepare-each-application-repository) |
 | **Accounts** | A domain and its DNS (Cloudflare, or free with DuckDNS), and a GitHub App for Jenkins | [6–7](docs/setup.md#6-domain-and-dns), [dns.md](docs/dns.md) |
-| **Hosts** | Bring up the controller host (in the default setup, the one VPS), any other host, then the application env files | [8–11](docs/setup.md#8-prepare-every-host) |
+| **Hosts** | Prepare each machine with `ygg install --role dev\|apps`, bring up the dev machine (the controller host) and the apps machine, then the application env files | [8–11](docs/setup.md#8-prepare-each-machine), [hosts.md](docs/hosts.md) |
 | **Finish** | Apply the GitHub rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-github-rules) |
 
 On an Ubuntu host, [`ygg`](docs/cli.md) does the host steps, as a command or from an arrow-key

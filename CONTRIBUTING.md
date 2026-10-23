@@ -98,7 +98,8 @@ python3 scripts/catalog.py validate
 ```
 
 CI also validates `platform/compose.yml` and every stack in `stacks/` with `docker compose config`, using dummy values
-for each variable they require.
+for each variable they require. Traefik's configuration is rendered first, as `platform.sh` does
+(`scripts/traefik_config.py`), because `compose.yml` requires that file.
 
 `scripts/test_socket_proxies.py` checks the Docker socket proxies' allowlists in `platform/compose.yml`. With Docker,
 CI also runs the proxies, then Traefik and Alloy through them, against a fake Docker API; locally:

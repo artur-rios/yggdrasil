@@ -117,12 +117,38 @@ jobs:
           TRAEFIK_DASHBOARD_USERS='admin:x'
           GRAFANA_ADMIN_PASSWORD=x
           YGGDRASIL_STATUS_TOKEN=0000000000000000000000000000000000000000
-          DOCKER_GID=999
+          COMPOSE_PROFILES=apps
           YGG_SECRETS_DIR=$secrets
           ENV
           touch "$secrets/acme.env"
-          GITHUB_OWNER=$(python3 scripts/catalog.py owner) \
-            docker compose --env-file "$secrets/platform.env" -f platform/compose.yml config --quiet
+          # Traefik's configuration is a file compose.yml requires; platform.sh renders it from the
+          # same settings.
+          (set -a; . "$secrets/platform.env"; python3 scripts/traefik_config.py) > "$secrets/traefik.yml"
+          # DOCKER_SOCKET is the user's rootless socket, which platform.sh finds on a host; Compose
+          # only needs the path here, not an engine behind it.
+          export DOCKER_SOCKET=/run/user/1000/docker.sock YGG_TRAEFIK_CONFIG_FILE="$secrets/traefik.yml"
+          # platform.sh labels Traefik with the file's hash, so a changed file recreates it.
+          YGG_TRAEFIK_CONFIG_HASH=$(sha256sum "$secrets/traefik.yml" | cut -d' ' -f1)
+          export YGG_TRAEFIK_CONFIG_HASH
+          GITHUB_OWNER=$(python3 scripts/catalog.py owner)
+          export GITHUB_OWNER
+          # The platform file once for each machine's profiles: the apps machine's, with its deploy
+          # agent (the env file's own COMPOSE_PROFILES is just apps), and the dev machine's, which
+          # runs Forgejo and the Jenkins controller. A variable in the shell wins over the env file.
+          for profiles in apps,agent forge,jenkins; do
+            COMPOSE_PROFILES=$profiles docker compose --env-file "$secrets/platform.env" -f platform/compose.yml config --quiet
+            echo "platform/compose.yml ($profiles) ok"
+          done
+          # The build agent of the ci and release users, with a dummy agent.env (scripts/agent.sh checks
+          # the real one; Compose needs all four values).
+          cat > "$secrets/agent.env" <<ENV
+          JENKINS_URL=https://jenkins.example.com
+          JENKINS_AGENT_NAME=ci
+          JENKINS_AGENT_SECRET=x
+          YGG_AGENT_WORKDIR=/home/ci/agent
+          ENV
+          docker compose -p yggdrasil-agent-ci --env-file "$secrets/agent.env" -f platform/build-agent.yml config --quiet
+          echo "platform/build-agent.yml ok"
           # Every stack that has its service here, in both modes, with a dummy value for each
           # variable it requires. (Stacks based on the application's own docker-compose.yml are
           # validated by deploy.sh on the first deploy.)
