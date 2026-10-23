@@ -2,8 +2,9 @@
 
 This repository is deployed by [yggdrasil](https://github.com/<owner>/<repository>) (the `owner` and
 `repository` of that installation's `catalog.yaml`). It is the application `<application-id>` in
-that catalog, which decides its environments, its Jenkins deploy job, its GitHub rulesets and
-required checks, and its place in the console.
+that catalog, which decides its environments, its Jenkins job, its branch rules and required checks on
+its git server (Forgejo or GitHub), and its place in the console. What Jenkins checks and releases is
+this repository's `yggdrasil.yml` (and the scripts under `ci/` it runs, which you can run yourself).
 
 ## Environments
 
@@ -38,8 +39,10 @@ fix/<name> ─────┴─▶ develop ──▶ release/x.y.z ──▶ ma
 A `release/` branch is a snapshot of `develop` and carries no commits of its own: a fix for a
 release lands on `develop` through a `fix/` branch, and a new release branch is cut.
 
-The **Branch Policy** workflow (check `branch-policy`) enforces this on every pull request, and is
-required on `develop` and `main`. It fails, with the message shown, when:
+The **branch policy** (check `branch-policy`) enforces this on every pull request, and is required
+on `develop` and `main`. Jenkins runs it for a repository with a `yggdrasil.yml` (it then accepts
+`renovate/...` into `develop` instead of `dependabot/...`); on GitHub, a repository without one runs
+the Branch Policy workflow. It fails, with the message shown, when:
 
 | Rule | Message |
 |---|---|
@@ -98,15 +101,18 @@ changelog (step 1 below), never on the release branch.
    `<environment>-1.4.0-<7-character commit>`). To try it there, turn the environment on (see
    [Environments](#environments)).
 3. Open a pull request `release/1.4.0 → main`.
-4. When every **GitHub Actions** check on its head commit has passed (`branch-policy` included;
-   Jenkins waits up to the catalog's `checksTimeout`, 1 hour by default), Jenkins marks every
+4. When its checks have passed: `branch-policy` and the checks of `yggdrasil.yml`, run by Jenkins,
+   and any GitHub Actions jobs the catalog lists (`actionsChecks`; on GitHub, a repository without
+   `yggdrasil.yml` waits for every GitHub Actions check). Jenkins waits for GitHub Actions up to the
+   catalog's `checksTimeout`, 1 hour by default. Then Jenkins marks every
    `deploy/<environment>` status pending, then deploys that commit to each release environment in
    catalog order, setting `deploy/<environment>` after each.
    - Where the catalog sets `approval: true`, open the build in Jenkins and click **Deploy**. A build
      still waiting after 4 hours is aborted.
    - Don't push to the release branch meanwhile: the build fails if its head moves.
 5. After the last environment, Jenkins merges the pull request (`release: v1.4.0 (#<n>)`), creates
-   the tag and GitHub release `v1.4.0`, and deletes the release branch.
+   the tag and the release `v1.4.0` (with the files `yggdrasil.yml`'s `release` declares), and deletes
+   the release branch (on Forgejo, release branches are protected: the owner deletes them).
 
 Steps 4 and 5 are Jenkins' only when the application has a release environment (`trigger: release`)
 in the catalog. Otherwise, once the checks pass, merge the pull request yourself with a merge commit

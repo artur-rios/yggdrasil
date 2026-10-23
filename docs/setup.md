@@ -256,9 +256,11 @@ For every application in the catalog:
      ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
    - `.github/workflows/branch-policy.yml`: only for a GitHub repository that has no `yggdrasil.yml`;
      with one, Jenkins runs the branch policy.
-   - The template `Jenkinsfile` is **no longer needed**: Jenkins never reads a repository's
-     `Jenkinsfile` ([why](#how-a-build-runs)). One that is there is ignored; delete it.
-4. **A `yggdrasil.yml`** at the repository's root, next to a `ci/` folder of scripts: the file says
+   - `yggdrasil.yml`: the starting point of step 4.
+   - No `Jenkinsfile`: Jenkins never reads a repository's `Jenkinsfile` ([why](#how-a-build-runs)).
+     One that is there (an earlier template's) is ignored; delete it.
+4. **A `yggdrasil.yml`** at the repository's root (from the template: replace `<application-id>`, then
+   keep the fields you need), next to a `ci/` folder of scripts: the file says
    which image and command run each check (`run: ci/test.sh`), and the scripts are what you can run
    on your own machine too. Its checks are the names you listed in the catalog's `checks` in step 3,
    and its `release` and `publish` sections describe the files of a release and a library's NuGet

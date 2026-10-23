@@ -169,7 +169,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   pipeline code with every credential in reach. The library is loaded at the tag `YGGDRASIL_LIBRARY_VERSION`, and
   the `scripts/` it calls are cloned at that same tag; only the owner's data, `catalog.yaml` and `stacks/`, still
   comes from `main`. A `Jenkinsfile` in a repository is ignored (and the Forgejo
-  protection of it on `develop` protects nothing about the pipeline now). Every build now starts with a step on the
+  protection of it on `develop` protects nothing about the pipeline now); `templates/application/` has a
+  `yggdrasil.yml` to start from in place of its `Jenkinsfile`. Every build now starts with a step on the
   `ci` agent that reads the commit, even for a repository without a `yggdrasil.yml`: an installation needs the CI
   agent, `CI_AGENT_WORKDIR`/`RELEASE_AGENT_WORKDIR` and `YGGDRASIL_LIBRARY_VERSION` before its next build.
 - The branch policy accepts `renovate/...` into `develop` in place of `dependabot/...` (`scripts/branch-policy.sh`, run

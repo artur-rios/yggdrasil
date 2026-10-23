@@ -220,7 +220,7 @@ because a host runs a checkout of one release of all of it. For yggdrasil, the p
   `catalog.yaml` field removed, renamed or given a new meaning; a new required variable in `platform.env`, `acme.env`
   or an application env file; a stack file convention that existing `stacks/` files no longer meet; a change to the
   [status API contract](docs/status-api.md) that a console of the previous release can't read; a change application
-  repositories must follow (their `Jenkinsfile`, Branch Policy or rules, `templates/application/`); data in the
+  repositories must follow (their `yggdrasil.yml`, Branch Policy or rules, `templates/application/`); data in the
   platform's volumes that has to be migrated.
 - **Minor**: something new that an existing installation can ignore: an optional catalog field or variable, a
   command, a console feature, an added status API field.

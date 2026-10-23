@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -198,6 +199,32 @@ class LoadTests(unittest.TestCase):
         # yaml.safe_load must be in use: a python tag may not construct objects.
         with self.assertRaises(pc.ConfigError):
             parsed("checks: !!python/object/apply:os.getcwd []\n")
+
+
+class TemplateTests(unittest.TestCase):
+    """templates/application/yggdrasil.yml, what an application repository starts from."""
+
+    TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "application"
+
+    def test_given_the_template_when_loaded_then_it_is_a_valid_pipeline_file(self):
+        config = pc.load_config(self.TEMPLATE)
+        self.assertEqual(list(config["checks"]), ["test"])
+        self.assertEqual(config["checks"]["test"]["run"], "ci/test.sh")
+
+    def test_given_every_optional_line_of_the_template_when_uncommented_then_it_is_still_valid(self):
+        # Below its header, a commented line is an example field: "<indent># <yaml>". Uncommented, they must
+        # all stay valid, or the template teaches a field the pipeline refuses.
+        lines = (self.TEMPLATE / "yggdrasil.yml").read_text(encoding="utf-8").splitlines()
+        body = lines[lines.index("checks:"):]
+        text = "\n".join(re.sub(r"^(\s*)# ", r"\1", line) for line in body) + "\n"
+        config = parsed(text)
+        self.assertEqual(set(config), {"checks", "deploy", "release"})
+        self.assertEqual(config["checks"]["test"]["credentials"], {"NUGET_TOKEN": "nuget-feed-token"})
+        self.assertEqual(config["release"]["build"]["credentials"], {"SIGN_KEY": "signing-key"})
+
+    def test_given_the_application_template_when_listed_then_it_has_no_jenkinsfile(self):
+        # Jenkins never reads a repository's Jenkinsfile: yggdrasil.yml replaced it.
+        self.assertFalse((self.TEMPLATE / "Jenkinsfile").exists())
 
 
 class HardeningTests(unittest.TestCase):
