@@ -277,10 +277,13 @@ Map prepare(Map ctx, String mode, boolean deploying = false) {
             python3 yggdrasil/scripts/pipeline_config.py describe "$YGG_JOB" app >"$YGG_TMP/describe.json"
           ''', returnStatus: true)
           String text = readScratch(tmp, 'describe.json')
-          if (!text.trim()) {
+          // describe exits 0 with a usable document, or 1 with the document's `errors`. Anything else
+          // (a crash with half a document, no document, exit 1 and no errors) is a failure: reading it
+          // as "no yggdrasil.yml" would let a broken describe turn every check off.
+          def document = text.trim() ? parseJson(text) : null
+          if (!(document instanceof Map) || (code != 0 && !document.errors)) {
             error "pipeline_config.py describe failed (exit ${code}); its message is above."
           }
-          Map document = parseJson(text) as Map
           if (document.errors) {
             error "yggdrasil.yml cannot be used:\n${bulleted(document.errors as List)}"
           }
@@ -349,7 +352,7 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
     }
   }
   List planned = parseJson(readScratch(scratch(), 'plan.json')) as List
-  String problem = planProblem(planned, state.entry)
+  String problem = planProblem(planned, state.entry) ?: planCoverage(planned, state.config)
   if (problem) {
     error "The plan of the checks is not usable: ${problem}"
   }
@@ -591,17 +594,41 @@ void withCheckCredentials(Map check, Map entry, Closure body) {
 
 // junit results and the archive of a check, from the application's checkout. A failure to collect
 // them makes the build unstable; it does not change the check's own result.
+//
+// The check wrote into that checkout as root, so it can leave a symbolic link to anything on the agent
+// (its own files, another workspace, @tmp with the env files) named like a result. archiveArtifacts
+// is told not to follow links, and junit and stash have no such switch: so before anything is
+// collected, a link in the checkout that resolves outside it refuses the whole collection.
 void collectResults(Map check) {
   if (!check.junit && !check.archive) {
     return
   }
   try {
     dir('app') {
+      int links = sh(script: '''
+        root=$(pwd -P)
+        export root
+        outside=$(find . -path ./.git -prune -o -type l -exec sh -c '
+          for link; do
+            case "$(realpath -m -- "$link")" in
+              "$root" | "$root"/*) ;;
+              *) echo "$link" ;;
+            esac
+          done' sh {} +)
+        if [ -n "$outside" ]; then
+          echo "Links that lead out of the checkout:" >&2
+          echo "$outside" | head -n 20 >&2
+          exit 3
+        fi
+      ''', returnStatus: true)
+      if (links != 0) {
+        error "a link in the checkout leads outside it (exit ${links}); nothing of ${check.name} is collected"
+      }
       if (check.junit) {
         junit testResults: check.junit, allowEmptyResults: true
       }
       if (check.archive) {
-        archiveArtifacts artifacts: check.archive, allowEmptyArchive: true
+        archiveArtifacts artifacts: check.archive, allowEmptyArchive: true, followSymlinks: false
         stash name: "check-${check.name}", includes: check.archive, allowEmpty: true
       }
     }
@@ -1098,6 +1125,28 @@ String planProblem(List planned, Map entry) {
         return "${check.name}: credential '${printable(check.credentials[variable])}' is not allowed for ${entry.id}"
       }
     }
+  }
+  return null
+}
+
+// Whether the plan covers the file's checks exactly: every check of yggdrasil.yml once, and nothing
+// else. A check the plan left out would never run and never report, and a required status that never
+// comes only blocks the merge -- on a push it would deploy unchecked. null when fine.
+@NonCPS
+String planCoverage(List planned, Map config) {
+  List names = planned.collect { it.name }
+  List wanted = new ArrayList(((config.checks ?: [:]) as Map).keySet())
+  List missing = wanted.findAll { !(it in names) }
+  if (missing) {
+    return "the plan leaves out ${missing.collect { printable(it) }.join(', ')}"
+  }
+  List extra = names.findAll { !(it in wanted) }
+  if (extra) {
+    return "the plan has checks yggdrasil.yml does not: ${extra.collect { printable(it) }.join(', ')}"
+  }
+  List twice = names.findAll { name -> names.count(name) > 1 }.unique()
+  if (twice) {
+    return "the plan has ${twice.collect { printable(it) }.join(', ')} more than once"
   }
   return null
 }

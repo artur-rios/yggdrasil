@@ -24,8 +24,12 @@ division is a heuristic. The rules below are written so that the code they accep
 correct, not so that every possible evasion is caught.
 """
 
+import os
 import pathlib
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -418,6 +422,65 @@ class PipelineLibraryTests(unittest.TestCase):
         # checkout scm is left only where the deploy agents check out.
         for match in re.finditer(r"\bcheckout\s+scm\b|\bcheckout\s*\(\s*scm\b", lib.masked):
             self.assertEqual(lib.function_at(match.start()), "checkoutBuild", f"line {lib.line(match.start())}")
+
+    def test_given_describe_when_read_then_a_failed_run_without_errors_fails_the_build(self):
+        # describe exits 0 with a document, or 1 with the document's errors. A run that failed some other
+        # way must not be read as "no yggdrasil.yml" (which turns every check off).
+        start, end = self.lib.functions["prepare"]
+        body = self.lib.code[start:end]
+        self.assertIn("pipeline_config.py describe", body)
+        self.assertIn("returnStatus: true", body)
+        self.assertRegex(body, r"!\(document instanceof Map\) \|\| \(code != 0 && !document\.errors\)")
+        failed = body.index("code != 0 && !document.errors")
+        self.assertLess(failed, body.index("state.config = document.config"))
+
+    def test_given_a_plan_when_read_then_it_must_cover_every_check_of_the_file_once(self):
+        start, end = self.lib.functions["planChecks"]
+        self.assertRegex(self.lib.code[start:end], r"planProblem\(planned, state\.entry\) \?: planCoverage\(planned, state\.config\)")
+        start, end = self.lib.functions["planCoverage"]
+        body = self.lib.code[start:end]
+        self.assertIn("config.checks", body)
+        for wanted in ("leaves out", "does not", "more than once"):
+            self.assertIn(wanted, body)
+
+    def test_given_collected_results_when_read_then_no_link_out_of_the_checkout_is_followed(self):
+        lib = self.lib
+        start, end = lib.functions["collectResults"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"archiveArtifacts [^\n]*followSymlinks: false")
+        # junit and stash cannot be told not to follow links: the refusal comes before all three.
+        refusal = body.index("-type l")
+        for step in ("junit testResults", "archiveArtifacts", "stash name"):
+            self.assertLess(refusal, body.index(step), step)
+        self.assertRegex(body, r"if \(links != 0\) \{\s*error ")
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("realpath"), "runs the embedded script with sh")
+    def test_given_links_in_a_checkout_when_the_collect_guard_runs_then_only_links_leading_out_refuse(self):
+        lib = self.lib
+        start, end = lib.functions["collectResults"]
+        script = next(body for s, _, quote, body in lib.strings if start < s < end and quote == "'''" and "-type l" in body)
+        self.assertNotIn("\\", script, "the guard has Groovy escapes this test does not undo")
+        with tempfile.TemporaryDirectory() as temp:
+            outside = pathlib.Path(temp) / "secret"
+            outside.write_text("host file\n")
+            app = pathlib.Path(temp) / "app"
+            (app / "results").mkdir(parents=True)
+            (app / "results" / "a.xml").write_text("<testsuite/>")
+            (app / "inside.xml").symlink_to("results/a.xml")
+            (app / "here").symlink_to(".")
+
+            def guard():
+                return subprocess.run(["sh", "-c", script], cwd=app, capture_output=True, text=True, timeout=30)
+
+            done = guard()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            for name, target in (("results/b.xml", outside), ("up.xml", "../secret"), ("etc", "/etc")):
+                link = app / name
+                link.symlink_to(target)
+                done = guard()
+                self.assertEqual(done.returncode, 3, name)
+                self.assertIn(name, done.stderr)
+                link.unlink()
 
     def test_given_the_release_path_when_read_then_it_still_runs_under_the_application_lock(self):
         # test_catalog pins the same; the release pull request's checks run inside it too.
