@@ -1,6 +1,7 @@
 """Tests for scripts/rules.py (the model).   python3 -m unittest discover -s scripts"""
 
 import copy
+import dataclasses
 import http.server
 import io
 import json
@@ -100,6 +101,10 @@ class DesiredRulesTests(unittest.TestCase):
         self.assertEqual((r.tag_pattern, r.tag_creators, r.main_mergers),
                          ("v*", ("artur-rios",), ("artur-rios",)))
         self.assertEqual(r.develop_checks, ("branch-policy", "lint"))
+
+    def test_given_the_catalog_when_modelled_then_only_the_repositories_entries_have_owner_tags(self):
+        self.assertEqual({repo: r.owner_tags for repo, r in by_repo().items()},
+                         {"shop-api": False, "storefront": False, "toolkit": True, "scratch": True, "notes": True})
 
     def test_given_a_basic_repository_when_modelled_then_it_has_no_checks_or_mergers(self):
         r = by_repo()["scratch"]
@@ -224,6 +229,17 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual(tags["conditions"]["ref_name"]["include"], ["refs/tags/v*"])
         self.assertEqual([r["type"] for r in tags["rules"]], ["update", "deletion"])
 
+    def test_given_jenkins_acting_as_the_owner_when_built_then_an_applications_tags_are_still_not_locked(self):
+        # Whose tags they are is the model's, not a comparison of user names: with forge.jenkinsUser
+        # the owner itself, an application's tags are still created by Jenkins, which a `creation`
+        # rule would lock out.
+        value = copy.deepcopy(CATALOG_GITHUB)
+        value["forge"] = {"type": "github", "jenkinsUser": "artur-rios"}
+        r = by_repo(value)["shop-api"]
+        self.assertEqual(r.tag_creators, r.release_pushers)
+        tags = ruleset(rules.github_rulesets(r), "release tags")
+        self.assertEqual([rule["type"] for rule in tags["rules"]], ["update", "deletion"])
+
     def test_given_a_basic_repository_when_built_then_only_deletion_and_force_push_are_blocked(self):
         payloads = rules.github_rulesets(by_repo()["scratch"])
         self.assertEqual([p["name"] for p in payloads], ["develop", "main"])
@@ -234,6 +250,23 @@ class GitHubRulesetsTests(unittest.TestCase):
         api = FakeGitHub()
         rules.apply_github(api, "artur-rios", by_repo()["scratch"], dry_run=False)
         self.assertEqual([b["name"] for m, _, b in api.writes() if m == "POST"], ["develop", "main"])
+
+    def test_given_a_basic_repository_with_a_release_tags_ruleset_when_applied_then_it_is_noted_not_removed(self):
+        # A repository that was released before it was turned `rules: basic`: its tag ruleset is no
+        # longer the model's, but deleting it is the owner's call.
+        api = FakeGitHub(existing=["develop", "main", "release tags"])
+        lines = rules.apply_github(api, "artur-rios", by_repo()["scratch"], dry_run=False)
+        self.assertNotIn("DELETE", [m for m, _, _ in api.writes()])
+        self.assertIn("release tags", [r["name"] for r in api.rulesets.values()])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("ruleset 'release tags'", notes[0])
+        self.assertIn("left as it is", notes[0])
+
+    def test_given_an_application_when_applied_then_its_release_tags_ruleset_is_not_noted(self):
+        api = FakeGitHub(existing=["develop", "main", "release tags"])
+        lines = rules.apply_github(api, "artur-rios", by_repo()["shop-api"], dry_run=False)
+        self.assertEqual([line for line in lines if "note" in line], [])
 
     def test_given_protected_files_when_built_then_github_gets_no_file_rule(self):
         # GitHub cannot restrict who merges a file; Jenkins' trust rule covers the Jenkinsfile there.
@@ -462,9 +495,56 @@ class ForgejoRulesTests(unittest.TestCase):
         self.assertEqual(sorted(api.protections), ["develop", "main"])
         for entry in api.protections.values():
             self.assertEqual({k: v for k, v in entry.items() if k not in ("id", "rule_name")},
-                             {"enable_push": True, "apply_to_admins": False})
+                             {"enable_push": True, "enable_merge_whitelist": False, "enable_status_check": False,
+                              "status_check_contexts": [], "protected_file_patterns": "", "apply_to_admins": False})
         self.assertEqual(api.written("tag_protections"), [])
         self.assertFalse(any("release/*" in line or "tag" in line for line in lines), lines)
+
+    def test_given_a_release_repository_turned_basic_when_applied_then_develop_and_main_lose_their_rules(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "shop-api")
+        api.calls.clear()
+        basic = dataclasses.replace(by_repo()["scratch"], repo="shop-api")
+        lines = rules.apply_forgejo(api, OWNER, basic, None, False)
+        self.assertEqual(sorted((m, p) for m, p, _ in api.writes()),
+                         [("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/develop"),
+                          ("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/main")])
+        for name in ("develop", "main"):
+            entry = protection(api, name)
+            self.assertEqual((entry["enable_push"], entry["enable_merge_whitelist"], entry["enable_status_check"],
+                              entry["status_check_contexts"], entry["protected_file_patterns"]),
+                             (True, False, False, [], ""), name)
+        # What the basic model has no place for is left, and said so: deleting it is the owner's call.
+        self.assertIn("release/*", api.protections)
+        self.assertEqual(len(api.tags), 1)
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 2, lines)
+        self.assertIn("branch protection 'release/*'", notes[0])
+        self.assertIn("tag protection 'v*'", notes[1])
+        api.calls.clear()
+        self.assertEqual([line for line in rules.apply_forgejo(api, OWNER, basic, None, False) if "note" in line],
+                         notes)
+        self.assertEqual(api.writes(), [])
+
+    def test_given_a_tag_pattern_that_changed_when_applied_then_the_new_one_is_protected_and_the_old_noted(self):
+        api = FakeForgejo()
+        forgejo_apply(api, "toolkit")
+        api.calls.clear()
+        renamed = dataclasses.replace(by_repo()["toolkit"], tag_pattern="v*")
+        lines = rules.apply_forgejo(api, OWNER, renamed, None, False)
+        self.assertEqual([b for m, _, b in api.written("tag_protections")],
+                         [{"name_pattern": "v*", "whitelist_usernames": ["artur-rios"]}])
+        self.assertEqual(sorted(t["name_pattern"] for t in api.tags.values()), ["[0-9]*", "v*"])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("tag protection '[0-9]*'", notes[0])
+        self.assertIn("left as it is", notes[0])
+
+    def test_given_protections_the_model_never_had_when_applied_then_they_are_not_noted(self):
+        # Only what the model itself could have left behind is noted; the owner's own rules are theirs.
+        api = FakeForgejo(protections=[{"rule_name": "feature/*", "enable_push": True}])
+        lines = forgejo_apply(api, "shop-api")
+        self.assertEqual([line for line in lines if "note" in line], [])
 
     def test_given_rules_applied_twice_when_nothing_changed_then_the_second_run_sends_no_write(self):
         webhook = {"url": HOOK_URL, "secret": SECRET}
@@ -623,25 +703,33 @@ class ForgejoCommandTests(unittest.TestCase):
         self.assertFalse([c for c in fake.calls if "/hooks" in c[1]])
 
     def test_given_jenkins_url_without_a_secret_when_run_then_it_is_refused(self):
-        env = {**self.ENV, "JENKINS_URL": "https://jenkins.example.com"}
+        env = {**self.ENV, "FORGE_JENKINS_URL": "https://jenkins.example.com"}
         fake, made, _, _, exit_ = self.run_main(["--dry-run"], env)
         self.assertIn("FORGE_WEBHOOK_SECRET", str(exit_))
         self.assertEqual((made, fake.calls), ([], []))
 
+    def test_given_only_the_jenkins_url_jenkins_sets_in_every_build_when_run_then_it_is_ignored(self):
+        # Jenkins sets JENKINS_URL in every build: it must neither ask for a secret nor add a webhook.
+        env = {**self.ENV, "JENKINS_URL": "https://jenkins.example.com/"}
+        fake, _, out, _, exit_ = self.run_main(["shop-api"], env)
+        self.assertIsNone(exit_)
+        self.assertIn("webhooks skipped", out)
+        self.assertFalse([c for c in fake.calls if "/hooks" in c[1]])
+
     def test_given_a_secret_without_jenkins_url_when_run_then_it_is_refused_without_printing_it(self):
         env = {**self.ENV, "FORGE_WEBHOOK_SECRET": SECRET}
         fake, made, out, err, exit_ = self.run_main(["--dry-run"], env)
-        self.assertIn("JENKINS_URL", str(exit_))
+        self.assertIn("FORGE_JENKINS_URL", str(exit_))
         self.assertNotIn(SECRET, str(exit_) + out + err)
         self.assertEqual((made, fake.calls), ([], []))
 
     def test_given_both_when_run_then_the_hook_url_has_no_double_slash_and_the_secret_stays_hidden(self):
-        env = {**self.ENV, "JENKINS_URL": "https://jenkins.example.com/", "FORGE_WEBHOOK_SECRET": SECRET}
+        env = {**self.ENV, "FORGE_JENKINS_URL": "https://jenkins.example.com/", "FORGE_WEBHOOK_SECRET": SECRET}
         fake, _, out, err, exit_ = self.run_main(["--dry-run", "shop-api"], env)
         self.assertIsNone(exit_)
         self.assertIn(HOOK_URL, out)
         self.assertNotIn(SECRET, out + err)
-        env = {**env, "JENKINS_URL": "https://jenkins.example.com/jenkins///"}
+        env = {**env, "FORGE_JENKINS_URL": "https://jenkins.example.com/jenkins///"}
         fake, _, out, _, _ = self.run_main(["shop-api"], env)
         self.assertEqual(next(iter(fake.hooks.values()))["config"]["url"],
                          "https://jenkins.example.com/jenkins/gitea-webhook/post")
@@ -653,7 +741,7 @@ class ForgejoCommandTests(unittest.TestCase):
                     raise rules.ApiError(method, path, 422, f"bad secret {SECRET}")
                 return super().request(method, path, body)
 
-        env = {**self.ENV, "JENKINS_URL": "https://jenkins.example.com", "FORGE_WEBHOOK_SECRET": SECRET}
+        env = {**self.ENV, "FORGE_JENKINS_URL": "https://jenkins.example.com", "FORGE_WEBHOOK_SECRET": SECRET}
         _, _, out, err, exit_ = self.run_main(["shop-api"], env, fake=Failing())
         self.assertIn("422", str(exit_))
         self.assertNotIn(SECRET, str(exit_) + out + err)
@@ -663,7 +751,7 @@ class ForgejoCommandTests(unittest.TestCase):
         fake, made, out, _, exit_ = self.run_main(["--help"], {})
         self.assertEqual(exit_.code, 0)
         self.assertIn("usage:", out)
-        for word in ("--dry-run", "FORGE_TOKEN", "JENKINS_URL", "FORGE_WEBHOOK_SECRET", "GH_TOKEN"):
+        for word in ("--dry-run", "FORGE_TOKEN", "FORGE_JENKINS_URL", "FORGE_WEBHOOK_SECRET", "GH_TOKEN"):
             self.assertIn(word, out)
         self.assertEqual((made, fake.calls), ([], []))
 

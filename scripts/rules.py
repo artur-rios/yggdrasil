@@ -11,11 +11,12 @@ Forgejo: FORGE_TOKEN) and goes only in the Authorization header, never in a proc
 or the --dry-run output. --dry-run still reads (GET) from the server, so it needs the token, but
 sends no write.
 
-On Forgejo, JENKINS_URL and FORGE_WEBHOOK_SECRET (both or neither) add the webhook that tells
-Jenkins about pushes, tags and pull requests: <JENKINS_URL>/gitea-webhook/post, one per repository,
-updated in place. Forgejo never returns a webhook's secret, so it cannot be compared: an existing
-hook is updated only when its url, events, content type, branch filter or active flag differ, and a
-changed secret needs the hook deleted (the next run creates it again). The secret is never printed.
+On Forgejo, FORGE_JENKINS_URL and FORGE_WEBHOOK_SECRET (both or neither) add the webhook that tells
+Jenkins about pushes, tags and pull requests: <FORGE_JENKINS_URL>/gitea-webhook/post, one per
+repository, updated in place (not JENKINS_URL: Jenkins sets that in every build). Forgejo never
+returns a webhook's secret, so it cannot be compared: an existing hook is updated only when its url,
+events, content type, branch filter or active flag differ, and a changed secret needs the hook
+deleted (the next run creates it again). The secret is never printed.
 
 Per repository the model is:
 
@@ -33,6 +34,10 @@ A repository with `rules: basic` gets develop and main without force push or del
 rule. It still gets the repository settings (default branch develop, head branches deleted after
 merge; on Forgejo the merge styles too) and, on Forgejo when configured, the Jenkins webhook: Jenkins
 builds it too.
+
+Nothing is deleted. A protection the model no longer has -- a release/* rule or a tag protection
+(GitHub: a `release tags` ruleset) of a repository turned `rules: basic`, a tag protection whose
+pattern the catalog changed -- is left as it is, and the run notes it: deleting it is the owner's call.
 
 On Forgejo a user is kept on a whitelist (merging, pushing, creating tags) only while they have write
 access to the repository: Forgejo leaves anyone else out without an error. The run says so, by name,
@@ -78,9 +83,10 @@ class RepoRules:
     release_pushers: tuple       # (owner,)
     tag_pattern: str             # "v*" or the repository's `tags`
     tag_creators: tuple          # (forge.jenkinsUser,) for applications, (owner,) for owner-tag repositories
+    owner_tags: bool             # the owner creates the version tags (a `repositories` entry), not Jenkins
     protected_files: tuple       # ("Jenkinsfile",): protected on develop only, see forgejo_branch_protections
     # With model "basic" the checks, mergers and protected_files are empty, and the release rules
-    # (release_pushers, tag_pattern, tag_creators) keep their defaults but are not applied.
+    # (release_pushers, tag_pattern, tag_creators, owner_tags) keep their defaults but are not applied.
 
 
 def _unique(*groups):
@@ -92,9 +98,12 @@ def _unique(*groups):
     return tuple(seen)
 
 
-def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag_pattern, tag_creator, developers):
+def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag_pattern, tag_creator, developers,
+           owner_tags):
     if model == "basic":
-        return RepoRules(repo, model, (), (), frozenset(), (), (), (owner,), tag_pattern, (tag_creator,), ())
+        return RepoRules(repo=repo, model=model, develop_checks=(), main_checks=(), actions_checks=frozenset(),
+                         develop_mergers=(), main_mergers=(), release_pushers=(owner,), tag_pattern=tag_pattern,
+                         tag_creators=(tag_creator,), owner_tags=owner_tags, protected_files=())
     return RepoRules(
         repo=repo,
         model=model,
@@ -108,6 +117,7 @@ def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag
         release_pushers=(owner,),
         tag_pattern=tag_pattern,
         tag_creators=(tag_creator,),
+        owner_tags=owner_tags,
         protected_files=("Jenkinsfile",),
     )
 
@@ -130,13 +140,13 @@ def desired_rules(catalog):
         entry["deploys"] += [e["id"] for e in catalog_module.resolve(catalog, app["id"]) if e["trigger"] == "release"]
 
     modelled = [_rules(repo, "release", owner, _unique(e["checks"]), _unique(e["actions"]), _unique(e["deploys"]),
-                       jenkins, "v*", jenkins, developers)
+                       jenkins, "v*", jenkins, developers, owner_tags=False)
                 for repo, e in applications.items()]
     for entry in catalog_module.repositories(catalog):
         # The owner releases these by hand: they merge main and create the tags themselves.
         owner_tag = entry["release"] == "owner-tag"
         modelled.append(_rules(entry["id"], entry["rules"], owner, entry["checks"], entry["actionsChecks"], (),
-                               owner, entry["tags"] if owner_tag else "v*", owner, developers))
+                               owner, entry["tags"] if owner_tag else "v*", owner, developers, owner_tags=True))
     return modelled
 
 
@@ -272,9 +282,9 @@ def github_rulesets(r):
 
     # A version names one commit forever: its tag cannot be moved or deleted.
     tag_rules = [{"type": "update"}, {"type": "deletion"}]
-    if r.tag_creators == r.release_pushers:
-        # An owner-tag repository: only the owner (an administrator, who bypasses the ruleset) creates
-        # its tags. An application's tags are created by Jenkins, which must not be locked out.
+    if r.owner_tags:
+        # A repository the owner tags: only the owner (an administrator, who bypasses the ruleset)
+        # creates its tags. An application's tags are created by Jenkins, which must not be locked out.
         tag_rules.insert(0, {"type": "creation"})
 
     return [
@@ -330,6 +340,16 @@ def _github_steps(api, owner, r, dry_run):
         yield from write("DELETE", f"{base}/rulesets/{existing['default']}", None,
                          "removed ruleset 'default'", "remove ruleset 'default'")
 
+    # A repository turned `rules: basic` keeps its tag ruleset: the run says so, the owner decides.
+    if r.model == "basic" and "release tags" in existing:
+        yield f"  {_stale('ruleset', 'release tags')}"
+
+
+def _stale(kind, name):
+    """The note for a protection the model no longer has, which is never deleted."""
+    return (f"note: {kind} '{name}' is not in this repository's model any more; left as it is "
+            "(delete it by hand if it is stale)")
+
 
 def apply_github(api, owner, r, dry_run):
     """Sets one repository's settings and rulesets on GitHub; rulesets are matched by name and
@@ -338,6 +358,9 @@ def apply_github(api, owner, r, dry_run):
 
 
 # --- Forgejo: settings, protections, tags, webhook ----------------------------------------------------
+
+# The branch protections the release model makes (forgejo_branch_protections).
+MODEL_BRANCHES = {"develop", "main", "release/*"}
 
 # What Jenkins is told about: branches and tags appearing and disappearing, pushes, pull requests.
 WEBHOOK_EVENTS = ["create", "delete", "push", "pull_request"]
@@ -356,7 +379,11 @@ def forgejo_branch_protections(r):
     the owner (an administrator) unbound -- `apply_to_admins: false` -- for emergencies. Forgejo blocks
     force push and deletion under any protection."""
     if r.model == "basic":
-        return [{"rule_name": name, "enable_push": True, "apply_to_admins": False} for name in ("develop", "main")]
+        # Pushing allowed, and every other rule the release model sets turned off explicitly, so a
+        # repository turned basic loses them (and they are compared on every run).
+        return [{"rule_name": name, "enable_push": True, "enable_merge_whitelist": False, "enable_status_check": False,
+                 "status_check_contexts": [], "protected_file_patterns": "", "apply_to_admins": False}
+                for name in ("develop", "main")]
 
     def guarded(name, mergers, checks, files):
         # Nobody pushes: a change gets in through a pull request that the checks passed, merged by
@@ -380,7 +407,9 @@ def forgejo_branch_protections(r):
 
 
 def forgejo_tag_protection(r):
-    """Who may create the repository's version tags (release model only: a basic repository has none)."""
+    """Who may create the repository's version tags (release model only: a basic repository has none).
+    Forgejo's tag protection is one list of who may change a matching tag in any way, so they may also
+    move and delete them: a known gap, which docs/setup.md (step 12) states and the live tests pin."""
     return {"name_pattern": r.tag_pattern, "whitelist_usernames": list(r.tag_creators)}
 
 
@@ -453,7 +482,8 @@ def _forgejo_steps(api, owner, r, webhook, dry_run):
 
     existing = {p.get("rule_name") or p.get("branch_name"): p
                 for p in api.request("GET", f"{base}/branch_protections") or []}
-    for payload in forgejo_branch_protections(r):
+    desired = forgejo_branch_protections(r)
+    for payload in desired:
         name = payload["rule_name"]
         body = {k: v for k, v in payload.items() if k != "rule_name"}
         if name not in existing:
@@ -466,10 +496,16 @@ def _forgejo_steps(api, owner, r, webhook, dry_run):
                              what=f"branch '{name}'")
         else:
             yield f"  protection of branch '{name}' unchanged"
+    # Only what the model itself may have made is noted: other protections are the owner's own.
+    for name in sorted((MODEL_BRANCHES & set(existing)) - {p["rule_name"] for p in desired}):
+        yield f"  {_stale('branch protection', name)}"
 
+    tags = {t["name_pattern"]: t for t in api.request("GET", f"{base}/tag_protections") or []}
+    for pattern in sorted(set(tags) - ({r.tag_pattern} if r.model == "release" else set())):
+        yield f"  {_stale('tag protection', pattern)}"
     if r.model == "release":
         tag = forgejo_tag_protection(r)
-        found = {t["name_pattern"]: t for t in api.request("GET", f"{base}/tag_protections") or []}.get(r.tag_pattern)
+        found = tags.get(r.tag_pattern)
         if found is None:
             yield from write("POST", f"{base}/tag_protections", tag, f"protected tags '{r.tag_pattern}'",
                              f"protect tags '{r.tag_pattern}'", what=f"tags '{r.tag_pattern}'")
@@ -533,26 +569,27 @@ the catalog's git server. --dry-run reads from the server but sends no write.
     GH_TOKEN         a token with repository administration; else `gh auth token` is used
   Forgejo (forge.type forgejo)
     FORGE_TOKEN      a token with write:repository (required)
-    JENKINS_URL, FORGE_WEBHOOK_SECRET
-                     both or neither: they add the Jenkins webhook <JENKINS_URL>/gitea-webhook/post;
-                     with neither, webhooks are skipped. A hook's secret cannot be read back, so to
-                     change it delete the hook in Forgejo and run again.
+    FORGE_JENKINS_URL, FORGE_WEBHOOK_SECRET
+                     both or neither: they add the Jenkins webhook
+                     <FORGE_JENKINS_URL>/gitea-webhook/post; with neither, webhooks are skipped
+                     (JENKINS_URL, which Jenkins sets in every build, is not read). A hook's secret
+                     cannot be read back, so to change it delete the hook in Forgejo and run again.
 
 The tokens and the secret are never printed."""
 
 
 def _forgejo_connection(forge):
-    """(api, webhook, secret): the Forgejo client and, when JENKINS_URL and FORGE_WEBHOOK_SECRET are
-    set, the webhook to apply (else None). Refuses before any request on a missing token or only one of
-    the two webhook variables."""
+    """(api, webhook, secret): the Forgejo client and, when FORGE_JENKINS_URL and FORGE_WEBHOOK_SECRET
+    are set, the webhook to apply (else None). Refuses before any request on a missing token or only
+    one of the two webhook variables."""
     token = os.environ.get("FORGE_TOKEN", "").strip()
     if not token:
         sys.exit("no Forgejo token: set FORGE_TOKEN")
-    jenkins = os.environ.get("JENKINS_URL", "").strip()
+    jenkins = os.environ.get("FORGE_JENKINS_URL", "").strip()
     secret = os.environ.get("FORGE_WEBHOOK_SECRET", "").strip()
     if bool(jenkins) != bool(secret):
-        sys.exit("set JENKINS_URL and FORGE_WEBHOOK_SECRET together (or neither, to skip webhooks): "
-                 + ("FORGE_WEBHOOK_SECRET" if jenkins else "JENKINS_URL") + " is missing")
+        sys.exit("set FORGE_JENKINS_URL and FORGE_WEBHOOK_SECRET together (or neither, to skip webhooks): "
+                 + ("FORGE_WEBHOOK_SECRET" if jenkins else "FORGE_JENKINS_URL") + " is missing")
     webhook = {"url": jenkins.rstrip("/") + "/gitea-webhook/post", "secret": secret} if jenkins else None
     return Api(forge["api"], token, "token"), webhook, secret
 
@@ -583,7 +620,7 @@ def main(argv=None):
     if forge["type"] == "forgejo":
         api, webhook, secret = _forgejo_connection(forge)
         if webhook is None:
-            print("webhooks skipped: JENKINS_URL and FORGE_WEBHOOK_SECRET are not set", flush=True)
+            print("webhooks skipped: FORGE_JENKINS_URL and FORGE_WEBHOOK_SECRET are not set", flush=True)
 
         def steps(r):
             return _forgejo_steps(api, catalog["owner"], r, webhook, dry_run)
