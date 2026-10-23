@@ -336,7 +336,7 @@ class PipelineLibraryTests(unittest.TestCase):
         start, end = lib.functions["withCheckCredentials"]
         self.assertIn("entry.credentials", lib.code[start:end])
 
-    def test_given_the_library_when_read_then_the_write_credential_is_asked_for_only_by_report_status(self):
+    def test_given_the_library_when_read_then_only_report_status_and_the_publish_agent_ask_for_write(self):
         lib = self.lib
         # forge-write only in forgeCredential (above); the 'write' access only in reportStatus (the
         # controller) and onPublishAgent (inside its node on the publish agent: tested below).

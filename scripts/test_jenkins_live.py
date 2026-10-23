@@ -1407,7 +1407,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual([line for line in calls if "agent=release" in line], [])
         self.assertEqual(self.description(DESKTOP, f"PR-{number}", build.number), "v1.0.0")
 
-    def test_given_a_failing_validation_when_released_then_the_draft_stays_unpublished(self):
+    def test_given_a_failing_validation_when_released_then_no_release_is_made_and_resume_is_named(self):
         number, build, _, _ = self.release_run(BROKEN)
         self.assertEqual(build.result, "FAILURE", build.console[-6000:])
         self.assertIn("VALIDATION-3-FAILED", build.console)
