@@ -30,6 +30,11 @@ if [[ "${1:-}" == --last-good ]]; then
 fi
 [[ "$command" =~ ^(up|down|ps|logs|config)$ ]] || die "$usage"
 [[ "$command" == logs || $# -eq 0 ]] || die "$usage"
+# Never as root (`sudo platform.sh …`): the platform runs on its user's rootless engine, whose
+# container root is that user, so a file root writes in the secrets directory (traefik.yml above all)
+# is one Traefik cannot read at its next start. Checked before anything is read or written.
+[[ "$(id -u)" != 0 ]] \
+  || die "run platform.sh as the user that owns the platform (ygg: log in as ygg, or sudo -iu ygg), not as root (docs/hosts.md)"
 cleanup_paths=()
 trap 'rm -rf ${cleanup_paths[@]+"${cleanup_paths[@]}"}' EXIT
 
@@ -89,32 +94,56 @@ export YGG_ACME_ENV_FILE="$acme_file"
 # copy kept with the rest. Cloudflare's ranges (<secrets>/cloudflare-ips) are read only when
 # CLOUDFLARE_PROXIED=true.
 #
-# It lives in <secrets>/traefik.yml, not in the run directory: Compose bind-mounts it into Traefik,
+# The live one is <secrets>/traefik.yml, not the run directory: Compose bind-mounts it into Traefik,
 # and the engine mounts it again at every start of the container (a crash, `docker restart`, the
-# engine's own restart, every boot), long after this script and its run directory are gone. Mode 600
-# like the rest of the directory: Traefik runs as container root, which is this user. Written to a
-# temporary file next to it and renamed over it, so a failed render never leaves half a file there,
-# and the running Traefik keeps the one it started with (a bind mount holds on to the file it was
-# given) until Compose recreates it.
+# engine's own restart, every boot), long after this script and its run directory are gone. Only `up`
+# replaces it, once the engine is checked (publish_traefik_config): down, ps, logs and config get a
+# copy in the run directory, so a `config` after a settings change can't put a configuration in front
+# of the next restart that no `up` applied. Mode 600 like the rest of the directory: Traefik runs as
+# container root, which is this user. `up` renders next to the live file and renames over it, so a
+# failed render or a refused engine never leaves half a file there, and the running Traefik keeps the
+# one it started with (a bind mount holds on to the file it was given) until Compose recreates it.
+#
+# render_traefik_config <directory>: renders into a new file there and points traefik_file at it.
 render_traefik_config() {
-  traefik_file="$secrets/traefik.yml"
   local options=() partial
   [[ -f "$secrets/cloudflare-ips" ]] && options=(--cloudflare-ips "$secrets/cloudflare-ips")
-  partial=$(mktemp "$secrets/.traefik.yml.XXXXXX") || die "cannot write Traefik's configuration in $secrets (is it yours? run platform.sh as ygg)"
+  partial=$(mktemp "$1/.traefik.yml.XXXXXX") || die "cannot write Traefik's configuration in $1 (is it yours? run platform.sh as ygg)"
   cleanup_paths+=("$partial")
   # The settings go in the renderer's environment, from the same file Compose reads.
   # shellcheck source=/dev/null
   (set -a; . "$env_file"; python3 "$root/scripts/traefik_config.py" ${options[@]+"${options[@]}"} >"$partial") \
     || die "could not render Traefik's configuration from $env_file (see above)"
   chmod 600 "$partial"
-  mv -f "$partial" "$traefik_file"
+  traefik_file=$partial
 }
-[[ -n "$last_good" ]] || render_traefik_config
-export YGG_TRAEFIK_CONFIG_FILE="$traefik_file"
-# The path is the same at every run, so Compose would not see a changed configuration: its hash is a
-# label on the Traefik service (compose.yml), and a new hash is what makes `up` recreate Traefik.
-YGG_TRAEFIK_CONFIG_HASH=$(sha256sum "$traefik_file" | cut -d' ' -f1) || die "cannot read $traefik_file"
-export YGG_TRAEFIK_CONFIG_HASH
+
+# The configuration Compose is given: its path, and its hash. The live path is the same at every run,
+# so Compose would not see a changed configuration: the hash is a label on the Traefik service
+# (compose.yml), and a new hash is what makes `up` recreate Traefik.
+use_traefik_config() {
+  export YGG_TRAEFIK_CONFIG_FILE="$traefik_file"
+  YGG_TRAEFIK_CONFIG_HASH=$(sha256sum "$traefik_file" | cut -d' ' -f1) || die "cannot read $traefik_file"
+  export YGG_TRAEFIK_CONFIG_HASH
+}
+
+# `up`, once its checks passed: the rendered file becomes the live one.
+publish_traefik_config() {
+  [[ -n "$last_good" ]] && return
+  mv -f "$traefik_file" "$secrets/traefik.yml"
+  traefik_file="$secrets/traefik.yml"
+  use_traefik_config
+}
+
+if [[ -n "$last_good" ]]; then
+  :
+elif [[ "$command" == up ]]; then
+  render_traefik_config "$secrets"
+else
+  [[ -n "$render_dir" ]] || run_dir
+  render_traefik_config "$render_dir"
+fi
+use_traefik_config
 
 compose() { docker compose --env-file "$env_file" -f "$root/platform/compose.yml" "$@"; }
 
@@ -192,6 +221,7 @@ case "$command" in
     done
     # The agent's deploy locks (scripts/deploy.sh): the agent's container root is this user.
     install -d -m 700 "$secrets/locks"
+    publish_traefik_config
     compose up --detach --build --remove-orphans --wait
     compose ps
     if [[ -n "$from_store" ]]; then

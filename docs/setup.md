@@ -589,7 +589,8 @@ Next to each part is what you would type to do it by hand. Every command is run 
     ```
     - `ufw allow OpenSSH` comes first, so turning the firewall on does not cut your session.
     - `default deny incoming`: what no rule allows is refused (Ubuntu's default, but the rules mean nothing
-      without it, so the installer sets it and `ygg check` reads it from `ufw status verbose`).
+      without it, so the installer sets it and `ygg check` reads it from `ufw status verbose`; the rules
+      themselves it reads from plain `ufw status`, which names `OpenSSH` where verbose says `22/tcp (OpenSSH)`).
     - `2222/tcp`: Forgejo's git over SSH (the dev machine only).
     - `from "$range" … comment yggdrasil-cloudflare`: lets one Cloudflare range in on the two web ports and
       labels the rule, so that a later `ygg install` knows it is its own and can update it.
@@ -797,10 +798,11 @@ either way. Check the settings:
 /opt/yggdrasil/scripts/platform.sh config > /dev/null && echo "platform.env OK"
 ```
 
-It prints `platform.env OK`, or names the missing variable (it also renders Traefik's configuration,
-`/etc/yggdrasil/traefik.yml`, from the settings, and stops if they are wrong). That file stays: Traefik's
-container mounts it at every start, a reboot included. `platform.sh` writes it again at every run, and `up`
-recreates Traefik when its content has changed. `platform.sh up` checks the rest (each of
+It prints `platform.env OK`, or names the missing variable (it also renders Traefik's configuration from the
+settings, into a throwaway copy, and stops if they are wrong). Only `platform.sh up` writes the live one,
+`/etc/yggdrasil/traefik.yml`, and recreates Traefik when its content has changed. That file stays: Traefik's
+container mounts it at every start, a reboot included. Run `platform.sh` as `ygg`, never with `sudo`: it refuses
+root, whose files there Traefik couldn't read. `platform.sh up` checks the rest (each of
 `ENVIRONMENTS` against the catalog, the Jenkins variables) before starting anything.
 
 ### 9.3 Start it and check the certificate

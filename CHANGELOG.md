@@ -41,7 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   **Cloudflare in front** (`CLOUDFLARE_PROXIED`): Traefik trusts the forwarded client address from Cloudflare's ranges
   only, from `<secrets>/cloudflare-ips`, which `ygg install --role apps` writes. Traefik's static configuration is now a
   file rendered by `scripts/traefik_config.py` into `<secrets>/traefik.yml` (kept there, so Traefik starts again
-  after a reboot); the settings are the same.
+  after a reboot); the settings are the same. Only `platform.sh up` replaces it (the other commands render a
+  throwaway copy), and `platform.sh` now refuses to run as root: a root-owned `traefik.yml` is one the rootless
+  Traefik can't read at its next start. Run it as the platform's user (`ygg`).
 - **`PLATFORM_HOST_SUFFIX`** (optional, empty by default) in `platform.env`: put after `traefik` and `grafana` in
   the names of the Traefik dashboard and Grafana (and Grafana's root URL). The dev machine sets `-dev`, so it serves
   `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>` instead of claiming the apps machine's `traefik.` and `grafana.`

@@ -188,7 +188,8 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(self.docker_calls(), "")
 
     def traefik_config_file(self):
-        return re.search(r"traefik-config-file: (\S+)", self.docker_calls()).group(1)
+        # The last call's: `up` checks the engine (`docker info`) before it publishes the live file.
+        return re.findall(r"traefik-config-file: (\S+)", self.docker_calls())[-1]
 
     def test_given_an_env_file_when_up_then_compose_gets_a_rendered_traefik_config(self):
         result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\nEXTRA_DOMAINS=artur-rios.tech\n")
@@ -240,6 +241,53 @@ class PlatformTests(unittest.TestCase):
             result = self.run_platform(command)
             self.assertEqual(result.returncode, 0, f"{command}: {result.stderr}")
             self.assertIn("main: techcraftsmen.net", self.docker_calls(), command)
+
+    def live_traefik_config(self):
+        path = self.secrets / "traefik.yml"
+        return path.read_text(), path.stat().st_ino, path.stat().st_mtime_ns
+
+    def test_given_a_live_traefik_config_when_down_ps_logs_or_config_run_then_it_is_left_alone(self):
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n").returncode, 0)
+        live = self.live_traefik_config()
+        # Settings changed since that up: only the next up may put them in front of the running Traefik.
+        (self.secrets / "platform.env").write_text(
+            TRAEFIK_ENV + "ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\nEXTRA_DOMAINS=artur-rios.tech\n")
+        for arguments in (["down"], ["ps"], ["logs", "traefik"], ["config"]):
+            self.log.unlink(missing_ok=True)
+            result = self.run_platform(*arguments)
+            self.assertEqual(result.returncode, 0, f"{arguments}: {result.stderr}")
+            self.assertEqual(self.live_traefik_config(), live, arguments)
+            # Compose still gets a configuration (it interpolates the whole file), rendered from the
+            # current settings, but not the live one Traefik mounts.
+            self.assertNotEqual(self.traefik_config_file(), str(self.secrets / "traefik.yml"), arguments)
+            self.assertIn("main: artur-rios.tech", self.docker_calls(), arguments)
+        # And nothing of those renders is left behind.
+        self.assertEqual(sorted(p.name for p in self.secrets.iterdir() if "traefik" in p.name), ["traefik.yml"])
+
+    def test_given_a_rootful_engine_when_up_then_the_live_traefik_config_is_untouched(self):
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n").returncode, 0)
+        live = self.live_traefik_config()
+        self.env["FAKE_DOCKER_INFO"] = '["name=seccomp"]'
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\nEXTRA_DOMAINS=artur-rios.tech\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.live_traefik_config(), live)
+        self.assertEqual(sorted(p.name for p in self.secrets.iterdir() if "traefik" in p.name), ["traefik.yml"])
+
+    def test_given_root_when_any_command_runs_then_it_is_refused_before_touching_anything(self):
+        self.assertEqual(self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n").returncode, 0)
+        live = self.live_traefik_config()
+        # `sudo platform.sh …`: root's files in the secrets directory would be unreadable to the rootless
+        # Traefik (its container root is ygg), so nothing may be written there.
+        fake_id = pathlib.Path(self.env["PATH"].split(os.pathsep)[0]) / "id"
+        fake_id.write_text('#!/usr/bin/env bash\nif [[ "$*" == -u ]]; then echo 0; else exec /usr/bin/id "$@"; fi\n')
+        fake_id.chmod(0o755)
+        for arguments in (["up"], ["down"], ["ps"], ["logs"], ["config"], ["up", "--last-good"]):
+            self.log.unlink(missing_ok=True)
+            result = self.run_platform(*arguments)
+            self.assertEqual(result.returncode, 1, arguments)
+            self.assertIn("not as root", result.stderr, arguments)
+            self.assertEqual(self.docker_calls(), "", arguments)
+            self.assertEqual(self.live_traefik_config(), live, arguments)
 
     def test_given_cloudflare_ranges_when_proxied_then_the_rendered_config_trusts_them(self):
         (self.secrets / "cloudflare-ips").write_text("173.245.48.0/20\n2400:cb00::/32\n")
