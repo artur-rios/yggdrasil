@@ -611,6 +611,19 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertRegex(code, r"if \(ctx\.forge\.type == 'github' && state\.config == null\) \{\s*(//[^\n]*\s*)*"
                                r"release\(app, environments")
 
+    def test_given_a_release_pull_request_when_read_then_it_deploys_with_the_deploy_inputs(self):
+        # A release pull request deploys like a push does: the checks deploy.inputs names run (not reused
+        # or skipped), and their archives go into the image build on the deploy agent.
+        lib = self.lib
+        code = lib.code
+        lock = code.index('lock(resource: "release-${app}")')
+        self.assertTrue(code.startswith("Map state = prepare(ctx, 'pull-request', true)",
+                                        code.index("Map state = prepare(", lock)))
+        body = lib.code[slice(*lib.functions["releasePullRequest"])]
+        self.assertIn("List inputs = state.config != null ? deployInputs(state.config) : []", body)
+        self.assertRegex(body, r"deployTo\(app, environment, version, state\.sha, false, ctx\.repo, inputs, null, note\)")
+        self.assertNotIn("ctx.repo, [], null, note)", body)
+
 
 class ReleaseLibraryTests(unittest.TestCase):
     """The release pull request, its files and the actions-release job: who holds which token, where
@@ -845,7 +858,7 @@ class ReleaseLibraryTests(unittest.TestCase):
         start, end = lib.functions["releasePullRequest"]
         body = lib.code[start:end]
         self.assertIn("String note = skipped ? \" (${SKIPPED})\" : ''", body)
-        self.assertIn("deployTo(app, environment, version, state.sha, false, ctx.repo, [], null, note)", body)
+        self.assertIn("deployTo(app, environment, version, state.sha, false, ctx.repo, inputs, null, note)", body)
         self.assertIn(": ' (deployed without GitHub Actions checks)'", body)
         self.assertIn("currentBuild.description = description", body)
         self.assertRegex(body, r"if \(published\.missing\) \{(\s*//[^\n]*)*\s*String finish = [^\n]*\n[^\n]*\n[^\n]*\n\s*unstable ")

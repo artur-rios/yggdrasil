@@ -246,7 +246,10 @@ NUGET_KEY = "a-throwaway-nuget-api-key"
 # the marker in the log proves the check ran, not that it was planned.
 UNIT_RAN = "UNIT-42-RAN"
 UNIT = {"image": "alpine:3", "run": 'echo "UNIT-$((40 + 2))-RAN"'}
-RELEASE_PIPELINE = {"checks": {"unit": UNIT}}
+# shop-release's unit check archives a file its release deploys with (deploy.inputs).
+RELEASE_PIPELINE = {"checks": {"unit": {**UNIT, "run": UNIT["run"] + " && mkdir -p out && echo input >out/input.txt",
+                                        "archive": "out/**"}},
+                    "deploy": {"inputs": ["unit"]}}
 
 HOSTILE_JENKINSFILE = """\
 // A branch's own Jenkinsfile: Jenkins must never run it (casc.yaml, globalConfigFiles).
@@ -259,6 +262,10 @@ DEPLOY_STUB = """\
 # test_jenkins_live.py's stand-in for scripts/deploy.sh: the pipeline's side of a deploy is what is
 # under test, deploy.sh has its own tests.
 echo "DEPLOY-STUB environment=$1 stack=$2 checkout=$3 version=$4 inputs=${DEPLOY_INPUTS_DIR:-}"
+# What the image build would get from deploy.inputs: each file's first line.
+if [ -n "${DEPLOY_INPUTS_DIR:-}" ]; then
+  find "$DEPLOY_INPUTS_DIR" -type f | sort | while read -r file; do echo "DEPLOY-INPUT $(head -n 1 "$file")"; done
+fi
 """
 
 
@@ -1363,11 +1370,13 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         pull = self.pull_request(RELEASE, number)
         head, merge = pull["head"]["sha"], pull["merge_commit_sha"]
         self.assertTrue(pull["merged"])
-        # Checked (unit reused when develop's build checked the same commit), then deployed (the head), then
-        # merged and tagged on the publish agent, then published.
-        self.assertRegex(build.console, r"Check unit: (run|reuse) ")
+        # Checked (unit is a deploy input: run even when develop's build checked the same commit), then
+        # deployed (the head) with its archive, then merged and tagged on the publish agent, then published.
+        self.assertIn("Check unit: run (run: a deploy input, its archive goes into the image)", build.console)
         self.assertLess(build.console.index("(Branch policy)"), build.console.index("DEPLOY-STUB"))
         deployed = build.console.index(f"DEPLOY-STUB environment=production stack={RELEASE} checkout=app version=1.0.0-{head[:7]}")
+        self.assertRegex(build.console[deployed:].splitlines()[0], r" inputs=/\S+/deploy-inputs$")
+        self.assertIn("DEPLOY-INPUT input", build.console[deployed:])
         self.assertLess(deployed, build.console.index(f"Merged as {merge[:7]}, tagged v1.0.0."))
         self.assertLess(build.console.index("Merged as"), build.console.index("Released v1.0.0:"))
         latest = self.latest_statuses(RELEASE, head)

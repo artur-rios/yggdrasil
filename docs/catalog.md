@@ -222,12 +222,13 @@ the safe way to be wrong.
 
 A site's image sometimes needs what a check produced (a rendered documentation tree, say). List the check's
 name under `deploy.inputs`; the check needs an `archive`. On a push that deploys (`develop`, `main` or
-`release/*`), that check runs even if its result could be reused or its `paths` skipped it, its archive is
+`release/*`) and on a release pull request (its deploys to the release environments), that check runs even if
+its result could be reused or its `paths` skipped it, its archive is
 handed to the deploy agent, and `scripts/deploy.sh` copies the files into the application's checkout, the build
 context of every stack, keeping their names (`DEPLOY_INPUTS_DIR`). A name that already exists in the
 repository stops the deploy before anything is copied: inputs never overwrite repository files (a directory
-may merge into one). Only deploys that follow a push get them: the deploys of a release pull request and
-`DEPLOY_TO` builds run with none, so a stack that needs them cannot build there.
+may merge into one). Only `DEPLOY_TO` builds ("Build with Parameters", which run no check) deploy with none,
+so a stack that needs them cannot build there.
 
 ## Environments
 

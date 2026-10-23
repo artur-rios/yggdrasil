@@ -283,7 +283,8 @@ void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
     // checks, every promotion, merge, packaging and publication, so two release branches cannot race
     // through production or publish out of deployment order.
     lock(resource: "release-${app}") {
-      Map state = prepare(ctx, 'pull-request')
+      // deploying: the release deploys, so deploy.inputs' checks run and their archives are stashed.
+      Map state = prepare(ctx, 'pull-request', true)
       if (state.config != null) {
         List failed = verify(ctx, state)
         if (failed) {
@@ -889,8 +890,8 @@ def onPublishAgent(Map ctx, boolean write, boolean github, Closure body) {
 //      outside node() up to the first release environment's checksTimeout: a failure fails the
 //      release; not finished (GitHub not answering, the mirror without the commit, still running) asks
 //      the skip (askToSkip);
-//   2. every trigger: release environment in catalog order, deploy/<environment> after each (with
-//      "without GitHub Actions checks" after a skip);
+//   2. every trigger: release environment in catalog order, with deploy.inputs' archives as on a push,
+//      deploy/<environment> after each (with "without GitHub Actions checks" after a skip);
 //   3. on the publish agent: the merge (titled "release: v<version> (#N)", which release_notes.py
 //      leaves out of the notes) and the tag v<version> on the merge commit;
 //   4. releaseFromTag, shared with the tag builds and the release-resume job: with yggdrasil.yml's
@@ -940,8 +941,10 @@ void releasePullRequest(Map ctx, Map state, List environments) {
   for (Map environment : environments) {
     reportStatus(ctx.repo, state.sha, 'pending', "deploy/${environment.id}", "Waiting to deploy to ${environment.name}${note}")
   }
+  // The image build gets deploy.inputs' archives, as on a push (prepare ran those checks).
+  List inputs = state.config != null ? deployInputs(state.config) : []
   for (Map environment : environments) {
-    deployTo(app, environment, version, state.sha, false, ctx.repo, [], null, note)
+    deployTo(app, environment, version, state.sha, false, ctx.repo, inputs, null, note)
   }
 
   String merged = mergeAndTag(ctx, state.sha, version, tag)
