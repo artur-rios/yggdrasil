@@ -68,9 +68,11 @@ class JenkinsJobTests(unittest.TestCase):
         script = job_dsl()
         self.assertIn("pipelineBranchDefaultsProjectFactory", script)
         self.assertIn("scriptId('yggdrasil-default')", script)
-        # The script runs unsandboxed: it loads a library, and the controller's own job config is the
-        # only thing that can change it.
-        self.assertIn("useSandbox(false)", script)
+        # The script runs in the sandbox: it only loads the library (trusted, a global library), and
+        # unsandboxed it would wait for a script approval (scripts/test_jenkins_live.py found every build
+        # failing with "script not yet approved for use").
+        self.assertIn("useSandbox(true)", script)
+        self.assertNotIn("useSandbox(false)", script)
         # The factory that reads the repository's Jenkinsfile must be nowhere, not even in a branch.
         self.assertNotIn("workflowBranchProjectFactory", script)
         self.assertNotIn("scriptPath", script)

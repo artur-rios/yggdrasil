@@ -209,10 +209,13 @@ jobs:
             }
           }
           factory {
-            // The script kept in Jenkins, not the repository's Jenkinsfile.
+            // The script kept in Jenkins, not the repository's Jenkinsfile. In the Groovy sandbox: it only
+            // loads the yggdrasil library, which as a global library runs trusted anyway, and an
+            // unsandboxed script would need a script approval no one gives (every build failed with
+            // "script not yet approved for use", proved by scripts/test_jenkins_live.py).
             pipelineBranchDefaultsProjectFactory {
               scriptId('yggdrasil-default')
-              useSandbox(false)
+              useSandbox(true)
             }
           }
           orphanedItemStrategy {
