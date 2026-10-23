@@ -1034,11 +1034,15 @@ python3 scripts/rules.py --dry-run     # what would change, per repository
 python3 scripts/rules.py               # apply
 ```
 
+- On an **existing GitHub installation**, read [An existing GitHub installation](#an-existing-github-installation)
+  first: for now, leave its rulesets as they are.
 - `--dry-run` reads from the server and prints what it would write, without writing anything. It still needs
   the token below.
 - Without it, the script applies the rules. It is safe to run again: on Forgejo it writes only what differs
   from what the server already has (and prints `unchanged` for the rest); on GitHub it updates the rulesets in
-  place, by name.
+  place, by name. It never deletes a protection: one the model no longer has (the `release/*` rule and the
+  tag protection of a repository turned `rules: basic`, a tag protection whose pattern the catalog changed;
+  on GitHub a `release tags` ruleset) is left as it is, with a `note:` line; delete it by hand if it is stale.
 - Name repositories to apply to some only: `python3 scripts/rules.py shop-api shop-web` (the repository
   names: an application's `repository`, or its `id`, or a `repositories` entry's `id`).
 - `python3 scripts/rules.py --help` lists the variables. `github/rulesets.py` still works, but it only
@@ -1048,7 +1052,7 @@ What the script needs, by server:
 
 | Server | Needs |
 |---|---|
-| **Forgejo** (`forge.type: forgejo`) | `FORGE_TOKEN`: the owner's token, with the `write:repository` scope and no other (the live test suite runs the script with a token of that scope). Create it in Forgejo, signed in as the owner: **Settings → Applications → Generate New Token**. `JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, together, to create the webhooks that tell Jenkins about pushes, tags and pull requests; with neither, the script says `webhooks skipped` and sets no webhook; with only one, it refuses to start. |
+| **Forgejo** (`forge.type: forgejo`) | `FORGE_TOKEN`: the owner's token, with the `write:repository` scope and no other (the live test suite runs the script with a token of that scope). Create it in Forgejo, signed in as the owner: **Settings → Applications → Generate New Token**. `FORGE_JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, together, to create the webhooks that tell Jenkins about pushes, tags and pull requests; with neither, the script says `webhooks skipped` and sets no webhook; with only one, it refuses to start. (It does not read `JENKINS_URL`, which Jenkins sets in every build.) |
 | **GitHub** (no `forge` block, or `github`) | An authenticated `gh` (`gh auth login`), or `GH_TOKEN`, with admin rights on the repositories. Rulesets on **private** repositories need a paid GitHub plan. |
 
 On Forgejo, set the variables for the one command, so they stay out of your shell history files and your
@@ -1057,7 +1061,7 @@ environment afterwards:
 ```bash
 read -rs FORGE_TOKEN && export FORGE_TOKEN          # paste the owner's token, then Enter
 read -rs FORGE_WEBHOOK_SECRET && export FORGE_WEBHOOK_SECRET
-export JENKINS_URL=https://jenkins.<DOMAIN>         # the controller's address (step 6)
+export FORGE_JENKINS_URL=https://jenkins.<DOMAIN>   # the controller's address (step 6)
 python3 scripts/rules.py --dry-run
 ```
 
@@ -1066,7 +1070,7 @@ python3 scripts/rules.py --dry-run
   script, and never put on a command line.
 - `FORGE_WEBHOOK_SECRET` is the secret Jenkins is configured with (plan 3 of the move to Forgejo); choose a
   long random one, for example `openssl rand -hex 32`, and keep it where [hosts.md](hosts.md#6-credentials)
-  says. Each repository gets one hook, `<JENKINS_URL>/gitea-webhook/post` (JSON, with that secret).
+  says. Each repository gets one hook, `<FORGE_JENKINS_URL>/gitea-webhook/post` (JSON, with that secret).
 
 ### What each server gets
 
@@ -1077,11 +1081,28 @@ deletion and nothing else of the table, plus the settings in its first row and, 
 |---|---|---|
 | Default branch, merged branches | `develop` is the default; head branches are deleted after merge; merge commits and squashes allowed, rebasing not | `develop` is the default; head branches are deleted after merge |
 | `develop` | A protected branch: no direct push (force push and deletion are always refused), changes only through a pull request whose required checks pass: `branch-policy`, the application's `checks` and its `actionsChecks`. Merged by the owner and `forge.developers` | A `develop` ruleset: no deletion or force push, a pull request (squash or merge commit), the same required checks. `actionsChecks` are bound to GitHub Actions, so only that app can satisfy them; the other checks (Jenkins') are bound to nobody |
-| `main` | The same, with `branch-policy`, `checks` and one `deploy/<environment>` per release environment. Merged only by `forge.jenkinsUser` for an application, only by the owner for an `owner-tag` repository | A `main` ruleset: the same required checks, merge commit only. Who merges is not restricted: the checks are the gate |
+| `main` | The same, with `branch-policy`, `checks` and one `deploy/<environment>` per release environment. Merged only by `forge.jenkinsUser` for an application, only by the owner for an `owner-tag` repository | A `main` ruleset: the same required checks, all bound to nobody (`actionsChecks` are not required on `main`), merge commit only. Who merges is not restricted: the checks are the gate |
 | `release/*` | Only the owner pushes | No rule (none today) |
 | Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner. Nobody else can create, move or delete them (in an application's repository not even the owner). **Known gap:** a Forgejo tag protection is one list of who may change a matching tag in any way, so the user who creates the tags can also **move** them (a forced push) and **delete** them (a push; through the API too, unless the tag has a release): `forge.jenkinsUser` an application's `v*` tags, the owner an `owner-tag` repository's. A release whose tag was deleted stays, naming a tag that is gone. The live tests (`scripts/test_forgejo_live.py`) pin this | A `release tags` ruleset: tags cannot be moved or deleted, and for an `owner-tag` repository only the owner creates them |
 | The owner | Not bound by the protections, for emergencies (see below) | A repository administrator bypasses all the rulesets |
 | `Jenkinsfile` | **Protected file** on `develop` only: a pull request that changes it can be merged only by the owner, with a forced merge (below); being on the list of who may merge is not enough (`forge.developers` included). Every change to the `Jenkinsfile` thus reaches `develop` through the owner. `main` has no protected file: it receives only snapshots of `develop`, merged by `forge.jenkinsUser`, which a release that changes the `Jenkinsfile` must not stop | Not applied: GitHub cannot restrict who may merge a given file. Jenkins' own trust rule on the `Jenkinsfile` covers GitHub (plan 3) |
+
+### An existing GitHub installation
+
+`scripts/rules.py` does not apply quite what `github/rulesets.py` did. That one bound every required check
+to GitHub Actions; this one binds only the `actionsChecks`, because Jenkins is to report `branch-policy`
+and the `checks` (plan 3 of the move to Forgejo). Run on a GitHub installation today, it changes the
+rulesets so:
+
+- on `develop` and `main`, `branch-policy` and the `checks` are still required but **bound to nobody**: a
+  status of that name from anyone who may post statuses satisfies them, not only GitHub Actions' job;
+- the `actionsChecks` are required, bound to GitHub Actions, **on `develop` only**: a GitHub Actions job
+  moved from `checks` to `actionsChecks` is no longer required on `main` at all;
+- `deploy/<environment>` on `main` is unchanged (it was never bound).
+
+So on an **existing GitHub installation, don't run `scripts/rules.py`** (nor `github/rulesets.py`, which
+runs it) until plan 3 makes those contexts Jenkins': the rulesets stay exactly as they are until then. A new
+GitHub installation that runs it gets the rules above from the start.
 
 ### Forgejo details worth knowing
 
@@ -1127,8 +1148,9 @@ catalog):
 | `delete-branch <repo> <branch>` | Deletes a branch; a branch that is already gone is not an error | nothing |
 
 Run it with a command and its arguments: `bash scripts/forge.sh get-statuses shop-api <sha>`. Without a
-command it refuses (`forge: unknown command ''`); with the wrong arguments it prints that command's usage.
-The same table is in the header of the script.
+command it prints the list of commands and their arguments and exits `2`; an unknown command is refused
+(`forge: unknown command '<name>'`); with the wrong arguments it prints that command's usage. The same table
+is in the header of the script.
 
 It reads its settings from the environment, and asks the catalog (`python3 scripts/catalog.py forge`) only for
 what the environment leaves out, so a Jenkins agent that sets them all needs no `catalog.yaml`:
@@ -1137,15 +1159,20 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
 |---|---|
 | `FORGE_TYPE` | `forgejo` or `github` (else the catalog's `forge.type`) |
 | `FORGE_API_URL` | The REST API's base address (else, for GitHub, `GITHUB_API_URL`, else the catalog's `forge` API) |
-| `FORGE_OWNER` | The owner of the repositories (else `GITHUB_OWNER`, else the catalog's `owner`) |
+| `FORGE_OWNER` | The owner of the repositories (else, for GitHub, `GITHUB_OWNER`, else the catalog's `owner`) |
 | `FORGE_TOKEN` | The access token, required (else, for GitHub, `GH_TOKEN`) |
 | `GITHUB_UPLOADS_URL` | Where GitHub takes release files (default `https://uploads.github.com`) |
 
 - The **token is passed to `curl` on its standard input**, never as an argument, so no other user of the
   machine sees it in the process list, and it is never printed.
 - **Exit codes:** `0` done; `1` an error, explained on standard error as `forge: <what> failed: <the server's
-  message>`; `3` (`delete-branch` only) that the server **keeps** the branch because it is protected: the
-  owner's decision, not a reason to stop a release.
+  message>`; `2` no command at all; `3` (`delete-branch` only) that the server **keeps** the branch because
+  it is protected: the owner's decision, not a reason to stop a release.
+- **On Forgejo every `release/x.y.z` branch is kept after a release.** `release/*` is protected, and Forgejo
+  refuses to delete a protected branch to everyone, the owner included: `delete-branch` exits `3`
+  (`forge: kept: release/x.y.z is protected`). Delete old release branches by hand, as the owner: remove the
+  `release/*` protection (the repository's **Settings → Branches**), delete the branches, then run
+  `python3 scripts/rules.py <repository>` to put the protection back.
 - `merge-pr` on Forgejo waits when Forgejo answers "try again later": right after new commit statuses are
   posted Forgejo checks the pull request again in the background and refuses to merge meanwhile, so the
   command retries for about a minute (every 3 seconds, up to 20 times) before it fails. Any other refusal

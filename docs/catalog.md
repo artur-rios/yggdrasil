@@ -70,16 +70,17 @@ mirror:                          # optional
 # GitHub (the same as having no forge block)
 forge:
   type: github
-  jenkinsUser: jenkins
-  developers: [claude]
 ```
+
+`jenkinsUser` and `developers` are read on Forgejo only: GitHub's rulesets do not restrict who merges,
+so with `type: github` they have no effect.
 
 | Field | Default | Meaning |
 |---|---|---|
 | `forge.type` | `github` without a `forge` block; required inside one | `forgejo` or `github`. |
 | `forge.url` | required for `forgejo` | An `https://` address with a host and no path (`https://git.example.com`, a port is fine). A trailing `/` is dropped; the API is `<url>/api/v1`. Not allowed for `github`: GitHub Enterprise Server is not supported, `github` is always `https://github.com` (API `https://api.github.com`). |
-| `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. It is the only one that merges `main` and creates the `v*` version tags of applications. A user name: letters, digits, `.`, `_` and `-`. |
-| `forge.developers` | `[]` | Users, besides the owner, who may merge pull requests into `develop`. A list of user names. |
+| `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. On Forgejo it is the only one that merges `main` and creates the `v*` version tags of applications (no effect on GitHub). A user name: letters, digits, `.`, `_` and `-`. |
+| `forge.developers` | `[]` | On Forgejo, users, besides the owner, who may merge pull requests into `develop` (no effect on GitHub). A list of user names. |
 | `mirror.github` | required with a `mirror` | The GitHub user or organisation the repositories are mirrored to. |
 | `mirror.releases` | `true` | Whether releases are mirrored as well. `true` or `false`. |
 
@@ -115,7 +116,7 @@ repositories:
 |---|---|---|
 | `id` | required | The repository name under `owner`: letters, digits, `.`, `_` and `-` (`reveal.js` is fine). Unique, and not the repository of any application (`<id> is already an application's repository`). |
 | `checks` | `[]` | The checks Jenkins reports on pull requests to `develop` and `main`, as for an application's `checks`. No empty entries. |
-| `actionsChecks` | `[]` | GitHub Actions job names required besides them, as for an application's `actionsChecks`. No empty entries. |
+| `actionsChecks` | `[]` | GitHub Actions job names required besides them on `develop` (not on `main`), as for an application's `actionsChecks`. No empty entries. |
 | `credentials` | `[]` | The only Jenkins credentials the repository's checks may bind. Jenkins credential ids: letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
 | `release` | `none` | `none`: no versions. `owner-tag`: the owner creates the version tags by hand, matching `tags`. (Applications are different: Jenkins creates their `v*` tags.) |
 | `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*` and `[...]` classes (`[0-9]*` for versions without a `v`). Only meaningful with `release: owner-tag`. |
@@ -284,8 +285,8 @@ An application's environment variables are not catalog fields: they come from th
 | `metrics` | `host:port` Prometheus scrapes, if the application exposes metrics (*status API*: must be `host:port`). Qualified like `health`: `shop-api.production:9464`, one target per environment, with an `environment` label. |
 | `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. Starts with `/`, and needs `metrics` (*status API*). |
 | `host` | A lowercase host name: letters, digits and dashes (*status API*). The link the console shows: `https://<host><hostSuffix>.<DOMAIN>`, with the environment's `hostSuffix`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
-| `checks` | The checks Jenkins reports on the pull requests to `develop` and `main`, besides `branch-policy`. They are required there. Only list checks that run on **every** pull request: one that doesn't run would leave its required check pending forever. No empty entries (*status API*). With the GitHub git server and the current pipeline they are still the job part of `<workflow> / <job>` in a pull request's Checks tab. |
-| `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`: the job part of `<workflow> / <job>` in a pull request's Checks tab. On GitHub the required check is bound to GitHub Actions, so only checks from it satisfy them (`checks`, Jenkins', are bound to no app); on Forgejo they are required by name, like the others. The same rule applies: only checks that run on **every** pull request. No empty entries. |
+| `checks` | The checks Jenkins reports on the pull requests to `develop` and `main`, besides `branch-policy`. They are required there. Only list checks that run on **every** pull request: one that doesn't run would leave its required check pending forever. No empty entries (*status API*). With the GitHub git server and the current pipeline they are still the job part of `<workflow> / <job>` in a pull request's Checks tab; `scripts/rules.py` would require them bound to no app, so an existing GitHub installation waits before running it ([setup.md](setup.md#an-existing-github-installation)). |
+| `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`, on pull requests into `develop` only (`main` requires only what Jenkins reports): the job part of `<workflow> / <job>` in a pull request's Checks tab. A job moved here from `checks` is no longer required on `main`. On GitHub the required check is bound to GitHub Actions, so only checks from it satisfy them (`checks`, Jenkins', are bound to no app); on Forgejo they are required by name, like the others. The same rule applies: only checks that run on **every** pull request. No empty entries. |
 | `credentials` | Optional list, default `[]`. The only Jenkins credentials the application's checks may bind: Jenkins credential ids (letters, digits, `.`, `_` and `-`, starting with a letter or digit). Anything else is refused by the pipeline. |
 | `domain` | Optional. The domain a site is served on: a lowercase host name with at least one dot (`docs.example.com`). For applications that are published sites. Read by the site routing of plan 5; it does not route anything yet. |
 | `path` | Optional. Where under the domain the site lives: starts with `/`, does not end with one, no `..` (`/docs`). Read by plan 5. |

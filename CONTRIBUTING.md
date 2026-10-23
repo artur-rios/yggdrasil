@@ -142,9 +142,8 @@ request into `develop` or `main`:
   is already on `develop`, and the version has no `v<version>` tag yet. A release carries no changes of its own; a fix
   goes to `develop` through a `fix/` branch and a new release is cut.
 
-Repository rulesets, the same ones [`scripts/rules.py`](scripts/rules.py) applies to application repositories on GitHub
-(on Forgejo it applies equivalent branch and tag protections),
-hold this in place:
+Repository rulesets, the same ones [`scripts/rules.py`](scripts/rules.py) applies to application repositories on
+GitHub (on Forgejo it applies equivalent branch and tag protections), hold this in place:
 
 | Ruleset | Rules |
 |---|---|
@@ -152,8 +151,8 @@ hold this in place:
 | `main` | The same, merge commit only. No `deploy/<environment>` status: Jenkins does not deploy or merge this repository |
 | `release tags` | `v*` tags can't be created, moved or deleted, except by the repository owner |
 
-The owner (repository admin role) can bypass all three, for emergencies (on Forgejo, with a forced merge). `develop` is the default branch, and head
-branches are deleted when their pull request merges.
+The owner (repository admin role) can bypass all three, for emergencies (on Forgejo, with a forced merge).
+`develop` is the default branch, and head branches are deleted when their pull request merges.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) with a lowercase subject, e.g.
 `feat: add a host helper menu for ubuntu hosts` or `fix: accept a release branch github already deleted`.

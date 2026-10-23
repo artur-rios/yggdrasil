@@ -504,14 +504,18 @@ git commit -m "feat: apply the branch rules on github"
     - `release/*`: `enable_push: true`, `enable_push_whitelist: true`, `push_whitelist_usernames`:
       `release_pushers`, `enable_merge_whitelist: false`, `apply_to_admins: false`.
     - basic model: `develop` and `main` with `enable_push: true` (force push and deletion are blocked by any
-      protection), no checks, no whitelist.
+      protection), and explicitly `enable_merge_whitelist: false`, `enable_status_check: false`,
+      `status_check_contexts: []`, `protected_file_patterns: ""`, so a repository turned basic loses them.
+      Nothing is deleted: a protection the model no longer has (`release/*`, a tag protection of another
+      pattern; GitHub: a `release tags` ruleset) is noted in the output.
   - Tag protection (`GET/POST/PATCH /repos/{o}/{r}/tag_protections`, matched by `name_pattern`):
     `{name_pattern: tag_pattern, whitelist_usernames: tag_creators}` (release model only).
-  - Webhook (when `webhook` is given: `{"url": "<JENKINS_URL>/gitea-webhook/post", "secret": …}`):
+  - Webhook (when `webhook` is given: `{"url": "<FORGE_JENKINS_URL>/gitea-webhook/post", "secret": …}`):
     `GET /repos/{o}/{r}/hooks`, matched by `config.url`; `POST` or `PATCH` `{type: "gitea", active: true,
     events: ["create", "delete", "push", "pull_request"], branch_filter: "*", config: {url, content_type:
     "json", secret}}`. The secret never appears in returned lines or `--dry-run` output (shown as `***`).
-  - CLI with `forge.type: forgejo`: token `FORGE_TOKEN` (required), webhook from `JENKINS_URL` and
+  - CLI with `forge.type: forgejo`: token `FORGE_TOKEN` (required), webhook from `FORGE_JENKINS_URL` (not
+    `JENKINS_URL`, which Jenkins sets in every build) and
     `FORGE_WEBHOOK_SECRET` (both or neither: with neither, webhooks are skipped and the output says so).
   - A PATCH is sent only when the current object differs from the desired one in a field this script owns.
 
@@ -611,8 +615,8 @@ git commit -m "test: check forge.sh and rules against forgejo"
 - [ ] **Step 1: Write the documentation**:
   - setup.md §12: "Apply the branch rules" — `python3 scripts/rules.py --dry-run`, then without; GitHub needs an
     authenticated `gh` (or `GH_TOKEN`) with admin rights, as today; Forgejo needs `FORGE_TOKEN` (the owner's
-    token, `write:repository` scope) and, for webhooks, `JENKINS_URL` and `FORGE_WEBHOOK_SECRET` (the same secret
-    configured in Jenkins in plan 3); what each server gets (tables from Tasks 6–7); the GitHub limitation on
+    token, `write:repository` scope) and, for webhooks, `FORGE_JENKINS_URL` and `FORGE_WEBHOOK_SECRET` (the same
+    secret configured in Jenkins in plan 3); what each server gets (tables from Tasks 6–7); the GitHub limitation on
     protected files; running it again after adding an application or repository.
   - CHANGELOG: `scripts/forge.sh`, `scripts/rules.py` (with `github/rulesets.py` now a shim), the catalog fields,
     Jenkins contexts no longer bound to GitHub Actions on GitHub.

@@ -179,9 +179,9 @@ String checkoutAll() {
   return sh(script: 'git -C app rev-parse HEAD', returnStdout: true).trim()
 }
 
-// Runs scripts/github.sh (the GitHub server's commands, through scripts/forge.sh) with the GitHub App's installation token. The token only ever reaches the
-// shell through its environment (GH_TOKEN), never the command line, so it cannot end up in the
-// script text Jenkins logs.
+// Runs scripts/github.sh (the GitHub server's commands, through scripts/forge.sh) with the GitHub
+// App's installation token. The token only ever reaches the shell through its environment
+// (GH_TOKEN), never the command line, so it cannot end up in the script text Jenkins logs.
 String github(String arguments, boolean returnStdout = false) {
   withCredentials([usernamePassword(credentialsId: 'github-app', usernameVariable: 'GH_APP', passwordVariable: 'GH_TOKEN')]) {
     return sh(script: "bash yggdrasil/scripts/github.sh ${arguments}", returnStdout: returnStdout)?.toString()?.trim()

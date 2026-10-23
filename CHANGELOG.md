@@ -12,21 +12,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **One interface to the git server, for Forgejo and GitHub.** `scripts/forge.sh` has the commands a release needs
   (set and read statuses, merge, tag, create, upload and publish releases, delete a branch) and does them on
   whichever server the catalog's `forge.type` names; `scripts/github.sh` now keeps only the GitHub Actions
-  commands (`wait-checks` and the release-artifacts workflow) and calls it for the rest, with the same commands,
-  arguments and output, so the Jenkins pipeline is unchanged. On Forgejo `merge-pr` waits while Forgejo says "try
-  again later", and `delete-branch` leaves a protected branch alone (exit 3). See
+  commands (`wait-checks` and the release-artifacts workflow) and calls it for the rest, with the same commands
+  and arguments, and the same output on stdout, so the Jenkins pipeline is unchanged. What differs: its error
+  lines start `forge:`, `delete-branch`'s "already deleted" note goes to stderr, and `merge-pr` and `release`
+  fail when GitHub's answer has no merge commit or release address (before, they printed `null`). On Forgejo
+  `merge-pr` waits while Forgejo says "try again later", and `delete-branch` leaves a protected branch alone
+  (exit 3: every `release/x.y.z` is kept, the owner deletes them by hand). See
   [docs/setup.md](docs/setup.md#the-git-server-commands).
 - **`scripts/rules.py`** applies the branching model to every repository of the catalog, on GitHub (rulesets) or
-  Forgejo (settings, branch and tag protections, the `Jenkinsfile` as a protected file on `develop`, and Jenkins' webhook), with
-  `--dry-run`. `github/rulesets.py` is now a shim that says it moved and runs it. Forgejo needs `FORGE_TOKEN`, and
-  `JENKINS_URL` with `FORGE_WEBHOOK_SECRET` for webhooks; the users it names must have write access to the
-  repository, or Forgejo drops them (the script warns). [docs/setup.md](docs/setup.md#12-apply-the-branch-rules)
-  step 12 lists what each server gets.
+  Forgejo (settings, branch and tag protections, the `Jenkinsfile` as a protected file on `develop`, and Jenkins'
+  webhook), with `--dry-run`. `github/rulesets.py` is now a shim that says it moved and runs it. Forgejo needs
+  `FORGE_TOKEN`, and `FORGE_JENKINS_URL` with `FORGE_WEBHOOK_SECRET` for webhooks; the users it names must have
+  write access to the repository, or Forgejo drops them (the script warns). It deletes nothing: a protection the
+  model no longer has is noted. [docs/setup.md](docs/setup.md#12-apply-the-branch-rules) step 12 lists what each
+  server gets. On Forgejo, the user who creates the version tags can also move and delete them (a known gap,
+  documented there).
 - **Catalog fields for the git server:** `forge` (`type` `forgejo` or `github`, `url`, `jenkinsUser`, `developers`;
   a catalog without it is GitHub), `mirror` (Forgejo to GitHub), `repositories` (libraries, CI-only repositories and
   yggdrasil itself, with `release`, `tags`, `rules`, `checks`, `actionsChecks`, `credentials`) and, on applications,
-  `actionsChecks` (GitHub Actions jobs to require), `domain`, `path` and `apex` (for the site routing to come). `catalog.py` reads them with
-  `forge`, `mirror`, `repositories` and `repository-entry`. [docs/catalog.md](docs/catalog.md).
+  `actionsChecks` (GitHub Actions jobs to require on `develop`), `domain`, `path` and `apex` (for the site routing
+  to come). `catalog.py` reads them with `forge`, `mirror`, `repositories` and `repository-entry`.
+  [docs/catalog.md](docs/catalog.md).
 - `scripts/test_forgejo_live.py` runs forge.sh and rules.py against the pinned Forgejo in a container
   (`YGG_FORGEJO_TESTS=1`; CI runs it) and proves the protections hold.
 - **Two machine roles.** `ygg check` and `ygg install` take `--role dev|apps|workstation`. `dev` and `apps` set up an
@@ -73,12 +79,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- **Re-run the rules on GitHub: `python3 scripts/rules.py`** (replaces `python3 github/rulesets.py`, which still
-  works). On GitHub the required `branch-policy`, `checks` and `deploy/<environment>` are no longer bound to GitHub
-  Actions, because Jenkins reports them; only the jobs listed in the new `actionsChecks` (applications and
-  repositories) are. Move a check that really is a GitHub Actions job from `checks` to `actionsChecks` to keep it
-  bound. Until the rules are applied again the rulesets stay as they were. GitHub cannot restrict who may merge
+- **The rules are applied by `python3 scripts/rules.py`** (replaces `python3 github/rulesets.py`, which still
+  works and runs it). On a GitHub installation it changes what the rulesets require: on `develop` and `main`,
+  `branch-policy` and the `checks` stay required but are bound to no app (any status of that name satisfies
+  them; until now only GitHub Actions' could), because Jenkins is to report them (plan 3); the new
+  `actionsChecks` (applications and repositories) are required, bound to GitHub Actions, on `develop` only, so a
+  job moved there from `checks` is no longer required on `main`. **An existing GitHub installation should not
+  re-run the rules until plan 3**: its rulesets stay as they are until then. GitHub cannot restrict who may merge
   one file, so the `Jenkinsfile` protection is Forgejo's only.
+  [docs/setup.md](docs/setup.md#an-existing-github-installation).
 - **Breaking: the platform runs on rootless Docker only.** `platform.sh`, `agent.sh` and `backup.sh` use the Docker
   engine of the user who runs them (the socket from `DOCKER_HOST`, else `/run/user/<uid>/docker.sock`) and refuse a
   rootful one. Run them as `ygg`. Root inside a container is that user on the host, so the socket proxies and the
