@@ -925,13 +925,26 @@ class TagReleaseLibraryTests(unittest.TestCase):
             callers = {name for name, calls in lib.calls.items() if step in calls and name != step}
             self.assertEqual(callers, {"releaseFromTag"}, step)
         body = self.body("releaseFromTag")
-        self.assertLess(body.index("publishPackages("), body.index("releaseFiles("))
         self.assertLess(body.index("publishPackages("), body.index("publishRelease("))
         # The release pull request passes no packages: applications have none.
         self.assertNotIn("nuget", self.body("releasePullRequest"))
         # A library declaring only publish.nuget is published, not released; anything else releases.
         self.assertIn("boolean releasing = releaseConfig != null || nuget == null", self.body("releaseTag"))
         self.assertIn("ctx.release == 'owner-tag'", self.body("releaseTag"))
+
+    def test_given_release_files_and_packages_when_read_then_the_files_are_validated_before_any_push(self):
+        # A NuGet push cannot be taken back: an entry declaring both release and publish.nuget builds and
+        # validates its release files first (a failed validation is an error in gatherReleaseFiles, so
+        # nothing after it runs), then packs and pushes, then publishes the release.
+        body = self.body("releaseFromTag")
+        files = body.index("releaseFiles(")
+        packages = body.index("publishPackages(")
+        self.assertLess(files, packages)
+        self.assertLess(packages, body.index("publishRelease("))
+        # Nothing in between can swallow a failure of the files.
+        self.assertNotRegex(body[:packages], r"\btry\b|\bcatch\b")
+        self.assertRegex(self.body("gatherReleaseFiles"), r"if \(code != 0\) \{\s*error \"release\.validate failed")
+        self.assertIn("releasing && releaseConfig != null ? releaseFiles(", body)
 
     def test_given_packages_when_read_then_they_are_packed_without_any_credential_and_stashed_past_the_link_guard(self):
         lib = self.lib

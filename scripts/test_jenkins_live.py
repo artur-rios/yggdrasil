@@ -122,6 +122,9 @@ RESUME = "shop-resume"
 # Owner-tagged repositories (tag builds): one releasing files, one library publishing NuGet packages to a
 # local feed (BaGet).
 OWNED, LIBRARY = "ygg-tool", "dotnet-lib"
+# An owner-tagged repository declaring both release files and NuGet packages, whose validation fails: the
+# packages must never be packed or pushed.
+BOTH = "ygg-both"
 MIRROR_OWNER = "artur-rios-mirror"
 GITHUB_TOKEN = "a-throwaway-github-token"
 SKIP_QUESTION = "GitHub Actions checks didn't finish. Deploy without them?"
@@ -222,6 +225,12 @@ LIBRARY_PIPELINE = {"publish": {"nuget": {
     "run": 'dotnet pack src/Lib/Lib.csproj -c Release -o out -p:Version="$RELEASE_VERSION"'
            ' && echo "PACK-SAW-KEY-$(env | grep -c NUGET_API_KEY)"',
     "packages": "out/*.nupkg"}}}
+BOTH_PIPELINE = {
+    "release": {"build": {"image": "alpine:3", "run": "mkdir -p dist && echo both >dist/ygg-both.tar.gz",
+                          "files": ["dist/*.tar.gz"]},
+                "validate": {"image": "alpine:3", "run": 'echo "BOTH-VALIDATION-$((1 + 2))-FAILED"; exit 3'}},
+    "publish": {"nuget": {"image": SDK_IMAGE, "run": 'echo "BOTH-PACKED-$((1 + 1))"', "packages": "out/*.nupkg"}},
+}
 LIBRARY_FILES = {
     "src/Lib/Lib.csproj": '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework>'
                           "<PackageId>Ygg.Live.Lib</PackageId><Authors>ygg</Authors></PropertyGroup></Project>\n",
@@ -288,7 +297,8 @@ def test_catalog():
         ]}],
         "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"},
                          {"id": OWNED, "release": "owner-tag", "tags": "v*"},
-                         {"id": LIBRARY, "release": "owner-tag", "tags": "[0-9]*"}],
+                         {"id": LIBRARY, "release": "owner-tag", "tags": "[0-9]*"},
+                         {"id": BOTH, "release": "owner-tag", "tags": "v*"}],
     }
 
 
@@ -296,7 +306,8 @@ RELEASE_APPLICATIONS = {RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TO
                         BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE}
 # The owner-tagged repositories with a yggdrasil.yml on main (and develop, cut from it), and their files.
 OWNER_TAGGED = {OWNED: {"yggdrasil.yml": yaml.safe_dump(OWNED_PIPELINE, sort_keys=False)},
-                LIBRARY: {"yggdrasil.yml": yaml.safe_dump(LIBRARY_PIPELINE, sort_keys=False), **LIBRARY_FILES}}
+                LIBRARY: {"yggdrasil.yml": yaml.safe_dump(LIBRARY_PIPELINE, sort_keys=False), **LIBRARY_FILES},
+                BOTH: {"yggdrasil.yml": yaml.safe_dump(BOTH_PIPELINE, sort_keys=False)}}
 
 
 def pipeline_file(**checks):
@@ -1570,6 +1581,17 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # A library's packages are its release: nothing on the git server.
         self.assertIsNone(self.release_of(LIBRARY, "1.2.3"))
         self.assertEqual(self.description(LIBRARY, "1.2.3", build.number), "1.2.3: packages pushed")
+
+    def test_given_release_files_and_packages_when_the_validation_fails_then_no_package_is_pushed(self):
+        # The release files are built and validated before the packages: a push cannot be taken back.
+        _, build = self.tag_run(BOTH, "v1.0.0")
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn("BOTH-VALIDATION-3-FAILED", build.console)
+        self.assertIn("release.validate failed (exit 3)", build.console)
+        # The pack command never ran (not even its text in the trace), nothing was pushed or published.
+        for later in ("BOTH-PACKED", "(Packages)", "nuget-push", "(Publish the release)"):
+            self.assertNotIn(later, build.console)
+        self.assertIsNone(self.release_of(BOTH, "v1.0.0"))
 
     def test_given_a_library_tag_pushed_already_when_release_resume_runs_then_the_push_skips_the_duplicate(self):
         _, build = self.tag_run(LIBRARY, "1.2.3")

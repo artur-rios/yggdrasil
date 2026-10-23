@@ -974,8 +974,10 @@ String resumeNote(Map ctx, String tag) {
 //            no GitHub copy of the release -- published on the git server only, "GitHub copy pending"
 //            (the release-resume job makes the copy later, publish-release.sh being idempotent)
 //   seconds  how long a Windows run may take (default 3600)
-//   nuget    publish.nuget of an owner-tagged library: its packages packed and pushed first
-//            (publishPackages; a version the feed has already is skipped, so a rerun goes on)
+//   nuget    publish.nuget of an owner-tagged library: its packages packed and pushed (publishPackages;
+//            a version the feed has already is skipped, so a rerun goes on) -- after the release files are
+//            built and validated, before anything is published: a push cannot be taken back, so a release
+//            whose files fail pushes nothing
 //   release  false: no release on the git server (a library that only publishes packages); default true
 // Returns [urls: the releases' addresses, missing: the Windows files left out, reason: why,
 // githubPending: whether the GitHub copy was left for later, packages: whether packages were pushed,
@@ -984,15 +986,18 @@ Map releaseFromTag(Map ctx, Map entry, Map releaseConfig, String tag, String sha
   boolean skipped = opts.skipped == true
   int seconds = (opts.seconds ?: 3600) as int
   Map nuget = opts.nuget as Map
+  boolean releasing = opts.release != false
+  // The order: the release files built and validated (a failure stops here, nothing pushed or
+  // published), then the packages (irreversible), then the release.
+  Map files = releasing && releaseConfig != null ? releaseFiles(ctx, entry, releaseConfig, tag, sha, skipped, seconds)
+                                                 : [stash: null, missing: [], reason: '']
   if (nuget != null) {
     publishPackages(ctx, nuget, tag, sha)
   }
-  if (opts.release == false) {
+  if (!releasing) {
     return [urls: [], missing: [], reason: '', githubPending: false, packages: nuget != null, released: false]
   }
   boolean githubPending = mirrorsReleases(ctx) && skipped
-  Map files = releaseConfig != null ? releaseFiles(ctx, entry, releaseConfig, tag, sha, skipped, seconds)
-                                    : [stash: null, missing: [], reason: '']
   if (githubPending) {
     echo "GitHub copy pending: the GitHub Actions checks were skipped, so ${tag} is published on the git server only. The release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}) makes its GitHub copy."
   }
@@ -1581,9 +1586,9 @@ Map readReleaseTag(Map ctx, String tag) {
 }
 
 // What a tag releases, from its yggdrasil.yml (`described`: readReleaseTag's answer), through
-// releaseFromTag -- the release pull request's own steps after its merge. An owner-tagged library's
-// publish.nuget: its packages packed and pushed; then the release (the files of `release`, when
-// declared, and the notes) unless the library declares publish.nuget and no release: a library's
+// releaseFromTag -- the release pull request's own steps after its merge: the files of `release`, when
+// declared, built and validated; an owner-tagged library's publish.nuget packed and pushed; then the
+// release (the files and the notes) unless the library declares publish.nuget and no release: a library's
 // packages are its release. Everything is checked before any of it runs. Returns releaseFromTag's
 // answer.
 Map releaseTag(Map ctx, String tag, Map described) {
