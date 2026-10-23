@@ -53,6 +53,8 @@ HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}\Z")
 REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+\Z")
 # A git server user name (Forgejo and GitHub both accept letters, digits, dots, dashes and underscores).
 USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+# A GitHub user name, or the bot login of a GitHub App (my-app[bot]).
+BOT_USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[bot\])?\Z")
 # A Jenkins credential id (what a `credentials(...)` binding names).
 CREDENTIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 # A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*).
@@ -241,9 +243,14 @@ def _forge_errors(catalog):
             elif "url" in block and block.get("type") == "github":
                 errors.append("forge.url: only for forgejo (GitHub Enterprise Server is not supported: "
                               "github is always github.com)")
+            # On GitHub the Jenkins identity may be a GitHub App, whose statuses are created by its bot
+            # login (my-app[bot]); a Forgejo user never has the [bot] suffix.
+            user_name = BOT_USER_NAME if forge_type == "github" else USER_NAME
             if "jenkinsUser" in block and not (isinstance(block["jenkinsUser"], str)
-                                               and USER_NAME.match(block["jenkinsUser"])):
-                errors.append("forge.jenkinsUser: a user name (letters, digits, '.', '_' and '-'; default jenkins)")
+                                               and user_name.match(block["jenkinsUser"])):
+                errors.append("forge.jenkinsUser: a user name (letters, digits, '.', '_' and '-'; "
+                              + ("optionally ending in [bot] for a GitHub App; " if forge_type == "github" else "")
+                              + "default jenkins)")
             developers = block.get("developers")
             if "developers" in block and not (isinstance(developers, list) and all(
                     isinstance(d, str) and USER_NAME.match(d) for d in developers)):

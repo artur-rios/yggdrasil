@@ -240,6 +240,13 @@ class GitHubRulesetsTests(unittest.TestCase):
         tags = ruleset(rules.github_rulesets(r), "release tags")
         self.assertEqual([rule["type"] for rule in tags["rules"]], ["update", "deletion"])
 
+    def test_given_a_github_app_as_the_jenkins_user_when_built_then_the_rulesets_are_the_same(self):
+        # The bot login is only a name to compare statuses with: GitHub rulesets never list who merges.
+        value = copy.deepcopy(CATALOG_GITHUB)
+        value["forge"] = {"type": "github", "jenkinsUser": "my-app[bot]"}
+        self.assertEqual(rules.github_rulesets(by_repo(value)["shop-api"]),
+                         rules.github_rulesets(by_repo()["shop-api"]))
+
     def test_given_a_basic_repository_when_built_then_only_deletion_and_force_push_are_blocked(self):
         payloads = rules.github_rulesets(by_repo()["scratch"])
         self.assertEqual([p["name"] for p in payloads], ["develop", "main"])

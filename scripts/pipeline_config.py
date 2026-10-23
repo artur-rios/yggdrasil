@@ -96,6 +96,14 @@ def _texts(where, value, errors):
         errors.append(f"{where}: a list of non-empty strings")
 
 
+def _globs(where, value, errors):
+    # [] would read as "never run" to one reader and "always run" to another: say which in the file.
+    if isinstance(value, list) and not value:
+        errors.append(f"{where}: must list at least one glob (leave paths out to always run)")
+    else:
+        _texts(where, value, errors)
+
+
 def _credentials(where, value, errors):
     """ENV_VAR -> Jenkins credential id: what a withCredentials binding needs, nothing more."""
     if not isinstance(value, dict):
@@ -110,7 +118,7 @@ def _credentials(where, value, errors):
 
 # Each section: field -> (validator, required). A section is a mapping of exactly these fields.
 CHECK = {"image": (_image, True), "run": (_text, True), "docker": (_flag, False),
-         "credentials": (_credentials, False), "paths": (_texts, False), "junit": (_text, False),
+         "credentials": (_credentials, False), "paths": (_globs, False), "junit": (_text, False),
          "archive": (_text, False)}
 IMAGE_RUN = {"image": (_image, True), "run": (_text, True)}
 SECTIONS = {

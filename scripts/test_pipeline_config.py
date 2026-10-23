@@ -114,6 +114,12 @@ class LoadTests(unittest.TestCase):
     def test_given_an_empty_file_when_loaded_then_it_is_a_config_with_nothing_in_it(self):
         self.assertEqual(parsed(""), {})
 
+    def test_given_empty_paths_when_loaded_then_it_names_the_field(self):
+        # An empty list reads as "skip always" or "run always" depending on who looks: refuse it.
+        with self.assertRaises(pc.ConfigError) as caught:
+            parsed("checks:\n  unit:\n    image: x\n    run: y\n    paths: []\n")
+        self.assertIn("checks.unit.paths: must list at least one glob", str(caught.exception))
+
     def test_given_a_check_with_an_unknown_field_when_loaded_then_it_names_the_field(self):
         with self.assertRaises(pc.ConfigError) as caught:
             parsed("checks:\n  unit:\n    image: x\n    run: y\n    dockr: true\n")

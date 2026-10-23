@@ -80,7 +80,7 @@ so with `type: github` they have no effect.
 |---|---|---|
 | `forge.type` | `github` without a `forge` block; required inside one | `forgejo` or `github`. |
 | `forge.url` | required for `forgejo` | An `https://` address with a host and no path (`https://git.example.com`, a port is fine). A trailing `/` is dropped; the API is `<url>/api/v1`. Not allowed for `github`: GitHub Enterprise Server is not supported, `github` is always `https://github.com` (API `https://api.github.com`). |
-| `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. On Forgejo it is the only one that merges `main` and creates the `v*` version tags of applications (no effect on GitHub). A user name: letters, digits, `.`, `_` and `-`. It is also whose check results the pipeline reuses (see [Which checks run](#which-checks-run)): on GitHub the statuses of a GitHub App are created by its bot login (`my-app[bot]`), so a GitHub installation reuses results only when `jenkinsUser` is set to that login; otherwise every check runs again. |
+| `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. On Forgejo it is the only one that merges `main` and creates the `v*` version tags of applications (no effect on GitHub). A user name: letters, digits, `.`, `_` and `-`; on GitHub it may end in `[bot]` (a GitHub App's bot login, `my-app[bot]`). It is also whose check results the pipeline reuses (see [Which checks run](#which-checks-run)): on GitHub the statuses of a GitHub App are created by its bot login (`my-app[bot]`), so a GitHub installation reuses results only when `jenkinsUser` is set to that login; otherwise every check runs again. |
 | `forge.developers` | `[]` | On Forgejo, users, besides the owner, who may merge pull requests into `develop` (no effect on GitHub). A list of user names. |
 | `forge.publishAgent` | the `agent` of the last `trigger: release` environment, over the applications in catalog order (what merges and releases today); none when no environment releases | The Jenkins agent that merges, tags, creates releases and uploads their files: the only one holding the git server's write token. An agent name: lowercase letters, digits and dashes. |
 | `mirror.github` | required with a `mirror` | The GitHub user or organisation the repositories are mirrored to. |
@@ -144,7 +144,7 @@ checks:                         # name -> a command run in a container; the name
     docker: true                # give it the Docker engine (default false)
     credentials:                # ENV_VAR -> Jenkins credential id
       NUGET_KEY: nuget-api-key
-    paths: ["src/**", "tests/**"]   # run only when a changed file matches (default: always)
+    paths: ["src/**", "tests/**"]   # run only when a changed file matches (default: always; never empty)
     junit: "**/TestResults/*.xml"   # test results Jenkins collects
     archive: "out/**"               # files kept as the build's artifacts
 branchPolicy:                   # the branch policy check

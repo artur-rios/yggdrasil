@@ -388,6 +388,28 @@ class ForgeTests(unittest.TestCase):
         self.assertTrue(any("forge.developers" in e for e in errors))
         self.assertTrue(any("forge.developers" in e for e in self.errors(forge=dict(self.FORGEJO, developers="claude"))))
 
+    def test_given_github_when_the_jenkins_user_is_an_apps_bot_login_then_it_is_valid(self):
+        for user in ("my-app[bot]", "My.App_1[bot]", "jenkins", "ci"):
+            with self.subTest(user=user):
+                v = catalog(forge={"type": "github", "jenkinsUser": user})
+                self.assertEqual(c.validate(v), [])
+                self.assertEqual(c.forge(v)["jenkinsUser"], user)
+
+    def test_given_github_when_the_jenkins_user_is_a_malformed_bot_login_then_it_is_an_error(self):
+        for user in ("[bot]", "app[bot]x", "app[bot][bot]", "app[Bot]", "app[bot]\n", "app[bots]", "-app[bot]",
+                     "app [bot]", "app[bot"):
+            with self.subTest(user=user):
+                errors = self.errors(forge={"type": "github", "jenkinsUser": user})
+                self.assertTrue(any("forge.jenkinsUser" in e for e in errors), errors)
+
+    def test_given_forgejo_when_the_jenkins_user_has_a_bot_suffix_then_it_is_an_error(self):
+        errors = self.errors(forge=dict(self.FORGEJO, jenkinsUser="my-app[bot]"))
+        self.assertTrue(any("forge.jenkinsUser" in e for e in errors), errors)
+
+    def test_given_github_when_a_developer_has_a_bot_suffix_then_it_is_still_an_error(self):
+        errors = self.errors(forge={"type": "github", "developers": ["my-app[bot]"]})
+        self.assertTrue(any("forge.developers" in e for e in errors), errors)
+
     def test_given_a_mirror_on_github_when_validated_then_it_is_an_error(self):
         self.assertTrue(any("mirror" in e and "forgejo" in e for e in self.errors(mirror={"github": "acme"})))
         errors = self.errors(forge={"type": "github"}, mirror={"github": "acme"})
