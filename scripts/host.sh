@@ -960,6 +960,8 @@ git_server_step() {
     say "   (its Settings, Collaborators: docs/setup.md step 12), then: python3 scripts/rules.py $repository"
   else
     say "3. Install the GitHub App on $repository (step 7.5), then: python3 scripts/rules.py $repository"
+    say "   (only this repository: on an existing GitHub installation, run it for no other until plan 3,"
+    say "   docs/setup.md step 12, An existing GitHub installation)"
   fi
 }
 

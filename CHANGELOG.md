@@ -23,8 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Forgejo (settings, branch and tag protections, the `Jenkinsfile` as a protected file on `develop`, and Jenkins'
   webhook), with `--dry-run`. `github/rulesets.py` is now a shim that says it moved and runs it. Forgejo needs
   `FORGE_TOKEN`, and `FORGE_JENKINS_URL` with `FORGE_WEBHOOK_SECRET` for webhooks; the users it names must have
-  write access to the repository, or Forgejo drops them (the script warns). It deletes nothing: a protection the
-  model no longer has is noted. [docs/setup.md](docs/setup.md#12-apply-the-branch-rules) step 12 lists what each
+  write access to the repository, or Forgejo drops them (the script warns). On Forgejo it deletes nothing, and on
+  GitHub only a ruleset named `default`, as `github/rulesets.py` did; a protection the model no longer has is
+  noted. [docs/setup.md](docs/setup.md#12-apply-the-branch-rules) step 12 lists what each
   server gets. On Forgejo, the user who creates the version tags can also move and delete them (a known gap,
   documented there).
 - **Catalog fields for the git server:** `forge` (`type` `forgejo` or `github`, `url`, `jenkinsUser`, `developers`;

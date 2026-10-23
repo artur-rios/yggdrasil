@@ -35,9 +35,11 @@ rule. It still gets the repository settings (default branch develop, head branch
 merge; on Forgejo the merge styles too) and, on Forgejo when configured, the Jenkins webhook: Jenkins
 builds it too.
 
-Nothing is deleted. A protection the model no longer has -- a release/* rule or a tag protection
-(GitHub: a `release tags` ruleset) of a repository turned `rules: basic`, a tag protection whose
-pattern the catalog changed -- is left as it is, and the run notes it: deleting it is the owner's call.
+Nothing is deleted on Forgejo. On GitHub one ruleset is: one named `default`, the ad-hoc protection
+of the default branch from before github/rulesets.py, as that script always did. A protection the
+model no longer has -- a release/* rule or a tag protection (GitHub: a `release tags` ruleset) of a
+repository turned `rules: basic`, a tag protection whose pattern the catalog changed -- is left as it
+is, and the run notes it: deleting it is the owner's call.
 
 On Forgejo a user is kept on a whitelist (merging, pushing, creating tags) only while they have write
 access to the repository: Forgejo leaves anyone else out without an error. The run says so, by name,

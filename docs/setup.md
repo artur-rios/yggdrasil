@@ -1040,7 +1040,10 @@ python3 scripts/rules.py               # apply
   the token below.
 - Without it, the script applies the rules. It is safe to run again: on Forgejo it writes only what differs
   from what the server already has (and prints `unchanged` for the rest); on GitHub it updates the rulesets in
-  place, by name. It never deletes a protection: one the model no longer has (the `release/*` rule and the
+  place, by name. On Forgejo it never deletes anything. On GitHub it deletes one thing: a ruleset named
+  `default` (the ad-hoc protection of the default branch from before `github/rulesets.py`, which would
+  otherwise go on protecting `develop` with different rules), so keep that name for nothing of your own.
+  Otherwise it never deletes a protection: one the model no longer has (the `release/*` rule and the
   tag protection of a repository turned `rules: basic`, a tag protection whose pattern the catalog changed;
   on GitHub a `release tags` ruleset) is left as it is, with a `note:` line; delete it by hand if it is stale.
 - Name repositories to apply to some only: `python3 scripts/rules.py shop-api shop-web` (the repository
@@ -1126,7 +1129,9 @@ GitHub installation that runs it gets the rules above from the start.
 
 Run the script again after adding an application or a repository to the catalog (the full steps are in
 [Adding things](#adding-things)) and after adding a release environment: `main` then also requires its
-`deploy/<environment>`. From then on `develop` and `main` change only through pull requests.
+`deploy/<environment>`. From then on `develop` and `main` change only through pull requests. (On an existing
+GitHub installation, until plan 3, run it only for a new repository and add a new `deploy/<environment>` by
+hand: [An existing GitHub installation](#an-existing-github-installation) says why.)
 
 ### The git server commands
 
@@ -1288,7 +1293,8 @@ Details: [cli.md](cli.md#start-and-stop-environments).
 4. **Env files** on each host it deploys to, as in [step 11](#11-application-env-files).
 5. **Apply:**
    - push the catalog and stack files to `main` of your fork
-   - `python3 scripts/rules.py <repository>`
+   - `python3 scripts/rules.py <repository>` (only the new repository: on an existing GitHub installation,
+     don't run it for the others until plan 3, see [An existing GitHub installation](#an-existing-github-installation))
    - on every host, pull and restart as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog): Jenkins creates the new job, the status APIs and Prometheus pick it up
 
 ### An environment
@@ -1307,7 +1313,9 @@ production on the VPS, say): no new platform, agent or DNS record.
 3. **Env files:** for each application, as in [step 11](#11-application-env-files), with the
    suffixed host names (`PUBLIC_HOST=shop-api-stg.example.com`).
 4. `python3 scripts/rules.py`, if it's a release environment: `main` now also requires its
-   `deploy/<id>`.
+   `deploy/<id>`. On an existing GitHub installation, until plan 3, add `deploy/<id>` to each
+   repository's `main` ruleset by hand instead (**Settings → Rules → Rulesets → main**): running the
+   script for every repository would unbind their checks, see [An existing GitHub installation](#an-existing-github-installation).
 
 **On a host of its own:**
 
@@ -1318,6 +1326,8 @@ production on the VPS, say): no new platform, agent or DNS record.
    - On the controller host, pull and restart Jenkins as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog). Jenkins creates the new agent.
    - Bring the new host up as in [step 10](#10-the-apps-machine), with the new agent's secret.
    - `python3 scripts/rules.py`, if it's a release environment: `main` now also requires its `deploy/<id>`.
+     On an existing GitHub installation, until plan 3, add it to each `main` ruleset by hand instead, as
+     in the case above.
 5. **Env files:** for each application on the new host, as in [step 11](#11-application-env-files).
 
 ### A system
