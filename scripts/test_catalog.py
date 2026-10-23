@@ -374,6 +374,13 @@ class ForgeTests(unittest.TestCase):
     def test_given_an_unknown_forge_key_when_validated_then_it_is_an_error(self):
         self.assertTrue(any("forge" in e and "token" in e for e in self.errors(forge=dict(self.FORGEJO, token="x"))))
 
+    def test_given_a_number_as_a_key_when_validated_then_it_is_reported_not_raised(self):
+        # YAML reads `1: x` as the int 1: next to the str keys, sorting them must not raise TypeError.
+        errors = self.errors(forge={**self.FORGEJO, 1: "x", "token": "y"},
+                             mirror={"github": "acme", 2: True})
+        self.assertIn("forge: unknown key(s) [1, 'token']", errors)
+        self.assertIn("mirror: unknown key(s) [2]", errors)
+
     def test_given_bad_user_names_when_validated_then_the_fields_are_named(self):
         errors = self.errors(forge=dict(self.FORGEJO, jenkinsUser="-bad user", developers=["ok", "no way"]))
         self.assertTrue(any("forge.jenkinsUser" in e for e in errors))
@@ -528,6 +535,14 @@ class RepositoryTests(unittest.TestCase):
     def test_given_an_unknown_repository_key_when_validated_then_it_is_an_error(self):
         errors = self.errors(repositories=[{"id": "lib", "branch": "main"}])
         self.assertTrue(any("repositories[0]" in e and "branch" in e for e in errors), errors)
+
+    def test_given_a_number_as_a_repository_or_option_key_when_validated_then_it_is_reported_not_raised(self):
+        value = catalog(repositories=[{"id": "lib", 3: "x", "branch": "main"}])
+        value["environments"][0][4] = "y"
+        value["environments"][0]["replicas"] = 2
+        errors = c.validate(value)
+        self.assertIn("repositories[0]: unknown key(s) [3, 'branch']", errors)
+        self.assertIn("environment 'dev': unknown option(s) [4, 'replicas']", errors)
 
     def test_given_the_application_site_fields_when_validated_then_they_are_valid(self):
         self.assertEqual(self.app_errors(domain="shop.example.com", path="/shop/app", apex=True,

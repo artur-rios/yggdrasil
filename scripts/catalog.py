@@ -20,10 +20,10 @@ add-application reads {"system": {"id", "name", "description"}, "application": {
 application goes at the end of that system, or of a new system (name and description only count
 then), inserted before the yggdrasil system if it is the last one.
 
-Used by scripts/deploy.sh, scripts/ygg.sh, scripts/forge.sh and scripts/rules.py (github/rulesets.py runs it), and by CI to reject a broken
-catalog. The Jenkins
-shared library resolves the same options itself (it cannot run Python on the controller); keep
-resolve() and jenkins/library/vars/yggdrasilPipeline.groovy in step. Reference: docs/catalog.md.
+Used by scripts/deploy.sh, scripts/ygg.sh, scripts/forge.sh and scripts/rules.py (which
+github/rulesets.py runs), and by CI to reject a broken catalog. The Jenkins shared library resolves
+the same options itself (it cannot run Python on the controller); keep resolve() and
+jenkins/library/vars/yggdrasilPipeline.groovy in step. Reference: docs/catalog.md.
 
 Needs PyYAML (pip install pyyaml; Ubuntu: apt install python3-yaml).
 """
@@ -207,6 +207,12 @@ def _forge_url(value):
     return None
 
 
+def _keys(keys):
+    """Unknown keys in a stable order, for an error. YAML reads `1:` as an int, which sorting with
+    the str keys would raise on: they are ordered as text."""
+    return sorted(keys, key=str)
+
+
 def _forge_errors(catalog):
     errors = []
     forge_type = "github"  # no forge block: GitHub, as before the git server was configurable
@@ -217,7 +223,7 @@ def _forge_errors(catalog):
         else:
             unknown = set(block) - {"type", "url", "jenkinsUser", "developers"}
             if unknown:
-                errors.append(f"forge: unknown key(s) {sorted(unknown)}")
+                errors.append(f"forge: unknown key(s) {_keys(unknown)}")
             if block.get("type") not in FORGES:
                 errors.append(f"forge.type: required, one of {list(FORGES)}")
             else:
@@ -246,7 +252,7 @@ def _forge_errors(catalog):
         else:
             unknown = set(block) - {"github", "releases"}
             if unknown:
-                errors.append(f"mirror: unknown key(s) {sorted(unknown)}")
+                errors.append(f"mirror: unknown key(s) {_keys(unknown)}")
             if "github" not in block:
                 errors.append("mirror.github: required, the GitHub user or organisation to mirror to")
             elif not (isinstance(block["github"], str) and REPOSITORY.match(block["github"])):
@@ -286,7 +292,7 @@ def _repository_errors(catalog, systems):
             continue
         unknown = set(entry) - REPOSITORY_KEYS
         if unknown:
-            errors.append(f"{where}: unknown key(s) {sorted(unknown)}")
+            errors.append(f"{where}: unknown key(s) {_keys(unknown)}")
         rid = entry.get("id")
         if not isinstance(rid, str) or not REPOSITORY.match(rid):
             errors.append(f"{where}.id: required, a repository name (letters, digits, '.', '_' and '-')")
@@ -409,7 +415,7 @@ def _options_errors(where, options, override=False):
                 errors.append(f"{where}.{key}: an application cannot rename an environment")
     unknown = set(options) - set(DEFAULTS) - {"id", "name"}
     if unknown:
-        errors.append(f"{where}: unknown option(s) {sorted(unknown)}")
+        errors.append(f"{where}: unknown option(s) {_keys(unknown)}")
     if "mode" in options and options["mode"] not in MODES:
         errors.append(f"{where}.mode: one of {sorted(MODES)}")
     if "trigger" in options and options["trigger"] not in TRIGGERS:
