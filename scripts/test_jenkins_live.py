@@ -24,6 +24,10 @@ What it starts, on a Docker network of its own, every container named ygg-pipeli
   vps       the deploy agent of the test catalog's one environment (the build agent image: the
             yggdrasil repository on Forgejo replaces scripts/deploy.sh with a stand-in that prints its
             arguments, so a deploy is a line in the log)
+  baget     a local NuGet feed (BaGet, pinned), on the engine's default bridge and published on its
+            gateway, over HTTPS with a certificate of the same CA: the release agent's YGG_NUGET_SOURCE
+            (and YGG_NUGET_CA_FILE), so an owner-tagged library's tag build pushes there, with the
+            controller's nuget-api-key (casc.nuget.yaml, its file mounted) as the feed's key
 
 The library is this checkout's jenkins/library, served from the Forgejo repository artur-rios/yggdrasil
 at the tag v0.0.0-live (YGGDRASIL_LIBRARY_VERSION), next to this checkout's scripts/. rules.py applies
@@ -38,8 +42,12 @@ and answers actions-status, wait-ref, dispatch, run-status and download-artifact
 the tests write, logging every call with the agent that made it and whether a GitHub token was bound. The
 github-app credential (a GitHubAppCredentials, which would ask GitHub for a token) is replaced, after the
 boots were inspected, by a plain username/password one under the same id. The skip is answered through
-Jenkins' REST API (the input's proceedEmpty), and the actions-release job (casc.yaml, its script mounted
-as compose.yml mounts it) is started with buildWithParameters.
+Jenkins' REST API (the input's proceedEmpty), and the actions-release and release-resume jobs (casc.yaml,
+their scripts mounted as compose.yml mounts them) are started with buildWithParameters.
+
+Owner tags: the owner pushes annotated tags (git tag -a: a lightweight tag on a commit older than a day is
+never built, see the tag-age test) to ygg-tool (release files) and dotnet-lib (a NuGet package, packed with
+the .NET SDK image nuget-push.sh pins), on main and off it.
 
 Differences from production worth knowing when reading a result: the engine here is not rootless (the
 agents' root is the machine's root, and a check's TESTCONTAINERS_HOST_OVERRIDE is the agent's gateway on
@@ -108,6 +116,12 @@ WORKER = "shop-worker"
 # validated; an application whose GitHub Actions check never answers (the skip, then actions-release); a
 # release whose validation fails.
 RELEASE, DESKTOP, TOOLS, BROKEN = "shop-release", "shop-desktop", "shop-tools", "shop-broken"
+# A release that fails after its merge (its release build binds a credential Jenkins does not have yet),
+# then finished by the release-resume job.
+RESUME = "shop-resume"
+# Owner-tagged repositories (tag builds): one releasing files, one library publishing NuGet packages to a
+# local feed (BaGet).
+OWNED, LIBRARY = "ygg-tool", "dotnet-lib"
 MIRROR_OWNER = "artur-rios-mirror"
 GITHUB_TOKEN = "a-throwaway-github-token"
 SKIP_QUESTION = "GitHub Actions checks didn't finish. Deploy without them?"
@@ -186,6 +200,38 @@ BROKEN_PIPELINE = {"release": {
               "files": ["dist/*.tar.gz"]},
     "validate": {"image": "alpine:3", "run": 'echo "VALIDATION-$((1 + 2))-FAILED"; exit 3'},
 }}
+RESUME_KEY = "a-throwaway-resume-key"
+RESUME_PIPELINE = {"release": {
+    "build": {"image": "alpine:3",
+              "run": 'mkdir -p dist && printf "resumed %s\\n" "$RELEASE_VERSION" >dist/shop-resume.tar.gz'
+                     ' && echo "RESUME-KEY $(printf %s "$RESUME_KEY" | sha256sum | cut -c1-64)"',
+              "files": ["dist/*.tar.gz"], "credentials": {"RESUME_KEY": "shop-resume-key"}},
+}}
+
+# The owner-tagged repositories' yggdrasil.yml, on main. The library packs with the .NET SDK image
+# nuget-push.sh pushes with (one pull), and says whether the key was in its environment (it must not be).
+SDK_IMAGE = re.search(r"^IMAGE='([^']+)'$", (ROOT / "scripts" / "nuget-push.sh").read_text(encoding="utf-8"), re.M).group(1)
+OWNED_PIPELINE = {"release": {
+    "build": {"image": "alpine:3",
+              "run": 'mkdir -p dist && printf "ygg-tool %s\\n" "$RELEASE_VERSION" >"dist/ygg-tool-$RELEASE_VERSION.tar.gz"'
+                     ' && echo "TOOL-BUILT-$((1 + 1))"',
+              "files": ["dist/*.tar.gz"]},
+}}
+LIBRARY_PIPELINE = {"publish": {"nuget": {
+    "image": SDK_IMAGE,
+    "run": 'dotnet pack src/Lib/Lib.csproj -c Release -o out -p:Version="$RELEASE_VERSION"'
+           ' && echo "PACK-SAW-KEY-$(env | grep -c NUGET_API_KEY)"',
+    "packages": "out/*.nupkg"}}}
+LIBRARY_FILES = {
+    "src/Lib/Lib.csproj": '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework>'
+                          "<PackageId>Ygg.Live.Lib</PackageId><Authors>ygg</Authors></PropertyGroup></Project>\n",
+    "src/Lib/Lib.cs": "namespace Ygg.Live.Lib;\npublic static class Answer { public static int Value => 42; }\n",
+}
+PACKAGE_ID = "Ygg.Live.Lib"
+# The local NuGet feed, over HTTPS (dotnet refuses to push to an http source, and nuget-push.sh too) with a
+# certificate of the run's CA, the key a throwaway one.
+BAGET_IMAGE = "loicsharma/baget:0.4.0-preview2@sha256:7ed7bdc3d29bb5145d69d1ca73b7c5fd4a34f72dd8b2810c907a6703b172b8ba"
+NUGET_KEY = "a-throwaway-nuget-api-key"
 
 # A check's command whose output differs from its text: the shell trace (sh -x) prints the command, so
 # the marker in the log proves the check ran, not that it was planned.
@@ -210,9 +256,10 @@ echo "DEPLOY-STUB environment=$1 stack=$2 checkout=$3 version=$4 inputs=${DEPLOY
 def test_catalog():
     """The installation under test: a branch environment and a release one (its checksTimeout short, for
     the skip), both on the agent vps, and a GitHub mirror without release copies; shop-api requires the
-    check unit and may bind shop-db-password; shop-web requires unit; plain-site has no checks; ygg-lib
-    is tagged by its owner; the release applications (shop-desktop may bind shop-db-password for its
-    release build; shop-tools requires a GitHub Actions check)."""
+    check unit and may bind shop-db-password; shop-web requires unit; plain-site has no checks and only
+    development (it does not release); ygg-lib, ygg-tool and dotnet-lib are tagged by their owner; the
+    release applications (shop-desktop may bind shop-db-password for its release build; shop-tools requires
+    a GitHub Actions check; shop-resume's release build binds a credential added only later)."""
     return {
         "owner": OWNER,
         "repository": "yggdrasil",
@@ -226,7 +273,9 @@ def test_catalog():
             {"id": APP, "name": "API", "kind": "api", "health": "http://shop-api:8080/healthz", "checks": ["unit"],
              "credentials": ["shop-db-password"]},
             {"id": WEB, "name": "Web", "kind": "web", "health": "http://shop-web:8080/", "checks": ["unit"]},
-            {"id": PLAIN, "name": "Site", "kind": "web", "health": "http://plain-site:8080/"},
+            # Development only: an application that does not release (release-resume refuses it).
+            {"id": PLAIN, "name": "Site", "kind": "web", "health": "http://plain-site:8080/",
+             "environments": {"development": {}}},
             {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/"},
             {"id": RELEASE, "name": "Release", "kind": "web", "health": "http://shop-release:8080/", "checks": ["unit"]},
             {"id": DESKTOP, "name": "Desktop", "kind": "web", "health": "http://shop-desktop:8080/",
@@ -234,13 +283,20 @@ def test_catalog():
             {"id": TOOLS, "name": "Tools", "kind": "web", "health": "http://shop-tools:8080/",
              "actionsChecks": ["Console (Windows)"]},
             {"id": BROKEN, "name": "Broken", "kind": "web", "health": "http://shop-broken:8080/"},
+            {"id": RESUME, "name": "Resume", "kind": "web", "health": "http://shop-resume:8080/",
+             "credentials": ["shop-resume-key"]},
         ]}],
-        "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"}],
+        "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"},
+                         {"id": OWNED, "release": "owner-tag", "tags": "v*"},
+                         {"id": LIBRARY, "release": "owner-tag", "tags": "[0-9]*"}],
     }
 
 
 RELEASE_APPLICATIONS = {RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
-                        BROKEN: BROKEN_PIPELINE}
+                        BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE}
+# The owner-tagged repositories with a yggdrasil.yml on main (and develop, cut from it), and their files.
+OWNER_TAGGED = {OWNED: {"yggdrasil.yml": yaml.safe_dump(OWNED_PIPELINE, sort_keys=False)},
+                LIBRARY: {"yggdrasil.yml": yaml.safe_dump(LIBRARY_PIPELINE, sort_keys=False), **LIBRARY_FILES}}
 
 
 def pipeline_file(**checks):
@@ -271,6 +327,19 @@ def make_certificates(directory):
     openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", "github-app.pem", cwd=directory)
     for name in ("forgejo.key", "forgejo.crt", "ca.crt", "github-app.pem"):
         (directory / name).chmod(0o644)  # read by the containers' own users
+
+
+def make_feed_certificate(directory, address):
+    """The local NuGet feed's certificate from the same CA, for its address on the engine's default bridge
+    (where nuget-push.sh's container reaches it), as the PKCS#12 file Kestrel reads."""
+    (directory / "baget.ext").write_text(f"subjectAltName=IP:{address}\nextendedKeyUsage=serverAuth\n")
+    openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", "baget.key", "-out", "baget.csr", "-subj", "/CN=baget",
+            cwd=directory)
+    openssl("x509", "-req", "-in", "baget.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial",
+            "-out", "baget.crt", "-days", "2", "-extfile", "baget.ext", cwd=directory)
+    openssl("pkcs12", "-export", "-out", "baget.pfx", "-inkey", "baget.key", "-in", "baget.crt", "-passout", "pass:baget",
+            cwd=directory)
+    (directory / "baget.pfx").chmod(0o644)
 
 
 @dataclasses.dataclass
@@ -361,7 +430,8 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.run_id = uuid.uuid4().hex[:8]
-        cls.names = {role: f"{PREFIX}-{role}-{cls.run_id}" for role in ("forgejo", "jenkins", "ci", "release", "vps")}
+        cls.names = {role: f"{PREFIX}-{role}-{cls.run_id}"
+                     for role in ("forgejo", "jenkins", "ci", "release", "vps", "baget")}
         cls.network = f"{PREFIX}-{cls.run_id}"
         cls.home_volume = f"{PREFIX}-jenkins-home-{cls.run_id}"
         cls.test_images = [f"{PREFIX}-controller:run-{cls.run_id}", f"{PREFIX}-build-agent:run-{cls.run_id}"]
@@ -399,19 +469,22 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         cls.first_boot = cls.inspect_controller()
         docker("rm", "--force", cls.names["jenkins"], timeout=120)
 
-        # Boot 2, on the same JENKINS_HOME: the mirror set, and the right ci work directory.
-        cls.start_controller(casc=["casc.yaml", "casc.forgejo.yaml", "casc.github-app.yaml", "casc.test.yaml"],
+        # Boot 2, on the same JENKINS_HOME: the mirror set with the NuGet key, and the right ci work directory.
+        cls.start_controller(casc=["casc.yaml", "casc.forgejo.yaml", "casc.github-app.yaml", "casc.nuget.yaml",
+                                   "casc.test.yaml"],
                              ci_workdir=cls.ci_workdir)
         cls.second_boot = cls.inspect_controller()
         cls.stand_in_for_the_github_app()
         cls.write_github_double()
+        cls.start_feed()
         cls.start_agents()
 
         cls.create_repositories()
         cls.apply_rules()
         cls.first_builds = {}
         cls.release_runs = {}
-        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS)
+        cls.tag_runs = {}
+        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED)
         for job in jobs:
             cls.jenkins.post(job_path(job) + "/build", {"delay": "0"})
         for job in jobs:
@@ -540,6 +613,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         (files / "forge-write-token").write_text(cls.tokens[JENKINS])
         (files / "forge-read-token").write_text(cls.tokens[JENKINS_CI])
         (files / "forge-webhook-secret").write_text(WEBHOOK_SECRET + "\n")
+        (files / "nuget-api-key").write_text(NUGET_KEY)
         # The credential a check of shop-api may bind (the catalog's `credentials`), in a casc file of
         # its own: a third domainCredentials list for Configuration as Code to merge.
         (files / "casc.test.yaml").write_text(yaml.safe_dump({"credentials": {"system": {"domainCredentials": [
@@ -558,11 +632,13 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         cls.jenkins_url = f"http://127.0.0.1:{port}"
         mounts = [(CONTROLLER_DIR / name, f"/etc/jenkins/{name}")
                   for name in ("casc.yaml", "casc.forgejo.yaml", "casc.github.yaml", "casc.github-app.yaml",
-                               "casc.github-read.yaml")]
+                               "casc.github-read.yaml", "casc.nuget.yaml")]
         mounts += [
             (cls.controller_files / "casc.test.yaml", "/etc/jenkins/casc.test.yaml"),
             (ROOT / "jenkins" / "Jenkinsfile.default", "/etc/jenkins/Jenkinsfile.default"),
             (ROOT / "jenkins" / "actions-release.groovy", "/etc/jenkins/actions-release.groovy"),
+            (ROOT / "jenkins" / "release-resume.groovy", "/etc/jenkins/release-resume.groovy"),
+            (cls.controller_files / "nuget-api-key", "/run/secrets/nuget-api-key"),
             (cls.controller_files / "catalog.yaml", "/etc/jenkins/catalog.yaml"),
             (CONTROLLER_DIR / "init.groovy.d" / "agents.groovy", "/var/jenkins_home/init.groovy.d/agents.groovy"),
             (cls.certificates / "github-app.pem", "/run/secrets/github-app.pem"),
@@ -692,6 +768,45 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             for name, text in files.items():
                 (artifact / name).write_text(text)
 
+    @classmethod
+    def start_feed(cls):
+        """The local NuGet feed (BaGet) the release agent pushes to instead of nuget.org: on the engine's
+        default bridge, published on its gateway, where both nuget-push.sh's container (on that bridge) and
+        the tests reach it; over HTTPS with a certificate of the run's CA, which the release agent hands to
+        nuget-push.sh (YGG_NUGET_CA_FILE)."""
+        cls.feed_host = docker("network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}").stdout.strip()
+        make_feed_certificate(cls.certificates, cls.feed_host)
+        port = free_port()
+        cls.feed_url = f"https://{cls.feed_host}:{port}"
+        docker("run", "--detach", f"--name={cls.names['baget']}", "--memory=512m", "--tmpfs=/var/baget",
+               f"--publish={cls.feed_host}:{port}:443", f"--volume={cls.certificates}:/certs:ro",
+               f"--env=ApiKey={NUGET_KEY}", "--env=Storage__Type=FileSystem", "--env=Storage__Path=/var/baget/packages",
+               "--env=Database__Type=Sqlite", "--env=Database__ConnectionString=Data Source=/var/baget/baget.db",
+               "--env=Search__Type=Database", "--env=ASPNETCORE_URLS=https://+:443",
+               "--env=ASPNETCORE_Kestrel__Certificates__Default__Path=/certs/baget.pfx",
+               "--env=ASPNETCORE_Kestrel__Certificates__Default__Password=baget", BAGET_IMAGE)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(cls.feed_url + "/v3/index.json", timeout=5) as answer:
+                    if answer.status == 200:
+                        return
+            except OSError:
+                pass
+            time.sleep(1)
+        logs = docker("logs", "--tail=40", cls.names["baget"], check=False)
+        raise AssertionError(f"the NuGet feed did not start:\n{logs.stdout}{logs.stderr}")
+
+    def feed_versions(self, package):
+        """The versions of the package the feed has ([] when none)."""
+        try:
+            with urllib.request.urlopen(f"{self.feed_url}/v3/package/{package.lower()}/index.json", timeout=30) as answer:
+                return json.loads(answer.read())["versions"]
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return []
+            raise
+
     def github_calls(self, repo=None):
         """The GitHub double's log, one call per line (of `repo` only, when given)."""
         lines = (self.github_double / "state" / "calls.log").read_text().splitlines()
@@ -712,6 +827,12 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             if name in ("vps", "release"):
                 arguments += ["--env=YGG_GITHUB_SH=/opt/github-double/github.sh",
                               f"--volume={cls.github_double}:/opt/github-double"]
+            if name == "release":
+                # The local feed instead of nuget.org, and its CA: a host path, which nuget-push.sh's
+                # `docker run` mounts (the certificates are at the same path in the agent).
+                arguments += [f"--env=YGG_NUGET_SOURCE={cls.feed_url}/v3/index.json",
+                              f"--env=YGG_NUGET_CA_FILE={cls.certificates}/ca.crt",
+                              f"--volume={cls.certificates}:{cls.certificates}:ro"]
             if workdir is None:
                 arguments += ["--env=JENKINS_AGENT_WORKDIR=/home/jenkins/agent"]
             else:
@@ -743,6 +864,13 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             "image": "alpine:3",
             "run": 'if [ -f slow ]; then echo "SLOW-$((1 + 1))-CHECK"; sleep 60; fi; echo "WORKER-$((40 + 2))-RAN"'}),
             "develop")
+        # The owner-tagged repositories: their files on main (before the rules protect it), develop cut from it.
+        for repo, files in OWNER_TAGGED.items():
+            cls.new_repository(repo)
+            for path, text in files.items():
+                cls.change_file(OWNER, repo, path, text, "main")
+            cls.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/branches",
+                                   {"new_branch_name": "develop", "old_branch_name": "main"})
         # The release applications: yggdrasil.yml on develop, which a release branch is a snapshot of.
         for repo, pipeline in RELEASE_APPLICATIONS.items():
             cls.new_repository(repo)
@@ -839,11 +967,13 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         boot = self.first_boot
         # Job DSL's giteaSCMSource and pipelineBranchDefaultsProjectFactory: one job per catalog entry,
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
-        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS})
-        # The actions-release job: a pipeline job running the script kept in Jenkins, in the sandbox.
-        self.assertEqual(boot["pipeline_jobs"], {"actions-release": {
+        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED})
+        # The actions-release and release-resume jobs: pipeline jobs running the scripts kept in Jenkins, in
+        # the sandbox.
+        self.assertEqual(boot["pipeline_jobs"], {name: {
             "sandbox": True, "parameters": ["REPOSITORY", "TAG"],
-            "script": (ROOT / "jenkins" / "actions-release.groovy").read_text(encoding="utf-8")}})
+            "script": (ROOT / "jenkins" / f"{name}.groovy").read_text(encoding="utf-8")}
+            for name in ("actions-release", "release-resume")})
         for job, made in boot["jobs"].items():
             self.assertEqual(made, {"sources": ["org.jenkinsci.plugin.gitea.GiteaSCMSource"],
                                     "factory": "org.jenkinsci.plugins.pipeline.multibranch.defaults."
@@ -862,9 +992,11 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
                                                "shop-db-password": "StringCredentialsImpl"})
 
     def test_given_a_mirror_when_booted_then_the_github_app_joins_the_forge_credentials(self):
-        # Three domainCredentials lists: casc.forgejo.yaml, casc.github-app.yaml and casc.test.yaml.
+        # Four domainCredentials lists: casc.forgejo.yaml, casc.github-app.yaml, casc.nuget.yaml (the optional
+        # NuGet key, its file mounted) and casc.test.yaml.
         self.assertEqual(self.second_boot["credentials"], {**self.first_boot["credentials"],
-                                                           "github-app": "GitHubAppCredentials"})
+                                                           "github-app": "GitHubAppCredentials",
+                                                           "nuget-api-key": "StringCredentialsImpl"})
         self.assertEqual(self.second_boot["jobs"], self.first_boot["jobs"])
 
     def test_given_a_secret_file_ending_in_a_newline_when_read_by_casc_then_the_newline_is_kept(self):
@@ -1142,8 +1274,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.jenkins.post(job_path(LIB) + "/build", {"delay": "0"})
         for tag in ("v1.0.1", "v1.1.0"):
             built = self.wait_for_build(LIB, tag, after=0)
-            self.assertIn(f"Nothing to do for the tag {tag}", built.console)
-            self.assertEqual(built.result, "SUCCESS")
+            # Built -- and refused: these tags are on a feature branch, not on main.
+            self.assertIn("Not released: the tag is not on main", built.console)
+            self.assertEqual(built.result, "FAILURE")
         deadline = time.monotonic() + 120
         scan = ""
         while "Finished:" not in scan or "Checking tag v1.0.0" not in scan:
@@ -1347,6 +1480,151 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         for line in calls:
             self.assertIn(f"agent=vps token=set owner={MIRROR_OWNER} ", line)
         self.assertEqual(self.description("actions-release", None, attached.number), f"{TOOLS} v1.0.0: Windows files attached")
+
+    # --- Owner-tagged releases, NuGet packages and release-resume ------------------------------------
+
+    def tag_run(self, repo, tag, ref="main", new_branch=None):
+        """The owner's annotated tag (a lightweight one on an older commit is never built, see the tag-age
+        test) on the head of `ref` -- or, with `new_branch`, on a new commit of that branch cut from `ref` --
+        pushed, then its build once finished: (the tagged commit, Build). Each tag is pushed and built once
+        for the whole class."""
+        key = (repo, tag)
+        if key not in self.tag_runs:
+            clone = self.clone(OWNER, repo)
+            steps = ([("checkout", "--quiet", "-b", new_branch, f"origin/{ref}"),
+                      ("commit", "--quiet", "--allow-empty", "-m", f"a commit for {tag}")] if new_branch
+                     else [("checkout", "--quiet", "--detach", f"origin/{ref}")])
+            steps += [("tag", "--annotate", tag, "-m", f"version {tag}"),
+                      ("push", "--quiet", "origin", *([new_branch] if new_branch else []), tag)]
+            for arguments in steps:
+                done = self.git(OWNER, *arguments, cwd=clone)
+                self.assertEqual(done.returncode, 0, done.stderr)
+            sha = self.git(OWNER, "rev-parse", "HEAD", cwd=clone).stdout.strip()
+            # The webhook's event may have started a build already; a scan makes sure the tag is seen.
+            self.jenkins.post(job_path(repo) + "/build", {"delay": "0"})
+            self.tag_runs[key] = (sha, self.wait_for_build(repo, tag, after=0, timeout=1200))
+        return self.tag_runs[key]
+
+    def release_resume(self, repository, tag):
+        before = self.last_number("release-resume", None)
+        self.jenkins.post(job_path("release-resume") + "/buildWithParameters", {"REPOSITORY": repository, "TAG": tag})
+        return self.wait_for_build("release-resume", None, after=before, timeout=1200)
+
+    def add_secret_text(self, credential, secret):
+        answer = self.jenkins.script(
+            "import com.cloudbees.plugins.credentials.CredentialsScope\n"
+            "import com.cloudbees.plugins.credentials.SystemCredentialsProvider\n"
+            "import com.cloudbees.plugins.credentials.domains.Domain\n"
+            "import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl\n"
+            "def store = SystemCredentialsProvider.getInstance().getStore()\n"
+            f"println(store.addCredentials(Domain.global(), new StringCredentialsImpl(CredentialsScope.GLOBAL, "
+            f"'{credential}', 'added by a test', hudson.util.Secret.fromString('{secret}'))))\n")
+        self.assertEqual(answer.strip(), "true", answer)
+
+    def assets(self, release):
+        return {asset["name"]: asset["size"] for asset in release["assets"]}
+
+    def test_given_an_owner_tag_on_main_when_built_then_the_release_is_published(self):
+        sha, build = self.tag_run(OWNED, "v1.0.0")
+        self.assertEqual(build.result, "SUCCESS", build.console[-8000:])
+        console = build.console
+        self.assertEqual(sha, self.head(OWNED, "main"))
+        # On main, checked before anything of the repository ran; then built on the release agent and
+        # published by jenkins, as a release pull request's files are after its merge.
+        self.assertIn(f"v1.0.0 is on {sha[:7]}, on main.", console)
+        self.assertLess(console.index("on main."), console.index("TOOL-BUILT-2"))
+        release = self.release_of(OWNED, "v1.0.0")
+        self.assertIsNotNone(release)
+        self.assertFalse(release["draft"])
+        self.assertEqual(release["author"]["login"], JENKINS)
+        self.assertEqual(self.assets(release), {"ygg-tool-1.0.0.tar.gz": len("ygg-tool 1.0.0\n")})
+        self.assertEqual(self.tag_commit(OWNED, "v1.0.0"), sha)
+        self.assertEqual(self.description(OWNED, "v1.0.0", build.number), "v1.0.0: released")
+        self.assert_no_secret(console, "the build log")
+        # No Windows files and no GitHub copy (mirror.releases is off): GitHub was never asked.
+        self.assertEqual(self.github_calls(OWNED), [])
+
+    def test_given_an_owner_tag_off_main_when_built_then_it_fails_before_releasing(self):
+        sha, build = self.tag_run(OWNED, "v0.9.0", ref="develop", new_branch="feature/off-main")
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn(f"Not released: the tag is not on main (v0.9.0 is on {sha[:7]}, which main does not contain).",
+                      build.console)
+        # Nothing of the repository ran (the build command's text is not even in the trace), nothing published.
+        for later in ("TOOL-BUILT", "(Release files)", "(Publish the release)"):
+            self.assertNotIn(later, build.console)
+        self.assertIsNone(self.release_of(OWNED, "v0.9.0"))
+
+    def test_given_a_library_tag_when_built_then_the_packages_are_pushed_to_the_source(self):
+        sha, build = self.tag_run(LIBRARY, "1.2.3")
+        self.assertEqual(build.result, "SUCCESS", build.console[-8000:])
+        console = build.console
+        self.assertIn(f"1.2.3 is on {sha[:7]}, on main.", console)
+        # Packed in the library's own command without the key in its environment, then pushed with it by
+        # nuget-push.sh, to the feed the release agent names (YGG_NUGET_SOURCE).
+        self.assertIn("PACK-SAW-KEY-0", console)
+        pushed = console.index(f"nuget-push: pushing {PACKAGE_ID}.1.2.3.nupkg to {self.feed_url}/v3/index.json")
+        self.assertLess(console.index("PACK-SAW-KEY-0"), pushed)
+        self.assertIn("Your package was pushed.", console)
+        self.assertEqual(self.feed_versions(PACKAGE_ID), ["1.2.3"])
+        self.assertNotIn(NUGET_KEY, console)
+        # A library's packages are its release: nothing on the git server.
+        self.assertIsNone(self.release_of(LIBRARY, "1.2.3"))
+        self.assertEqual(self.description(LIBRARY, "1.2.3", build.number), "1.2.3: packages pushed")
+
+    def test_given_a_library_tag_pushed_already_when_release_resume_runs_then_the_push_skips_the_duplicate(self):
+        _, build = self.tag_run(LIBRARY, "1.2.3")
+        self.assertEqual(build.result, "SUCCESS", build.console[-6000:])
+        resumed = self.release_resume(LIBRARY, "1.2.3")
+        self.assertEqual(resumed.result, "SUCCESS", resumed.console[-6000:])
+        self.assertIn("already exists at feed", resumed.console)
+        self.assertEqual(self.feed_versions(PACKAGE_ID), ["1.2.3"])
+        self.assertEqual(self.description("release-resume", None, resumed.number), f"{LIBRARY} 1.2.3: packages pushed")
+
+    def test_given_a_release_that_failed_after_its_merge_when_release_resume_runs_then_it_is_finished(self):
+        # The release build binds shop-resume-key, which the catalog allows and Jenkins does not have yet:
+        # the release fails after its merge and its tag.
+        number, build, _, _ = self.release_run(RESUME)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn("shop-resume-key", build.console)
+        self.assertIn(f"Not released: the pull request is merged and tagged v1.0.0; finish the release with the "
+                      f"release-resume job (REPOSITORY={RESUME}, TAG=v1.0.0).", build.console)
+        self.assertIsNone(self.release_of(RESUME, "v1.0.0"))
+        merge = self.pull_request(RESUME, number)["merge_commit_sha"]
+        self.assertEqual(self.tag_commit(RESUME, "v1.0.0"), merge)
+
+        # The parameters are checked first: a catalog entry that releases, one of its version tags, that
+        # exists and is on main.
+        for repository, tag, message in (
+                ("not-in-catalog", "v1.0.0", "'not-in-catalog' is not an application or a repositories entry"),
+                (PLAIN, "v1.0.0", f"{PLAIN} does not release"),
+                (RESUME, "1.0.0", f"'1.0.0' is not a version tag of {RESUME} (v*)"),
+                (RESUME, "v9.9.9", f"{RESUME} has no tag v9.9.9.")):
+            refused = self.release_resume(repository, tag)
+            self.assertEqual(refused.result, "FAILURE", (repository, tag, refused.console[-3000:]))
+            self.assertIn(message, refused.console)
+        self.tag_run(OWNED, "v0.9.0", ref="develop", new_branch="feature/off-main")
+        refused = self.release_resume(OWNED, "v0.9.0")
+        self.assertEqual(refused.result, "FAILURE")
+        self.assertIn("Not released: the tag is not on main", refused.console)
+        self.assertNotIn("TOOL-BUILT", refused.console)
+
+        # With the credential there, the release is finished from its tag: built, published.
+        self.add_secret_text("shop-resume-key", RESUME_KEY)
+        resumed = self.release_resume(RESUME, "v1.0.0")
+        self.assertEqual(resumed.result, "SUCCESS", resumed.console[-8000:])
+        self.assertIn(f"Loading library yggdrasil@{LIBRARY_VERSION}", resumed.console)
+        self.assertIn(f"v1.0.0 is on {merge[:7]}, on main.", resumed.console)
+        self.assertIn(f"RESUME-KEY {hashlib.sha256(RESUME_KEY.encode()).hexdigest()}", resumed.console)
+        self.assertNotIn(RESUME_KEY, resumed.console)
+        release = self.release_of(RESUME, "v1.0.0")
+        self.assertFalse(release["draft"])
+        self.assertEqual(release["author"]["login"], JENKINS)
+        self.assertEqual(self.assets(release), {"shop-resume.tar.gz": len("resumed 1.0.0\n")})
+        self.assertEqual(self.description("release-resume", None, resumed.number), f"{RESUME} v1.0.0: released")
+        # Run again, it changes nothing: the tag, the release and its file are reused.
+        again = self.release_resume(RESUME, "v1.0.0")
+        self.assertEqual(again.result, "SUCCESS", again.console[-6000:])
+        self.assertEqual(self.release_of(RESUME, "v1.0.0")["assets"], release["assets"])
 
     # --- The library's own pieces -----------------------------------------------------------------
 
