@@ -109,47 +109,13 @@ def _can_run():
             and all(shutil.which(tool) for tool in ("docker", "bash", "jq", "git", "curl")))
 
 
-@unittest.skipUnless(_can_run(), "set YGG_FORGEJO_TESTS=1 to run against a Forgejo container "
-                                 "(needs Docker, bash, jq, git and curl on a POSIX system)")
-class ForgejoLiveTests(unittest.TestCase):
-    """One Forgejo for the whole class. Every test works on branches, tags and pull requests of its
-    own, so they do not depend on each other's order."""
+class ForgejoClient:
+    """What a live suite does on its Forgejo container as its users: health, admin commands, commits,
+    branches, pull requests and git over HTTP(S). Shared with test_jenkins_live.py. The class using it
+    sets `container`, `url` (the server as the tests reach it), `api` and `tokens` (by user) and `temp`;
+    `git_ca`, when set, is the CA file git trusts (a Forgejo served over HTTPS)."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.container = f"ygg-forgejo-test-{uuid.uuid4().hex[:8]}"
-        # Class cleanups also run when setUpClass fails halfway: the container never outlives the suite.
-        cls.addClassCleanup(docker, "rm", "--force", "--volumes", cls.container, check=False)
-        cls.temp = pathlib.Path(tempfile.mkdtemp(prefix="forgejo-live-"))
-        cls.addClassCleanup(shutil.rmtree, cls.temp, ignore_errors=True)
-
-        port = free_port()
-        cls.url = f"http://127.0.0.1:{port}"
-        docker("run", "--detach", f"--name={cls.container}", f"--publish=127.0.0.1:{port}:3000", "--memory=1g",
-               "--env=FORGEJO__security__INSTALL_LOCK=true",
-               "--env=FORGEJO__database__DB_TYPE=sqlite3",
-               f"--env=FORGEJO__server__ROOT_URL={cls.url}/",
-               # As in compose.yml: nothing is visible signed out, so a wrong token or repository is a 404.
-               "--env=FORGEJO__service__DISABLE_REGISTRATION=true",
-               "--env=FORGEJO__service__REQUIRE_SIGNIN_VIEW=true",
-               pinned_image())
-        cls.wait_for_health()
-
-        cls.tokens = {}
-        for user in (OWNER, JENKINS, CLAUDE):
-            cls.admin_cli("create", "--username", user, "--password", f"throwaway-{uuid.uuid4().hex}",
-                          "--email", f"{user}@example.com", *(["--admin"] if user == OWNER else []),
-                          "--must-change-password=false")
-            cls.tokens[user] = cls.admin_cli("generate-access-token", "--username", user, "--token-name", "tests",
-                                             "--scopes", "all", "--raw").strip()
-        cls.api = {user: rules.Api(cls.url + "/api/v1", token, "token") for user, token in cls.tokens.items()}
-
-        for repo in (APP, DOTTED):
-            cls.create_repository(repo)
-
-        cls.rules = {r.repo: r for r in rules.desired_rules(test_catalog())}
-        cls.first_run = {repo: rules.apply_forgejo(cls.api[OWNER], OWNER, r, WEBHOOK, False)
-                         for repo, r in cls.rules.items()}
+    git_ca = None
 
     @classmethod
     def wait_for_health(cls, seconds=180):
@@ -171,22 +137,6 @@ class ForgejoLiveTests(unittest.TestCase):
         if done.returncode:
             raise AssertionError(f"forgejo admin user {arguments[0]} failed: {done.stdout}{done.stderr}")
         return done.stdout
-
-    @classmethod
-    def create_repository(cls, repo):
-        """A private repository of the owner's: main with a Jenkinsfile, develop from it, and jenkins
-        and claude as collaborators with write access (Forgejo drops users without it from a
-        protection's whitelists)."""
-        owner = cls.api[OWNER]
-        owner.request("POST", "/user/repos", {"name": repo, "auto_init": True, "default_branch": "main",
-                                              "private": True})
-        cls.change_file(OWNER, repo, "Jenkinsfile", JENKINSFILE, "main")
-        owner.request("POST", f"/repos/{OWNER}/{repo}/branches", {"new_branch_name": "develop",
-                                                                   "old_branch_name": "main"})
-        for user in (JENKINS, CLAUDE):
-            owner.request("PUT", f"/repos/{OWNER}/{repo}/collaborators/{user}", {"permission": "write"})
-
-    # --- Helpers -----------------------------------------------------------------------------------
 
     @classmethod
     def change_file(cls, user, repo, path, text, branch, new_branch=None):
@@ -235,11 +185,6 @@ class ForgejoLiveTests(unittest.TestCase):
     def pull_request(self, repo, number):
         return self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/pulls/{number}")
 
-    def set_checks(self, repo, sha, contexts, state="success"):
-        for context in contexts:
-            self.api[JENKINS].request("POST", f"/repos/{OWNER}/{repo}/statuses/{sha}",
-                                      {"state": state, "context": context, "description": state})
-
     def send(self, user, method, path, body=None):
         """The request, tried again while Forgejo is still working out whether a pull request can be
         merged (405 "Please try again later", which a new commit status sets off): a refusal must be
@@ -255,6 +200,91 @@ class ForgejoLiveTests(unittest.TestCase):
 
     def merge(self, user, repo, number, **fields):
         self.send(user, "POST", f"/repos/{OWNER}/{repo}/pulls/{number}/merge", {"Do": "merge", **fields})
+
+    @classmethod
+    def git(cls, user, *arguments, cwd=None, env=None):
+        """git as `user` over HTTP(S). The credentials go in an extra header set through the environment
+        (never an argument), and the machine's own git configuration is left out. `env` adds to the
+        environment (GIT_COMMITTER_DATE, say)."""
+        credentials = base64.b64encode(f"{user}:{cls.tokens[user]}".encode()).decode()
+        environment = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_TERMINAL_PROMPT="0",
+                           GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader",
+                           GIT_CONFIG_VALUE_0=f"Authorization: Basic {credentials}",
+                           GIT_AUTHOR_NAME=user, GIT_AUTHOR_EMAIL=f"{user}@example.com",
+                           GIT_COMMITTER_NAME=user, GIT_COMMITTER_EMAIL=f"{user}@example.com", **(env or {}))
+        if cls.git_ca:
+            environment["GIT_SSL_CAINFO"] = str(cls.git_ca)
+        return subprocess.run(["git", *arguments], cwd=cwd, env=environment, capture_output=True, text=True, timeout=120)
+
+    def clone(self, user, repo):
+        target = pathlib.Path(tempfile.mkdtemp(dir=self.temp, prefix=f"{user}-"))
+        done = self.git(user, "clone", "--quiet", f"{self.url}/{OWNER}/{repo}.git", str(target))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return target
+
+
+@unittest.skipUnless(_can_run(), "set YGG_FORGEJO_TESTS=1 to run against a Forgejo container "
+                                 "(needs Docker, bash, jq, git and curl on a POSIX system)")
+class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
+    """One Forgejo for the whole class. Every test works on branches, tags and pull requests of its
+    own, so they do not depend on each other's order."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.container = f"ygg-forgejo-test-{uuid.uuid4().hex[:8]}"
+        # Class cleanups also run when setUpClass fails halfway: the container never outlives the suite.
+        cls.addClassCleanup(docker, "rm", "--force", "--volumes", cls.container, check=False)
+        cls.temp = pathlib.Path(tempfile.mkdtemp(prefix="forgejo-live-"))
+        cls.addClassCleanup(shutil.rmtree, cls.temp, ignore_errors=True)
+
+        port = free_port()
+        cls.url = f"http://127.0.0.1:{port}"
+        docker("run", "--detach", f"--name={cls.container}", f"--publish=127.0.0.1:{port}:3000", "--memory=1g",
+               "--env=FORGEJO__security__INSTALL_LOCK=true",
+               "--env=FORGEJO__database__DB_TYPE=sqlite3",
+               f"--env=FORGEJO__server__ROOT_URL={cls.url}/",
+               # As in compose.yml: nothing is visible signed out, so a wrong token or repository is a 404.
+               "--env=FORGEJO__service__DISABLE_REGISTRATION=true",
+               "--env=FORGEJO__service__REQUIRE_SIGNIN_VIEW=true",
+               pinned_image())
+        cls.wait_for_health()
+
+        cls.tokens = {}
+        for user in (OWNER, JENKINS, CLAUDE):
+            cls.admin_cli("create", "--username", user, "--password", f"throwaway-{uuid.uuid4().hex}",
+                          "--email", f"{user}@example.com", *(["--admin"] if user == OWNER else []),
+                          "--must-change-password=false")
+            cls.tokens[user] = cls.admin_cli("generate-access-token", "--username", user, "--token-name", "tests",
+                                             "--scopes", "all", "--raw").strip()
+        cls.api = {user: rules.Api(cls.url + "/api/v1", token, "token") for user, token in cls.tokens.items()}
+
+        for repo in (APP, DOTTED):
+            cls.create_repository(repo)
+
+        cls.rules = {r.repo: r for r in rules.desired_rules(test_catalog())}
+        cls.first_run = {repo: rules.apply_forgejo(cls.api[OWNER], OWNER, r, WEBHOOK, False)
+                         for repo, r in cls.rules.items()}
+
+    @classmethod
+    def create_repository(cls, repo):
+        """A private repository of the owner's: main with a Jenkinsfile, develop from it, and jenkins
+        and claude as collaborators with write access (Forgejo drops users without it from a
+        protection's whitelists)."""
+        owner = cls.api[OWNER]
+        owner.request("POST", "/user/repos", {"name": repo, "auto_init": True, "default_branch": "main",
+                                              "private": True})
+        cls.change_file(OWNER, repo, "Jenkinsfile", JENKINSFILE, "main")
+        owner.request("POST", f"/repos/{OWNER}/{repo}/branches", {"new_branch_name": "develop",
+                                                                   "old_branch_name": "main"})
+        for user in (JENKINS, CLAUDE):
+            owner.request("PUT", f"/repos/{OWNER}/{repo}/collaborators/{user}", {"permission": "write"})
+
+    # --- Helpers -----------------------------------------------------------------------------------
+
+    def set_checks(self, repo, sha, contexts, state="success"):
+        for context in contexts:
+            self.api[JENKINS].request("POST", f"/repos/{OWNER}/{repo}/statuses/{sha}",
+                                      {"state": state, "context": context, "description": state})
 
     def refused(self, user, method, path, body=None):
         """The ApiError of a request that must be refused."""
@@ -274,23 +304,6 @@ class ForgejoLiveTests(unittest.TestCase):
                    FORGE_TOKEN=self.tokens[user])
         return subprocess.run(["bash", str(FORGE_SH), *arguments], env=env, capture_output=True, text=True,
                               timeout=120, stdin=subprocess.DEVNULL)
-
-    def git(self, user, *arguments, cwd=None):
-        """git as `user` over HTTP. The credentials go in an extra header set through the environment
-        (never an argument), and the machine's own git configuration is left out."""
-        credentials = base64.b64encode(f"{user}:{self.tokens[user]}".encode()).decode()
-        env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_TERMINAL_PROMPT="0",
-                   GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader",
-                   GIT_CONFIG_VALUE_0=f"Authorization: Basic {credentials}",
-                   GIT_AUTHOR_NAME=user, GIT_AUTHOR_EMAIL=f"{user}@example.com",
-                   GIT_COMMITTER_NAME=user, GIT_COMMITTER_EMAIL=f"{user}@example.com")
-        return subprocess.run(["git", *arguments], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
-
-    def clone(self, user, repo):
-        target = pathlib.Path(tempfile.mkdtemp(dir=self.temp, prefix=f"{user}-"))
-        done = self.git(user, "clone", "--quiet", f"{self.url}/{OWNER}/{repo}.git", str(target))
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return target
 
     # --- forge.sh ----------------------------------------------------------------------------------
 
