@@ -10,7 +10,8 @@
     python3 scripts/catalog.py systems                    id<TAB>name, one per line
     python3 scripts/catalog.py show <app>                 JSON: the application's fields and its system
     python3 scripts/catalog.py owner | repository         the GitHub owner, this repository's name
-    python3 scripts/catalog.py forge [type|url|api|jenkins-user]  the git server (JSON without an argument)
+    python3 scripts/catalog.py forge [type|url|api|jenkins-user|publish-agent]  the git server (JSON without
+                                                           an argument; publish-agent exits 1 without one)
     python3 scripts/catalog.py mirror [github|releases]    the Forgejo -> GitHub mirror (exit 1 without one)
     python3 scripts/catalog.py repositories                ids of the repositories that are not applications
     python3 scripts/catalog.py repository-entry <id>       JSON: one of them, defaults applied (exit 1 if unknown)
@@ -55,6 +56,8 @@ CREDENTIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*).
 TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-]+$")
 FORGES = ("forgejo", "github")
+# A Jenkins agent label: what an environment's id is by default, so the same shape.
+AGENT_NAME = ID
 KINDS = {"api", "web", "worker", "platform"}
 MODES = {"proxy", "ports"}
 TRIGGERS = {"manual", "branch", "release"}
@@ -219,9 +222,9 @@ def _forge_errors(catalog):
     if "forge" in catalog:
         block = catalog["forge"]
         if not isinstance(block, dict):
-            errors.append("forge: a mapping with type, and url, jenkinsUser, developers")
+            errors.append("forge: a mapping with type, and url, jenkinsUser, developers, publishAgent")
         else:
-            unknown = set(block) - {"type", "url", "jenkinsUser", "developers"}
+            unknown = set(block) - {"type", "url", "jenkinsUser", "developers", "publishAgent"}
             if unknown:
                 errors.append(f"forge: unknown key(s) {_keys(unknown)}")
             if block.get("type") not in FORGES:
@@ -243,6 +246,10 @@ def _forge_errors(catalog):
             if "developers" in block and not (isinstance(developers, list) and all(
                     isinstance(d, str) and USER_NAME.match(d) for d in developers)):
                 errors.append("forge.developers: a list of user names (letters, digits, '.', '_' and '-')")
+            if "publishAgent" in block and not (isinstance(block["publishAgent"], str)
+                                                and AGENT_NAME.match(block["publishAgent"])):
+                errors.append("forge.publishAgent: a Jenkins agent name (lowercase letters, digits and dashes; "
+                              "default the agent of the last release environment)")
     if "mirror" in catalog:
         block = catalog["mirror"]
         if forge_type != "forgejo":
@@ -457,7 +464,19 @@ def forge(catalog):
     else:
         url, api = "https://github.com", "https://api.github.com"
     return {"type": forge_type, "url": url, "api": api,
-            "jenkinsUser": block.get("jenkinsUser", "jenkins"), "developers": list(block.get("developers") or [])}
+            "jenkinsUser": block.get("jenkinsUser", "jenkins"), "developers": list(block.get("developers") or []),
+            "publishAgent": block.get("publishAgent") or _release_agent(catalog)}
+
+
+def _release_agent(catalog):
+    """The agent of the last `trigger: release` environment over the deployable applications, in
+    catalog order (the agent that merges and releases today), or None when nothing releases."""
+    agent = None
+    for _, app in applications(catalog, deployable=True):
+        for env in resolve(catalog, app["id"]):
+            if env["trigger"] == "release":
+                agent = env["agent"]
+    return agent
 
 
 def mirror(catalog):
@@ -676,10 +695,14 @@ def main(argv):
             print(catalog.get("repository") or "yggdrasil")
         elif command == "forge" and len(args) <= 1:
             resolved = forge(catalog)
-            fields = {"type": "type", "url": "url", "api": "api", "jenkins-user": "jenkinsUser"}
+            fields = {"type": "type", "url": "url", "api": "api", "jenkins-user": "jenkinsUser",
+                      "publish-agent": "publishAgent"}
             if not args:
                 print(json.dumps(resolved, indent=2))
             elif args[0] in fields:
+                if resolved[fields[args[0]]] is None:
+                    raise CatalogError("catalog.yaml has no publish agent (set forge.publishAgent, or have an "
+                                       "environment with trigger release)")
                 print(resolved[fields[args[0]]])
             else:
                 print(__doc__, file=sys.stderr)

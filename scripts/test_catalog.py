@@ -326,7 +326,7 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(c.forge(catalog())["api"], "https://api.github.com")
         self.assertEqual(c.forge(catalog()), {"type": "github", "url": "https://github.com",
                                              "api": "https://api.github.com", "jenkinsUser": "jenkins",
-                                             "developers": []})
+                                             "developers": [], "publishAgent": "vps"})
 
     def test_given_the_repository_catalog_when_read_then_it_is_github_without_a_mirror(self):
         self.assertEqual(c.forge(c.load())["type"], "github")
@@ -341,7 +341,8 @@ class ForgeTests(unittest.TestCase):
         v = catalog(forge={"type": "github", "jenkinsUser": "ci", "developers": ["ann"]})
         self.assertEqual(c.validate(v), [])
         self.assertEqual(c.forge(v), {"type": "github", "url": "https://github.com",
-                                      "api": "https://api.github.com", "jenkinsUser": "ci", "developers": ["ann"]})
+                                      "api": "https://api.github.com", "jenkinsUser": "ci", "developers": ["ann"],
+                                      "publishAgent": "vps"})
 
     def test_given_forgejo_without_a_url_when_validated_then_it_is_an_error(self):
         self.assertTrue(any("forge.url: required" in e for e in self.errors(forge={"type": "forgejo"})))
@@ -434,6 +435,47 @@ class ForgeTests(unittest.TestCase):
 
     def test_given_the_cli_when_asked_for_an_unknown_forge_field_then_it_fails(self):
         self.assertEqual(self.run_cli(catalog(), "forge", "token")[0], 2)
+
+    def test_given_a_publish_agent_when_read_then_it_wins_over_the_release_environment(self):
+        v = catalog(forge=dict(self.FORGEJO, publishAgent="publisher"))
+        self.assertEqual(c.validate(v), [])
+        self.assertEqual(c.forge(v)["publishAgent"], "publisher")
+
+    def test_given_no_publish_agent_when_read_then_it_is_the_last_release_environments_agent(self):
+        # prod (trigger release) is the only release environment; its agent is vps.
+        self.assertEqual(c.forge(catalog())["publishAgent"], "vps")
+
+    def test_given_several_applications_when_read_then_the_last_release_environment_in_catalog_order_wins(self):
+        v = catalog()
+        # shop-web is the last deployable application with a release environment: its override counts.
+        v["systems"][0]["applications"][1]["environments"]["prod"]["agent"] = "late"
+        self.assertEqual(c.forge(v)["publishAgent"], "late")
+
+    def test_given_no_release_environment_when_read_then_there_is_no_publish_agent(self):
+        v = catalog()
+        v["environments"][2]["trigger"] = "manual"
+        self.assertIsNone(c.forge(v)["publishAgent"])
+
+    def test_given_a_release_environment_without_an_agent_when_read_then_its_id_is_the_agent(self):
+        v = catalog()
+        del v["environments"][2]["agent"]
+        self.assertEqual(c.forge(v)["publishAgent"], "prod")
+
+    def test_given_a_bad_publish_agent_when_validated_then_it_is_an_error(self):
+        for bad in ("", "Bad Agent", 3, ["vps"]):
+            with self.subTest(bad=bad):
+                errors = self.errors(forge=dict(self.FORGEJO, publishAgent=bad))
+                self.assertTrue(any("forge.publishAgent" in e for e in errors), errors)
+
+    def test_given_the_cli_when_asked_for_the_publish_agent_then_it_prints_it(self):
+        self.assertEqual(self.run_cli(catalog(), "forge", "publish-agent"), (0, "vps\n", ""))
+
+    def test_given_the_cli_and_no_publish_agent_when_asked_then_it_exits_with_one(self):
+        v = catalog()
+        v["environments"][2]["trigger"] = "manual"
+        status, out, err = self.run_cli(v, "forge", "publish-agent")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("no publish agent", err)
 
     def test_given_the_cli_when_asked_for_the_mirror_then_it_prints_it(self):
         v = catalog(forge=self.FORGEJO, mirror={"github": "acme", "releases": False})

@@ -61,6 +61,7 @@ forge:
   url: https://git.example.com   # the server's address
   jenkinsUser: jenkins           # default jenkins
   developers: [claude]           # default []
+  publishAgent: vps              # default: the agent of the last release environment
 mirror:                          # optional
   github: acme                   # the GitHub user or organisation to mirror to
   releases: true                 # default true
@@ -81,6 +82,7 @@ so with `type: github` they have no effect.
 | `forge.url` | required for `forgejo` | An `https://` address with a host and no path (`https://git.example.com`, a port is fine). A trailing `/` is dropped; the API is `<url>/api/v1`. Not allowed for `github`: GitHub Enterprise Server is not supported, `github` is always `https://github.com` (API `https://api.github.com`). |
 | `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. On Forgejo it is the only one that merges `main` and creates the `v*` version tags of applications (no effect on GitHub). A user name: letters, digits, `.`, `_` and `-`. |
 | `forge.developers` | `[]` | On Forgejo, users, besides the owner, who may merge pull requests into `develop` (no effect on GitHub). A list of user names. |
+| `forge.publishAgent` | the `agent` of the last `trigger: release` environment, over the applications in catalog order (what merges and releases today); none when no environment releases | The Jenkins agent that merges, tags, creates releases and uploads their files: the only one holding the git server's write token. An agent name: lowercase letters, digits and dashes. |
 | `mirror.github` | required with a `mirror` | The GitHub user or organisation the repositories are mirrored to. |
 | `mirror.releases` | `true` | Whether releases are mirrored as well. `true` or `false`. |
 
@@ -125,6 +127,60 @@ repositories:
 Any other key is an error. Read the list with `python3 scripts/catalog.py repositories` (ids) and one
 entry, defaults applied, with `python3 scripts/catalog.py repository-entry <id>`. The git server's rules
 (`scripts/rules.py`) and the Jenkins pipeline consume them.
+
+## Repository pipeline file
+
+Each repository describes its own checks and releases in a `yggdrasil.yml` at its root. The file is
+**data**: images, commands (usually a script under `ci/`), globs and the *names* of Jenkins credentials.
+Jenkins does not read the repository's `Jenkinsfile`; the Jenkins library reads this file instead and
+runs the commands only on the isolated CI agent (checks) or the release agent (releases). A repository
+**without** a `yggdrasil.yml` is not an error: it behaves as before, it deploys and nothing else.
+
+```yaml
+checks:                         # name -> a command run in a container; the name is the status context
+  unit:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    run: ci/test.sh             # a command line, run with sh -c in the checkout
+    docker: true                # give it the Docker engine (default false)
+    credentials:                # ENV_VAR -> Jenkins credential id
+      NUGET_KEY: nuget-api-key
+    paths: ["src/**", "tests/**"]   # run only when a changed file matches (default: always)
+    junit: "**/TestResults/*.xml"   # test results Jenkins collects
+    archive: "out/**"               # files kept as the build's artifacts
+branchPolicy:                   # the branch policy check
+  image: alpine/git
+  run: scripts/branch-policy.sh
+deploy:
+  inputs: [unit]                # checks whose archives go into the image build
+release:                        # applications with a release environment, owner-tagged repositories
+  build:   {image: debian:12, run: ci/release.sh, files: ["dist/*.zip"], credentials: {SIGN_KEY: sign-key}}
+  windows: {workflow: windows.yml, files: ["Setup.exe"]}   # built by a GitHub Actions workflow
+  validate: {image: debian:12, run: ci/validate.sh}
+publish:                        # owner-tagged repositories only
+  nuget: {image: mcr.microsoft.com/dotnet/sdk:10.0, run: ci/pack.sh, packages: "out/*.nupkg"}
+```
+
+Every section is optional. Unknown keys at any level, and values of the wrong type, are errors that name
+the field (`checks.unit.dockr: unknown field`). `image` and `run` are required wherever they appear,
+and so is `release.windows.workflow`. `credentials` keys are environment variable names; a check may not
+be called `branch-policy`.
+
+The file is also checked against the catalog entry of the repository (the application, or its
+[`repositories`](#repositories) entry):
+
+- every credential in `checks.*.credentials` and `release.build.credentials` must be in the entry's
+  `credentials`; it is never bound on `renovate/*` builds;
+- every name in the entry's `checks` must be defined under `checks`;
+- `deploy.inputs` may only name checks defined in the file;
+- `publish` is allowed only for a `repositories` entry with `release: owner-tag`;
+- `release` is allowed for an application with a release environment and for `release: owner-tag`.
+
+Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
+(`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,
+`{"entry", "config", "errors"}`, where `config` is `null` when there is no file, and exits `1` when
+`errors` is not empty. The entry has `kind` (`application` or `repository`), `id`, `repository`,
+`credentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
+environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
 
 ## Environments
 
@@ -335,7 +391,7 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py get <app> <environment> <option>` | One resolved option. Lists are space-separated, booleans `true`/`false`: `get heimdall-api development onDemand` prints `true` |
 | `python3 scripts/catalog.py environment <environment> [<option>]` | JSON: the environment's own options, defaults applied but no application's override; with an option, only its value, printed as `get` does |
 | `python3 scripts/catalog.py owner` / `repository` | The GitHub owner; this repository's name (default `yggdrasil`) |
-| `python3 scripts/catalog.py forge [type\|url\|api\|jenkins-user]` | The git server: JSON of `type`, `url`, `api`, `jenkinsUser` and `developers` with defaults applied (GitHub when there is no `forge` block), or one value |
+| `python3 scripts/catalog.py forge [type\|url\|api\|jenkins-user\|publish-agent]` | The git server: JSON of `type`, `url`, `api`, `jenkinsUser`, `developers` and `publishAgent` (`null` when nothing releases) with defaults applied (GitHub when there is no `forge` block), or one value; `publish-agent` exits `1` when there is none |
 | `python3 scripts/catalog.py mirror [github\|releases]` | The mirror: JSON, or one value (booleans `true`/`false`). Exits `1` with `catalog.yaml has no mirror` when there is none |
 | `python3 scripts/catalog.py repositories` | The ids of the [`repositories`](#repositories) that are not applications, one per line (nothing when there are none) |
 | `python3 scripts/catalog.py repository-entry <id>` | JSON of one such repository with defaults applied (`id`, `checks`, `actionsChecks`, `credentials`, `release`, `tags`, `rules`). Exits `1` when the id is not listed |
