@@ -194,6 +194,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrading an existing GitHub installation to the pipeline
 
+**First, before this reaches your fork's `main`:** pin the running controller's library to your current release
+tag (**Manage Jenkins → System → Global Trusted Pipeline Libraries → `yggdrasil` → Default version**, e.g.
+`v0.7.4`), and keep the controller host's checkout at that release until you upgrade. A controller from before
+this release loads the library at `main`, so it would run the new library at once, before `scripts/platform.sh up`
+(builds would wait for a `ci` agent that does not exist; the HTTP Request plugin is missing). The old library
+keeps working pinned: it still clones `scripts/` from `main`, and the `github.sh` commands it calls (`wait-checks`,
+`set-status`, `merge-pr`, `release`, `publish-release`, `delete-branch`) and `deploy.sh <environment> <application>
+<checkout> <version>` take the same arguments as before.
+
 Nothing in a repository has to change for it to keep deploying and releasing. On the dev (controller) host: set
 `YGGDRASIL_LIBRARY_VERSION` (a release tag of your fork that has this pipeline), `CI_AGENT_WORKDIR` and
 `RELEASE_AGENT_WORKDIR` in `platform.env`, fill in the `ci` and `release` agents' `agent.env` and start them

@@ -1240,6 +1240,20 @@ deletion and nothing else of the table, plus the settings in its first row and, 
 
 ### An existing GitHub installation
 
+**Before this release reaches your fork's `main`, pin the controller's library to your current release.** A
+controller set up before it loads the library at `defaultVersion: "main"`, so the moment `main` has this release
+it would run the new library, before `scripts/platform.sh up` has given it what that needs: builds would wait for
+a `ci` agent that does not exist, and the HTTP Request plugin it posts statuses with is not installed. In
+Jenkins: **Manage Jenkins → System → Global Trusted Pipeline Libraries** (Global Pipeline Libraries on older
+versions) → `yggdrasil` → **Default version**: your current release tag (`git tag --list 'v*'` in your fork,
+e.g. `v0.7.4`) → **Save**. Keep the controller host's checkout at that release too until you upgrade: a restart
+re-applies its `casc.yaml`, which says `main`. Pinned, the old library keeps working while `main` moves on. It
+still clones `scripts/` from `main` for every build, and what it calls there stays compatible:
+`github.sh wait-checks`, `set-status`, `merge-pr`, `release`, `publish-release` and `delete-branch` take the
+same arguments and print the same output (they now go through `scripts/forge.sh`), and `deploy.sh <environment>
+<application> <checkout> <version>` is unchanged (its new `YGG_DOMAIN` and `DEPLOY_INPUTS_DIR` are optional).
+The pin is replaced by `YGGDRASIL_LIBRARY_VERSION` when you upgrade with `scripts/platform.sh up`.
+
 An installation that ran on GitHub before the pipeline moved into Jenkins keeps working without a change to
 any repository: its repositories have no `yggdrasil.yml`, so they deploy and release as they always did (a
 release waits for every GitHub Actions check, and `releaseArtifacts: true` still runs its workflow). Two
