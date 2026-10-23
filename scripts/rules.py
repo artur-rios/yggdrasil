@@ -28,7 +28,9 @@ Per repository the model is:
                  application, by the owner for a repository that tags its own releases
   release/*      only the owner pushes
   version tags   created by the Jenkins user (applications) or the owner (owner-tag repositories)
-  Jenkinsfile    protected on develop (Forgejo): only the owner merges a change to it
+  yggdrasil.yml  protected on develop (Forgejo): only the owner merges a change to it (what Jenkins
+                 runs: images, commands, the credentials a check binds); the Jenkinsfile too, which
+                 Jenkins no longer reads but a repository may still carry
 
 A repository with `rules: basic` gets develop and main without force push or deletion, and no other
 rule. It still gets the repository settings (default branch develop, head branches deleted after
@@ -46,8 +48,8 @@ access to the repository: Forgejo leaves anyone else out without an error. The r
 when the server's answer is missing someone it was sent -- give that user write access (a
 collaborator) and run again.
 
-GitHub cannot restrict who may merge a given file, so `protected_files` (the Jenkinsfile) is not
-applied there; Jenkins' trust rule (plan 3) covers it. Nor does GitHub get a release/* rule: there
+GitHub cannot restrict who may merge a given file, so `protected_files` (yggdrasil.yml, the
+Jenkinsfile) is not applied there. Nor does GitHub get a release/* rule: there
 is none today. On GitHub only the actionsChecks are bound to GitHub Actions; Jenkins' contexts
 (branch-policy, checks, deploy/<environment>) are bound to nobody.
 
@@ -86,7 +88,7 @@ class RepoRules:
     tag_pattern: str             # "v*" or the repository's `tags`
     tag_creators: tuple          # (forge.jenkinsUser,) for applications, (owner,) for owner-tag repositories
     owner_tags: bool             # the owner creates the version tags (a `repositories` entry), not Jenkins
-    protected_files: tuple       # ("Jenkinsfile",): protected on develop only, see forgejo_branch_protections
+    protected_files: tuple       # ("Jenkinsfile", "yggdrasil.yml"): on develop only, see forgejo_branch_protections
     # With model "basic" the checks, mergers and protected_files are empty, and the release rules
     # (release_pushers, tag_pattern, tag_creators, owner_tags) keep their defaults but are not applied.
 
@@ -120,7 +122,9 @@ def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag
         tag_pattern=tag_pattern,
         tag_creators=(tag_creator,),
         owner_tags=owner_tags,
-        protected_files=("Jenkinsfile",),
+        # yggdrasil.yml is what Jenkins runs for the repository; the Jenkinsfile is no longer read (every job
+        # runs jenkins/Jenkinsfile.default) and stays listed, harmlessly, for repositories that carry one.
+        protected_files=("Jenkinsfile", "yggdrasil.yml"),
     )
 
 
@@ -397,9 +401,9 @@ def forgejo_branch_protections(r):
                 "required_approvals": 0, "protected_file_patterns": ";".join(files),
                 "apply_to_admins": False}
 
-    # The Jenkinsfile is protected on develop only: every change to it reaches develop through a merge
-    # the owner makes. main receives only snapshots of develop, merged by Jenkins, which a protected
-    # file there would stop whenever a release changes the Jenkinsfile.
+    # The protected files are protected on develop only: every change to them reaches develop through a
+    # merge the owner makes. main receives only snapshots of develop, merged by Jenkins, which a
+    # protected file there would stop whenever a release changes yggdrasil.yml.
     return [guarded("develop", r.develop_mergers, r.develop_checks, r.protected_files),
             guarded("main", r.main_mergers, r.main_checks, ()),
             # Release branches are pushed to directly, by the owner alone.

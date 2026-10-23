@@ -498,7 +498,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
             p = protections[name]
             self.assertEqual((p["enable_push"], p["enable_merge_whitelist"], p["enable_status_check"],
                               p["protected_file_patterns"], p["apply_to_admins"]),
-                             (False, True, True, "Jenkinsfile" if name == "develop" else "", False), name)
+                             (False, True, True, "Jenkinsfile;yggdrasil.yml" if name == "develop" else "", False),
+                             name)
             self.assertEqual(set(p["merge_whitelist_usernames"]), set(mergers), name)
             self.assertEqual(set(p["status_check_contexts"]), set(checks), name)
         release = protections["release/*"]
@@ -605,7 +606,7 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         rules.apply_forgejo(api, OWNER, basic, None, False)
         self.assertEqual(api.writes(), [])
 
-    def test_given_the_rules_when_claude_merges_a_jenkinsfile_change_then_it_is_refused(self):
+    def test_given_the_rules_when_claude_merges_a_pipeline_file_change_then_it_is_refused(self):
         checks = self.rules[APP].develop_checks
         changed = self.change_file(CLAUDE, APP, "Jenkinsfile", JENKINSFILE + "// claude was here\n", "develop",
                                    "feature/claude-jenkinsfile")
@@ -615,7 +616,15 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual((error.status, error.message), (405, "not allowed to merge [reason: Changed protected files]"))
         self.assertFalse(self.pull_request(APP, number)["merged"])
 
-        # The same developer merges any other change: it is the Jenkinsfile that is refused.
+        # yggdrasil.yml (what Jenkins runs) is refused the same way.
+        pipeline = self.change_file(CLAUDE, APP, "yggdrasil.yml", "checks: {}\n", "develop", "feature/claude-pipeline")
+        number = self.open_pull_request(CLAUDE, APP, "feature/claude-pipeline", "develop")
+        self.set_checks(APP, pipeline, checks)
+        error = self.refused(CLAUDE, "POST", f"/repos/{OWNER}/{APP}/pulls/{number}/merge", {"Do": "merge"})
+        self.assertEqual((error.status, error.message), (405, "not allowed to merge [reason: Changed protected files]"))
+        self.assertFalse(self.pull_request(APP, number)["merged"])
+
+        # The same developer merges any other change: it is the pipeline files that are refused.
         other = self.change_file(CLAUDE, APP, "docs/claude.md", "notes\n", "develop", "feature/claude-docs")
         number = self.open_pull_request(CLAUDE, APP, "feature/claude-docs", "develop")
         self.set_checks(APP, other, checks)

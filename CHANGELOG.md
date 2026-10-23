@@ -20,7 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (exit 3: every `release/x.y.z` is kept, the owner deletes them by hand). See
   [docs/setup.md](docs/setup.md#the-git-server-commands).
 - **`scripts/rules.py`** applies the branching model to every repository of the catalog, on GitHub (rulesets) or
-  Forgejo (settings, branch and tag protections, the `Jenkinsfile` as a protected file on `develop`, and Jenkins'
+  Forgejo (settings, branch and tag protections, `yggdrasil.yml` and the `Jenkinsfile` as protected files on
+  `develop`, so only the owner merges a change to what Jenkins runs (Renovate's image bumps there too), and Jenkins'
   webhook), with `--dry-run`. `github/rulesets.py` is now a shim that says it moved and runs it. Forgejo needs
   `FORGE_TOKEN`, and `FORGE_JENKINS_URL` with `FORGE_WEBHOOK_SECRET` for webhooks; the users it names must have
   write access to the repository, or Forgejo drops them (the script warns). On Forgejo it deletes nothing, and on

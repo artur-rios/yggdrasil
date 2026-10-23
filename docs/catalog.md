@@ -138,6 +138,8 @@ Jenkins does not read the repository's `Jenkinsfile`: every job runs the one in
 [`jenkins/Jenkinsfile.default`](../jenkins/Jenkinsfile.default), kept in Jenkins, and the Jenkins library reads
 this file instead. It runs the commands only on the isolated CI agent (checks) or the release agent
 (releases). Why, and what happens on each push, pull request and tag: [The pipeline](setup.md#the-pipeline).
+On Forgejo the file is a protected file on `develop`: only the owner merges a change to it (Renovate's image
+bumps there included), with **Merge anyway** ([step 12](setup.md#12-apply-the-branch-rules)).
 A repository **without** a `yggdrasil.yml` is not an error: it behaves as before, it deploys and nothing
 else (on GitHub, its release also waits for every GitHub Actions check, as it always did).
 

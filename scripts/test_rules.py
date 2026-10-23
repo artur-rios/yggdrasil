@@ -69,7 +69,7 @@ class DesiredRulesTests(unittest.TestCase):
         r = by_repo()["shop-api"]
         self.assertEqual((r.main_mergers, r.tag_pattern, r.tag_creators, r.release_pushers),
                          (("jenkins-bot",), "v*", ("jenkins-bot",), ("artur-rios",)))
-        self.assertEqual(r.protected_files, ("Jenkinsfile",))
+        self.assertEqual(r.protected_files, ("Jenkinsfile", "yggdrasil.yml"))
         self.assertEqual(r.model, "release")
 
     def test_given_actions_checks_when_modelled_then_develop_requires_them_and_main_does_not(self):
@@ -458,15 +458,16 @@ class ForgejoRulesTests(unittest.TestCase):
         self.assertEqual((develop["enable_push"], develop["merge_whitelist_usernames"]),
                          (False, ["artur-rios", "alice", "bob"]))
 
-    def test_given_any_release_model_repository_when_applied_then_jenkinsfile_is_protected_on_develop_only(self):
-        # main only receives snapshots of develop, merged by Jenkins: a protected file there would stop it
-        # from merging any release that changes the Jenkinsfile.
+    def test_given_any_release_model_repository_when_applied_then_its_pipeline_files_are_protected_on_develop_only(self):
+        # yggdrasil.yml says what Jenkins runs (images, commands, which credentials a check binds): only the
+        # owner merges a change to it. main only receives snapshots of develop, merged by Jenkins: a
+        # protected file there would stop it from merging any release that changes them.
         for r in rules.desired_rules(CATALOG):
             if r.model != "release":
                 continue
             api = FakeForgejo()
             rules.apply_forgejo(api, OWNER, r, None, False)
-            self.assertEqual(protection(api, "develop")["protected_file_patterns"], "Jenkinsfile", r.repo)
+            self.assertEqual(protection(api, "develop")["protected_file_patterns"], "Jenkinsfile;yggdrasil.yml", r.repo)
             self.assertEqual(protection(api, "main")["protected_file_patterns"], "", r.repo)
 
     def test_given_release_branches_when_applied_then_only_the_owner_may_push_them(self):

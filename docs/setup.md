@@ -1044,7 +1044,9 @@ Run it **once by hand first**, as above, and read what it says: the unit then ru
 visits only the repositories of the catalog and, with `requireConfig: required`, skips a repository that has no
 Renovate configuration of its own: there are no onboarding pull requests. Each repository's configuration comes
 with the move of the repositories to Forgejo. Its branches are `renovate/*` and go into `develop`, where the
-branch policy accepts them; a build of a `renovate/*` branch never gets a credential.
+branch policy accepts them; a build of a `renovate/*` branch never gets a credential. A Renovate pull request
+that changes `yggdrasil.yml` (an image bump there) is a change to a protected file: it waits for the owner's
+**Merge anyway** ([Forgejo details](#forgejo-details-worth-knowing)).
 
 ## 10. The apps machine
 
@@ -1234,7 +1236,7 @@ deletion and nothing else of the table, plus the settings in its first row and, 
 | `release/*` | Only the owner pushes | No rule (none today) |
 | Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner. Nobody else can create, move or delete them (in an application's repository not even the owner). **Known gap:** a Forgejo tag protection is one list of who may change a matching tag in any way, so the user who creates the tags can also **move** them (a forced push) and **delete** them (a push; through the API too, unless the tag has a release): `forge.jenkinsUser` an application's `v*` tags, the owner an `owner-tag` repository's. A release whose tag was deleted stays, naming a tag that is gone. The live tests (`scripts/test_forgejo_live.py`) pin this | A `release tags` ruleset: tags cannot be moved or deleted, and for an `owner-tag` repository only the owner creates them |
 | The owner | Not bound by the protections, for emergencies (see below) | A repository administrator bypasses all the rulesets |
-| `Jenkinsfile` | **Protected file** on `develop` only: a pull request that changes it can be merged only by the owner, with a forced merge (below); being on the list of who may merge is not enough (`forge.developers` included). Every change to the `Jenkinsfile` thus reaches `develop` through the owner. `main` has no protected file: it receives only snapshots of `develop`, merged by `forge.jenkinsUser`, which a release that changes the `Jenkinsfile` must not stop. Jenkins no longer reads a repository's `Jenkinsfile` ([why](#how-a-build-runs)), so this protects nothing about the pipeline now; it stays for repositories that still carry one | Not applied: GitHub cannot restrict who may merge a given file, and it is not needed, since Jenkins never reads the `Jenkinsfile` |
+| `yggdrasil.yml` (and `Jenkinsfile`) | **Protected files** on `develop` only: a pull request that changes one can be merged only by the owner, with a forced merge (below); being on the list of who may merge is not enough (`forge.developers` included). `yggdrasil.yml` says what Jenkins runs for the repository (images, commands, which allowed credential a check binds), so every change to it reaches `develop` through the owner, **Renovate's too**: a `renovate/*` pull request that bumps an image in `yggdrasil.yml` passes its checks and then waits for the owner's **Merge anyway**. `main` has no protected file: it receives only snapshots of `develop`, merged by `forge.jenkinsUser`, which a release that changes `yggdrasil.yml` must not stop. Jenkins no longer reads a repository's `Jenkinsfile` ([why](#how-a-build-runs)); it stays on the list, harmlessly, for repositories that still carry one | Not applied: GitHub cannot restrict who may merge a given file. On GitHub a change to `yggdrasil.yml` is guarded only by who may merge into `develop` |
 
 ### An existing GitHub installation
 
@@ -1290,7 +1292,8 @@ for the others only after they adopt the file.
   the repository and run again`; do that and run it again.
 - **The owner's override is a forced merge.** The protections do not bind the owner (an administrator), for
   emergencies, but a plain merge by the owner is still refused while a required check fails, and also for a
-  pull request that changes a protected file (the `Jenkinsfile` on `develop`). In the web
+  pull request that changes a protected file (`yggdrasil.yml` or the `Jenkinsfile` on `develop`: a
+  Renovate pull request that bumps an image in `yggdrasil.yml` included). In the web
   interface use **Merge anyway** on the pull request; through the API, `force_merge: true` on the merge
   call. Nobody else can.
 - **Changing the webhook secret.** Forgejo never returns a hook's secret, so the script cannot tell that
