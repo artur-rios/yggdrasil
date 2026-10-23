@@ -157,10 +157,23 @@ class JenkinsCredentialsTests(unittest.TestCase):
         self.assertEqual(found["github-app"][0], "gitHubApp")
         self.assertEqual(found["github-app"][1]["privateKey"], "${readFile:/run/secrets/github-app.pem}")
 
+    def test_given_the_github_read_configuration_when_read_then_it_has_the_read_only_app_only(self):
+        # The ci agent's identity on GitHub, in a file of its own: platform.sh adds it only when both of
+        # its settings are there (Configuration as Code has no conditionals).
+        found = credentials("casc.github-read.yaml")
+        self.assertEqual(set(found), {"github-read"})
+        kind, fields = found["github-read"]
+        self.assertEqual(kind, "gitHubApp")
+        self.assertEqual(fields["appID"], "${GITHUB_READ_APP_ID}")
+        self.assertEqual(fields["owner"], "${GITHUB_OWNER}")
+        self.assertEqual(fields["privateKey"], "${readFile:/run/secrets/github-read.pem}")
+        self.assertNotIn("github-read", yaml.dump(casc("casc.github.yaml")))
+
     def test_given_the_github_configuration_when_read_then_it_has_no_forge_credentials(self):
-        # On GitHub the library's forgeCredential() answers github-app for both 'read' and 'write'.
+        # On GitHub the library's forgeCredential() answers github-app for 'write', and for 'read' too
+        # unless the optional read-only App (casc.github-read.yaml) is configured.
         self.assertEqual(credentials("casc.github.yaml"), {})
-        for name in ("casc.github.yaml", "casc.github-app.yaml"):
+        for name in ("casc.github.yaml", "casc.github-app.yaml", "casc.github-read.yaml"):
             self.assertNotIn("forge-", yaml.dump(casc(name)), name)
         # The common file defines none either: credentials belong to the forge's own file.
         self.assertNotIn("credentials", casc("casc.yaml"))
@@ -217,7 +230,8 @@ class JenkinsfileTests(unittest.TestCase):
     def test_given_the_compose_service_when_read_then_the_jenkinsfile_and_every_casc_file_are_mounted(self):
         volumes = " ".join(jenkins_service()["volumes"])
         self.assertIn("../jenkins/Jenkinsfile.default:/etc/jenkins/Jenkinsfile.default:ro", volumes)
-        for name in ("casc.yaml", "casc.forgejo.yaml", "casc.github.yaml", "casc.github-app.yaml"):
+        for name in ("casc.yaml", "casc.forgejo.yaml", "casc.github.yaml", "casc.github-app.yaml",
+                     "casc.github-read.yaml"):
             self.assertIn(f"./jenkins/controller/{name}:/etc/jenkins/{name}:ro", volumes)
 
 
@@ -239,11 +253,25 @@ class JenkinsServiceTests(unittest.TestCase):
             # directory in its place on the host.
             self.assertIn("${%s:-/dev/null}:/run/secrets/%s:ro" % (variable, name), volumes)
 
+    def test_given_the_compose_service_when_read_then_the_read_only_app_key_is_a_file_mounted_read_only(self):
+        service = jenkins_service()
+        self.assertIn("${GITHUB_READ_APP_KEY_FILE:-/dev/null}:/run/secrets/github-read.pem:ro", service["volumes"])
+        self.assertEqual(service["environment"]["GITHUB_READ_APP_ID"], "${GITHUB_READ_APP_ID:-}")
+
+    def test_given_the_compose_service_when_read_then_the_build_agents_work_directories_reach_the_controller(self):
+        environment = jenkins_service()["environment"]
+        self.assertEqual(environment["CI_AGENT_WORKDIR"], "${CI_AGENT_WORKDIR:-}")
+        self.assertEqual(environment["RELEASE_AGENT_WORKDIR"], "${RELEASE_AGENT_WORKDIR:-}")
+
     def test_given_the_environment_example_when_read_then_it_documents_the_new_settings(self):
         text = read(ROOT / "env" / "platform.env.example")
         for name in ("YGGDRASIL_LIBRARY_VERSION", "FORGE_WRITE_TOKEN_FILE", "FORGE_READ_TOKEN_FILE",
-                     "FORGE_WEBHOOK_SECRET_FILE"):
+                     "FORGE_WEBHOOK_SECRET_FILE", "GITHUB_READ_APP_ID", "GITHUB_READ_APP_KEY_FILE",
+                     "CI_AGENT_WORKDIR", "RELEASE_AGENT_WORKDIR"):
             self.assertRegex(text, rf"(?m)^{name}=")
+        # The work directories must match the agents' own settings: the example says which.
+        self.assertIn("YGG_AGENT_WORKDIR", text)
+        self.assertIn("CI_AGENT_WORKDIR", read(ROOT / "env" / "agent.env.example"))
 
 
 class AgentsScriptTests(unittest.TestCase):
@@ -259,6 +287,20 @@ class AgentsScriptTests(unittest.TestCase):
 
     def test_given_the_agents_script_when_read_then_the_environment_agents_keep_two_executors(self):
         self.assertIn("create(name, 2, name)", read(CONTROLLER / "init.groovy.d" / "agents.groovy"))
+
+    def test_given_the_agents_script_when_read_then_ci_and_release_work_in_their_configured_directories(self):
+        # run-check.sh hands a workspace to the host's engine by its path: the nodes' remote roots must be
+        # the directories build-agent.yml mounts at the same path (each user's YGG_AGENT_WORKDIR).
+        script = read(CONTROLLER / "init.groovy.d" / "agents.groovy")
+        self.assertRegex(script, r"ci:\s*\[[^]]*workdir:\s*'CI_AGENT_WORKDIR'")
+        self.assertRegex(script, r"release:\s*\[[^]]*workdir:\s*'RELEASE_AGENT_WORKDIR'")
+        self.assertIn("System.getenv(options.workdir)", script)
+        # Not absolute (or unset): refused with the setting's name, never a guess.
+        self.assertIn("startsWith('/')", script)
+        self.assertIn("must be the absolute work directory", script)
+        # A node created before the setting is moved; the environment agents keep today's root.
+        self.assertIn("create(name, options.executors, options.label, options.remoteFS, true)", script)
+        self.assertIn("String remoteFS = '/home/jenkins/agent'", script)
 
 
 if __name__ == "__main__":

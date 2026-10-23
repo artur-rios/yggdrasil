@@ -54,6 +54,8 @@
 //
 // Credentials, the rules this file keeps (scripts/test_pipeline_library.py checks them):
 //   - the forge's own credential ids are named in forgeCredential() only;
+//   - the ci agent never binds the GitHub App: the GitHub Actions lookup runs on the publish agent, and
+//     on GitHub the ci agent reads with github-read when it is configured;
 //   - the write credential is bound by reportStatus() only, which posts from the controller, outside
 //     any node(): neither the ci nor the release agent ever holds it. Checkouts and reads on those
 //     agents use the read credential;
@@ -529,7 +531,8 @@ boolean runCheck(Map ctx, Map state, Map check) {
 // file only the agent's user can read (umask 077, in the workspace's @tmp, outside every mount), handed
 // to the body as its path ('' when the check has none) and deleted afterwards. Every id is checked
 // against the catalog entry's `credentials` here, right before it is bound, and the forge's own ids
-// are refused whatever the catalog says: a check runs code from a branch.
+// (any id starting with forge- or github-) are refused whatever the catalog says: a check runs code
+// from a branch.
 void withCheckCredentials(Map check, Map entry, Closure body) {
   Map credentials = (check.credentials ?: [:]) as Map
   if (credentials.isEmpty()) {
@@ -551,8 +554,9 @@ void withCheckCredentials(Map check, Map entry, Closure body) {
     if (!(id in (entry.credentials ?: []))) {
       error "Check ${check.name}: the credential '${printable(id)}' is not in the catalog's credentials of ${entry.id}"
     }
-    if (id.startsWith('forge-') || id == forgeCredential('github')) {
-      error "Check ${check.name}: '${id}' is one of the pipeline's own credentials, never a check's"
+    // The pipeline's own: forge-read, forge-write, forge-webhook, github-app, github-read.
+    if (id.startsWith('forge-') || id.startsWith('github-')) {
+      error "Check ${check.name}: '${id}' is named like one of the pipeline's own credentials (forge-*, github-*), never a check's"
     }
     bindings << string(credentialsId: id, variable: variable)
   }
@@ -611,13 +615,17 @@ void collectResults(Map check) {
 
 // On Forgejo with a GitHub mirror, a pull request into develop also needs the entry's actionsChecks,
 // the Windows and macOS jobs GitHub Actions runs on the mirror. Each is set pending, then looked at
-// once a minute -- each look on a ci executor, the wait between looks outside node(), so waiting never
-// holds an agent -- until github.sh actions-status says they all passed (0) or one failed (1), or
+// once a minute -- each look on the publish agent (never ci: the GitHub App's token must not sit next to
+// the repositories' check code), the wait between looks outside node(), so waiting never holds an
+// agent -- until github.sh actions-status says they all passed (0) or one failed (1), or
 // checksTimeout runs out. Then each is copied to the forge with the GitHub run as its target. Not
 // finished in time (still running, or GitHub not answering: exit 2 or 3): pending, "GitHub Actions
 // didn't answer", and the build ends unstable; a rebuild looks again.
 void copyActionsChecks(Map ctx, Map state) {
   List names = state.entry.actionsChecks as List
+  if (!ctx.forge.publishAgent) {
+    error "GitHub Actions results are read on the publish agent, and catalog.yaml has none (set forge.publishAgent, or have an environment with trigger: release)."
+  }
   stage('GitHub Actions') {
     for (String name : names) {
       reportStatus(ctx.repo, state.sha, 'pending', name, 'Waiting for GitHub Actions')
@@ -649,11 +657,12 @@ void copyActionsChecks(Map ctx, Map state) {
   }
 }
 
-// One look at the actionsChecks on the mirror (owner mirror.github, the same repository name), on a ci
-// executor with the GitHub App's token. Returns [code: actions-status' exit, out: its lines].
+// One look at the actionsChecks on the mirror (owner mirror.github, the same repository name), on the
+// publish agent (forge.publishAgent: the agent that already holds the GitHub App for releases) with the
+// App's token. Returns [code: actions-status' exit, out: its lines].
 Map actionsLook(Map ctx, String sha, List names) {
   Map look = [code: 2, out: '']
-  node('ci') {
+  node(ctx.forge.publishAgent) {
     try {
       checkoutTools()
       String tmp = scratch()
@@ -845,14 +854,28 @@ void sameCommit(String sha, String expected) {
 // ---- Credentials and the git server ----
 
 // The Jenkins credential id for an access to the git server (platform/jenkins/controller/casc.*.yaml):
-//   read    checkouts, statuses read, history: forge-read (the read-only jenkins-ci user) on Forgejo
+//   read    checkouts, statuses read, history: forge-read (the read-only jenkins-ci user) on Forgejo;
+//           on GitHub github-read, the read-only GitHub App (casc.github-read.yaml), when it is
+//           configured, else github-app with a warning in the log
 //   write   statuses: forge-write (forge.jenkinsUser), bound by reportStatus() only, on the controller
-//   github  the GitHub App: GitHub Actions on the mirror, and the release path's GitHub commands
-// GitHub installations have no forge-* credentials: the GitHub App is everything there.
+//   github  the GitHub App: GitHub Actions on the mirror (on the publish agent), and the release path's
+//           GitHub commands
+// GitHub installations have no forge-* credentials: the GitHub App (and the optional read-only one) is
+// everything there.
 String forgeCredential(String access) {
   boolean forgejo = env.FORGE_TYPE == 'forgejo'
   if (access == 'read') {
-    return forgejo ? 'forge-read' : 'github-app'
+    if (forgejo) {
+      return 'forge-read'
+    }
+    // Looked up once per build; the answer is kept in the build's environment.
+    if (env.YGG_GITHUB_READ == null) {
+      env.YGG_GITHUB_READ = credentialExists('github-read') ? 'yes' : 'no'
+      if (env.YGG_GITHUB_READ == 'no') {
+        echo 'github-read is not configured: the CI agent uses the GitHub App'
+      }
+    }
+    return env.YGG_GITHUB_READ == 'yes' ? 'github-read' : 'github-app'
   }
   if (access == 'write') {
     return forgejo ? 'forge-write' : 'github-app'
@@ -861,6 +884,15 @@ String forgeCredential(String access) {
     return 'github-app'
   }
   error "forgeCredential: unknown access '${access}' (read, write or github)"
+}
+
+// Whether a global credential with this id exists (the library runs unsandboxed, on the controller).
+@NonCPS
+boolean credentialExists(String id) {
+  List found = com.cloudbees.plugins.credentials.CredentialsProvider.lookupCredentials(
+    com.cloudbees.plugins.credentials.common.StandardCredentials.class, jenkins.model.Jenkins.get(), hudson.security.ACL.SYSTEM,
+    Collections.emptyList())
+  return found.any { it.id == id }
 }
 
 // Binds the token of forgeCredential(access) for the body: as GH_TOKEN for 'github' (github.sh), else
@@ -1099,15 +1131,33 @@ Map findRepositoryEntry(Map catalog, String id) {
   return (catalog.repositories ?: []).find { it.id == id } as Map
 }
 
-// The git server: Forgejo at forge.url, or GitHub without a forge block (catalog.py forge()).
+// The git server: Forgejo at forge.url, or GitHub without a forge block, and the publish agent
+// (catalog.py forge()).
 @NonCPS
 Map forgeOf(Map catalog) {
   Map block = (catalog.forge ?: [:]) as Map
+  Map forge = [type: 'github', url: 'https://github.com', api: 'https://api.github.com']
   if ((block.type ?: 'github') == 'forgejo') {
     String url = block.url.toString().trim().replaceAll('/+$', '')
-    return [type: 'forgejo', url: url, api: url + '/api/v1']
+    forge = [type: 'forgejo', url: url, api: url + '/api/v1']
   }
-  return [type: 'github', url: 'https://github.com', api: 'https://api.github.com']
+  forge.publishAgent = block.publishAgent ? block.publishAgent.toString() : releaseAgent(catalog)
+  return forge
+}
+
+// The agent of the last trigger: release environment over the deployable applications, in catalog
+// order (catalog.py _release_agent: the agent that merges and releases today), or null.
+@NonCPS
+String releaseAgent(Map catalog) {
+  String agent = null
+  for (Map app : (catalog.systems ?: []).collectMany { it.applications ?: [] }.findAll { it.kind != 'platform' }) {
+    for (Map environment : resolve(catalog, app.id as String)) {
+      if (environment.trigger == 'release') {
+        agent = environment.agent
+      }
+    }
+  }
+  return agent
 }
 
 // The Forgejo -> GitHub mirror ([github: <owner>]), or null (catalog.py mirror()).

@@ -32,7 +32,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIBRARY = ROOT / "jenkins" / "library" / "vars" / "yggdrasilPipeline.groovy"
 
 # The Jenkins credential ids of the forge itself (platform/jenkins/controller/casc.*.yaml).
-FORGE_CREDENTIAL_IDS = ("forge-read", "forge-write", "forge-webhook", "github-app")
+FORGE_CREDENTIAL_IDS = ("forge-read", "forge-write", "forge-webhook", "github-app", "github-read")
 # Constants whose value is a shell script, accepted as `sh(script: <NAME>, ...)` when the constant itself
 # is a single-quoted literal (checked below).
 SCRIPT_CONSTANTS = ("TOOL",)
@@ -185,6 +185,13 @@ class Library:
             todo.extend(self.calls.get(name, ()))
         return seen
 
+    def code_reached(self, start, end, leaving_out=()):
+        """The code (comments blanked, strings kept) of the span and of the library functions it reaches,
+        but those in leaving_out, joined."""
+        spans = [(start, end)] + [self.functions[name] for name in self.reachable(start, end)
+                                  if name in self.functions and name not in leaving_out]
+        return "\n".join(self.code[a:b] for a, b in spans)
+
     def words_reached(self, start, end):
         """Every word in the span and in the library functions it reaches. A word, not only a call: a
         step called without parentheses (`sleep time: 60`, `input message: ...`) has no "(" after it."""
@@ -286,6 +293,38 @@ class PipelineLibraryTests(unittest.TestCase):
         for match in re.finditer(r"\bhttpRequest\s*\(", lib.masked):
             self.assertEqual(lib.function_at(match.start()), "reportStatus",
                              f"line {lib.line(match.start())}: httpRequest outside reportStatus()")
+
+    def test_given_ci_node_blocks_when_read_then_none_binds_the_github_app(self):
+        # The ci agent runs the repositories' check code: the GitHub App's token (which can write to the
+        # mirror, or to every repository on a GitHub installation) is never bound there. forgeCredential()
+        # itself is left out of the scan: it is the table of ids, and its 'read' answer on GitHub without
+        # github-read is the accepted, logged fallback; what matters is which access a ci block binds.
+        lib = self.lib
+        ci_blocks = [(label, start, end) for label, start, end in lib.node_blocks() if re.search(r"\bci\b", label)]
+        self.assertTrue(ci_blocks)
+        for label, start, end in ci_blocks:
+            where = f"line {lib.line(start)}: node({label})"
+            code = lib.code_reached(start, end, leaving_out=("forgeCredential",))
+            self.assertNotRegex(code, r"(?:withForgeToken|forgeCredential)\(\s*'github'", f"{where} binds the GitHub App")
+            self.assertNotIn("'github-app'", code, where)
+            self.assertNotIn("github", lib.reachable(start, end), f"{where} runs github.sh with the App")
+        # The Actions lookup is where the App is bound for a check build: on the publish agent.
+        (label, start, end), = [block for block in lib.node_blocks()
+                                if lib.function_at(block[1]) == "actionsLook"]
+        self.assertEqual(label, "ctx.forge.publishAgent")
+        self.assertIn("withForgeToken('github')", lib.code[start:end])
+
+    def test_given_github_when_read_then_the_ci_agent_reads_with_github_read_when_it_is_configured(self):
+        start, end = self.lib.functions["forgeCredential"]
+        body = self.lib.code[start:end]
+        self.assertIn("credentialExists('github-read')", body)
+        self.assertIn("? 'github-read' : 'github-app'", body)
+        self.assertIn("'github-read is not configured: the CI agent uses the GitHub App'", body)
+        start, end = self.lib.functions["credentialExists"]
+        self.assertIn("CredentialsProvider.lookupCredentials", self.lib.code[start:end])
+        # A check never gets one of the pipeline's own credentials, the read-only App included.
+        start, end = self.lib.functions["withCheckCredentials"]
+        self.assertIn("id.startsWith('github-')", self.lib.code[start:end])
 
     def test_given_node_blocks_when_read_then_none_reaches_the_write_credential_or_a_status(self):
         # httpRequest inside node() runs on that agent; the write token must stay on the controller. And on

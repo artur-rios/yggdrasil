@@ -1,0 +1,19 @@
+# Configuration as Code for the read-only GitHub App (see casc.yaml): the identity of the ci agent on a
+# GitHub installation, as forge-read (the jenkins-ci user) is on Forgejo. Optional, so it is a file of its
+# own (Configuration as Code has no conditionals): scripts/platform.sh adds it to YGG_CASC_CONFIG only on
+# GitHub and only when GITHUB_READ_APP_ID and GITHUB_READ_APP_KEY_FILE are set. Without it the library's
+# forgeCredential('read') falls back to github-app, with a warning in the build log.
+#
+# The App needs read access only: contents, metadata, pull requests and commit statuses. Install it on
+# the same owner as the main App.
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - gitHubApp:
+              id: "github-read"
+              description: "yggdrasil GitHub App, read-only (the ci agent)"
+              appID: "${GITHUB_READ_APP_ID}"
+              owner: "${GITHUB_OWNER}"
+              privateKey: "${readFile:/run/secrets/github-read.pem}"

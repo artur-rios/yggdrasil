@@ -354,7 +354,8 @@ services:
       JAVA_OPTS: -Djenkins.install.runSetupWizard=false
       # The configuration files of this installation's git server, comma-separated: scripts/platform.sh
       # picks them from catalog.yaml (casc.yaml, then casc.forgejo.yaml or casc.github.yaml, and
-      # casc.github-app.yaml when the GitHub App is used). The default is GitHub, as without a forge block.
+      # casc.github-app.yaml when the GitHub App is used, casc.github-read.yaml on GitHub when the read-only
+      # App is set). The default is GitHub, as without a forge block.
       CASC_JENKINS_CONFIG: ${YGG_CASC_CONFIG:-/etc/jenkins/casc.yaml,/etc/jenkins/casc.github.yaml,/etc/jenkins/casc.github-app.yaml}
       JENKINS_URL: ${JENKINS_URL:-}
       JENKINS_ADMIN_ID: ${JENKINS_ADMIN_ID:-admin}
@@ -363,6 +364,13 @@ services:
       GITHUB_OWNER: ${GITHUB_OWNER:?run through scripts/platform.sh, which reads it from catalog.yaml}
       YGGDRASIL_REPOSITORY: ${YGGDRASIL_REPOSITORY:-yggdrasil}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      # GitHub only, optional: the read-only GitHub App the ci agent checks out with (casc.github-read.yaml).
+      GITHUB_READ_APP_ID: ${GITHUB_READ_APP_ID:-}
+      # The work directories of the ci and release build agents (agents.groovy makes them the nodes'
+      # remote roots): each the YGG_AGENT_WORKDIR of that user's agent.env. Required with this profile
+      # (scripts/platform.sh).
+      CI_AGENT_WORKDIR: ${CI_AGENT_WORKDIR:-}
+      RELEASE_AGENT_WORKDIR: ${RELEASE_AGENT_WORKDIR:-}
       # The git server, from catalog.yaml's forge block (also exported by scripts/platform.sh): its web
       # address and the user the write token belongs to. Unused on GitHub.
       FORGE_URL: ${FORGE_URL:-https://github.com}
@@ -375,6 +383,7 @@ services:
       - ./jenkins/controller/casc.forgejo.yaml:/etc/jenkins/casc.forgejo.yaml:ro
       - ./jenkins/controller/casc.github.yaml:/etc/jenkins/casc.github.yaml:ro
       - ./jenkins/controller/casc.github-app.yaml:/etc/jenkins/casc.github-app.yaml:ro
+      - ./jenkins/controller/casc.github-read.yaml:/etc/jenkins/casc.github-read.yaml:ro
       # The one Jenkinsfile of the installation, loaded into Config File Provider by casc.yaml: every job
       # runs it, never the repository's own.
       - ../jenkins/Jenkinsfile.default:/etc/jenkins/Jenkinsfile.default:ro
@@ -385,6 +394,8 @@ services:
       - ./jenkins/controller/init.groovy.d/agents.groovy:/var/jenkins_home/init.groovy.d/agents.groovy:ro
       # The GitHub App private key, converted to PKCS#8 (see the README). Read by casc.yaml.
       - ${GITHUB_APP_KEY_FILE:-/etc/yggdrasil/github-app.pem}:/run/secrets/github-app.pem:ro
+      # The read-only GitHub App's key (PKCS#8 too), read by casc.github-read.yaml; /dev/null when unset.
+      - ${GITHUB_READ_APP_KEY_FILE:-/dev/null}:/run/secrets/github-read.pem:ro
       # Forgejo's tokens and webhook secret, one file each (env/platform.env.example), read by
       # casc.forgejo.yaml. /dev/null when unset, which is every GitHub installation: a missing file would
       # make Docker create a directory in its place on the host.

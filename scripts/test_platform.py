@@ -40,6 +40,7 @@ class PlatformTests(unittest.TestCase):
                           'echo "YGG_CASC_CONFIG=${YGG_CASC_CONFIG:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "FORGE_URL=${FORGE_URL:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "FORGE_JENKINS_USER=${FORGE_JENKINS_USER:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "GITHUB_READ_APP_KEY_FILE=${GITHUB_READ_APP_KEY_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
                           '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
                           '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
@@ -391,13 +392,15 @@ class PlatformTests(unittest.TestCase):
     def test_given_the_dev_profiles_without_environments_when_up_then_it_starts(self):
         result = self.up("COMPOSE_PROFILES=forge,jenkins\nJENKINS_URL=https://jenkins.example.com/\n"
                          "JENKINS_ADMIN_PASSWORD=x\nGITHUB_APP_ID=1\nGITHUB_APP_KEY_FILE=/etc/yggdrasil/github-app.pem\n"
-                         "YGGDRASIL_LIBRARY_VERSION=v1.0.0\n")
+                         "YGGDRASIL_LIBRARY_VERSION=v1.0.0\n" + self.WORKDIRS)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("up --detach", self.docker_calls())
         self.assertIn("PROMETHEUS_CONFIG_FILE=prometheus-static.yml\n", self.docker_calls())
 
+    WORKDIRS = "CI_AGENT_WORKDIR=/home/ci/agent\nRELEASE_AGENT_WORKDIR=/home/release/agent\n"
     JENKINS = ("COMPOSE_PROFILES=forge,jenkins\nJENKINS_URL=https://jenkins.example.com/\nJENKINS_ADMIN_PASSWORD=x\n"
-               "YGGDRASIL_LIBRARY_VERSION=v1.0.0\n")
+               "YGGDRASIL_LIBRARY_VERSION=v1.0.0\n" + WORKDIRS)
+    GITHUB_READ = "GITHUB_READ_APP_ID=2\nGITHUB_READ_APP_KEY_FILE=/etc/yggdrasil/github-read.pem\n"
     GITHUB_APP = "GITHUB_APP_ID=1\nGITHUB_APP_KEY_FILE=/etc/yggdrasil/github-app.pem\n"
     FORGE_FILES = ("FORGE_WRITE_TOKEN_FILE=/etc/yggdrasil/forge-write-token\n"
                    "FORGE_READ_TOKEN_FILE=/etc/yggdrasil/forge-read-token\n"
@@ -422,6 +425,51 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("YGG_CASC_CONFIG=/etc/jenkins/casc.yaml,/etc/jenkins/casc.github.yaml,"
                       "/etc/jenkins/casc.github-app.yaml\n", self.docker_calls())
+
+    def test_given_a_github_catalog_without_the_read_only_app_when_up_then_its_file_is_not_read(self):
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertNotIn("casc.github-read.yaml", calls)
+        # No key to mount: /dev/null, not a path Docker would create as a directory.
+        self.assertIn("GITHUB_READ_APP_KEY_FILE=/dev/null\n", calls)
+
+    def test_given_a_github_catalog_with_the_read_only_app_when_up_then_jenkins_reads_its_credential(self):
+        result = self.up(self.JENKINS + self.GITHUB_APP + self.GITHUB_READ)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertIn("YGG_CASC_CONFIG=/etc/jenkins/casc.yaml,/etc/jenkins/casc.github.yaml,"
+                      "/etc/jenkins/casc.github-app.yaml,/etc/jenkins/casc.github-read.yaml\n", calls)
+        self.assertNotIn("GITHUB_READ_APP_KEY_FILE=/dev/null", calls)
+
+    def test_given_half_of_the_read_only_app_when_up_then_it_is_refused(self):
+        for line in self.GITHUB_READ.splitlines():
+            result = self.up(self.JENKINS + self.GITHUB_APP + line + "\n")
+            self.assertEqual(result.returncode, 1, line)
+            self.assertIn("set both GITHUB_READ_APP_ID and GITHUB_READ_APP_KEY_FILE", result.stderr)
+            self.assertEqual(self.docker_calls(), "")
+
+    def test_given_a_forgejo_catalog_when_up_then_the_read_only_github_app_is_not_configured(self):
+        # Forgejo's ci identity is forge-read; github-read is a GitHub installation's.
+        self.use_catalog("forge:\n  type: forgejo\n  url: https://git.example.com\n")
+        result = self.up(self.JENKINS + self.FORGE_FILES + self.GITHUB_READ)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("casc.github-read.yaml", self.docker_calls())
+
+    def test_given_the_jenkins_profile_without_the_build_agents_work_directories_when_up_then_it_is_refused(self):
+        for name in ("CI_AGENT_WORKDIR", "RELEASE_AGENT_WORKDIR"):
+            settings = "".join(line + "\n" for line in self.JENKINS.splitlines() if not line.startswith(name + "="))
+            result = self.up(settings + self.GITHUB_APP)
+            self.assertEqual(result.returncode, 1, name)
+            self.assertIn(f"{name} must be set", result.stderr)
+            self.assertEqual(self.docker_calls(), "")
+
+    def test_given_a_relative_build_agent_work_directory_when_up_then_it_is_refused(self):
+        result = self.up(self.JENKINS + self.GITHUB_APP + "RELEASE_AGENT_WORKDIR=agent\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("RELEASE_AGENT_WORKDIR in", result.stderr)
+        self.assertIn("must be an absolute path", result.stderr)
+        self.assertEqual(self.docker_calls(), "")
 
     def test_given_a_github_catalog_without_the_app_when_up_then_it_is_refused(self):
         result = self.up(self.JENKINS)
