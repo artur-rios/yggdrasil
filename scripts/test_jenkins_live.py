@@ -262,6 +262,8 @@ DEPLOY_STUB = """\
 # test_jenkins_live.py's stand-in for scripts/deploy.sh: the pipeline's side of a deploy is what is
 # under test, deploy.sh has its own tests.
 echo "DEPLOY-STUB environment=$1 stack=$2 checkout=$3 version=$4 inputs=${DEPLOY_INPUTS_DIR:-}"
+# The owner's data next to it (stacks/ from main, while this script is the library's version).
+echo "DEPLOY-OWNER-DATA $(cat "$(dirname "$0")/../stacks/live-marker.yml" 2>/dev/null || echo none)"
 # What the image build would get from deploy.inputs: each file's first line.
 if [ -n "${DEPLOY_INPUTS_DIR:-}" ]; then
   find "$DEPLOY_INPUTS_DIR" -type f | sort | while read -r file; do echo "DEPLOY-INPUT $(head -n 1 "$file")"; done
@@ -616,7 +618,16 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         (tree / "catalog.yaml").write_text(yaml.safe_dump(test_catalog(), sort_keys=False))
         for arguments in (("init", "--quiet", "--initial-branch=main"), ("add", "--all"),
                           ("commit", "--quiet", "--message", "yggdrasil under test"),
-                          ("tag", LIBRARY_VERSION),
+                          ("tag", LIBRARY_VERSION)):
+            done = cls.git(OWNER, *arguments, cwd=tree)
+            if done.returncode:
+                raise AssertionError(f"git {arguments[0]}: {done.stderr}")
+        # Then main moves on past the tag: a deploy.sh the pipeline must not run (the scripts are the
+        # library's version) and owner data it must use (stacks/ comes from main).
+        (tree / "scripts" / "deploy.sh").write_text('#!/usr/bin/env bash\necho "DEPLOY-FROM-MAIN"\n')
+        (tree / "stacks").mkdir()
+        (tree / "stacks" / "live-marker.yml").write_text("from-main\n")
+        for arguments in (("add", "--all"), ("commit", "--quiet", "--message", "main moves on"),
                           ("push", "--quiet", f"{cls.url}/{OWNER}/yggdrasil.git", "main", LIBRARY_VERSION)):
             done = cls.git(OWNER, *arguments, cwd=tree)
             if done.returncode:
@@ -1230,6 +1241,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(build.result, "SUCCESS", build.console[-4000:])
         self.assertIn(f"DEPLOY-STUB environment=development stack={PLAIN} checkout=app version=develop-{sha[:7]} inputs=",
                       build.console)
+        # yggdrasil's scripts at the library's tag (main's deploy.sh never ran), its stacks/ from main.
+        self.assertIn("DEPLOY-OWNER-DATA from-main", build.console)
+        self.assertNotIn("DEPLOY-FROM-MAIN", build.console)
         for stage in ("(Branch policy)", "(Checks)"):
             self.assertNotIn(stage, build.console)
         self.assertEqual(self.statuses(PLAIN, sha), [])

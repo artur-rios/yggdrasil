@@ -1421,7 +1421,7 @@ Day to day from here: [README.md#day-to-day](../README.md#day-to-day).
 |---|---|
 | Jenkins controller: jobs, agents, what a build deploys where | The controller host's `/opt/yggdrasil/catalog.yaml` |
 | Each deploy: `scripts/deploy.sh` and `stacks/` | A fresh clone of your fork's `main`, made by the agent for the build |
-| Every build: the pipeline library (`jenkins/library/`) | Your fork at the tag `YGGDRASIL_LIBRARY_VERSION` ([How a build runs](#how-a-build-runs)); the `scripts/` it calls come from `main` |
+| Every build: the pipeline library (`jenkins/library/`) | Your fork at the tag `YGGDRASIL_LIBRARY_VERSION` ([How a build runs](#how-a-build-runs)); the `scripts/` it calls at the same tag, `catalog.yaml` and `stacks/` from `main` |
 | A repository's checks and releases | Its `yggdrasil.yml` at the commit being built (data only), checked against the controller's `catalog.yaml` |
 | `platform.sh`, the status API, Prometheus, hand deploys | That host's `/opt/yggdrasil` |
 
@@ -1463,8 +1463,16 @@ repository that id. A `Jenkinsfile` left in a repository is ignored.
 
 The library is **pinned**: Jenkins loads `jenkins/library/` from your fork at the tag
 `YGGDRASIL_LIBRARY_VERSION`, so what runs in your pipelines is a release you chose, not whatever `main` is
-today. The `scripts/` and `stacks/` it calls are cloned from `main` of your fork by each build, so keep the tag
-and `main` close. To upgrade the pipeline: release yggdrasil in your fork ([CONTRIBUTING.md](../CONTRIBUTING.md#releasing)),
+today. Each build also clones your fork for what the library calls, split in two:
+
+- **the code** (`scripts/`, and everything else of yggdrasil) at the **same tag**, so the library and the
+  scripts it runs are always one release, whatever has been merged into `main` since;
+- **your data**, `catalog.yaml` and `stacks/`, from **`main`**, where you keep them up to date: a new
+  application's stack file or a catalog change is used by the next build without a new release. (The
+  controller's own copy of the catalog, `/etc/jenkins/catalog.yaml`, is what decides the jobs, agents and
+  allow-lists; the clone's copy is what `deploy.sh` reads on the deploy agents.)
+
+A change to `scripts/` therefore reaches the pipeline only with a new tag. To upgrade the pipeline: release yggdrasil in your fork ([CONTRIBUTING.md](../CONTRIBUTING.md#releasing)),
 set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's `platform.env`, and run
 `scripts/platform.sh up` (Compose recreates the controller).
 

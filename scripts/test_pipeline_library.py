@@ -478,6 +478,24 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertNotIn("--depth", body)
         self.assertIn("sameCommit(head, sha)", body)
 
+    def test_given_the_tools_checkout_when_read_then_scripts_are_the_librarys_version_and_data_comes_from_main(self):
+        # The library is pinned (YGGDRASIL_LIBRARY_VERSION); the scripts it calls must be that release too,
+        # not whatever main has. Only the owner's data (catalog.yaml, stacks/) comes from main.
+        lib = self.lib
+        body = lib.code[slice(*lib.functions["checkoutTools"])]
+        self.assertIn("withForgeToken('read')", body)
+        self.assertIn('"YGG_TOOLS_VERSION=${libraryVersion()}"', body)
+        self.assertIn('fetch "refs/tags/$YGG_TOOLS_VERSION" 2>/dev/null || fetch "refs/heads/$YGG_TOOLS_VERSION"', body)
+        self.assertIn("checkout --quiet --detach FETCH_HEAD", body)
+        self.assertLess(body.index("--detach FETCH_HEAD"), body.index("fetch refs/heads/main"))
+        self.assertLess(body.index("fetch refs/heads/main"), body.index('git checkout --quiet FETCH_HEAD -- "$path"'))
+        self.assertNotIn("branch: 'main'", body)
+        self.assertNotIn("git url:", body)
+        self.assertEqual(re.search(r"OWNER_DATA = (\[[^\]]*\])", lib.code)[1], "['catalog.yaml', 'stacks']")
+        version = lib.code[slice(*lib.functions["libraryVersion"])]
+        self.assertIn("env['library.yggdrasil.version']", version)
+        self.assertRegex(version, r"if \(!\(version ==~ LIBRARY_VERSION\) \|\| version\.contains\('\.\.'\)\) \{\s*error ")
+
     def test_given_ci_node_blocks_when_read_then_none_checks_out_with_the_jobs_credential(self):
         # checkout scm uses the job's branch-source credential (the main GitHub App on GitHub): on the ci
         # agent the build's commit is fetched by checkoutCommit() with the read credential instead. The

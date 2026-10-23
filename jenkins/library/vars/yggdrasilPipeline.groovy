@@ -130,6 +130,10 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final int TAG_WAIT_SECONDS = 600
 // A tag of a release (v1.4.0, 1.4.0), before it reaches git or the forge.
 @Field static final String TAG = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}'
+// The version the library was loaded at (a yggdrasil release tag; a branch name is accepted too), and
+// what of this repository is the owner's data, always taken from main (checkoutTools).
+@Field static final String LIBRARY_VERSION = '[A-Za-z0-9][A-Za-z0-9._/-]{0,99}'
+@Field static final List OWNER_DATA = ['catalog.yaml', 'stacks']
 // A release file glob (release.build.files, release.windows.files) as the stash step takes it: Ant
 // patterns (*, **, ?), relative, with no comma or whitespace (stash splits its includes on them); a
 // `.` or `..` segment is refused separately (releaseProblem).
@@ -2050,12 +2054,47 @@ String revisionHash(def run) {
   return null
 }
 
-// This repository (its main branch, from the same git server) in ./yggdrasil, with the read credential.
+// This repository in ./yggdrasil, from the same git server with the read credential: its code (scripts/,
+// everything the library calls) at the version this build loaded the library at (libraryVersion(): the
+// pinned YGGDRASIL_LIBRARY_VERSION tag), so the library and its scripts are always one release; and the
+// owner's data (OWNER_DATA: catalog.yaml and stacks/) from main, which is where the owner keeps them up
+// to date. A path main does not have keeps the version's copy.
 void checkoutTools() {
-  dir('yggdrasil') {
-    git url: "${env.FORGE_URL}/${env.GITHUB_OWNER}/${env.YGGDRASIL_REPOSITORY}.git", branch: 'main',
-        credentialsId: forgeCredential('read')
+  withForgeToken('read') {
+    withEnv(["YGG_TOOLS_URL=${env.FORGE_URL}/${env.GITHUB_OWNER}/${env.YGGDRASIL_REPOSITORY}.git",
+             "YGG_TOOLS_VERSION=${libraryVersion()}", "YGG_OWNER_DATA=${OWNER_DATA.join(' ')}"]) {
+      sh(script: '''
+        set +x
+        export GIT_TERMINAL_PROMPT=0
+        helper='!f() { test "$1" = get || exit 0; echo "username=$FORGE_USER"; echo "password=$FORGE_TOKEN"; }; f'
+        fetch() { git -c credential.helper= -c "credential.helper=$helper" fetch --quiet --depth 1 origin "$@"; }
+        rm -rf yggdrasil
+        git init --quiet yggdrasil
+        cd yggdrasil
+        git remote add origin "$YGG_TOOLS_URL"
+        # A release tag (what the controller pins); a branch only if there is no such tag.
+        fetch "refs/tags/$YGG_TOOLS_VERSION" 2>/dev/null || fetch "refs/heads/$YGG_TOOLS_VERSION"
+        git -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
+        fetch refs/heads/main
+        for path in $YGG_OWNER_DATA; do
+          if [ -n "$(git ls-tree --name-only FETCH_HEAD -- "$path")" ]; then
+            rm -rf "$path"
+            git checkout --quiet FETCH_HEAD -- "$path"
+          fi
+        done
+      ''')
+    }
   }
+}
+
+// The version (a yggdrasil release tag) this build loaded the library at: what Jenkins records as
+// library.yggdrasil.version, from casc's defaultVersion (YGGDRASIL_LIBRARY_VERSION).
+String libraryVersion() {
+  String version = env['library.yggdrasil.version']
+  if (!(version ==~ LIBRARY_VERSION) || version.contains('..')) {
+    error "Cannot tell which version of the yggdrasil library this build loaded (library.yggdrasil.version is '${printable(version)}')."
+  }
+  return version
 }
 
 // The checkout of an earlier step and this one must be the same commit (every step of a build works on

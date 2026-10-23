@@ -164,8 +164,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   login owns is moved with heimdall-api's `separate-owner.sql` runbook.
 - **Breaking: Jenkins never reads a repository's `Jenkinsfile`.** Every job runs `jenkins/Jenkinsfile.default`, kept in
   Jenkins, which calls the pinned library; a branch pushed by someone who is not the owner would otherwise run its own
-  pipeline code with every credential in reach. The library is loaded at the tag `YGGDRASIL_LIBRARY_VERSION`; the
-  `scripts/` and `stacks/` it calls still come from `main`. A `Jenkinsfile` in a repository is ignored (and the Forgejo
+  pipeline code with every credential in reach. The library is loaded at the tag `YGGDRASIL_LIBRARY_VERSION`, and
+  the `scripts/` it calls are cloned at that same tag; only the owner's data, `catalog.yaml` and `stacks/`, still
+  comes from `main`. A `Jenkinsfile` in a repository is ignored (and the Forgejo
   protection of it on `develop` protects nothing about the pipeline now). Every build now starts with a step on the
   `ci` agent that reads the commit, even for a repository without a `yggdrasil.yml`: an installation needs the CI
   agent, `CI_AGENT_WORKDIR`/`RELEASE_AGENT_WORKDIR` and `YGGDRASIL_LIBRARY_VERSION` before its next build.
