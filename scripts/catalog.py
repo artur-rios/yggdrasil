@@ -9,6 +9,9 @@
     python3 scripts/catalog.py applications [--deployable] ids
     python3 scripts/catalog.py systems                    id<TAB>name, one per line
     python3 scripts/catalog.py show <app>                 JSON: the application's fields and its system
+    python3 scripts/catalog.py public-host <app> <environment> <default-domain>
+                                                          the site's full host name (nothing if it has none)
+    python3 scripts/catalog.py public-path <app>          the site's URL path (nothing if it has none)
     python3 scripts/catalog.py owner | repository         the GitHub owner, this repository's name
     python3 scripts/catalog.py forge [type|url|api|jenkins-user|publish-agent]  the git server (JSON without
                                                            an argument; publish-agent exits 1 without one)
@@ -558,6 +561,27 @@ def environment_options(catalog, env_id):
     raise CatalogError(f"'{env_id}' is not an environment in catalog.yaml")
 
 
+def public_host(catalog, app_id, env_id, default_domain):
+    """The full public host name of an application in an environment: <host><hostSuffix>.<domain>,
+    the domain being the application's own `domain`, else the default (the host's DOMAIN). With
+    `apex: true` and no `host` it is the bare domain; `host` wins when both are set. "" when the
+    application is not public, or when there is no domain to put it under (an installation whose
+    stacks do not use it)."""
+    app = application(catalog, app_id)
+    suffix = None
+    for env in resolve(catalog, app_id):
+        if env["id"] == env_id:
+            suffix = env["hostSuffix"]
+    if suffix is None:
+        raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
+    domain = app.get("domain") or default_domain
+    if not domain:
+        return ""
+    if app.get("host"):
+        return f"{app['host']}{suffix}.{domain}"
+    return domain if app.get("apex") else ""
+
+
 def _print_value(value):
     print(" ".join(value) if isinstance(value, list) else str(value).lower() if isinstance(value, bool) else value)
 
@@ -698,6 +722,15 @@ def main(argv):
                 _print_value(env[args[1]])
         elif command == "plan" and len(args) == 1:
             print(json.dumps(resolve(catalog, args[0]), indent=2))
+        elif command == "public-host" and len(args) == 3:
+            # Nothing at all (not a blank line) when there is none, so $(...) is empty.
+            host = public_host(catalog, *args)
+            if host:
+                print(host)
+        elif command == "public-path" and len(args) == 1:
+            path = application(catalog, args[0]).get("path")
+            if path:
+                print(path)
         elif command == "owner":
             print(catalog["owner"])
         elif command == "repository":

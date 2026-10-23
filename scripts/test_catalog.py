@@ -664,6 +664,69 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(run_cli(catalog(), "repository-entry")[0], 2)
 
 
+class PublicHostTests(unittest.TestCase):
+    """public-host and public-path: the full host name and URL path a site's stack file needs."""
+
+    def site(self, **fields):
+        """BASE with one more application, `site`, and a -dev suffix on the dev environment."""
+        value = catalog()
+        value["environments"][0]["hostSuffix"] = "-dev"
+        value["systems"][0]["applications"].append(
+            {"id": "site", "name": "Site", "kind": "web", "health": "http://site:8080/healthz", **fields})
+        return value
+
+    def ask(self, value, *argv):
+        return run_cli(value, *argv)
+
+    def test_given_a_host_and_a_suffix_when_asked_then_the_host_is_under_the_default_domain(self):
+        value = self.site(host="docs")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"), (0, "docs-dev.example.com\n", ""))
+        self.assertEqual(self.ask(value, "public-host", "site", "prod", "example.com"), (0, "docs.example.com\n", ""))
+
+    def test_given_a_domain_when_asked_then_the_host_is_under_it(self):
+        value = self.site(host="docs", domain="sites.example.org")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"),
+                         (0, "docs-dev.sites.example.org\n", ""))
+
+    def test_given_an_environment_override_of_the_suffix_when_asked_then_the_override_wins(self):
+        value = self.site(host="docs", environments={"dev": {"hostSuffix": "-x"}})
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com")[1], "docs-x.example.com\n")
+
+    def test_given_apex_without_host_when_asked_then_it_is_the_bare_domain(self):
+        value = self.site(apex=True)
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"), (0, "example.com\n", ""))
+        value = self.site(apex=True, domain="docs.example.org")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"), (0, "docs.example.org\n", ""))
+
+    def test_given_apex_with_a_host_when_asked_then_the_host_wins(self):
+        value = self.site(apex=True, host="docs")
+        self.assertEqual(self.ask(value, "public-host", "site", "prod", "example.com")[1], "docs.example.com\n")
+
+    def test_given_neither_host_nor_apex_when_asked_then_nothing_is_printed(self):
+        self.assertEqual(self.ask(self.site(), "public-host", "site", "dev", "example.com"), (0, "", ""))
+
+    def test_given_no_domain_at_all_when_asked_then_nothing_is_printed(self):
+        value = self.site(host="docs")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", ""), (0, "", ""))
+
+    def test_given_an_unknown_application_or_environment_when_asked_then_it_is_an_error(self):
+        value = self.site(host="docs")
+        self.assertEqual(self.ask(value, "public-host", "nope", "dev", "example.com")[0], 1)
+        status, out, err = self.ask(value, "public-host", "site", "nope", "example.com")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("does not deploy to 'nope'", err)
+
+    def test_given_the_wrong_number_of_arguments_when_asked_then_it_is_a_usage_error(self):
+        self.assertEqual(self.ask(self.site(), "public-host", "site", "dev")[0], 2)
+        self.assertEqual(self.ask(self.site(), "public-path")[0], 2)
+
+    def test_given_a_path_when_asked_then_it_is_printed(self):
+        self.assertEqual(self.ask(self.site(path="/docs"), "public-path", "site"), (0, "/docs\n", ""))
+
+    def test_given_no_path_when_asked_then_nothing_is_printed(self):
+        self.assertEqual(self.ask(self.site(), "public-path", "site"), (0, "", ""))
+
+
 class DeployableTests(unittest.TestCase):
     def test_given_platform_components_when_listing_deployable_then_they_are_excluded(self):
         ids = [a["id"] for _, a in c.applications(catalog(), deployable=True)]

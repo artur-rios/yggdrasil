@@ -398,6 +398,10 @@ services:
       JENKINS_SECRET: ${JENKINS_AGENT_SECRET:-}
       JENKINS_AGENT_WORKDIR: /home/jenkins/agent
       YGG_SECRETS_DIR: /etc/yggdrasil
+      # The platform's domain, which scripts/deploy.sh puts under a site's host (YGG_PUBLIC_HOST) when the
+      # application sets no `domain` of its own: the agent is what runs deploy.sh, and DOMAIN is only
+      # known to this file.
+      YGG_DOMAIN: ${DOMAIN}
     # The image's jenkins user could not open the socket. Root here is the service user on the host
     # (rootless Docker, see x-socket-proxy), so the agent can do what that user can and no more.
     user: "0:0"

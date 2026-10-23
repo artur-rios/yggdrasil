@@ -39,6 +39,10 @@ FAKE_DOCKER = textwrap.dedent(r"""
       done
       case "$1 ${2:-}" in
         "config --services") cat "$state/services" ;;
+        build*)
+          # The build context is $APP_DIR in every stack file: record what is in it at build time.
+          (cd "$APP_DIR" && find . -type f -not -path './.git/*' | sort) >"$state/build.files"
+          ;;
         "config --images")
           while read -r repository; do echo "$repository:$IMAGE_TAG"; done <"$state/repositories"
           cat "$state/other_images" 2>/dev/null || true
@@ -49,6 +53,8 @@ FAKE_DOCKER = textwrap.dedent(r"""
           # The labels file deploy.sh generates is always the last -f.
           cp "${files[-1]}" "$state/up$count.labels"
           echo "$IMAGE_TAG" >"$state/up$count.tag"
+          # What Compose would substitute into the stack files.
+          printf '%s\n%s\n' "${YGG_PUBLIC_HOST-unset}" "${YGG_PUBLIC_PATH-unset}" >"$state/up$count.public"
           if command -v flock >/dev/null; then
             status=0
             flock --nonblock --conflict-exit-code 75 "$YGG_SECRETS_DIR/locks/$PROJECT_UNDER_TEST.lock" true || status=$?
@@ -126,6 +132,7 @@ class DeployTests(unittest.TestCase):
 
         self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                         FAKE_DOCKER_DIR=str(self.state), YGG_SECRETS_DIR=str(secrets))
+        self.env.pop("YGG_DOMAIN", None)
         self.given("services", "ui")
         self.given("repositories", STACK)
         self.given("ps", "")
@@ -391,6 +398,100 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("missing or unreadable env file", result.stderr)
         self.assertEqual(self.read("calls"), "")
+
+    def public_values(self, number=1):
+        host, path = self.read(f"up{number}.public").splitlines()
+        return host, path
+
+    def test_given_a_deploy_when_run_then_compose_gets_the_public_host_and_path(self):
+        # heimdall-ui has the host "heimdall" and development the suffix "-dev"; the domain is the
+        # platform's (the agent gets it as YGG_DOMAIN). The path is the application's `path`, which
+        # the repository's catalog does not set for it: a copy of the repository with one does.
+        result = self.deploy(environment=ON_DEMAND, DEPLOY_START="1", YGG_DOMAIN="example.com")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.public_values(), ("heimdall-dev.example.com", ""))
+
+        copy = self.temp / "copy"
+        (copy / "scripts").mkdir(parents=True)
+        (copy / "stacks").mkdir()
+        for name in ("deploy.sh", "catalog.py"):
+            shutil.copy(ROOT / "scripts" / name, copy / "scripts" / name)
+        for stack_file in (ROOT / "stacks").glob(f"{STACK}*.yml"):
+            shutil.copy(stack_file, copy / "stacks" / stack_file.name)
+        text = (ROOT / "catalog.yaml").read_text()
+        anchor = "        host: heimdall" + chr(10)
+        self.assertIn(anchor, text)
+        (copy / "catalog.yaml").write_text(text.replace(
+            anchor, anchor + "        domain: docs.example.org" + chr(10) + "        path: /docs" + chr(10), 1))
+        self.state_reset()
+        result = subprocess.run(["bash", str(copy / "scripts" / "deploy.sh"), ON_DEMAND, STACK, str(self.app),
+                                 f"2.0.0-{self.commit}"],
+                                env=dict(self.env, PROJECT_UNDER_TEST=f"{STACK}-{ON_DEMAND}", DEPLOY_START="1",
+                                         YGG_DOMAIN="example.com"),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.public_values(), ("heimdall-dev.docs.example.org", "/docs"))
+
+    def state_reset(self):
+        for name in ("calls", "ups", "up1.public", "up1.tag", "up1.labels", "up1.lock"):
+            (self.state / name).unlink(missing_ok=True)
+
+    def test_given_no_default_domain_and_no_application_domain_when_deployed_then_the_public_host_is_empty(self):
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.public_values(), ("", ""))
+
+    def test_given_deploy_inputs_when_deploying_then_they_are_in_the_build_context(self):
+        inputs = self.temp / "inputs"
+        (inputs / "dist" / "site").mkdir(parents=True)
+        (inputs / "dist" / "site" / "index.html").write_text("<html>")
+        (inputs / "coverage.zip").write_text("zip")
+        (self.app / "dist").mkdir()
+        (self.app / "dist" / "keep.txt").write_text("repo file")
+        result = self.deploy(DEPLOY_INPUTS_DIR=str(inputs))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("build.files").split(),
+                         ["./coverage.zip", "./dist/keep.txt", "./dist/site/index.html"])
+        self.assertEqual((self.app / "dist" / "site" / "index.html").read_text(), "<html>")
+        self.assertEqual(self.read("ups").strip(), "1")
+
+    def test_given_no_deploy_inputs_when_deploying_then_the_build_context_is_the_checkout_alone(self):
+        (self.app / "Dockerfile").write_text("FROM scratch")
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("build.files").split(), ["./Dockerfile"])
+
+    def test_given_an_input_that_would_overwrite_a_repository_file_when_deploying_then_it_stops_before_building(self):
+        inputs = self.temp / "inputs"
+        (inputs / "docs").mkdir(parents=True)
+        (inputs / "docs" / "new.txt").write_text("new")
+        (inputs / "Dockerfile").write_text("FROM evil")
+        (self.app / "Dockerfile").write_text("FROM scratch")
+        result = self.deploy(DEPLOY_INPUTS_DIR=str(inputs))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Dockerfile", result.stderr)
+        self.assertIn("would overwrite", result.stderr)
+        self.assertEqual((self.app / "Dockerfile").read_text(), "FROM scratch")
+        # Nothing was copied, and nothing was built or started.
+        self.assertFalse((self.app / "docs").exists())
+        self.assertEqual(self.compose_calls("build"), [])
+        self.assertEqual(self.compose_calls("up"), [])
+
+    def test_given_an_input_directory_that_is_a_repository_file_when_deploying_then_it_stops(self):
+        inputs = self.temp / "inputs"
+        (inputs / "dist").mkdir(parents=True)
+        (inputs / "dist" / "a.txt").write_text("a")
+        (self.app / "dist").write_text("a file")
+        result = self.deploy(DEPLOY_INPUTS_DIR=str(inputs))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("dist", result.stderr)
+        self.assertEqual(self.compose_calls("build"), [])
+
+    def test_given_deploy_inputs_that_are_not_a_directory_when_deploying_then_it_stops(self):
+        result = self.deploy(DEPLOY_INPUTS_DIR=str(self.temp / "missing"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DEPLOY_INPUTS_DIR", result.stderr)
+        self.assertEqual(self.compose_calls("build"), [])
 
 
 if __name__ == "__main__":
