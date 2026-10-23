@@ -766,13 +766,29 @@ class ReleaseLibraryTests(unittest.TestCase):
         self.assertIn("the pull request is merged and tagged ${tag}; finish the release with the release-resume job "
                       "(REPOSITORY=${ctx.app}, TAG=${tag})", lib.code[start:end])
 
+    def test_given_a_skip_with_release_copies_when_read_then_github_gets_none_and_it_is_pending(self):
+        # After a skip GitHub may be down: the release is published on the git server only (no
+        # --mirror-releases), and the description and the log say the GitHub copy is pending.
+        lib = self.lib
+        start, end = lib.functions["releaseFromTag"]
+        body = lib.code[start:end]
+        self.assertIn("boolean githubPending = mirrorsReleases(ctx) && skipped", body)
+        self.assertIn("publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx) && !skipped)", body)
+        self.assertRegex(body, r"if \(githubPending\) \{\s*echo \"GitHub copy pending: ")
+        start, end = lib.functions["publishRelease"]
+        body = lib.code[start:end]
+        self.assertNotIn("mirrorsReleases(", body)
+        self.assertRegex(body, r"if \(mirrorReleases\) \{\s*arguments << '--mirror-releases'")
+        start, end = lib.functions["releasePullRequest"]
+        self.assertIn("' (deployed without GitHub Actions checks; GitHub copy pending)'", lib.code[start:end])
+
     def test_given_a_skip_when_read_then_it_is_recorded_and_missing_files_make_the_build_unstable(self):
         lib = self.lib
         start, end = lib.functions["releasePullRequest"]
         body = lib.code[start:end]
         self.assertIn("String note = skipped ? \" (${SKIPPED})\" : ''", body)
         self.assertIn("deployTo(app, environment, version, state.sha, false, ctx.repo, [], null, note)", body)
-        self.assertIn("description += ' (deployed without GitHub Actions checks)'", body)
+        self.assertIn(": ' (deployed without GitHub Actions checks)'", body)
         self.assertIn("currentBuild.description = description", body)
         self.assertRegex(body, r"if \(published\.missing\) \{\s*unstable ")
         start, end = lib.functions["releaseFiles"]

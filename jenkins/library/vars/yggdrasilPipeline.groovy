@@ -849,12 +849,14 @@ def onPublishAgent(Map ctx, boolean write, boolean github, Closure body) {
 //      release, the release files (releaseFiles: built on the release agent, the Windows ones from
 //      GitHub, validated on the release agent); then, on the publish agent, the notes and
 //      publish-release.sh (publishRelease), which makes the drafts, uploads and checks the files and
-//      publishes the release (Forgejo, then GitHub last). A failure here says the pull request is
-//      merged and tagged, and to finish the release with the release-resume job;
+//      publishes the release (Forgejo, then GitHub last; after a skip Forgejo only, "GitHub copy
+//      pending"). A failure here says the pull request is merged and tagged, and to finish the release
+//      with the release-resume job;
 //   5. the release branch deleted -- kept, with a note, where Forgejo protects it.
-// The build's description is v<version> (" (deployed without GitHub Actions checks)" after a skip); it
-// is unstable when Windows files are missing (published without them, listed in the notes and the
-// log; the actions-release job attaches them later).
+// The build's description is v<version> (" (deployed without GitHub Actions checks)" after a skip, with
+// "; GitHub copy pending" when the release has a GitHub copy to make); it is unstable when Windows files
+// are missing (published without them, listed in the notes and the log; the actions-release job
+// attaches them later).
 void releasePullRequest(Map ctx, Map state, List environments) {
   String app = ctx.app
   if (!environments) {
@@ -908,7 +910,8 @@ void releasePullRequest(Map ctx, Map state, List environments) {
   }
   String description = tag
   if (skipped) {
-    description += ' (deployed without GitHub Actions checks)'
+    description += published.githubPending ? ' (deployed without GitHub Actions checks; GitHub copy pending)'
+                                           : ' (deployed without GitHub Actions checks)'
   }
   currentBuild.description = description
   echo "Released ${tag}: ${published.urls.join(' ')}"
@@ -928,16 +931,23 @@ String resumeNote(Map ctx, String tag) {
 // draft and the files an earlier run left. The release pull request calls it after its merge; the
 // owner-tagged releases (a tag build) and the release-resume job call it with the tag's commit -- one copy
 // of the release logic. opts:
-//   skipped  the GitHub Actions checks were skipped (GitHub may not be answering): no Windows files
+//   skipped  the GitHub Actions checks were skipped (GitHub may not be answering): no Windows files, and
+//            no GitHub copy of the release -- published on the git server only, "GitHub copy pending"
+//            (the release-resume job makes the copy later, publish-release.sh being idempotent)
 //   seconds  how long a Windows run may take (default 3600)
-// Returns [urls: the releases' addresses, missing: the Windows files left out, reason: why].
+// Returns [urls: the releases' addresses, missing: the Windows files left out, reason: why,
+// githubPending: whether the GitHub copy was left for later].
 Map releaseFromTag(Map ctx, Map entry, Map releaseConfig, String tag, String sha, Map opts) {
   boolean skipped = opts.skipped == true
   int seconds = (opts.seconds ?: 3600) as int
+  boolean githubPending = mirrorsReleases(ctx) && skipped
   Map files = releaseConfig != null ? releaseFiles(ctx, entry, releaseConfig, tag, sha, skipped, seconds)
                                     : [stash: null, missing: [], reason: '']
-  List urls = publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx))
-  return [urls: urls, missing: files.missing, reason: files.reason]
+  if (githubPending) {
+    echo "GitHub copy pending: the GitHub Actions checks were skipped, so ${tag} is published on the git server only. The release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}) makes its GitHub copy."
+  }
+  List urls = publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx) && !skipped)
+  return [urls: urls, missing: files.missing, reason: files.reason, githubPending: githubPending]
 }
 
 // Stage Wait for GitHub Actions: the entry's actionsChecks on the release's commit, for as long as
@@ -1251,7 +1261,7 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
 // Stage Publish the release, on the publish agent: the notes (release_notes.py: the version's CHANGELOG.md
 // section, else the pull requests merged since the previous tag), the files (the release-files stash,
 // nothing else) and publish-release.sh, with the release's GitHub copy when `mirrorReleases` (the
-// catalog's mirror.releases) -- the tag
+// catalog's mirror.releases, unless the GitHub Actions checks were skipped: releaseFromTag) -- the tag
 // waited for first, outside node(): the mirror pushes it. Returns the releases' addresses.
 List publishRelease(Map ctx, Map entry, String version, String tag, String sha, Map files, boolean mirrorReleases) {
   List urls = []

@@ -1277,8 +1277,10 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIn(SKIP_QUESTION, console)
         self.assertIn("Approved by admin", console)
         self.assertIn("Deploying without GitHub Actions checks: Console (Windows) did not finish.", console)
+        # mirror.releases is off here: no GitHub copy to leave pending (static tests pin that case).
         self.assertEqual(self.description(TOOLS, f"PR-{number}", build.number),
                          "v1.0.0 (deployed without GitHub Actions checks)")
+        self.assertNotIn("GitHub copy pending", console)
         head = self.pull_request(TOOLS, number)["head"]["sha"]
         deploys = [s for s in self.statuses(TOOLS, head) if s[0] == "deploy/production"]
         self.assertEqual([(s[1], s[3]) for s in deploys],
