@@ -53,16 +53,13 @@ unclassified:
           modernSCM:
             libraryPath: "jenkins/library/"
             scm:
-              # The Gitea plugin's source has no symbol: Configuration as Code names it after its class
-              # without the SCMSource suffix (as github is GitHubSCMSource). The class's full name is
-              # refused (proved by scripts/test_jenkins_live.py).
-              gitea:
-                serverUrl: "${FORGE_URL}"
-                repoOwner: "${GITHUB_OWNER}"
-                repository: "${YGGDRASIL_REPOSITORY}"
+              # The git plugin's source, not the Gitea plugin's: the library is only ever a clone at a
+              # tag, and the Gitea source (plugin 286.v0740a_413c1eb_) finds the tag but then fetches
+              # it as refs/heads/<tag>, so no version ever loaded (proved by
+              # scripts/test_jenkins_live.py). Read-only, as the jobs' sources are.
+              git:
+                remote: "${FORGE_URL}/${GITHUB_OWNER}/${YGGDRASIL_REPOSITORY}.git"
                 credentialsId: "forge-read"
                 traits:
-                  - giteaBranchDiscovery:
-                      strategyId: 1
                   # A version is a tag: without it the library is not found at v1.0.0.
-                  - giteaTagDiscovery: {}
+                  - gitTagDiscovery: {}

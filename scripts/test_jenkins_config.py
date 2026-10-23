@@ -198,14 +198,15 @@ class JenkinsLibraryTests(unittest.TestCase):
             self.assertEqual(library["retriever"]["modernSCM"]["libraryPath"], "jenkins/library/", name)
 
     def test_given_the_forgejo_configuration_when_read_then_the_library_comes_from_the_forge_with_the_read_credential(self):
-        # gitea: the name Configuration as Code gives GiteaSCMSource (no symbol); its class name is refused.
-        source = libraries("casc.forgejo.yaml")[0]["retriever"]["modernSCM"]["scm"]["gitea"]
-        self.assertEqual(source["serverUrl"], "${FORGE_URL}")
-        self.assertEqual(source["repoOwner"], "${GITHUB_OWNER}")
-        self.assertEqual(source["repository"], "${YGGDRASIL_REPOSITORY}")
+        # The git plugin's source: the Gitea plugin's fetches a tag version as a branch
+        # (scripts/test_jenkins_live.py), so no version loads through it.
+        scm = libraries("casc.forgejo.yaml")[0]["retriever"]["modernSCM"]["scm"]
+        self.assertEqual(list(scm), ["git"])
+        source = scm["git"]
+        self.assertEqual(source["remote"], "${FORGE_URL}/${GITHUB_OWNER}/${YGGDRASIL_REPOSITORY}.git")
         self.assertEqual(source["credentialsId"], "forge-read")
         # A version is a tag: without tag discovery the library could not be found at v1.0.0.
-        self.assertIn("giteaTagDiscovery", [next(iter(t)) for t in source["traits"]])
+        self.assertIn("gitTagDiscovery", [next(iter(t)) for t in source["traits"]])
 
     def test_given_the_github_configuration_when_read_then_the_library_comes_from_github_with_the_app(self):
         source = libraries("casc.github.yaml")[0]["retriever"]["modernSCM"]["scm"]["github"]
