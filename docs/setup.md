@@ -879,7 +879,9 @@ from step 3:
      default VPS: **Manage Jenkins → Nodes**), and the two build agents, `ci` (4 executors) and
      `release` (1), all offline for now. The build agents come up in [9.8](#98-the-ci-and-release-agents);
    - the `actions-release` and `release-resume` jobs ([Finishing a release that
-     stopped](#finishing-a-release-that-stopped)).
+     stopped](#finishing-a-release-that-stopped)), and the `tag-check` job, which checks every day that each
+     release's tag is still on the commit it was released from ([Version tags: tag-check and
+     repairs](#version-tags-tag-check-and-repairs)).
 2. **GitHub.** Back in the GitHub App's **General** page ([step 7.3](#73-note-the-app-id)), tick
    **Webhook → Active**, check the Webhook URL is `https://jenkins.<DOMAIN>/github-webhook/` and
    the events **Push**, **Pull request** and **Repository** are checked, and click **Save changes**.
@@ -1200,7 +1202,8 @@ python3 scripts/rules.py               # apply
   otherwise go on protecting `develop` with different rules), so keep that name for nothing of your own.
   Otherwise it never deletes a protection: one the model no longer has (the `release/*` rule and the
   tag protection of a repository turned `rules: basic`, a tag protection whose pattern the catalog changed;
-  on GitHub a `release tags` ruleset) is left as it is, with a `note:` line; delete it by hand if it is stale.
+  on GitHub a `release tags` or `release tag creation` ruleset, on a GitHub copy `mirror tags`) is left as it
+  is, with a `note:` line; delete it by hand if it is stale.
 - Name repositories to apply to some only: `python3 scripts/rules.py shop-api shop-web` (the repository
   names: an application's `repository`, or its `id`, or a `repositories` entry's `id`).
 - `python3 scripts/rules.py --help` lists the variables. `github/rulesets.py` still works, but it only
@@ -1212,6 +1215,7 @@ What the script needs, by server:
 |---|---|
 | **Forgejo** (`forge.type: forgejo`) | `FORGE_TOKEN`: the owner's token, with the `write:repository` scope and no other (the live test suite runs the script with a token of that scope). Create it in Forgejo, signed in as the owner: **Settings → Applications → Generate New Token**. `FORGE_JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, together, to create the webhooks that tell Jenkins about pushes, tags and pull requests; with neither, the script says `webhooks skipped` and sets no webhook; with only one, it refuses to start. (It does not read `JENKINS_URL`, which Jenkins sets in every build.) |
 | **GitHub** (no `forge` block, or `github`) | An authenticated `gh` (`gh auth login`), or `GH_TOKEN`, with admin rights on the repositories. Rulesets on **private** repositories need a paid GitHub plan. |
+| **Forgejo with a [`mirror`](catalog.md#git-server)** | Everything Forgejo needs, and a GitHub token for the copies (`<mirror.github>/<repository>`): an authenticated `gh`, or `GH_TOKEN`, with **Administration: read and write** on them (a fine-grained token limited to those repositories will do). Each copy gets one ruleset, `mirror tags`, and nothing else ([Version tags](#version-tags-tag-check-and-repairs)). Without a token the script still applies the Forgejo rules, says `mirror tags not applied`, and exits `1` at the end (`the mirror tags were not applied to the GitHub copies ...`): run it again with one. Rulesets on private copies need the paid plan too. |
 
 On Forgejo, set the variables for the one command, so they stay out of your shell history files and your
 environment afterwards:
@@ -1242,8 +1246,8 @@ deletion and nothing else of the table, plus the settings in its first row and, 
 | `develop` | A protected branch: no direct push (force push and deletion are always refused), changes only through a pull request whose required checks pass: `branch-policy`, the application's `checks` and its `actionsChecks`. Merged by the owner and `forge.developers` | A `develop` ruleset: no deletion or force push, a pull request (squash or merge commit), the same required checks. `actionsChecks` are bound to GitHub Actions, so only that app can satisfy them; the other checks (Jenkins') are bound to nobody |
 | `main` | The same, with `branch-policy`, `checks` and one `deploy/<environment>` per release environment. Merged only by `forge.jenkinsUser` for an application, only by the owner for an `owner-tag` repository | A `main` ruleset: the same required checks, all bound to nobody (`actionsChecks` are not required on `main`), merge commit only. Who merges is not restricted: the checks are the gate |
 | `release/*` | Only the owner pushes | No rule (none today) |
-| Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner. Nobody else can create, move or delete them (in an application's repository not even the owner). **Known gap:** a Forgejo tag protection is one list of who may change a matching tag in any way, so the user who creates the tags can also **move** them (a forced push) and **delete** them (a push; through the API too, unless the tag has a release): `forge.jenkinsUser` an application's `v*` tags, the owner an `owner-tag` repository's. A release whose tag was deleted stays, naming a tag that is gone. The live tests (`scripts/test_forgejo_live.py`) pin this | A `release tags` ruleset: tags cannot be moved or deleted, and for an `owner-tag` repository only the owner creates them |
-| The owner | Not bound by the protections, for emergencies (see below) | A repository administrator bypasses all the rulesets |
+| Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner. Nobody else can create, move or delete them (in an application's repository not even the owner). **Accepted gap:** a Forgejo tag protection is one list of who may change a matching tag in any way, so the user who creates the tags can also **move** them (a forced push) and **delete** them (a push; through the API too, unless the tag has a release): `forge.jenkinsUser` an application's `v*` tags, the owner an `owner-tag` repository's. A release whose tag was deleted stays, naming a tag that is gone. The live tests (`scripts/test_forgejo_live.py`) pin this. The `tag-check` job detects it, and with a `mirror` each repository's GitHub copy gets a `mirror tags` ruleset that keeps its tags as released: [Version tags: tag-check and repairs](#version-tags-tag-check-and-repairs) | A `release tags` ruleset: tags cannot be moved or deleted, by **anyone** (it has no bypass: the owner neither). For an `owner-tag` repository a second ruleset, `release tag creation`: only repository administrators (the owner) create its tags |
+| The owner | Not bound by the protections, for emergencies (see below) | A repository administrator bypasses all the rulesets but `release tags` |
 | `yggdrasil.yml` (and `Jenkinsfile`) | **Protected files** on `develop` only: a pull request that changes one can be merged only by the owner, with a forced merge (below); being on the list of who may merge is not enough (`forge.developers` included). `yggdrasil.yml` says what Jenkins runs for the repository (images, commands, which allowed credential a check binds), so every change to it reaches `develop` through the owner, **Renovate's too**: a `renovate/*` pull request that bumps an image in `yggdrasil.yml` passes its checks and then waits for the owner's **Merge anyway**. `main` has no protected file: it receives only snapshots of `develop`, merged by `forge.jenkinsUser`, which a release that changes `yggdrasil.yml` must not stop. Jenkins no longer reads a repository's `Jenkinsfile` ([why](#how-a-build-runs)); it stays on the list, harmlessly, for repositories that still carry one | Not applied: GitHub cannot restrict who may merge a given file. On GitHub a change to `yggdrasil.yml` is guarded only by who may merge into `develop` |
 
 ### An existing GitHub installation
@@ -1341,6 +1345,82 @@ Run the script again after adding an application or a repository to the catalog 
 GitHub installation, run it for a repository that has adopted `yggdrasil.yml`; for the others add a new
 `deploy/<environment>` by hand: [An existing GitHub installation](#an-existing-github-installation) says why.)
 
+### Version tags: tag-check and repairs
+
+A version tag names the commit that was released, for good. Who may move or delete one:
+
+| Where | Moves or deletes a version tag |
+|---|---|
+| Forgejo, an application's `v*` | `forge.jenkinsUser`, the user that creates them (the accepted gap: one Forgejo list covers creating, moving and deleting) |
+| Forgejo, an `owner-tag` repository's `tags` | The owner, who creates them (the same gap) |
+| A GitHub installation: `release tags` ruleset | Nobody, the owner included: it has no bypass. An `owner-tag` repository's tags are *created* only by administrators, through the separate `release tag creation` ruleset, whose bypass covers creating and nothing else |
+| A Forgejo installation's GitHub copies (with a `mirror`): `mirror tags` ruleset | Nobody, the owner included. The mirror creates the tags there (no creation rule) and keeps pushing the branches (no branch rule, no setting changed) |
+
+The accepted gap means a mistake, or a stolen token of `forge.jenkinsUser`, can move or delete a released tag
+on Forgejo. Two things answer it:
+
+- **The `tag-check` job notices.** Every day (at a time Jenkins picks within the 4 o'clock hour), and whenever
+  you open it and press **Build Now**, it reads every catalog entry that releases (an application with a
+  `trigger: release` environment, an `owner-tag` entry) on the `ci` agent with the read credential: each
+  published release (`forge.sh release-tags`) and where its tag is now (`forge.sh tag-sha`). It checks out and
+  runs nothing of the repositories and holds no write token.
+- **The GitHub copies keep the tags as they were released.** With a `mirror`, `rules.py` puts `mirror tags` on
+  every copy, so the push mirror cannot move or delete a version tag there: GitHub refuses a mirror push that
+  would, and Forgejo shows that repository's push mirror failing to sync (its **Settings → Repository**, the
+  push mirror's last update) until the tag is repaired. That is intended: the copy is the record to repair
+  from.
+
+**Reading tag-check.** Green means every release's tag is on the commit it was released from; the build's
+description says how many were checked (`17 release tags checked`). Red means at least one is not; the
+description counts them (`2 release tags moved or deleted`), and the last lines of the log name each one:
+
+| Line | Means |
+|---|---|
+| `MOVED: <repository> <tag> (tag on <sha>, released from <sha>)` | The tag now points at another commit. The second `<sha>` is the one to put it back on |
+| `DELETED: <repository> <tag> (released from <sha>): the tag is gone` | The release is there, its tag is not |
+| `NOT CHECKED: <repository> ...` | The job could not read that repository or tag (`forge.sh`'s message is above it). It is red too, since nothing was proved; usually the read credential lost access ([9.7](#97-the-forgejo-accounts-and-tokens)) |
+
+A line `<repository> <tag>: unknown target: released from '<name>', not a commit ...` earlier in the log is not
+a failure: that release names a branch instead of a commit (one made by hand, or from before the pipeline made
+releases), so whether its tag moved cannot be told. A deleted tag is reported `DELETED` either way.
+
+**Repairing a moved or deleted tag on Forgejo**, as the owner, on your machine:
+
+1. Get the tag from the GitHub copy into a clone of the Forgejo repository, and check it is the commit
+   tag-check says it was released from:
+
+   ```bash
+   git clone https://git.<DOMAIN>/<owner>/<repository>.git && cd <repository>
+   git fetch --no-tags https://github.com/<mirror.github>/<repository>.git "+refs/tags/<tag>:refs/tags/<tag>"
+   git rev-parse "<tag>^{commit}"      # must print the "released from" commit of tag-check's line
+   ```
+
+   The `+` lets the fetch replace the moved tag the clone came with, and an annotated tag keeps its message. A
+   private copy needs your GitHub credentials for git (`gh auth setup-git` sets them up). Without a mirror, put
+   the tag on the commit tag-check named instead: `git tag --force <tag> <sha>` (Jenkins' `v*` tags are
+   lightweight, so nothing is lost; an annotated tag of yours needs `git tag --annotate --force -m <message> <tag>
+   <sha>`).
+2. Push it back:
+   - **An application's `v*` tag.** Only `forge.jenkinsUser` may push `v*` tags, so let yourself in for the
+     moment: in Forgejo, the repository's **Settings → Tags**, edit the `v*` protection and add yourself to who
+     may push it (you are the repository's administrator). Then, in the clone, and in your fork for `rules.py`:
+
+     ```bash
+     git push --force origin "refs/tags/<tag>"
+     python3 scripts/rules.py <repository>     # puts the protection back to forge.jenkinsUser alone
+     ```
+
+     `rules.py` needs `FORGE_TOKEN` as above (and, with a mirror, a GitHub token); it prints `updated tag
+     protection 'v*'`.
+   - **An `owner-tag` repository's tag.** You may push it already: `git push --force origin "refs/tags/<tag>"`.
+3. Run tag-check again (**Build Now**): it is green once every tag is back, and the push mirror's next sync
+   goes through again.
+
+**A wrong tag on GitHub.** Nobody bypasses `release tags` or `mirror tags`, so to fix a tag on GitHub (one
+created on the wrong commit, say), edit the ruleset first: the repository's **Settings → Rules → Rulesets**,
+open it, set **Enforcement status** to **Disabled** and save; fix the tag; then run `python3 scripts/rules.py
+<repository>`, which turns it back on (it writes every ruleset whole, `active` included).
+
 ### The git server commands
 
 The pipeline and the scripts never talk to the git server themselves: they call `scripts/forge.sh`, one set of
@@ -1358,6 +1438,8 @@ catalog):
 | `create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]` | Creates a release (an unpublished draft with `--draft`) | the release id, a tab, its page address |
 | `upload-release-file <repo> <release-id> <file>` | Attaches a file to a release | the file's download address (on Forgejo `<server>/attachments/<uuid>`) |
 | `publish-release <repo> <release-id>` | Publishes a draft release | the release's page address |
+| `release-tags <repo>` | Lists the published releases (drafts left out) | `<tag>`, a tab, `<target>` (the commit it was released from: the pipeline sends the release's commit; a release made by hand may name a branch), one line per release |
+| `tag-sha <repo> <tag>` | Finds the commit a tag points to (an annotated tag is followed to its commit); exits `4` when there is no such tag | the commit |
 | `delete-branch <repo> <branch>` | Deletes a branch; a branch that is already gone is not an error | nothing |
 
 Run it with a command and its arguments: `bash scripts/forge.sh get-statuses shop-api <sha>`. Without a
@@ -1381,7 +1463,8 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
   machine sees it in the process list, and it is never printed.
 - **Exit codes:** `0` done; `1` an error, explained on standard error as `forge: <what> failed: <the server's
   message>`; `2` no command at all; `3` (`delete-branch` only) that the server **keeps** the branch because
-  it is protected: the owner's decision, not a reason to stop a release.
+  it is protected: the owner's decision, not a reason to stop a release; `4` (`find-release` and `tag-sha`
+  only) that there is no such release or tag.
 - **On Forgejo every `release/x.y.z` branch is kept after a release.** `release/*` is protected, and Forgejo
   refuses to delete a protected branch to everyone, the owner included: `delete-branch` exits `3`
   (`forge: kept: release/x.y.z is protected`). Delete old release branches by hand, as the owner: remove the
@@ -1700,6 +1783,10 @@ fail pushes nothing.
 
 ### Accepted risks
 
+- **Version tags on Forgejo can be moved or deleted by whoever creates them** (`forge.jenkinsUser` for an
+  application, you for an `owner-tag` repository): one Forgejo list covers creating, moving and deleting. The
+  daily `tag-check` job finds a moved or deleted release tag, and the GitHub copies, where nobody can move or
+  delete one, are what to repair it from ([Version tags: tag-check and repairs](#version-tags-tag-check-and-repairs)).
 - **Checks run branch code, side by side.** Any branch's `yggdrasil.yml` can set `docker: true`, and through the
   shared `ci` engine a check can then read the env files and workspaces of checks running at the same moment. So
   a credential you allow a repository's checks (`credentials` in the catalog) is reachable by anyone who can push
@@ -1824,6 +1911,8 @@ A service's log, as `ygg`: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, 
 | `Not released: the pull request is merged as <sha>, but not tagged …` | The merge went through and the tag did not. Run `release-resume` with the repository, the tag and `COMMIT=<sha>`, as the message says: it tags the merge commit, then releases ([Finishing a release that stopped](#finishing-a-release-that-stopped)) |
 | The build waits at **Deploy without GitHub Actions checks** | The GitHub Actions checks did not finish; click the button to go on without them (Forgejo only publication, `release-resume` later) or **Abort** ([GitHub Actions and the skip](#github-actions-and-the-skip)) |
 | An owner's tag built nothing | The tag is lightweight and on a commit older than a day, or does not match the entry's `tags`, or the repository is not `release: owner-tag`. Tag with `git tag -a`, or run `release-resume` ([Owner tags and NuGet](#owner-tags-and-nuget)) |
+| The `tag-check` job is red | A release's tag moved or was deleted: its log ends with a `MOVED` or `DELETED` line for each. Repair them from the GitHub copy ([Version tags: tag-check and repairs](#version-tags-tag-check-and-repairs)) |
+| A Forgejo push mirror fails to sync after a tag changed | GitHub refused to move or delete a version tag (`mirror tags`): intended. Repair the Forgejo tag ([Version tags: tag-check and repairs](#version-tags-tag-check-and-repairs)) |
 | A stack trace with `403` at every checkout in a build log | The Gitea plugin posting a status with the read token. Harmless ([Accepted risks](#accepted-risks)) |
 | An agent stays offline | Wrong `JENKINS_AGENT_SECRET` or `JENKINS_AGENT_NAME`, or `JENKINS_URL` not reachable from that host. The agent's log says which |
 | A new application or environment doesn't appear in Jenkins or the console | The containers still see the old catalog: restart them as in [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog) |

@@ -6,14 +6,14 @@ Every part of yggdrasil reads it:
 
 | Reader | What it takes from the catalog |
 |---|---|
-| Jenkins: `casc.yaml` Job DSL | One multibranch job per application and per [`repositories`](#repositories) entry (deploys, checks, releases), the branches each builds and, for an `owner-tag` entry, its tags; the `actions-release` and `release-resume` jobs |
+| Jenkins: `casc.yaml` Job DSL | One multibranch job per application and per [`repositories`](#repositories) entry (deploys, checks, releases), the branches each builds and, for an `owner-tag` entry, its tags; the `actions-release` and `release-resume` jobs, and the daily `tag-check` job, which checks the release tags of every entry that releases ([setup.md](setup.md#version-tags-tag-check-and-repairs)) |
 | Jenkins: `init.groovy.d/agents.groovy` | One agent per distinct `agent` of the environments Jenkins deploys to: one per host; and the `ci` and `release` build agents, always (so no environment's `agent` may be called either) |
 | Jenkins: the shared pipeline | What each push or pull request deploys, where, and with which options; with the repository's `yggdrasil.yml`, which checks and releases it gets ([The pipeline](setup.md#the-pipeline)) |
 | `scripts/pipeline_config.py` | Reads each repository's `yggdrasil.yml` and checks it against its catalog entry: credentials, checks, release, publish ([Repository pipeline file](#repository-pipeline-file)) |
 | `scripts/deploy.sh` | Whether the application deploys to that environment, its mode, timeouts, rollback depth and whether it runs on demand |
 | `scripts/platform.sh` | That every environment in the host's `ENVIRONMENTS` exists; the GitHub owner and repository for Jenkins |
 | `ygg` (`scripts/host.sh`) | The applications of each of the host's environments; which environments it may stop |
-| `scripts/rules.py` (`github/rulesets.py` runs it) | The git server (`forge`), the `repositories`, each repository's required checks and the `deploy/<environment>` statuses on `main`, the users who may merge (`forge.jenkinsUser`, `forge.developers`) and the tag pattern. Applies them on GitHub or Forgejo ([setup.md, step 12](setup.md#12-apply-the-branch-rules)) |
+| `scripts/rules.py` (`github/rulesets.py` runs it) | The git server (`forge`), the `repositories`, each repository's required checks and the `deploy/<environment>` statuses on `main`, the users who may merge (`forge.jenkinsUser`, `forge.developers`) and the tag pattern. Applies them on GitHub or Forgejo ([setup.md, step 12](setup.md#12-apply-the-branch-rules)), and with a `mirror` the `mirror tags` ruleset on each repository's GitHub copy under `mirror.github` |
 | `scripts/forge.sh` | The git server's type, API address and the owner, when the environment doesn't give them: the commands Jenkins and the scripts use to set statuses, merge, tag, release and delete branches ([setup.md](setup.md#the-git-server-commands)) |
 | `scripts/renovate.sh` | The names of the repositories to run Renovate against (`repository-names`) and Forgejo's API address |
 | Status API | Which applications run in each of its host's environments, how to probe them, how they group into systems |

@@ -27,8 +27,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   write access to the repository, or Forgejo drops them (the script warns). On Forgejo it deletes nothing, and on
   GitHub only a ruleset named `default`, as `github/rulesets.py` did; a protection the model no longer has is
   noted. [docs/setup.md](docs/setup.md#12-apply-the-branch-rules) step 12 lists what each
-  server gets. On Forgejo, the user who creates the version tags can also move and delete them (a known gap,
-  documented there).
+  server gets. On Forgejo, the user who creates the version tags can also move and delete them: an accepted gap,
+  which the `tag-check` job detects (below). With a `mirror`, every repository's GitHub copy gets the ruleset
+  **`mirror tags`** (update and deletion, no bypass, administrators included; nothing on the copy's branches or
+  settings), so the copies keep the tags as released and are what a moved or deleted Forgejo tag is repaired
+  from; that needs a GitHub token with administration of the copies, and without one the Forgejo rules are still
+  applied and the run exits 1. A mirror push that would move or delete a version tag is refused, and Forgejo
+  shows the mirror sync failing: intended.
 - **Catalog fields for the git server:** `forge` (`type` `forgejo` or `github`, `url`, `jenkinsUser`, `developers`;
   a catalog without it is GitHub), `mirror` (Forgejo to GitHub), `repositories` (libraries, CI-only repositories and
   yggdrasil itself, with `release`, `tags`, `rules`, `checks`, `actionsChecks`, `credentials`) and, on applications,
@@ -100,6 +105,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `release-resume` also takes `COMMIT`, for a release merged but never tagged: it tags the merge commit (only when
   it is that release's merge on `main`'s first-parent line), since only Jenkins may create an application's `v*`
   tags.
+- **The `tag-check` job**: every day (cron `H 4 * * *`) and by hand, on the `ci` agent with the read credential
+  only, it checks that every published release of every catalog entry that releases still has its tag on the
+  commit it was released from (`forge.sh release-tags`, new: each published release's tag and target, and
+  `tag-sha`). A tag that moved or was deleted fails the build, named `MOVED` or `DELETED` at the end of the log,
+  the count in the build's description; a release that names a branch, not a commit, is logged as an unknown
+  target. [docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs) says how to read it and how to repair a
+  tag from its GitHub copy. Its script, `jenkins/tag-check.groovy`, is mounted by `platform/compose.yml` like the
+  other jobs'.
 - **Owner-tagged releases and NuGet**: a `repositories` entry with `release: owner-tag` is released by the owner's
   tag on `main` (tag with `git tag -a`: Jenkins builds only tags at most a day old and dates a lightweight tag by its
   commit). `publish.nuget` packs a library's packages with no credential, then `scripts/nuget-push.sh` pushes them
@@ -135,6 +148,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   then its rulesets stay as they are. GitHub cannot restrict who may merge one file, so the `Jenkinsfile`
   protection is Forgejo's only.
   [docs/setup.md](docs/setup.md#an-existing-github-installation).
+- **Breaking, GitHub: nobody can move or delete a version tag any more, the owner included.** The `release tags`
+  ruleset loses its administrator bypass. An owner-tagged repository's creation rule moves out of it into a new
+  ruleset, `release tag creation`, which administrators bypass, so the owner still creates those tags. To fix a
+  wrong tag, disable the ruleset first, then run `rules.py` again
+  ([docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
 - **Breaking: the platform runs on rootless Docker only.** `platform.sh`, `agent.sh` and `backup.sh` use the Docker
   engine of the user who runs them (the socket from `DOCKER_HOST`, else `/run/user/<uid>/docker.sock`) and refuse a
   rootful one. Run them as `ygg`. Root inside a container is that user on the host, so the socket proxies and the
@@ -214,6 +232,11 @@ Nothing in a repository has to change for it to keep deploying and releasing. On
 a time: move each Actions job's steps into `ci/` scripts, list them as `checks` in `yggdrasil.yml`, name them in the
 catalog's `checks` and keep the Windows and macOS jobs in `actionsChecks`, and, now that Jenkins reports them,
 run `scripts/rules.py` for that repository. Step by step: [docs/setup.md](docs/setup.md#an-existing-github-installation).
+
+**Version tags.** The first `rules.py` run for a repository removes the administrator bypass from its `release
+tags` ruleset (updated in place, by name): from then on you can no longer move or delete a version tag on GitHub
+without disabling the ruleset first. For an owner-tagged repository it also creates the ruleset `release tag
+creation` (only administrators create its tags), and `release tags` loses the creation rule it had.
 
 ### Upgrading a host from rootful Docker
 
