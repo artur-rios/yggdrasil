@@ -1082,6 +1082,50 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIn(f"{source}\trefs\tFAIL\trefs/tags/v0.0.2 only on GitHub", out.splitlines())
         self.assertEqual(github.writes(), [])
 
+    def test_given_what_only_the_target_has_when_migrate_mirrors_then_it_is_refused_until_allow_prune(self):
+        # The guard before the first --mirror push, against this server's answers: the target (GitHub's
+        # stand-in) starts as a copy of the source, then gets a branch of its own and a commit on main that
+        # the source never had, while the source's develop moves on. Forgejo's `git/commits/<sha>` must
+        # answer 404 for the commit it lacks and 200 for the one it has.
+        source, target = "prune-source", "prune-target"
+        self.create_repository(source)
+        owner = self.api[OWNER]
+        owner.request("POST", "/user/repos", {"name": target, "private": True})
+        clone = self.clone(OWNER, source)
+        pushed = self.git(OWNER, "push", f"{self.url}/{OWNER}/{target}.git", "refs/remotes/origin/main:refs/heads/main",
+                          "refs/remotes/origin/develop:refs/heads/develop", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.change_file(OWNER, source, "ahead.txt", "the source moved on\n", "develop")
+        owner.request("POST", f"/repos/{OWNER}/{target}/branches",
+                      {"new_branch_name": "github-only", "old_branch_name": "develop"})
+        lost = self.change_file(OWNER, target, "only-on-github.txt", "pushed to GitHub after the import\n", "main")
+
+        catalog = self.migrate_catalog()
+        address = f"http://127.0.0.1:3000/{OWNER}/{target}.git"
+        env = {"MIRROR_GITHUB_USER": OWNER, "MIRROR_GITHUB_TOKEN": self.tokens[OWNER]}
+        github = GitHubOnForgejo([github_repository(source, default_branch="main", private=True)], owner,
+                                 {source: target}, login=OWNER)
+
+        code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual(code, 1, out)
+        (failure,) = [line for line in err.splitlines() if line.startswith(f"  {source}: ")]
+        self.assertIn("refs/heads/github-only only on GitHub", failure)
+        self.assertIn(f"refs/heads/main at {lost[:12]} on GitHub, a commit Forgejo does not have", failure)
+        self.assertNotIn("refs/heads/develop", failure)  # the target's develop is a commit the source has
+        self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors"), [])
+        self.assertTrue(self.branch_exists(target, "github-only"))
+
+        code, out, err = self.migrate_run(["mirrors", "--only", source, "--allow-prune"], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines()[1:], [f"{source}: push mirror created", f"{source}: sync requested"])
+        self.assertTrue(out.splitlines()[0].startswith(f"{source}: --allow-prune: "), out)
+        # What --allow-prune let go is gone from the target, and it holds the source's state.
+        self.eventually(lambda: not self.branch_exists(target, "github-only"), "the target's own branch deleted")
+        self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
+        self.eventually(lambda: self.head(target, "develop") == self.head(source, "develop"), "develop on the target")
+
     def test_given_a_catalog_repository_when_migrate_sets_the_collaborators_then_each_bot_reads_back_with_its_permission(self):
         repo = "bots-lib"
         owner = self.api[OWNER]

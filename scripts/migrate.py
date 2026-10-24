@@ -43,7 +43,13 @@ and goes on to the next, so a re-run picks up where it stopped):
               only in the request body, and a --dry-run shows it as ***. One that has the mirror is
               "already there" (the address is compared without credentials, a trailing slash or `.git`);
               one that never synced gets its sync asked for again, so a run that stopped between the two
-              is finished by the next. A repository with a push mirror to another address is a failure,
+              is finished by the next. Before that first push (Forgejo pushes with --mirror, which deletes
+              on GitHub what Forgejo lacks), GitHub's branches and tags are compared with Forgejo's: a
+              repository where GitHub has a branch or tag Forgejo lacks, a branch at a commit Forgejo does
+              not have (GET .../git/commits/<sha> answers 404) or a tag at another commit is a failure
+              naming each ref, and gets no mirror; --allow-prune names them and makes the mirror anyway.
+              A push to GitHub after the import, or a stale copy that reads "already imported", is what
+              this catches. A repository with a push mirror to another address is a failure,
               not replaced: remove that mirror on Forgejo yourself. A repository archived on GitHub gets
               no mirror (a note, not a failure); one Forgejo does not have is a failure ("not on Forgejo:
               run import first"). Covers every repository of the GitHub owner, as prepare-github does.
@@ -644,6 +650,11 @@ def _same_address(first, second):
     return key(first) == key(second)
 
 
+def _synced(mirror):
+    """Whether a push mirror has pushed: Forgejo's `last_update` is empty until its first push."""
+    return bool(mirror.get("last_update"))
+
+
 def _request_sync(ctx, name, done):
     """Asks Forgejo to push every push mirror of the repository now (it answers at once and pushes in the
     background). Returns the failure to report, or None."""
@@ -655,7 +666,58 @@ def _request_sync(ctx, name, done):
     return None
 
 
-def _mirror_one(ctx, repo):
+def _forgejo_has_commit(ctx, name, sha):
+    """Whether Forgejo's copy has the commit (`GET .../git/commits/<sha>`: 404 when it has not). Any other
+    error raises: unsure is not a yes."""
+    try:
+        ctx.forgejo.request("GET", f"/repos/{ctx.forgejo_owner}/{name}/git/commits/{sha}"
+                                   "?stat=false&verification=false&files=false")
+    except rules.ApiError as error:
+        if error.status == 404:
+            return False
+        raise
+    return True
+
+
+def _taken_from_github(ctx, name):
+    """What the first --mirror push would take from GitHub, one text per ref: a GitHub branch or tag Forgejo
+    lacks (the push deletes it), a branch at a commit Forgejo does not have (the push rewinds it and drops
+    the commits), and a tag Forgejo has at another commit (the push moves it; a version names one commit, so
+    knowing the commit is not enough). A branch Forgejo has further on -- prepare-github's Dependabot commit
+    on top of GitHub's -- takes nothing. Raises ApiError or MigrateError."""
+    on_github, on_forgejo = _github_refs(ctx, name), _forgejo_refs(ctx, name)
+    taken = []
+    for ref, sha in sorted(on_github.items()):
+        if ref not in on_forgejo:
+            taken.append(f"{ref} only on GitHub")
+        elif on_forgejo[ref] == sha:
+            continue
+        elif ref.startswith("refs/tags/"):
+            taken.append(f"{ref} at {sha[:12]} on GitHub, {on_forgejo[ref][:12]} on Forgejo")
+        elif not _forgejo_has_commit(ctx, name, sha):
+            taken.append(f"{ref} at {sha[:12]} on GitHub, a commit Forgejo does not have")
+    return taken
+
+
+def _prune_guard(ctx, name, allow_prune):
+    """Stands before a repository's first --mirror push: returns the failure to report when the push would
+    take from GitHub what only GitHub has, else None. With --allow-prune it is named and let go."""
+    try:
+        taken = _taken_from_github(ctx, name)
+    except (rules.ApiError, MigrateError) as error:
+        return _report(ctx, f"{name}: could not compare its branches and tags with GitHub's: {error}")
+    if not taken:
+        return None
+    if allow_prune:
+        print(f"{name}: --allow-prune: the first mirror push deletes or moves on GitHub: {'; '.join(taken)}",
+              flush=True)
+        return None
+    return _report(ctx, f"{name}: the first mirror push would delete or move what only GitHub has: "
+                        f"{'; '.join(taken)}: get it onto Forgejo first (or delete it on GitHub), "
+                        "or run again with --allow-prune to let it go")
+
+
+def _mirror_one(ctx, repo, allow_prune=False):
     """Gives one repository its push mirror; returns the failure to report, or None. Prints its lines."""
     name = repo["name"]
     try:
@@ -676,16 +738,21 @@ def _mirror_one(ctx, repo):
     except rules.ApiError as error:
         return _report(ctx, f"{name}: could not list its push mirrors: {error}")
     right = [m for m in existing if _same_address(m.get("remote_address") or "", wanted)]
-    if right:
-        if right[0].get("last_update"):
-            print(f"{name}: push mirror already there", flush=True)
-            return None
-        # Made but never pushed: the run that made it stopped before the sync (or the sync failed).
-        return _request_sync(ctx, name, "push mirror already there, never synced: sync requested")
-    if existing:
+    if right and _synced(right[0]):
+        print(f"{name}: push mirror already there", flush=True)
+        return None
+    if existing and not right:
         others = ", ".join(_without_credentials(m.get("remote_address") or "?") for m in existing)
         return _report(ctx, f"{name}: has a push mirror to {others}, not to {wanted}: "
                             "not replaced; remove it on Forgejo if it is wrong")
+    # The first push is still to come (the mirror's own sync, or the one asked for next): it pushes with
+    # --mirror, which deletes on GitHub what Forgejo lacks.
+    failure = _prune_guard(ctx, name, allow_prune)
+    if failure:
+        return failure
+    if right:
+        # Made but never pushed: the run that made it stopped before the sync (or the sync failed).
+        return _request_sync(ctx, name, "push mirror already there, never synced: sync requested")
 
     payload = mirror_payload(ctx, name)
     try:
@@ -702,10 +769,15 @@ def cmd_mirrors(ctx, args):
     ctx.forgejo, ctx.mirror_user, ctx.mirror_token  # a missing token or user is a usage error before any output
     failures = []
     for repo in github_repositories(ctx.gh, ctx.github_owner, ctx.only):
-        failure = _mirror_one(ctx, repo)
+        failure = _mirror_one(ctx, repo, args.allow_prune)
         if failure:
             failures.append(failure)
     return failures
+
+
+cmd_mirrors.arguments = lambda sub: sub.add_argument(
+    "--allow-prune", action="store_true",
+    help="make the mirror although its first push deletes or moves branches and tags only GitHub has")
 
 
 # --- collaborators ----------------------------------------------------------------------------------------
