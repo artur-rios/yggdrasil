@@ -1436,7 +1436,12 @@ checked again.
      stopped](#finishing-a-release-that-stopped) apply). Abort that build in Jenkins if you don't want it.
 3. Run tag-check again (**Build with Parameters**, `FORGET` empty): it is green once every tag is back, and the push mirror's next sync
    goes through again. On Forgejo pushing a deleted tag back also publishes its release again (the live tests
-   pin it); on GitHub, check the release and publish it by hand if it is still a draft.
+   pin it).
+
+On a **GitHub installation** a version tag can be deleted only after its ruleset was disabled (below). If one
+was, push it back the same way while the ruleset is still disabled, then check its release on GitHub: GitHub
+leaves a deleted tag's release a draft, so publish it by hand if it still is one, and run `rules.py` to turn the
+ruleset back on.
 
 **A wrong tag on GitHub.** Nobody bypasses `release tags` or `mirror tags`, so to fix a tag on GitHub (one
 created on the wrong commit, say), edit the ruleset first: the repository's **Settings → Rules → Rulesets**,
