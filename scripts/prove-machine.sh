@@ -4,7 +4,10 @@
 #
 #     scripts/prove-machine.sh <apps|dev>
 #
-# Prints rows like `ygg check` does and exits 1 when any is FAIL (2 on bad usage):
+# Prints rows shaped like `ygg check`'s and exits 1 when any is FAIL (2 on bad usage). The status words here are
+# ok / FAIL / look: they REPLACE ygg check's ok / -- / !! marks, not add to them. This proof is run once, by a
+# person, to decide whether the setup holds, so a failed proof says FAIL in words rather than a mark to be
+# interpreted:
 #
 #   ok     the proof held
 #   FAIL   it did not, or could not be made: a proof that couldn't run proves nothing, so that is a FAIL too
@@ -95,6 +98,14 @@ user_docker() {
   run_as_user "$user" env "DOCKER_HOST=unix://$(machine_engine_socket "$user")" docker "$@" </dev/null
 }
 ci_docker() { user_docker ci "$@"; }
+
+# user_docker_input <user> <file> <docker arguments...>: user_docker with the file as the command's stdin (docker
+# run -i), for handing a container a file without mounting anything from the host.
+user_docker_input() {
+  local user=$1 input=$2
+  shift 2
+  run_as_user "$user" env "DOCKER_HOST=unix://$(machine_engine_socket "$user")" docker "$@" <"$input"
+}
 
 # The containers this script starts, all on ci's engine. Removed (by name, so also a leftover of a killed run)
 # before the proofs and on every way out of the script: the EXIT trap runs on a normal exit, on `die` and on the
@@ -222,7 +233,13 @@ prove_ci_container() {
     "$TAR_IMAGE" sh -c "$PROBE_SCRIPT" 2>&1) || status=$?
   if ((status != 0)); then
     # The engine runs as ci and can't mount a path ci can't read: it refuses, and that is the isolation working.
-    ok "$name" "the engine of ci refused the mounts of ygg's directories: $(head -n1 <<<"$out" | cut -c1-110)"
+    # Only that refusal is the proof: docker's own failures use status 125, and the message must be about a
+    # mount or a permission. Anything else (a daemon error, a probe that crashed, a signal) proves nothing.
+    if ((status == 125)) && grep -qiE 'permission denied|not a directory|no such file|operation not permitted' <<<"$out"; then
+      ok "$name" "the engine of ci refused the mounts of ygg's directories: $(head -n1 <<<"$out" | cut -c1-110)"
+    else
+      fail "$name" "refused for another reason (status $status): $(head -n1 <<<"$out" | cut -c1-110)"
+    fi
     return 0
   fi
   if ! grep -qx 'probe-done' <<<"$out"; then
@@ -242,13 +259,16 @@ prove_ci_container() {
 
 # Where Testcontainers' own tests reach a published port: the container's default gateway, which is the host.
 # The server publishes a random port on every interface (-p 0:8080); the client is a second container on the
-# same engine, and finds the address by running run-check.sh --print-host-override (mounted from the checkout,
-# run by busybox's sh: that part of the script is plain sh for this) -- the same code a --docker check is
-# told its override by.
+# same engine, and finds the address by running run-check.sh --print-host-override, run by busybox's sh (that
+# part of the script is plain sh for this) -- the same code a --docker check is told its override by. The
+# script reaches the container on its stdin (docker run -i), not as a bind mount: ci's daemon resolves a mount's
+# source itself, so a checkout under a directory ci can't traverse (the admin's home, say) would have the run
+# refused for a reason that has nothing to do with Testcontainers.
 # shellcheck disable=SC2016
 SERVER_SCRIPT='mkdir -p /www && echo ygg-prove >/www/index.html && exec httpd -f -p 8080 -h /www'
 # shellcheck disable=SC2016
-CLIENT_SCRIPT='h=$(sh /probe/run-check.sh --print-host-override)
+CLIENT_SCRIPT='cat >/tmp/run-check.sh
+h=$(sh /tmp/run-check.sh --print-host-override)
 echo "override:$h"
 body=""
 if [ -n "$h" ]; then
@@ -281,8 +301,7 @@ prove_testcontainers() {
   fi
 
   status=0
-  out=$(ci_docker run --rm --name ygg-prove-client \
-    -v "$root/scripts/run-check.sh:/probe/run-check.sh:ro" \
+  out=$(user_docker_input ci "$root/scripts/run-check.sh" run -i --rm --name ygg-prove-client \
     "$TAR_IMAGE" sh -c "$CLIENT_SCRIPT" sh "$port" 2>&1) || status=$?
   override=$(sed -n 's/^override://p' <<<"$out" | head -n1)
   body=$(sed -n 's/^body://p' <<<"$out" | head -n1)
@@ -321,7 +340,7 @@ prove_client_addresses() {
   log=$(user_docker ygg logs --tail "$LOG_LINES" "$id" 2>/dev/null) || log=""
   addresses=$({ grep -o '"ClientHost":"[^"]*"' <<<"$log" || true; } \
     | sed 's/^"ClientHost":"//; s/"$//' | { grep -E '^[0-9A-Fa-f:.]+$' || true; } \
-    | tac | awk '!seen[$0]++' | head -n 10) || addresses=""
+    | tac | awk '!seen[$0]++ { print; if (++n == 10) exit }') || true
   if [[ -z "$addresses" ]]; then
     row look "$name" "no request in the last $LOG_LINES lines of Traefik's access log: make one from your machine, then prove again"
     return 0

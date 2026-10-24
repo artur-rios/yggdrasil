@@ -67,6 +67,7 @@ FAKES = {
     # (ygg-prove-probe, -server, -client) and by switches in the environment:
     #   FAKE_ENGINE_DOWN, FAKE_ENGINE_ROOTFUL, FAKE_NO_IMAGE, FAKE_PULL_FAILS  the engine and the image
     #   FAKE_PROBE_REFUSED   the probe's `docker run` fails, as a rootless engine does for a path it can't read
+    #                        (status 125, a permission message; FAKE_PROBE_STATUS and FAKE_PROBE_MESSAGE change them)
     #   FAKE_PROBE_REACHES   what the probe reports it could reach ("run-socket home etc")
     #   FAKE_PROBE_SILENT    the probe prints nothing at all
     #   FAKE_SERVER_FAILS, FAKE_NO_PORT, FAKE_NO_ANSWER, FAKE_NO_GATEWAY   the Testcontainers proof
@@ -90,8 +91,8 @@ FAKES = {
             case "$*" in
               *ygg-prove-probe*)
                 if [[ -n "${FAKE_PROBE_REFUSED:-}" ]]; then
-                  echo "docker: Error response from daemon: error while creating mount source path: permission denied" >&2
-                  exit 125
+                  echo "${FAKE_PROBE_MESSAGE:-docker: Error response from daemon: error while creating mount source path: permission denied}" >&2
+                  exit "${FAKE_PROBE_STATUS:-125}"
                 fi
                 [[ -z "${FAKE_PROBE_SILENT:-}" ]] || exit 0
                 echo "reached:${FAKE_PROBE_REACHES:-}"
@@ -102,6 +103,7 @@ FAKES = {
                 echo "server-container-id"
                 ;;
               *ygg-prove-client*)
+                cat >"$FAKE_STATE/client-stdin"
                 if [[ -n "${FAKE_NO_GATEWAY:-}" ]]; then echo "override:"
                 else echo "override:172.17.0.1"; fi
                 if [[ -n "${FAKE_NO_ANSWER:-}" ]]; then echo "body:"; else echo "body:ygg-prove"; fi
@@ -276,6 +278,29 @@ class ProveMachineTests(unittest.TestCase):
         self.assertEqual(self.status_of(result, "ci -> ygg (docker)"), "ok")
         self.assertIn("refused", self.rows(result)["ci -> ygg (docker)"][1])
 
+    def test_given_a_run_that_fails_for_another_reason_when_proved_then_it_is_no_proof(self):
+        # Only docker's own refusal of a mount (status 125, about a permission or a path) is the proof.
+        cases = {
+            "another status": {"FAKE_PROBE_STATUS": "1"},
+            "daemon down": {"FAKE_PROBE_MESSAGE": "docker: Cannot connect to the Docker daemon. Is it running?"},
+            "pull denied": {"FAKE_PROBE_MESSAGE": "docker: pull access denied for busybox"},
+            "killed": {"FAKE_PROBE_STATUS": "137"},
+        }
+        for label, extra in cases.items():
+            with self.subTest(label):
+                result = self.prove("dev", FAKE_PROBE_REFUSED="1", **extra)
+                self.assertEqual(self.status_of(result, "ci -> ygg (docker)"), "FAIL")
+                self.assertIn("another reason", self.rows(result)["ci -> ygg (docker)"][1])
+                self.assertEqual(result.returncode, 1)
+
+    def test_given_each_mount_refusal_message_when_proved_then_it_is_the_proof(self):
+        for message in ("permission denied", "Not a directory", "no such file or directory",
+                        "operation not permitted"):
+            with self.subTest(message):
+                result = self.prove("dev", FAKE_PROBE_REFUSED="1",
+                                    FAKE_PROBE_MESSAGE=f"docker: Error response from daemon: {message}")
+                self.assertEqual(self.status_of(result, "ci -> ygg (docker)"), "ok")
+
     def test_given_the_probe_runs_and_reaches_nothing_when_proved_then_the_container_side_is_ok(self):
         result = self.prove("dev")
         self.assertEqual(self.status_of(result, "ci -> ygg (docker)"), "ok")
@@ -379,18 +404,31 @@ class ProveMachineTests(unittest.TestCase):
         self.assertEqual(len(port), 1, port)
         self.assertIn("ygg-prove-server", port[0])
 
-    def test_given_the_client_when_started_then_it_gets_the_override_from_run_check_inside_it(self):
+    def test_given_the_client_when_started_then_it_gets_the_override_from_run_check_on_its_stdin(self):
         self.prove("dev")
         client = [line for line in self.docker_calls("ygg-prove-client") if " run " in line]
         self.assertEqual(len(client), 1, client)
         client = client[0]
         self.assertTrue(client.startswith("docker as=ci host=unix:///run/user/1002/docker.sock "), client)
-        # The same engine (a second container next to the server), with the script that computes the override
-        # mounted read-only, run by the container's own sh, and the published port asked of the address it finds.
-        self.assertIn("run-check.sh:ro", client)
+        # The same engine (a second container next to the server). Nothing is mounted from the host: ci's
+        # daemon resolves a mount's source itself, and a checkout under a directory ci can't traverse would
+        # have the run refused. run-check.sh comes in on stdin (-i) and is run by the container's own sh, and
+        # the published port is asked of the address it finds.
+        self.assertNotIn(" -v ", client)
+        self.assertNotIn("--mount", client)
+        self.assertIn(" run -i ", client)
         self.assertIn("--print-host-override", client)
         self.assertIn("wget", client)
         self.assertTrue(client.rstrip().endswith("49153"), client)
+        sent = (self.state / "client-stdin").read_text()
+        self.assertEqual(sent, (SCRIPT.parent / "run-check.sh").read_text())
+
+    def test_given_any_proof_when_run_then_no_docker_argument_names_a_path_of_the_checkout(self):
+        # The checkout may be anywhere (under the admin's home, closed to ci): ci's engine must never be asked
+        # to open a path in it, as a mount source would.
+        self.prove("dev")
+        arguments = chr(10).join(self.docker_calls())
+        self.assertNotIn(str(SCRIPT.parent), arguments)
 
     def test_given_no_answer_from_the_published_port_when_proved_then_testcontainers_fails(self):
         result = self.prove("dev", FAKE_NO_ANSWER="1")
@@ -483,6 +521,15 @@ class ProveMachineTests(unittest.TestCase):
         detail = self.rows(result)["client addresses"][1]
         shown = re.findall(r"192\.0\.2\.\d+", detail)
         self.assertEqual(shown, [f"192.0.2.{n}" for n in range(15, 5, -1)])
+
+    def test_given_a_long_log_when_proved_then_the_pipeline_closing_early_does_not_wipe_the_result(self):
+        # Stopping at ten addresses closes the pipe on the writers behind it, which pipefail would count as
+        # a failure of the whole read: a log far longer than a pipe buffer must still give ten addresses.
+        self.traefik_log([f"10.{n // 250}.{n % 250}.1" for n in range(20000)])
+        result = self.prove("apps")
+        detail = self.rows(result)["client addresses"][1]
+        self.assertEqual(len(re.findall(r"10\.\d+\.\d+\.1", detail)), 10, detail)
+        self.assertIn("10.79.249.1", detail)
 
     def test_given_an_access_log_when_proved_then_no_path_or_header_is_printed(self):
         self.traefik_log(["203.0.113.5"])
