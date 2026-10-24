@@ -31,11 +31,52 @@ class FakeGitHub:
     its own per_page loses the rest."""
 
     def __init__(self, repos, pulls=None, kind="User", login=OWNER, page_size=30, pulls_fail=(), empty=(),
-                 commits_status=None):
+                 commits_status=None, rulesets=None, settings=None, fail=None):
         self.repos, self.pulls, self.pulls_fail = repos, pulls or {}, set(pulls_fail)
         self.empty, self.commits_status = set(empty), commits_status or {}
         self.kind, self.login, self.page_size = kind, login, page_size
+        # What prepare-github works on, per repository: `rulesets` (name -> [rulesets, as {id, name}]),
+        # `settings` (name -> fields that override the defaults of an untouched copy), `fail` (name ->
+        # {(method, path suffix): status} to answer with an error).
+        self.rulesets, self.settings, self.fail = rulesets or {}, settings or {}, fail or {}
+        self.state = {}
         self.calls = []
+
+    def writes(self):
+        return [call for call in self.calls if call[0] != "GET"]
+
+    def _repo_state(self, name):
+        if name not in self.state:
+            self.state[name] = {"has_issues": True, "description": "old description", "fixes": True,
+                                "rulesets": list(self.rulesets.get(name, [])), **self.settings.get(name, {})}
+        return self.state[name]
+
+    def _prepare_request(self, method, path, segments, body):
+        """The routes prepare-github uses: the repository itself, its rulesets and its automated security
+        fixes. NotImplemented for any other."""
+        name, rest = segments[3], segments[4:]
+        if rest and rest[0] not in ("rulesets", "automated-security-fixes"):
+            return NotImplemented
+        for (failing_method, suffix), status in self.fail.get(name, {}).items():
+            if method == failing_method and path.split("?")[0].endswith(suffix):
+                raise migrate.rules.ApiError(method, path, status, "refused")
+        state = self._repo_state(name)
+        if rest == []:
+            if method == "PATCH":
+                state.update(body)
+            return {"name": name, "has_issues": state["has_issues"], "description": state["description"]}
+        if rest == ["rulesets"] and method == "GET":
+            return list(state["rulesets"])
+        if len(rest) == 2 and rest[0] == "rulesets" and method == "DELETE":
+            state["rulesets"] = [r for r in state["rulesets"] if str(r["id"]) != rest[1]]
+            return None
+        if rest == ["automated-security-fixes"]:
+            if method == "GET":
+                return {"enabled": state["fixes"], "paused": False}
+            if method == "DELETE":
+                state["fixes"] = False
+                return None
+        raise AssertionError(f"unexpected request: {method} {path}")
 
     def _page(self, items, query):
         page = int(query.get("page", "1"))
@@ -44,10 +85,14 @@ class FakeGitHub:
 
     def request(self, method, path, body=None):
         self.calls.append((method, path, body))
-        assert method == "GET", f"inventory only reads: {method} {path}"
         route, _, raw = path.partition("?")
         query = dict(part.split("=") for part in raw.split("&") if part)
         segments = route.split("/")  # ["", "repos", owner, repo, "pulls"]
+        if segments[:2] == ["", "repos"] and len(segments) >= 4:
+            answer = self._prepare_request(method, path, segments, body)
+            if answer is not NotImplemented:
+                return answer
+        assert method == "GET", f"only prepare-github writes: {method} {path}"
         if route.startswith("/users/"):
             return {"login": segments[2], "type": self.kind}
         if route == "/user":
@@ -75,14 +120,37 @@ class FakeForgejo:
     a name to a status its GET answers instead (403, 500 ...); `migrate_status` maps a name to the status its
     migration answers (500, 0 for no answer at all). Every request is kept in `calls`, with its timeout."""
 
-    def __init__(self, existing=None, lookup=None, migrate_status=None, migrate_message=None):
+    def __init__(self, existing=None, lookup=None, migrate_status=None, migrate_message=None, files=None,
+                 contents_status=None):
         self.existing, self.lookup, self.migrate_status = existing or {}, lookup or {}, migrate_status or {}
         self.migrate_message = migrate_message
+        # The files prepare-github looks for: (repository, path) -> the file's sha. `contents_status` maps a
+        # repository to a status its contents requests answer instead (500 ...).
+        self.files, self.contents_status = dict(files or {}), contents_status or {}
         self.calls, self.timeouts = [], []
+
+    def _contents(self, method, path, body):
+        """`GET|DELETE /repos/<owner>/<name>/contents/<file>`: Forgejo answers 404 for a file that is not
+        there and, for a delete, wants the file's current sha."""
+        route, _, query = path.partition("?")
+        name, _, filepath = route[len(f"/repos/{OWNER}/"):].partition("/contents/")
+        if name in self.contents_status:
+            raise migrate.rules.ApiError(method, path, self.contents_status[name], "contents failed")
+        sha = self.files.get((name, filepath))
+        if sha is None:
+            raise migrate.rules.ApiError(method, path, 404, "The target couldn't be found.")
+        if method == "GET":
+            return {"type": "file", "path": filepath, "sha": sha, "ref": query}
+        if body.get("sha") != sha:
+            raise migrate.rules.ApiError(method, path, 422, "sha does not match")
+        del self.files[(name, filepath)]
+        return {"commit": {"message": body["message"]}}
 
     def request(self, method, path, body=None, timeout=None):
         self.calls.append((method, path, body))
         self.timeouts.append(timeout)
+        if "/contents/" in path:
+            return self._contents(method, path, body)
         if method == "GET" and path.startswith(f"/repos/{OWNER}/"):
             name = path.rsplit("/", 1)[1]
             if name in self.lookup:
@@ -108,7 +176,8 @@ class FakeForgejo:
 
 def forgejo_repository(name, **fields):
     """A repository as Forgejo answers `GET /repos/<owner>/<name>` (more fields than migrate reads)."""
-    return {"id": 7, "name": name, "full_name": f"{OWNER}/{name}", "empty": False, "mirror": False, **fields}
+    return {"id": 7, "name": name, "full_name": f"{OWNER}/{name}", "empty": False, "mirror": False,
+            "default_branch": "develop", **fields}
 
 
 def sixty(**by_name):
@@ -398,6 +467,19 @@ class ImportTests(unittest.TestCase):
         self.assertIn("half: exists but looks unfinished (mirror): delete it on Forgejo and run import again", run.err)
         self.assertEqual(forgejo.writes(), [])
 
+    def test_given_a_copy_that_is_both_empty_and_a_mirror_when_imported_then_it_is_reported_as_a_mirror(self):
+        # Both flags can be on at once: a pull mirror whose first sync has not run. The mirror is the one that
+        # matters: it would keep pulling from GitHub, so it is not a finished import even when GitHub's
+        # repository is empty too (which alone would be "already imported"). So the mirror is named, and
+        # GitHub is not even asked whether the repository is empty.
+        forgejo = FakeForgejo(existing={"both": forgejo_repository("both", empty=True, mirror=True)})
+        run = self.run_import([repository("both", size=0)], forgejo=forgejo, empty={"both"})
+        self.assertEqual(run.code, 1)
+        self.assertIn("  both: exists but looks unfinished (mirror): delete it on Forgejo and run import again",
+                      run.err.splitlines())
+        self.assertFalse([c for c in run.gh.calls if "/commits" in c[1]])
+        self.assertEqual(forgejo.writes(), [])
+
     def test_given_open_pull_requests_when_imported_then_it_refuses_unless_allowed(self):
         repos = [repository("a"), repository("b"), repository("c")]
         run = self.run_import(repos, pulls={"b": 2})
@@ -485,6 +567,226 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(second.code, 0, second.err)
         self.assertIn("a: already imported", second.lines)
         self.assertIn("b: imported", second.lines)
+
+
+DEPENDABOT = ".github/dependabot.yml"
+DEPENDABOT_MESSAGE = "chore: stop dependabot; renovate replaces it"
+
+
+def description(name, base="https://git.example.com"):
+    # The em dash (U+2014) is part of the text.
+    return f"Mirror of {base}/{OWNER}/{name} — contribute there"
+
+
+class PrepareGitHubTests(unittest.TestCase):
+    ARGS = ["--github-owner", OWNER, "prepare-github"]
+
+    def run_prepare(self, repos, args=None, forgejo=None, env=None, catalog=FORGEJO_CATALOG, gh=None, **github):
+        """Every repository is on Forgejo unless `forgejo` says otherwise."""
+        forgejo = forgejo or FakeForgejo(existing={r["name"]: forgejo_repository(r["name"]) for r in repos})
+        gh = gh or FakeGitHub(repos, **github)
+        return Run(args or self.ARGS, gh, catalog=catalog, env=ENV if env is None else env, forgejo=forgejo)
+
+    def test_given_a_dependabot_file_when_prepared_then_it_is_deleted_on_forgejos_default_branch(self):
+        # Forgejo's own default branch counts (the copy is what the file is deleted on), not GitHub's.
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit", default_branch="main")},
+                              files={("toolkit", DEPENDABOT): "sha-1"})
+        run = self.run_prepare([repository("toolkit")], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(forgejo.writes(), [
+            ("DELETE", f"/repos/{OWNER}/toolkit/contents/{DEPENDABOT}",
+             {"sha": "sha-1", "branch": "main", "message": DEPENDABOT_MESSAGE})])
+        # The sha came from reading the file on that branch.
+        self.assertIn(("GET", f"/repos/{OWNER}/toolkit/contents/{DEPENDABOT}?ref=main", None), forgejo.calls)
+        self.assertIn("toolkit: deleted .github/dependabot.yml on main", run.lines)
+        self.assertEqual(forgejo.files, {})
+
+    def test_given_the_yaml_spelling_when_prepared_then_that_file_is_deleted_too(self):
+        # Dependabot reads both names. A repository with both loses both, in one commit each.
+        forgejo = FakeForgejo(existing={"a": forgejo_repository("a"), "b": forgejo_repository("b")},
+                              files={("a", ".github/dependabot.yaml"): "sha-a",
+                                     ("b", DEPENDABOT): "sha-b1", ("b", ".github/dependabot.yaml"): "sha-b2"})
+        run = self.run_prepare([repository("a"), repository("b")], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual([c[1] for c in forgejo.writes()], [
+            f"/repos/{OWNER}/a/contents/.github/dependabot.yaml",
+            f"/repos/{OWNER}/b/contents/{DEPENDABOT}",
+            f"/repos/{OWNER}/b/contents/.github/dependabot.yaml"])
+        self.assertEqual(forgejo.files, {})
+
+    def test_given_no_dependabot_file_when_prepared_then_nothing_is_deleted(self):
+        run = self.run_prepare([repository("toolkit")])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertIn("toolkit: no dependabot file", run.lines)
+        self.assertEqual(run.forgejo.writes(), [])
+
+    def test_given_an_empty_copy_when_prepared_then_forgejo_is_not_asked_for_files_and_github_is_still_prepared(self):
+        forgejo = FakeForgejo(existing={"blank": forgejo_repository("blank", empty=True, default_branch="")})
+        run = self.run_prepare([repository("blank", size=0)], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertIn("blank: no dependabot file (empty repository)", run.lines)
+        self.assertFalse([c for c in forgejo.calls if "/contents/" in c[1]])
+        self.assertFalse(run.gh.state["blank"]["has_issues"])
+
+    def test_given_old_rulesets_when_prepared_then_all_but_mirror_tags_are_deleted(self):
+        rulesets = [{"id": 11, "name": "default"}, {"id": 12, "name": "mirror tags"}, {"id": 13, "name": "release"}]
+        run = self.run_prepare([repository("toolkit")], rulesets={"toolkit": rulesets})
+        self.assertEqual(run.code, 0, run.err)
+        deletes = [c[1] for c in run.gh.calls if c[0] == "DELETE" and "/rulesets/" in c[1]]
+        self.assertEqual(deletes, [f"/repos/{OWNER}/toolkit/rulesets/11", f"/repos/{OWNER}/toolkit/rulesets/13"])
+        self.assertEqual(run.gh.state["toolkit"]["rulesets"], [{"id": 12, "name": "mirror tags"}])
+        self.assertIn(("GET", f"/repos/{OWNER}/toolkit/rulesets?per_page=100", None), run.gh.calls)
+        self.assertIn("toolkit: deleted ruleset 'default'", run.lines)
+        self.assertIn("toolkit: kept ruleset 'mirror tags'", run.lines)
+
+    def test_given_a_repository_when_prepared_then_issues_are_off_and_the_description_points_at_forgejo(self):
+        run = self.run_prepare([repository("toolkit")])
+        self.assertEqual(run.code, 0, run.err)
+        patches = [c for c in run.gh.calls if c[0] == "PATCH"]
+        self.assertEqual(patches, [("PATCH", f"/repos/{OWNER}/toolkit",
+                                    {"has_issues": False, "description": description("toolkit")})])
+        self.assertEqual(description("toolkit"),
+                         "Mirror of https://git.example.com/artur-rios/toolkit — contribute there")
+        # Automated security fixes were on: one DELETE switches them off.
+        self.assertEqual([c for c in run.gh.calls if c[0] == "DELETE"],
+                         [("DELETE", f"/repos/{OWNER}/toolkit/automated-security-fixes", None)])
+        self.assertFalse(run.gh.state["toolkit"]["fixes"])
+
+    def test_given_another_forge_url_when_prepared_then_the_description_uses_it_not_a_fixed_host(self):
+        catalog = {**CATALOG, "forge": {"type": "forgejo", "url": "https://forge.other.org/"}}
+        run = self.run_prepare([repository("toolkit")], catalog=catalog)
+        self.assertEqual(run.gh.state["toolkit"]["description"], description("toolkit", "https://forge.other.org"))
+
+    def test_given_prepared_twice_when_run_then_the_second_run_changes_nothing(self):
+        repos = [repository("a"), repository("b")]
+        forgejo = FakeForgejo(existing={r["name"]: forgejo_repository(r["name"]) for r in repos},
+                              files={("a", DEPENDABOT): "sha-a"})
+        gh = FakeGitHub(repos, rulesets={"b": [{"id": 1, "name": "old"}, {"id": 2, "name": "mirror tags"}]})
+        first = self.run_prepare(repos, forgejo=forgejo, gh=gh)
+        self.assertEqual(first.code, 0, first.err)
+        writes = len(forgejo.writes()) + len(gh.writes())
+        self.assertGreater(writes, 0)
+        second = self.run_prepare(repos, forgejo=forgejo, gh=gh)
+        self.assertEqual(second.code, 0, second.err)
+        self.assertEqual(len(forgejo.writes()) + len(gh.writes()), writes)  # not one more write
+        self.assertIn("a: no dependabot file", second.lines)
+        self.assertIn("a: already prepared on GitHub", second.lines)
+
+    def test_given_security_fixes_already_off_or_unreadable_when_prepared_then_no_delete_is_sent(self):
+        run = self.run_prepare([repository("off"), repository("gone")],
+                               settings={"off": {"fixes": False}},
+                               fail={"gone": {("GET", "/automated-security-fixes"): 404}})
+        self.assertEqual(run.code, 0, run.err)
+        self.assertFalse([c for c in run.gh.calls if c[0] == "DELETE"])
+
+    def test_given_security_fixes_that_answer_404_to_the_delete_when_prepared_then_it_is_fine(self):
+        run = self.run_prepare([repository("a")], fail={"a": {("DELETE", "/automated-security-fixes"): 404}})
+        self.assertEqual(run.code, 0, run.err)
+
+    def test_given_a_repository_forgejo_does_not_have_when_prepared_then_it_fails_untouched_and_the_rest_go_on(self):
+        repos = [repository("a"), repository("missing"), repository("c")]
+        forgejo = FakeForgejo(existing={"a": forgejo_repository("a"), "c": forgejo_repository("c")})
+        run = self.run_prepare(repos, forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("  missing: not on Forgejo: run import first", run.err.splitlines())
+        self.assertFalse([c for c in run.gh.calls if "/missing" in c[1]])
+        self.assertFalse(run.gh.state["a"]["has_issues"])
+        self.assertFalse(run.gh.state["c"]["has_issues"])
+
+    def test_given_a_forgejo_lookup_that_fails_when_prepared_then_that_repository_fails_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={"b": forgejo_repository("b")}, lookup={"a": 500})
+        run = self.run_prepare([repository("a"), repository("b")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("a: could not look for it on Forgejo", run.err)
+        self.assertFalse(run.gh.state["b"]["has_issues"])
+
+    def test_given_forgejo_refusing_the_file_when_prepared_then_that_repository_fails_before_github_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={"a": forgejo_repository("a"), "b": forgejo_repository("b")},
+                              contents_status={"a": 500})
+        run = self.run_prepare([repository("a"), repository("b")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertEqual([line for line in run.err.splitlines() if line.startswith("  a:")],
+                         [f"  a: could not prepare it: GET /repos/{OWNER}/a/contents/{DEPENDABOT}?ref=develop: "
+                          "500 contents failed"])
+        # Not half prepared: a's GitHub side waits for the re-run.
+        self.assertFalse([c for c in run.gh.calls if c[1].startswith(f"/repos/{OWNER}/a") and c[0] != "GET"])
+        self.assertFalse(run.gh.state["b"]["has_issues"])
+
+    def test_given_a_github_request_that_fails_when_prepared_then_that_repository_fails_and_the_rest_go_on(self):
+        run = self.run_prepare([repository("a"), repository("b"), repository("c")],
+                               fail={"b": {("GET", "/rulesets"): 403}})
+        self.assertEqual(run.code, 1)
+        self.assertEqual([line for line in run.err.splitlines() if line.startswith("  b:")],
+                         [f"  b: could not prepare it: GET /repos/{OWNER}/b/rulesets?per_page=100: 403 refused"])
+        self.assertFalse(run.gh.state["a"]["has_issues"])
+        self.assertFalse(run.gh.state["c"]["has_issues"])
+
+    def test_given_an_error_that_echoes_the_github_token_when_prepared_then_it_is_hidden(self):
+        class Echoing(FakeGitHub):
+            def request(self, method, path, body=None):
+                if method == "PATCH":
+                    raise migrate.rules.ApiError(method, path, 422, "bad credentials gh-tok-456")
+                return super().request(method, path, body)
+
+        run = self.run_prepare([repository("a")], gh=Echoing([repository("a")]))
+        self.assertEqual(run.code, 1)
+        self.assertNotIn("gh-tok-456", run.out + run.err)
+        self.assertIn("422 bad credentials ***", run.err)
+
+    def test_given_a_dry_run_when_prepared_then_nothing_is_written_and_the_plan_is_printed(self):
+        forgejo = FakeForgejo(existing={"a": forgejo_repository("a")}, files={("a", DEPENDABOT): "sha-a"})
+        gh = FakeGitHub([repository("a")], rulesets={"a": [{"id": 1, "name": "old"}, {"id": 2, "name": "mirror tags"}]})
+        run = self.run_prepare([repository("a")], ["--dry-run"] + self.ARGS, forgejo=forgejo, gh=gh)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual((forgejo.writes(), gh.writes()), ([], []))
+        self.assertIn("a: would delete .github/dependabot.yml on develop", run.lines)
+        self.assertIn("a: would delete ruleset 'old'", run.lines)
+        self.assertIn("a: would set issues off and the description", run.lines)
+        self.assertIn("a: would switch off automated security fixes", run.lines)
+        self.assertEqual(forgejo.files, {("a", DEPENDABOT): "sha-a"})
+
+    def test_given_a_dry_run_and_a_repository_not_on_forgejo_when_prepared_then_it_is_still_a_failure(self):
+        run = self.run_prepare([repository("missing")], ["--dry-run"] + self.ARGS, forgejo=FakeForgejo())
+        self.assertEqual(run.code, 1)
+        self.assertIn("missing: not on Forgejo: run import first", run.err)
+
+    def test_given_only_when_prepared_then_just_those_are_prepared(self):
+        run = self.run_prepare([repository("a"), repository("b"), repository("c")], self.ARGS + ["--only", "b"])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(set(run.gh.state), {"b"})
+        self.assertFalse([c for c in run.forgejo.calls if f"/{OWNER}/a" in c[1] or f"/{OWNER}/c" in c[1]])
+
+    def test_given_no_forgejo_token_when_prepared_then_it_exits_2_before_anything_is_printed(self):
+        run = self.run_prepare([repository("a")], env={})
+        self.assertEqual(run.code, 2)
+        self.assertIn("FORGE_TOKEN", run.err)
+        self.assertEqual(run.out, "")
+
+    def test_given_the_tokens_when_prepared_then_they_are_in_no_line_and_no_path(self):
+        run = self.run_prepare([repository("a")])
+        self.assertNotIn("gh-tok-456", run.out + run.err)
+        self.assertNotIn("fg-tok-123", run.out + run.err)
+        self.assertFalse([c for c in run.gh.calls + run.forgejo.calls if "tok-" in c[1]])
+
+
+class ReportTests(unittest.TestCase):
+    def context(self, token):
+        ctx = migrate.Context(catalog=CATALOG, dry_run=False, only=[], github_owner=OWNER)
+        ctx.github_token = token  # a cached_property: assigning it stands in for the lookup
+        return ctx
+
+    def test_given_a_token_in_a_failure_when_reported_then_it_is_hidden_in_the_text_that_is_printed_and_returned(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            shown = migrate._report(self.context("gh-tok-456"), "a: failed: echoed gh-tok-456")
+        self.assertEqual(shown, "a: failed: echoed ***")
+        self.assertEqual(out.getvalue(), "a: failed: echoed ***\n")
+
+    def test_given_an_empty_or_missing_token_when_reported_then_the_text_is_left_as_it_is(self):
+        # str.replace("", "***") would put *** between every character; None would raise.
+        for token in ("", None):
+            with self.subTest(token=token), mock.patch("sys.stdout", io.StringIO()):
+                self.assertEqual(migrate._report(self.context(token), "a: failed: no way"), "a: failed: no way")
 
 
 class FrameTests(unittest.TestCase):

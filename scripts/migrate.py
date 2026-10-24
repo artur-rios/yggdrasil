@@ -12,13 +12,28 @@ and goes on to the next, so a re-run picks up where it stopped):
   import      every repository of the GitHub owner that Forgejo does not have yet, through Forgejo's
               GitHub migration: issues, labels, milestones, releases, pull requests and the wiki (when
               there is one), private as on GitHub. One Forgejo has already is "already imported" and is
-              left alone -- except one that exists but looks unfinished (empty, or a mirror), which is
-              reported as a failure: delete it on Forgejo yourself, then run import again; this script
-              never deletes anything. Refuses to start while any repository has open pull requests,
-              unless --allow-open-pulls. A migration may take long: the wait for each one is 30 minutes,
-              MIGRATE_TIMEOUT (seconds) changes it. After a client timeout Forgejo may still be copying:
-              wait for it to finish (watch the repository on Forgejo) before running import again, or
-              the half-copied repository is reported as unfinished.
+              left alone -- except one that exists but looks unfinished, which is reported as a failure:
+              delete it on Forgejo yourself, then run import again; this script never deletes anything.
+              Unfinished is a copy flagged as a pull mirror, or an empty one whose GitHub repository has
+              commits. An empty copy of a repository that is empty on GitHub too is a finished import
+              ("already imported"). A copy that is both empty and a mirror is reported as a mirror: it
+              would keep pulling from GitHub, so being empty does not make it finished. Refuses to start
+              while any repository has open pull requests, unless --allow-open-pulls. A migration may
+              take long: the wait for each one is 30 minutes, MIGRATE_TIMEOUT (seconds) changes it. After
+              a client timeout Forgejo may still be copying: wait for it to finish (watch the repository
+              on Forgejo) before running import again, or the half-copied repository is reported as
+              unfinished.
+  prepare-github
+              gets each GitHub repository ready to become a read-only push-mirror copy of Forgejo's, for
+              the repositories Forgejo has (one it does not have is a failure: "not on Forgejo: run import
+              first"). On Forgejo, Dependabot's config file (.github/dependabot.yml, and .yaml) is deleted
+              on the default branch, in a commit by the token's owner; none there is "no dependabot file".
+              On GitHub, every ruleset but `mirror tags` (rules.py makes that one) is deleted, issues are
+              turned off, the description is set to `Mirror of <forgejo url>/<owner>/<repo> -- contribute
+              there` (with an em dash), and automated security fixes are switched off. It only sends what
+              is not so yet, so a second run writes nothing. A repository whose Forgejo step fails is not
+              touched on GitHub. With --dry-run it prints what it would do and sends no write.
+              Runbook order: import, prepare-github, mirrors, collaborators, rules.py, verify.
 
 The move covers every repository of the GitHub owner, forks included. Only the catalog's repositories
 (catalog.py repository-names) get the bots as collaborators and the webhook; `inventory` shows both.
@@ -47,6 +62,7 @@ import json
 import os
 import pathlib
 import sys
+import urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import catalog as catalog_module  # noqa: E402  (scripts/catalog.py)
@@ -266,17 +282,22 @@ def _unfinished(found):
     """Why a repository Forgejo has does not look like a finished migration, or None. A failed or interrupted
     migration leaves an empty repository (Forgejo's `empty`), or one still flagged as a mirror (a pull
     mirror: `mirror`; the import asks for none). Checked on Forgejo 16's repository JSON in the live suite."""
-    if found.get("empty"):
-        return "empty"
+    # The mirror is looked at first: a copy that is both is a mirror before anything else (see the module
+    # docstring), so it is never taken for a finished empty import.
     if found.get("mirror"):
         return "mirror"
+    if found.get("empty"):
+        return "empty"
     return None
 
 
 def _report(ctx, failure):
     """Prints a failure where it happened (it is listed again at the end) and returns it, with the GitHub
-    token hidden: a server's error text may echo what it was sent."""
-    failure = failure.replace(ctx.github_token, "***")
+    token hidden: a server's error text may echo what it was sent. No token (empty, None) hides nothing:
+    str.replace on "" would put *** between every character."""
+    token = ctx.github_token
+    if token:
+        failure = failure.replace(token, "***")
     print(failure, flush=True)
     return failure
 
@@ -360,7 +381,133 @@ def cmd_import(ctx, args):
 cmd_import.arguments = lambda sub: sub.add_argument(
     "--allow-open-pulls", action="store_true", help="import although repositories have open pull requests")
 
-COMMANDS = {"inventory": cmd_inventory, "import": cmd_import}
+# --- prepare-github ---------------------------------------------------------------------------------------
+
+# Dependabot reads either name; both are valid, so both are looked for.
+DEPENDABOT_FILES = (".github/dependabot.yml", ".github/dependabot.yaml")
+DEPENDABOT_MESSAGE = "chore: stop dependabot; renovate replaces it"
+
+
+def mirror_description(ctx, name):
+    """The GitHub description of a copy: it points at Forgejo, built from the catalog's forge url and the
+    owner (not a fixed host). The em dash (U+2014) is part of the text."""
+    return f"Mirror of {catalog_module.forge(ctx.catalog)['url']}/{ctx.forgejo_owner}/{name} \u2014 contribute there"
+
+
+def _write(ctx, name, would, done, send):
+    """One write: with --dry-run only the line "would ..." is printed and `send` is not called; else `send()`
+    goes out first and the "done" line is printed once it has succeeded (a failure raises before it)."""
+    if ctx.dry_run:
+        print(f"{name}: would {would}", flush=True)
+        return
+    send()
+    print(f"{name}: {done}", flush=True)
+
+
+def _delete_dependabot_files(ctx, name, found, github_repo):
+    """Deletes Dependabot's config file on Forgejo's default branch (one commit per file that is there).
+    Raises ApiError. An empty copy has no branch to look at: nothing to delete."""
+    if found.get("empty"):
+        print(f"{name}: no dependabot file (empty repository)", flush=True)
+        return
+    # The copy's own default branch; GitHub's is the same after an import, and the fallback if Forgejo omits it.
+    branch = found.get("default_branch") or github_repo["default_branch"]
+    base = f"/repos/{ctx.forgejo_owner}/{name}/contents"
+    deleted = False
+    for filepath in DEPENDABOT_FILES:
+        try:
+            current = ctx.forgejo.request("GET", f"{base}/{filepath}?ref={urllib.parse.quote(branch, safe='')}")
+        except rules.ApiError as error:
+            if error.status == 404:  # no such file on that branch
+                continue
+            raise
+        sha = current.get("sha") if isinstance(current, dict) else None
+        if not sha:
+            raise rules.ApiError("GET", f"{base}/{filepath}", 200, "the answer has no sha: not a file?")
+        deleted = True
+        _write(ctx, name, f"delete {filepath} on {branch}", f"deleted {filepath} on {branch}",
+               lambda filepath=filepath, sha=sha: ctx.forgejo.request(
+                   "DELETE", f"{base}/{filepath}", {"sha": sha, "branch": branch, "message": DEPENDABOT_MESSAGE}))
+    if not deleted:
+        print(f"{name}: no dependabot file", flush=True)
+
+
+def _delete_security_fixes(ctx, base):
+    """204 is the answer; 404 says there is nothing to switch off, which is the goal too."""
+    try:
+        ctx.gh.request("DELETE", f"{base}/automated-security-fixes")
+    except rules.ApiError as error:
+        if error.status != 404:
+            raise
+
+
+def _prepare_github_side(ctx, name):
+    """Old rulesets deleted (but `mirror tags`), issues off, description set, automated security fixes
+    off: each only when it is not so yet. Raises ApiError."""
+    base = f"/repos/{ctx.github_owner}/{name}"
+    changed = False
+    for ruleset in ctx.gh.request("GET", f"{base}/rulesets?per_page=100") or []:
+        if ruleset["name"] == rules.MIRROR_TAGS:
+            print(f"{name}: kept ruleset '{ruleset['name']}'", flush=True)
+        else:
+            changed = True
+            _write(ctx, name, f"delete ruleset '{ruleset['name']}'", f"deleted ruleset '{ruleset['name']}'",
+                   lambda ruleset=ruleset: ctx.gh.request("DELETE", f"{base}/rulesets/{ruleset['id']}"))
+
+    now = ctx.gh.request("GET", base) or {}
+    wanted = mirror_description(ctx, name)
+    if now.get("has_issues") is not False or now.get("description") != wanted:
+        changed = True
+        _write(ctx, name, "set issues off and the description", "issues are off and the description is set",
+               lambda: ctx.gh.request("PATCH", base, {"has_issues": False, "description": wanted}))
+
+    # `enabled` is read first so that a repository that is already off costs no write. A 404 on the read
+    # means the feature is not there to switch off (GitHub answers it for a repository without it).
+    try:
+        fixes = (ctx.gh.request("GET", f"{base}/automated-security-fixes") or {}).get("enabled")
+    except rules.ApiError as error:
+        if error.status != 404:
+            raise
+        fixes = False
+    if fixes:
+        changed = True
+        _write(ctx, name, "switch off automated security fixes", "automated security fixes are off",
+               lambda: _delete_security_fixes(ctx, base))
+    if not changed:
+        print(f"{name}: already prepared on GitHub", flush=True)
+
+
+def _prepare_one(ctx, repo):
+    """Prepares one repository; returns the failure to report, or None. Prints its lines. Forgejo's side
+    goes first and a failure there stops the repository (its GitHub side waits for the re-run)."""
+    name = repo["name"]
+    try:
+        found = _on_forgejo(ctx, name)
+    except rules.ApiError as error:
+        return _report(ctx, f"{name}: could not look for it on Forgejo: {error}")
+    if found is None:
+        return _report(ctx, f"{name}: not on Forgejo: run import first")
+    try:
+        _delete_dependabot_files(ctx, name, found, repo)
+        _prepare_github_side(ctx, name)
+    except rules.ApiError as error:
+        return _report(ctx, f"{name}: could not prepare it: {error}")
+    return None
+
+
+def cmd_prepare_github(ctx, args):
+    """Gets the GitHub copies ready to be mirrors: Dependabot's file deleted on Forgejo; on GitHub the old
+    rulesets (not `mirror tags`) deleted, issues off, the description set, automated security fixes off."""
+    ctx.forgejo  # a missing token is a usage error before any output
+    failures = []
+    for repo in github_repositories(ctx.gh, ctx.github_owner, ctx.only):
+        failure = _prepare_one(ctx, repo)
+        if failure:
+            failures.append(failure)
+    return failures
+
+
+COMMANDS = {"inventory": cmd_inventory, "import": cmd_import, "prepare-github": cmd_prepare_github}
 
 
 # --- The command line ---------------------------------------------------------------------------------
