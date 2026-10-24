@@ -1202,8 +1202,9 @@ python3 scripts/rules.py               # apply
   otherwise go on protecting `develop` with different rules), so keep that name for nothing of your own.
   Otherwise it never deletes a protection: one the model no longer has (the `release/*` rule and the
   tag protection of a repository turned `rules: basic`, a tag protection whose pattern the catalog changed;
-  on GitHub a `release tags` or `release tag creation` ruleset, on a GitHub copy `mirror tags`) is left as it
-  is, with a `note:` line; delete it by hand if it is stale.
+  on GitHub a `release tags` or `release tag creation` ruleset) is left as it is, with a `note:` line; delete it
+  by hand if it is stale. A GitHub copy's `mirror tags` is not looked at once its repository is `rules: basic`:
+  delete it by hand when you turn one basic.
 - Name repositories to apply to some only: `python3 scripts/rules.py shop-api shop-web` (the repository
   names: an application's `repository`, or its `id`, or a `repositories` entry's `id`).
 - `python3 scripts/rules.py --help` lists the variables. `github/rulesets.py` still works, but it only
@@ -1215,7 +1216,7 @@ What the script needs, by server:
 |---|---|
 | **Forgejo** (`forge.type: forgejo`) | `FORGE_TOKEN`: the owner's token, with the `write:repository` scope and no other (the live test suite runs the script with a token of that scope). Create it in Forgejo, signed in as the owner: **Settings → Applications → Generate New Token**. `FORGE_JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, together, to create the webhooks that tell Jenkins about pushes, tags and pull requests; with neither, the script says `webhooks skipped` and sets no webhook; with only one, it refuses to start. (It does not read `JENKINS_URL`, which Jenkins sets in every build.) |
 | **GitHub** (no `forge` block, or `github`) | An authenticated `gh` (`gh auth login`), or `GH_TOKEN`, with admin rights on the repositories. Rulesets on **private** repositories need a paid GitHub plan. |
-| **Forgejo with a [`mirror`](catalog.md#git-server)** | Everything Forgejo needs, and a GitHub token for the copies (`<mirror.github>/<repository>`): an authenticated `gh`, or `GH_TOKEN`, with **Administration: read and write** on them (a fine-grained token limited to those repositories will do). Each copy gets one ruleset, `mirror tags`, and nothing else ([Version tags](#version-tags-tag-check-and-repairs)). Without a token the script still applies the Forgejo rules, says `mirror tags not applied`, and exits `1` at the end (`the mirror tags were not applied to the GitHub copies ...`): run it again with one. Rulesets on private copies need the paid plan too. |
+| **Forgejo with a [`mirror`](catalog.md#git-server)** | Everything Forgejo needs, and a GitHub token for the copies (`<mirror.github>/<repository>`): an authenticated `gh`, or `GH_TOKEN`, with **Administration: read and write** on them (a fine-grained token limited to those repositories will do). Each copy gets one ruleset, `mirror tags`, and nothing else ([Version tags](#version-tags-tag-check-and-repairs)). Without a token the script still applies the Forgejo rules, says `mirror tags not applied`, and exits `1` at the end (`the mirror tags were not applied to the GitHub copies ...`): run it again with one (`gh auth token` is tried when `GH_TOKEN` is not set, so being logged in to `gh` is enough). A copy GitHub refuses is skipped with a line `<repository> (GitHub copy <owner>/<repository>): not applied: <error>`, the other repositories are still applied, and the run exits `1` at the end naming the copies. The two usual causes: **`404 Not Found`**, the push mirror has not created that copy yet (set up the repository's push mirror, let it sync, run again); **`403`**, a **private** copy on a free GitHub plan, which has no rulesets for private repositories (a paid plan, or a public copy, fixes it; until then that copy's tags are unprotected and the run stays red). A `rules: basic` repository's copy is never asked. |
 
 On Forgejo, set the variables for the one command, so they stay out of your shell history files and your
 environment afterwards:

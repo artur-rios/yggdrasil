@@ -821,6 +821,20 @@ class ForgejoCommandTests(unittest.TestCase):
         self.assertIn("usage:", done.stdout)
 
 
+class PerRepoForgejo:
+    """FakeForgejo per repository, for a run over the whole catalog (one FakeForgejo keeps one repository)."""
+
+    def __init__(self, make=None):
+        self.make = make or FakeForgejo
+        self.repos = {}
+
+    def request(self, method, path, body=None):
+        return self.repos.setdefault(path.split("/")[3], self.make()).request(method, path, body)
+
+    def writes(self):
+        return [w for fake in self.repos.values() for w in fake.writes()]
+
+
 MIRROR = "artur-rios-mirror"
 CATALOG_MIRROR = {**copy.deepcopy(CATALOG), "mirror": {"github": MIRROR, "releases": False}}
 
@@ -860,16 +874,13 @@ class MirrorTagsTests(unittest.TestCase):
         self.assertEqual([(m, p) for m, p, _ in api.writes()], [("PUT", f"/repos/{MIRROR}/toolkit/rulesets/2")])
         self.assertEqual(sorted(r["name"] for r in api.rulesets.values()), ["mirror tags", "something of the owner's"])
 
-    def test_given_a_basic_repository_when_applied_then_nothing_is_written_and_an_old_ruleset_is_noted(self):
-        api = FakeGitHub()
+    def test_given_a_basic_repository_when_applied_then_github_is_not_even_asked(self):
+        # Nothing to apply, so no request at all: a basic repository's copy may not exist, or be one GitHub
+        # refuses rulesets on, and that must cost nothing.
+        api = FakeGitHub(existing=["mirror tags"])
         self.assertEqual(rules.apply_mirror(api, MIRROR, by_repo()["scratch"], dry_run=False),
                          [f"{MIRROR}/scratch (the GitHub copy)", "  no version tags (rules: basic): nothing to apply"])
-        api = FakeGitHub(existing=["mirror tags"])
-        lines = rules.apply_mirror(api, MIRROR, by_repo()["scratch"], dry_run=False)
-        self.assertEqual(api.writes(), [])
-        notes = [line for line in lines if "note" in line]
-        self.assertEqual(len(notes), 1, lines)
-        self.assertIn("ruleset 'mirror tags'", notes[0])
+        self.assertEqual(api.calls, [])
 
     def test_given_dry_run_when_applied_then_the_payload_is_shown_and_nothing_is_written(self):
         api = FakeGitHub()
@@ -958,21 +969,70 @@ class MirrorCommandTests(unittest.TestCase):
         # The basic repository's copy is only looked at.
         self.assertIn(f"{MIRROR}/scratch (the GitHub copy)", out)
 
-    def test_given_the_copy_missing_on_github_when_run_then_the_error_names_the_copy(self):
+    def run_with_github(self, github, args=()):
+        """main() with a fake Forgejo and the given fake GitHub: (forgejo, out, the SystemExit or None)."""
+        fakes = {"token": PerRepoForgejo(), "Bearer": github}
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR),                 mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True),                 mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]),                 mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            try:
+                rules.main(list(args))
+                exit_ = None
+            except SystemExit as raised:
+                exit_ = raised
+        return fakes["token"], out.getvalue(), exit_
+
+    def test_given_the_copy_missing_on_github_when_run_then_the_later_repositories_still_get_their_rules(self):
+        # A copy the push mirror has not made yet (404), or a private one on a free plan (403): each copy is
+        # reported, the run goes on with every later repository's Forgejo rules, and fails at the end.
         class Missing(FakeGitHub):
             def request(self, method, path, body=None):
+                self.calls.append((method, path, body))
                 raise rules.ApiError(method, path, 404, "Not Found")
 
-        fakes = {"token": FakeForgejo(), "Bearer": Missing()}
-        out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR), \
-                mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True), \
-                mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]), \
-                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+        github = Missing()
+        forgejo, out, exit_ = self.run_with_github(github)
+        for repo in ("shop-api", "storefront", "toolkit", "scratch", "notes"):
+            self.assertIn(("POST", f"/repos/{OWNER}/{repo}/branch_protections"), [(m, p) for m, p, _ in forgejo.writes()],
+                          repo)
+        for repo in ("shop-api", "storefront", "toolkit", "notes"):
+            self.assertIn(f"{repo} (GitHub copy {MIRROR}/{repo}): not applied: GET /repos/{MIRROR}/{repo}/rulesets"
+                          f"?per_page=100: 404 Not Found", out)
+        # The basic repository's copy is never asked.
+        self.assertNotIn(f"/repos/{MIRROR}/scratch/rulesets?per_page=100", [p for _, p, _ in github.calls])
+        self.assertIsInstance(exit_.code, str)
+        self.assertIn("the mirror tags were not applied to 4 GitHub copies", exit_.code)
+        self.assertIn("shop-api, storefront, toolkit, notes", exit_.code)
+
+    def test_given_github_refusing_one_copy_when_run_then_the_others_are_applied_and_it_exits_1(self):
+        class RefusesToolkit(FakeGitHub):
+            def request(self, method, path, body=None):
+                if f"/{MIRROR}/toolkit/" in path:
+                    self.calls.append((method, path, body))
+                    raise rules.ApiError(method, path, 403, "Upgrade to GitHub Pro or make this repository public")
+                return super().request(method, path, body)
+
+        github = RefusesToolkit()
+        _, out, exit_ = self.run_with_github(github)
+        # (One fake for every copy: the first creates `mirror tags`, the next ones find it and update it.)
+        written = [p.split("/")[3] for _, p, _ in github.writes()]
+        self.assertEqual(written, ["shop-api", "storefront", "notes"])
+        self.assertIn(f"toolkit (GitHub copy {MIRROR}/toolkit): not applied: GET", out)
+        self.assertIn("403 Upgrade to GitHub Pro", out)
+        self.assertIn("the mirror tags were not applied to 1 GitHub copy: toolkit", exit_.code)
+
+    def test_given_a_forgejo_error_when_run_then_it_still_stops_the_run(self):
+        # Only a copy's failure is carried on from: one of Forgejo's own still stops the run, as before.
+        class Failing(FakeForgejo):
+            def request(self, method, path, body=None):
+                if method != "GET" and "/storefront" in path:
+                    raise rules.ApiError(method, path, 500, "boom")
+                return super().request(method, path, body)
+
+        fakes = {"token": PerRepoForgejo(Failing), "Bearer": FakeGitHub()}
+        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR),                 mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True),                 mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]),                 mock.patch("sys.stdout", io.StringIO()):
             with self.assertRaises(SystemExit) as raised:
-                rules.main(["shop-api"])
-        self.assertIn(f"shop-api (GitHub copy {MIRROR}/shop-api)", str(raised.exception))
-        self.assertIn("404", str(raised.exception))
+                rules.main([])
+        self.assertTrue(str(raised.exception).startswith("storefront: "), raised.exception)
 
 
 class ApiTests(unittest.TestCase):

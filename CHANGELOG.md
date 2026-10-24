@@ -32,7 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   **`mirror tags`** (update and deletion, no bypass, administrators included; nothing on the copy's branches or
   settings), so the copies keep the tags as released and are what a moved or deleted Forgejo tag is repaired
   from; that needs a GitHub token with administration of the copies, and without one the Forgejo rules are still
-  applied and the run exits 1. A mirror push that would move or delete a version tag is refused, and Forgejo
+  applied and the run exits 1. A copy GitHub refuses (one the push mirror has not made yet, a private copy on a
+  free plan) is reported and skipped: the other repositories are still applied and the run exits 1 at the end. A mirror push that would move or delete a version tag is refused, and Forgejo
   shows the mirror sync failing: intended.
 - **Catalog fields for the git server:** `forge` (`type` `forgejo` or `github`, `url`, `jenkinsUser`, `developers`;
   a catalog without it is GitHub), `mirror` (Forgejo to GitHub), `repositories` (libraries, CI-only repositories and

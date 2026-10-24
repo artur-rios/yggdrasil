@@ -46,13 +46,16 @@ move and delete them: the accepted gap docs/setup.md (step 12) states. The tag-c
 release tag that moved or was deleted, and with a `mirror` every repository's GitHub copy
 (<mirror.github>/<repo>) gets the ruleset `mirror tags` (update and deletion, no bypass): the copies keep
 the tags as released, the record to repair Forgejo's from. That needs a GitHub token (GH_TOKEN, else `gh
-auth token`); without one the Forgejo rules are applied, the copies' are not, and the run exits 1. The
-copies get nothing else: no settings, no branch ruleset (the mirror force-pushes their branches).
+auth token`); without one the Forgejo rules are applied, the copies' are not, and the run exits 1. A copy
+GitHub refuses (404: the push mirror has not made it yet; 403: a private copy on a plan without rulesets)
+is reported and skipped, the run goes on with every later repository, and exits 1 at the end naming the
+copies. The copies get nothing else: no settings, no branch ruleset (the mirror force-pushes their
+branches); a basic repository's copy is not asked at all.
 
 Nothing is deleted on Forgejo. On GitHub one ruleset is: one named `default`, the ad-hoc protection
 of the default branch from before github/rulesets.py, as that script always did. A protection the
 model no longer has -- a release/* rule or a tag protection (GitHub: a `release tags` or `release tag
-creation` ruleset, on a copy `mirror tags`) of a repository turned `rules: basic`, a tag protection
+creation` ruleset) of a repository turned `rules: basic`, a tag protection
 whose pattern the catalog changed -- is left as it is, and the run notes it: deleting it is the owner's
 call.
 
@@ -416,15 +419,16 @@ def _github_steps(api, owner, r, dry_run):
 
 def _mirror_steps(api, mirror_owner, r, dry_run):
     """What applying one repository's GitHub copy (<mirror_owner>/<repo>) does, as lines, as it happens:
-    github_mirror_rulesets, matched by name and updated in place like _github_steps' rulesets."""
+    github_mirror_rulesets, matched by name and updated in place like _github_steps' rulesets. A basic
+    repository has none, and its copy is not even asked: it may not exist yet, or be a private one GitHub
+    refuses rulesets on (a free plan), which must cost nothing."""
     base = f"/repos/{mirror_owner}/{r.repo}"
     yield f"{mirror_owner}/{r.repo} (the GitHub copy)"
     payloads = github_mirror_rulesets(r)
-    existing = yield from _ruleset_steps(api, base, payloads, dry_run)
-    if MIRROR_TAGS in existing and not payloads:
-        yield f"  {_stale('ruleset', MIRROR_TAGS)}"
-    elif not payloads:
+    if not payloads:
         yield "  no version tags (rules: basic): nothing to apply"
+        return
+    yield from _ruleset_steps(api, base, payloads, dry_run)
 
 
 def _stale(kind, name):
@@ -667,7 +671,8 @@ the catalog's git server. --dry-run reads from the server but sends no write.
     GH_TOKEN         a token with administration of the GitHub copies (<mirror.github>/<repo>); else
                      `gh auth token` is used. Each copy gets the ruleset `mirror tags`: nobody moves or
                      deletes a version tag there. Without a token the Forgejo rules are still applied,
-                     the mirror tags are not, and the run exits 1.
+                     the mirror tags are not, and the run exits 1. A copy GitHub refuses (missing,
+                     or private on a free plan) is skipped with its error; the run goes on and exits 1.
 
 The tokens and the secret are never printed."""
 
@@ -712,7 +717,7 @@ def main(argv=None):
     forge = catalog_module.forge(catalog)
     secret = ""
     mirror, mirror_api = None, None
-    on_copy = [False]  # whether the steps running are a GitHub copy's, for the error message
+    copies_failed = []  # the repositories whose GitHub copy GitHub refused
     if forge["type"] == "forgejo":
         api, webhook, secret = _forgejo_connection(forge)
         if webhook is None:
@@ -731,11 +736,17 @@ def main(argv=None):
                       "(set GH_TOKEN, or log in with `gh auth login`)", flush=True)
 
         def steps(r):
-            on_copy[0] = False
             yield from _forgejo_steps(api, catalog["owner"], r, webhook, dry_run)
-            if mirror_api is not None:
-                on_copy[0] = True
+            if mirror_api is None:
+                return
+            # A copy GitHub refuses -- one the push mirror has not made yet (404), a private one on a free
+            # plan (403) -- is reported, and the run goes on: every later repository still gets its Forgejo
+            # rules. It fails at the end, naming the copies.
+            try:
                 yield from _mirror_steps(mirror_api, mirror["github"], r, dry_run)
+            except ApiError as error:
+                copies_failed.append(r.repo)
+                yield f"{r.repo} (GitHub copy {mirror['github']}/{r.repo}): not applied: {error}"
     else:
         api = Api(forge["api"], github_token(), "Bearer", GITHUB_HEADERS)
 
@@ -750,12 +761,16 @@ def main(argv=None):
                 print(line, flush=True)
         except ApiError as error:
             # A server may echo what it was sent: the webhook secret is masked like the token is.
-            where = f"{r.repo} (GitHub copy {mirror['github']}/{r.repo})" if on_copy[0] else r.repo
-            sys.exit(f"{where}: {str(error).replace(secret, '***') if secret else error}")
+            sys.exit(f"{r.repo}: {str(error).replace(secret, '***') if secret else error}")
 
     if mirror is not None and mirror_api is None:
         sys.exit(f"the mirror tags were not applied to the GitHub copies under {mirror['github']}: no GitHub token "
                  "(set GH_TOKEN, or log in with `gh auth login`, and run again); the Forgejo rules above were applied")
+    if copies_failed:
+        count = len(copies_failed)
+        sys.exit(f"the mirror tags were not applied to {count} GitHub {'copy' if count == 1 else 'copies'}: "
+                 f"{', '.join(copies_failed)} (each one's error is above: a copy the push mirror has not made yet, "
+                 "or a private copy on a plan without rulesets); the Forgejo rules above were applied")
 
 
 if __name__ == "__main__":
