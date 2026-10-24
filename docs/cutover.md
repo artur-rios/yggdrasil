@@ -27,7 +27,7 @@ flowchart LR
 | [1. Cloudflare](#1-cloudflare) | Cloudflare, your machine | Days before | 1 hour, plus name-server propagation |
 | [2. The dev machine](#2-the-dev-machine) | Dev machine | Days before | 2 hours |
 | [3. The apps machine](#3-the-apps-machine) | Apps machine | Days before | 1 hour, plus the env files |
-| [4. Rehearse the move](#4-rehearse-the-move) | Your machine, the old VPS | The days before | 1 hour |
+| [4. Rehearse the move](#4-rehearse-the-move) | Your machine, the old VPS, the apps machine | The days before | 2 hours |
 | [5. The window](#5-the-window) | Everywhere | One evening; production is off | 3 to 6 hours |
 | [6. Rollback](#6-rollback) | Everywhere | Only if the window goes wrong | 1 hour |
 | [7. Clean up](#7-clean-up) | GitHub, the old VPS | After the new apps machine has run a release | 30 min |
@@ -520,8 +520,9 @@ On the days before the window, with production still running from GitHub. Nothin
   Forgejo, which reads the issues, pull requests and releases with it. 7.3 revokes it.
 - **For the mirrors** (`MIRROR_GITHUB_TOKEN`): **Fine-grained tokens → Generate new token**, name
   `forgejo-mirror`, resource owner `artur-rios`, the longest expiry you accept (write its date down: on that day
-  every mirror stops), **All repositories**, repository permissions **Contents: Read and write** and **Workflows:
-  Read and write** (the mirror pushes commits that touch `.github/workflows`).
+  every mirror stops; 7.3 says how to give them a new one), **All repositories**, repository permissions
+  **Contents: Read and write** and **Workflows: Read and write** (the mirror pushes commits that touch
+  `.github/workflows`).
 
 On your machine:
 
@@ -578,10 +579,11 @@ python3 scripts/migrate.py verify --only <small repository>
 ```
 
 **Success looks like:** `<small repository>: imported`, exit `0`, and on Forgejo the issues, pull requests and
-releases are there (compare their counts with GitHub's by eye). `verify` prints `on Forgejo ok` and `default
-branch ok`; the other rows `FAIL` (`no push mirror`, `issues are on`, ...) because the rest of the move has not
-run: that is expected here, and it is what the window fixes. Note how long the import took: the window imports
-the others one after the other.
+releases are there (compare their counts with GitHub's by eye). `verify` prints `on Forgejo ok`, `visibility ok`
+and `default branch ok` (for a catalog repository whose GitHub default branch is not `develop`, that row is a
+`FAIL` until `rules.py` sets `develop` in 5.15); the other rows `FAIL` (`no push mirror`, `issues are on`, ...)
+because the rest of the move has not run: that is expected here, and it is what the window fixes. Note how long
+the import took: the window imports the others one after the other.
 **If it fails:** `import failed: ...` is Forgejo's own message. A client timeout (`timed out`) does not stop the
 migration on Forgejo's side: wait until the repository on Forgejo has its content (watch its page) before running
 import again. An import that left an empty repository is reported `exists but looks unfinished (empty): delete it
@@ -596,6 +598,11 @@ The push mirror is the one part of the move that cannot be tried without GitHub:
 of 0.3 is the right one): `prepare-github` deletes its rulesets, turns its issues off and rewrites its
 description, and from then on the mirror overwrites its GitHub side with Forgejo's.
 
+Give it a Dependabot file first, if it has none, so that the rehearsal carries a `prepare-github` commit to
+GitHub as the window does for most repositories: on GitHub, in the scratch repository's default branch, **Add
+file → Create new file**, `.github/dependabot.yml`, with the two lines `version: 2` and `updates: []`, **Commit
+changes** (an empty `updates` list: Dependabot opens nothing). Then, on your machine:
+
 ```bash
 python3 scripts/migrate.py import --only <scratch>
 python3 scripts/migrate.py prepare-github --only <scratch>
@@ -605,13 +612,23 @@ python3 scripts/migrate.py verify --only <scratch>
 
 Wait a minute after `mirrors` (it asks for one sync, which Forgejo runs in the background) before `verify`.
 
-**Success looks like:** `push mirror created`, `sync requested`; then verify's `push mirror ok synced <time>`
-and `refs ok`. Look at the mirror on Forgejo as well: the repository's **Settings → Repository → Mirror
-settings** lists it with its last update and no error.
+Before it makes a mirror, `mirrors` compares GitHub's branches and tags with Forgejo's: the mirror's first push
+deletes on GitHub whatever Forgejo lacks, so a repository where GitHub has a branch or tag Forgejo does not, a
+branch at a commit Forgejo does not have, or a tag at another commit, is refused, each ref named, and gets no
+mirror. Here Forgejo's copy is a minute old, so nothing is refused: the Dependabot commit puts Forgejo's default
+branch ahead of GitHub's, which takes nothing from GitHub.
+
+**Success looks like:** `deleted .github/dependabot.yml on <default branch>`, then `push mirror created`, `sync
+requested`; then verify's `push mirror ok synced <time>` and `refs ok`. On GitHub, the default branch's latest
+commit is `chore: stop dependabot; renovate replaces it`, by you. Look at the mirror on Forgejo as well: the
+repository's **Settings → Repository → Mirror settings** lists it with its last update and no error.
 **If it fails:**
-- **A branch or tag that only GitHub had is gone.** That is `--mirror` working, and intended: from the window on,
-  Forgejo is the record, and GitHub holds exactly what Forgejo has. (Against a Forgejo standing in for GitHub,
-  while writing this page, a branch and a tag made on the copy only were deleted by the next sync.)
+- **`the first mirror push would delete or move what only GitHub has: <ref> ...`**: the guard. Something reached
+  GitHub after the import (a push, a merged pull request). Delete the copy on Forgejo (Back out) and start this
+  step again. `mirrors --allow-prune` would make the mirror anyway and delete or move each ref it names: that is
+  `--mirror` working, and from the window on Forgejo is the record (against a Forgejo standing in for GitHub,
+  while writing this page, a branch made on the copy only was refused, then deleted by the first sync with
+  `--allow-prune`), but it is never what the window wants.
 - **The mirror's last error names `refs/pull/...` (`deny updating a hidden ref`, or similar).** Forgejo keeps
   each imported pull request's head as `refs/pull/<n>/head`, and GitHub refuses pushes there. Against a Forgejo
   stand-in, Forgejo 16 pushed the branches and no `refs/pull/*` and had no error, but GitHub was not there to
@@ -625,10 +642,10 @@ settings** lists it with its last update and no error.
 ### 4.6 The volumes, compared
 
 Each application's data is a Docker volume named `<project>_<volume>`, and the new deploys use the project
-`<application>-<environment>`. On the old VPS:
+`<application>-<environment>`. On the old VPS (its engine is rootful: `docker` there is `sudo docker`):
 
 ```bash
-docker volume ls --filter label=com.docker.compose.project \
+sudo docker volume ls --filter label=com.docker.compose.project \
   --format '{{.Name}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.volume"}}'
 ```
 
@@ -656,7 +673,76 @@ scp scripts/volumes.sh scripts/docker-engine.sh <old admin>@<old ip>:cutover-too
 
 `volumes.sh` sources `docker-engine.sh` from its own folder; the old VPS needs nothing else of the repository.
 
-### 4.7 Go or no go
+### 4.7 One volume, rehearsed
+
+The volumes go once, in the window, from the old VPS's rootful engine to `ygg`'s rootless one, and a database
+whose files come out with the wrong owners only shows when production does not start. Rehearse it now with one
+volume that holds a database and that nothing needs: one of an on-demand environment (`development` or
+`homologation`) from 4.6's list, stopped. Not production's, which runs until 5.3: `volumes.sh` refuses a volume
+that a running container mounts.
+
+On the old VPS, check that no running container mounts it (the first command prints nothing; else `ygg env stop
+<environment>` first), then export it alone, to a directory of its own (5.4 refuses a directory that holds an
+export, so not `/srv/cutover`), and hand the files to the admin:
+
+```bash
+sudo docker ps --filter volume=<volume> --format '{{.Names}}'
+sudo bash ~/cutover-tools/volumes.sh export /srv/cutover-rehearsal <volume>
+sudo chown -R "$USER": /srv/cutover-rehearsal
+```
+
+From your machine, copy it to `ygg` on the apps machine, as 5.5 does:
+
+```bash
+scp -3 -r <old admin>@<old ip>:/srv/cutover-rehearsal ygg@<apps ip>:
+```
+
+On the apps machine, as `ygg`, give it a scratch name first, so that it can never be taken for the volume a
+deploy will use: rename its `.tar`, and in `manifest.tsv` change the first three columns of its one line (the
+volume's name, its project, its Compose volume) to `rehearsal-scratch_data`, `rehearsal-scratch` and `data`,
+leaving the size and the checksum as they are (4.6 says why). Then import it:
+
+```bash
+cd ~/cutover-rehearsal && mv <volume>.tar rehearsal-scratch_data.tar && nano manifest.tsv
+/opt/yggdrasil/scripts/volumes.sh import ~/cutover-rehearsal
+```
+
+Then start the database image the application uses on it, once, and read it:
+
+```bash
+docker run -d --name ygg-rehearsal-db -v rehearsal-scratch_data:<data path> <image>
+sleep 15; docker logs ygg-rehearsal-db 2>&1 | tail -5
+docker exec ygg-rehearsal-db psql -U <user> -d <database> -c '\dt'
+```
+
+- `<image>` and `<data path>`: the database service's `image:` and the path its volume is mounted at, in the
+  application's stack file (4.6): the same image, so that the same version reads the files.
+- `<user>` and `<database>`: `POSTGRES_USER` and `POSTGRES_DB` (the user's name when it is not set) in that
+  environment's env file (3.4). No password is needed: the image asks for one only to create a database, and
+  `psql` inside the container connects over its socket, which the image trusts. A database of another kind: its
+  own image and client, the same way.
+
+Last, remove what the rehearsal made, on the apps machine as `ygg` and on the old VPS:
+
+```bash
+docker rm -f ygg-rehearsal-db && docker volume rm rehearsal-scratch_data && rm -r ~/cutover-rehearsal
+```
+```bash
+sudo rm -r /srv/cutover-rehearsal
+```
+
+**Success looks like:** `volumes: exported 1 volume(s) to /srv/cutover-rehearsal`; `volumes: creating
+rehearsal-scratch_data`, then `volumes: imported 1 volume(s) from /home/ygg/cutover-rehearsal`; the log ends
+with `database system is ready to accept connections` (after `Skipping initialization`: it found its data), and
+`\dt` lists the application's tables.
+**If it fails:** `used by a running container, stop it first`: that environment is on; stop it. `nothing
+imported: ...` names the file or the manifest line that is wrong: a renamed `.tar` must be the manifest's first
+column with `.tar` after it. The database refuses to start (`Permission denied`, `wrong ownership`, `could not
+open file`): the owners of its files did not come through, and the window's import would break every database
+the same way. **Stop and report it**; the window does not start.
+**Back out:** the last two commands; the old VPS's volume was only read.
+
+### 4.8 Go or no go
 
 The window starts only when all of these hold:
 
@@ -664,6 +750,10 @@ The window starts only when all of these hold:
 - [ ] `inventory` exits `0`: no open pull request anywhere.
 - [ ] 2.3 to 2.7 and 3.3 to 3.5 looked like their success lines.
 - [ ] 4.4 and 4.5 worked, and the mirror had no `refs/pull` error.
+- [ ] 4.4's rehearsal copy is deleted on Forgejo (and 4.5's, with its mirror): one left there reads `already
+  imported` in 5.11 and misses every commit made on GitHub since (5.13 would then refuse it).
+- [ ] 4.7's volume started on the apps machine with its data readable, and the rehearsal's volume, container and
+  files are removed.
 - [ ] You know how long an import takes, and the window is long enough for 4.3's `<N>` of them.
 - [ ] The tokens of 0.5 are in your password manager.
 
@@ -671,8 +761,8 @@ The window starts only when all of these hold:
 
 Rollout step 5, in one sitting. Production is off from 5.3 to 5.17. The data and the repositories move together,
 since the new deploy agent cannot use the new controller until the repositories are on Forgejo. From 5.3 on,
-nobody merges, pushes to GitHub, or deploys: a commit pushed to GitHub after 5.11 is overwritten by the first
-mirror push of 5.13.
+nobody merges, pushes to GitHub, or deploys: a commit pushed to GitHub after 5.11 is one Forgejo's copy lacks,
+and 5.13 refuses that repository's mirror rather than let its first push delete it (`--allow-prune` would).
 
 ### 5.1 Announce
 
@@ -709,7 +799,7 @@ On the old VPS, as its admin, with its own checkout (the old release):
 ```bash
 for environment in $(python3 /opt/yggdrasil/scripts/catalog.py environments); do ygg env stop "$environment" --force; done
 /opt/yggdrasil/scripts/platform.sh down
-docker ps --format '{{.Names}}'
+sudo docker ps --format '{{.Names}}'
 ```
 
 - `ygg env stop <environment> --force`: every application of the environment, production included. An
@@ -717,10 +807,41 @@ docker ps --format '{{.Names}}'
 - `platform.sh down`: Traefik, the old controller, the agent and the rest. The old controller must not run:
   the mirror pushes of 5.13 are pushes to `develop` on GitHub, which it would deploy.
 
-**Success looks like:** `docker ps` prints nothing (or only containers that are not yggdrasil's).
-**If it fails:** `docker stop <name>` for what is left.
+Then GitHub's own automation. The first mirror push of 5.13 puts the Dependabot commit of 5.12 on the default
+branch of every repository that had the file, which is most of them: a push, so every GitHub Actions workflow
+that runs `on: push` there starts, publishing and deploying ones included. And a scheduled workflow that commits
+to GitHub would keep making commits Forgejo does not have: each one fails `verify`'s `refs` row until the next
+sync overwrites it. List both kinds, from 5.2's inventory, on your machine (`gh` reads `GH_TOKEN`):
+
+```bash
+for repo in $(awk -F'\t' 'NF == 5 { print $1 }' ~/cutover-log/inventory.txt); do
+  for file in $(gh api "repos/artur-rios/$repo/contents/.github/workflows" --jq '.[].path' 2>/dev/null); do
+    body=$(gh api -H 'Accept: application/vnd.github.raw' "repos/artur-rios/$repo/contents/$file")
+    grep -qE '^on:.*\bpush\b|^[[:space:]]+push:|cron:' <<<"$body" && echo "$repo $file"
+  done
+done | tee ~/cutover-log/workflows.txt
+```
+
+Each line is a repository's workflow on its default branch that runs on a push (`on: push`, `on: [push, ...]`,
+or `push:` under `on:`) or on a schedule (`cron:`). Open each one: disable every one that publishes, deploys or
+releases on a push, and every scheduled one that commits or pushes to GitHub. One that only builds and tests may
+stay. Disable them with this helper, which also writes down what it disabled, for a rollback:
+
+```bash
+disable() { gh workflow disable "$(basename "$2")" -R "artur-rios/$1" && echo "$1 $2" >> ~/cutover-log/workflows-disabled.txt; }
+disable <repo> .github/workflows/<file>      # one line of workflows.txt, for each to disable
+```
+
+They stay disabled after the window: what they did moves to Jenkins with each repository (rollout steps 6 and 7).
+
+**Success looks like:** `sudo docker ps` prints nothing (or only containers that are not yggdrasil's);
+`workflows.txt` lists the workflows, and `gh workflow list -R artur-rios/<repo> --all` shows each one you disabled
+as `disabled_manually`.
+**If it fails:** `sudo docker stop <name>` for what is left. A `gh` error naming `HTTP 403`: `GH_TOKEN` lacks the
+`repo` scope (4.1).
 **Back out:** `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start production` (and the on-demand
-environments that were on).
+environments that were on); the workflows: `while read -r repo file; do gh workflow enable "$(basename "$file")"
+-R "artur-rios/$repo"; done < ~/cutover-log/workflows-disabled.txt`.
 
 ### 5.4 Export the volumes
 
@@ -728,7 +849,7 @@ On the old VPS, the only place this runs as root (its engine is rootful). The vo
 line: every volume Compose made, but the platform's own `yggdrasil_*` (4.6):
 
 ```bash
-docker volume ls --filter label=com.docker.compose.project --format '{{.Name}}' | grep -v '^yggdrasil_' > ~/cutover-volumes.txt
+sudo docker volume ls --filter label=com.docker.compose.project --format '{{.Name}}' | grep -v '^yggdrasil_' > ~/cutover-volumes.txt
 cat ~/cutover-volumes.txt
 sudo bash ~/cutover-tools/volumes.sh export /srv/cutover $(cat ~/cutover-volumes.txt)
 ```
@@ -743,7 +864,7 @@ SHA-256. The files are root's, mode `600`.
 
 **Success looks like:** `volumes: exporting <volume>` for each, then `volumes: exported N volume(s) to
 /srv/cutover`, with N the number of application volumes of 4.6.
-**If it fails:** `used by a running container, stop it first: ...`: `docker stop` it (5.3 missed it), run again.
+**If it fails:** `used by a running container, stop it first: ...`: `sudo docker stop` it (5.3 missed it), run again.
 `/srv/cutover/manifest.tsv exists`: a finished export is there; use it, or move it away. A failed run leaves no
 `manifest.tsv` and no half file: run it again.
 **Back out:** the volumes were only read. `sudo rm -r /srv/cutover` once you no longer need the copy (keep it
@@ -858,7 +979,10 @@ python3 - <<'EOF'
 import json, os, pathlib, subprocess
 def gh(path):
     done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
-    return json.loads(done.stdout) if done.returncode == 0 else None
+    if done.returncode == 0:
+        return json.loads(done.stdout)
+    print(f"  error: {path}: {(done.stderr or done.stdout).strip()}")
+    return None
 log = pathlib.Path(os.path.expanduser("~/cutover-log/github-before"))
 log.mkdir(exist_ok=True)
 for repo in json.load(open(log.parent / "github-before.json", encoding="utf-8")):
@@ -887,9 +1011,15 @@ stash pop`.)
   has `"rulesets_listed": false` and none to keep.
 
 **Success looks like:** `github-before.json` lists 4.3's `<N>` repositories, the loop prints a line for each one
-that is not archived, the push goes through, and `python3 scripts/catalog.py forge type` prints `forgejo`.
-**If it fails:** a refused push names the rule; you are the repository's administrator. A `0 rulesets` line for
-a public repository that has some: `GH_TOKEN` cannot read them (the `repo` scope, 4.1); fix it and run again.
+that is not archived, the push goes through, and `python3 scripts/catalog.py forge type` prints `forgejo`. Two
+kinds of `error:` line above a repository's line are expected: `.../automated-security-fixes: ... (HTTP 404)` (a
+repository without the feature: `null`), and `.../rulesets...: ... (HTTP 403)` for a **private** repository on a
+plan without rulesets (`"rulesets_listed": false`).
+**If it fails:** a refused push names the rule; you are the repository's administrator. Any other `error:` line
+(a `403` on a public repository's rulesets, a `401`, a `5xx`) means that repository's snapshot is incomplete:
+its rulesets could not be read, so a rollback could not put them back. Fix the cause (`GH_TOKEN` and its `repo`
+scope, 4.1) and run the snapshot again before going on. A `0 rulesets` line for a public repository that has
+some, without an error: the same.
 **Back out:** `git revert --no-edit "$(cat ~/cutover-log/catalog-commit.txt)" && git push origin main`.
 
 ### 5.10 The repository move: the shell has everything
@@ -933,7 +1063,10 @@ GitHub and run again.
 
 ### 5.12 Prepare the GitHub copies
 
+First the dry run, over every repository: it reads everything and writes nothing. Read it, then the real run:
+
 ```bash
+python3 scripts/migrate.py --dry-run prepare-github | tee ~/cutover-log/prepare-github-dry-run.txt
 python3 scripts/migrate.py prepare-github | tee ~/cutover-log/prepare-github.txt
 ```
 
@@ -943,9 +1076,12 @@ ruleset but `mirror tags` is deleted (they would refuse the mirror's pushes), is
 description becomes `Mirror of https://git.techcraftsmen.net/artur-rios/<repo> — contribute there`, and
 automated security fixes are switched off.
 
-**Success looks like:** for each repository its lines (`deleted .github/dependabot.yml on develop` or `no
-dependabot file`; `deleted ruleset '...'`; `issues are off and the description is set`; ...) or `already
-prepared on GitHub`, exit `0`. Two kinds of note are expected and are not failures:
+**Success looks like:** the dry run: `would delete .github/dependabot.yml on develop` (or `no dependabot file`),
+`would delete ruleset '...'`, `would set issues off and the description`, ... for each repository, exit `0`, and
+no repository you did not expect (a `not on Forgejo` is 5.11 first). The real run: for each repository its lines
+(`deleted .github/dependabot.yml on develop` or `no dependabot file`; `deleted ruleset '...'`; `issues are off
+and the description is set`; ...) or `already prepared on GitHub`, exit `0`. Two kinds of note are expected and
+are not failures:
 - `archived on GitHub: left as it is`: an archived repository takes no setting on GitHub. It is imported, gets
   no mirror, and `verify` says `archived on GitHub: Forgejo only`.
 - `rulesets not available here: nothing to delete`: a private repository on a plan without rulesets.
@@ -955,20 +1091,34 @@ touched on GitHub: run again.
 
 ### 5.13 The push mirrors
 
+The dry run first, over every repository, then the real run:
+
 ```bash
+python3 scripts/migrate.py --dry-run mirrors | tee ~/cutover-log/mirrors-dry-run.txt
 python3 scripts/migrate.py mirrors | tee ~/cutover-log/mirrors.txt
 ```
 
 Each repository gets a push mirror to `https://github.com/artur-rios/<repo>.git`: every branch and tag, on every
-commit and every 8 hours, with the mirror token, and one sync is asked for at once. The first sync carries the
-Dependabot deletion to GitHub (a push to that branch there: its workflows run as for any push) and deletes on
-GitHub every branch and tag Forgejo does not have.
+commit and every 8 hours, with the mirror token, and one sync is asked for at once. The first sync pushes with
+`--mirror`: it carries the Dependabot deletion to GitHub, a push to the default branch there that starts its `on:
+push` workflows (5.3 disabled the ones that publish or deploy), and it would delete on GitHub every branch and
+tag Forgejo does not have. So before it makes a repository's mirror, `mirrors` compares GitHub's branches and
+tags with Forgejo's (the dry run too: it only reads), and **refuses a repository** where GitHub has a branch or
+tag Forgejo lacks, a branch at a commit Forgejo does not have, or a tag at another commit. After 5.3's freeze
+there is none; a refusal is a push that reached GitHub after 5.11, or a copy left from 4.4.
 
-**Success looks like:** `push mirror created` and `sync requested` for each (`archived on GitHub: no mirror` for
-the archived ones), exit `0`.
-**If it fails:** `could not make the push mirror: ...`: Forgejo's message; a `401`/`403` from GitHub later shows
-in `verify` as the mirror's last error, and is the mirror token (4.1). Run again: a mirror that exists is `already
-there`, one that never synced gets its sync asked for again.
+**Success looks like:** the dry run: `would create a push mirror {...}` (the password `***`) and `would request
+the sync` for each, exit `0`. The real run: `push mirror created` and `sync requested` for each (`archived on
+GitHub: no mirror` for the archived ones), exit `0`.
+**If it fails:** `the first mirror push would delete or move what only GitHub has: <ref> only on GitHub; <ref> at
+<sha> on GitHub, a commit Forgejo does not have`: that repository gets no mirror; the others go on. Find who
+pushed it; bring it to Forgejo (a stale copy: delete it on Forgejo and `import --only <repo>` again, then
+`prepare-github --only <repo>`), and run `mirrors` again. Only if what it names must go, `python3
+scripts/migrate.py mirrors --only <repo> --allow-prune` makes the mirror anyway, and its first push deletes or
+moves each ref named (the line says which). `could not make the push mirror: ...`: Forgejo's message; a
+`401`/`403` from GitHub later shows in `verify` as the mirror's last error, and is the mirror token (4.1). Run
+again: a mirror that exists and has pushed is `already there`; one that never synced is compared again, then
+gets its sync asked for.
 **Back out:** [Rollback](#6-rollback), step 1: delete every push mirror first. Stopping Forgejo only pauses them:
 the next start pushes Forgejo's state over GitHub again.
 
@@ -1022,7 +1172,8 @@ python3 scripts/migrate.py verify | tee ~/cutover-log/verify.txt
 ```
 
 Read only. One row per check, tab-separated: repository, check, `ok` or `FAIL`, detail; then `<N> repositories,
-<K> checks failed`.
+<K> checks failed`. Each repository has `on Forgejo`, `default branch`, `visibility`, `push mirror`, `refs`,
+`rulesets` and `issues`; a catalog repository also `webhook` and `collaborators`.
 
 **Success looks like:** `<N> repositories, 0 checks failed` (4.3's `<N>`), exit `0`. Only then do pushes go to
 Forgejo. Rows that are `ok` with a note: `github ok archived on GitHub: Forgejo only`, and `rulesets ok rulesets
@@ -1032,15 +1183,35 @@ not available here`.
 | Check | Means | Back to |
 |---|---|---|
 | `on Forgejo` | not imported | 5.11 |
-| `default branch` | Forgejo's differs from GitHub's | a catalog repository: 5.15; another: its **Settings → Branches** on Forgejo |
-| `push mirror` | `no push mirror`, `never synced`, or `last error: ...` | 5.13; for an error, read it (4.5); a sync can be asked by hand: **Settings → Repository → Mirror settings → Synchronize now** |
-| `refs` | a branch or tag differs, or is on one side only | wait a minute and run again (the first sync may still run); `only on GitHub` after that is a push to GitHub during the window, which the next sync deletes: get it from whoever pushed it |
-| `rulesets` | `missing: mirror tags` or `unexpected: ...` | 5.15, or 5.12 |
+| `default branch` | a catalog repository's is not `develop` (`wants develop`); another's differs from GitHub's | a catalog repository: 5.15 (`rules.py` sets `develop`); another: its **Settings → Branches** on Forgejo |
+| `visibility` | `public on Forgejo, private on GitHub` (or the other way) | the copy's **Settings → Repository → Visibility** on Forgejo, to GitHub's; a private repository shown public was readable by anyone signed in since 5.11: say so in 5.22 |
+| `push mirror` | `no push mirror`, `never synced`, `last error: ...`, or `another push mirror to ...` | 5.13; for an error, read it (4.5); a sync can be asked by hand: **Settings → Repository → Mirror settings → Synchronize now**; another mirror: delete it there, unless you made it on purpose |
+| `refs` | a branch or tag differs, or is on one side only (every branch and tag is compared); `nothing compared` | wait a minute and run again (the first sync may still run); `only on GitHub` after that is a push to GitHub during the window, which the next sync deletes: get it from whoever pushed it; `nothing compared`: neither side listed a branch of a copy that has some: run again, and report it if it stays |
+| `rulesets` | `missing: mirror tags`, `unexpected: ...`, or `mirror tags is disabled, not active` | 5.15, or 5.12; one not active: its **Settings → Rules → Rulesets** on GitHub, **Enforcement status: Active** |
 | `issues` | `issues are on` | 5.12 |
-| `webhook` | no webhook, or `FORGE_JENKINS_URL not set` | 5.15, with 5.10's variables |
+| `webhook` | no webhook, `not an active gitea hook`, or `FORGE_JENKINS_URL not set` | 5.15, with 5.10's variables; a hook that is inactive or of another type: delete it on Forgejo (**Settings → Webhooks**), then 5.15 makes it again |
 | `collaborators` | a bot is missing, or has another permission | 5.14 |
 
-**Back out:** read only.
+Then the protections, which `verify` does not read: `rules.py` again, as a dry run, must find nothing to change
+on Forgejo.
+
+```bash
+python3 scripts/rules.py --dry-run | tee ~/cutover-log/rules-after.txt \
+  | awk '/^[^ ]/ { copy = /\(the GitHub copy\)$/ || /\(GitHub copy /; next } !copy && !/ unchanged/'
+```
+
+`rules.py` prints a repository's Forgejo side under its name (`artur-rios/<repo>`), then its GitHub copy's under
+`artur-rios/<repo> (the GitHub copy)`. The `awk` keeps the Forgejo side's lines that do not say `unchanged`.
+
+**Success looks like:** the `awk` prints nothing: on Forgejo every line is `repository settings unchanged`,
+`protection of branch '...' unchanged`, `tag protection 'v*' unchanged` or `Jenkins webhook unchanged (...)`.
+Under each copy, `would update ruleset 'mirror tags'` is expected: `rules.py` rewrites that ruleset on every run
+without comparing it. The run's own exit is `1` when 5.15's was (the private copies on a plan without rulesets).
+**If it fails:** a `would ...` line names what differs on Forgejo (a protection changed by hand since 5.15, a
+bot dropped from a list): run 5.15's real `rules.py` again, then this check. A `note: ...` line is a protection
+the model does not have: look at it on Forgejo, and delete it there if it is stale.
+
+**Back out:** read only, both.
 
 From here, pushes go to Forgejo.
 
@@ -1185,12 +1356,12 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
 
 | Up to | What changed | Undone by | Not undone |
 |---|---|---|---|
-| 5.3 to 5.7 | The old VPS is stopped; its volumes were read; copies on the apps machine | Starting the old VPS (step 5 below) | Nothing |
+| 5.3 to 5.7 | The old VPS is stopped; its volumes were read; copies on the apps machine; GitHub workflows disabled | Starting the old VPS (step 6 below); the workflows enabled again (step 3) | Nothing |
 | 5.8 | DNS points at the apps machine | `cloudflare_dns.py --apps <old ip>`, and the records deleted by hand in 5.8 put back from 1.5's zone export | A record that was DNS only before stays proxied until you switch it back by hand |
 | 5.9 | `catalog.yaml` on `main` names Forgejo | Reverting the commit | Nothing |
 | 5.11 | Copies on Forgejo | Nothing to undo on GitHub | The copies stay on Forgejo; delete them before trying the window again, or they are `already imported` and stale |
 | 5.12 | GitHub: rulesets deleted, issues off, the description, automated security fixes off. Forgejo: the Dependabot commits | 5.9's snapshot (`github-before.json`, `github-before/`): descriptions, issues, every ruleset and the security fixes that were on; a revert per repository | A ruleset 5.9 could not read (a private repository on a plan without them has none) |
-| 5.13 | GitHub has Forgejo's state: the Dependabot commits, and no branch or tag that only GitHub had | Deleting every push mirror (step 1; stopping Forgejo only pauses them); the commits are reverted | **Branches and tags that only GitHub had are deleted.** After a frozen window there are none, but nothing brings one back but a clone that has it |
+| 5.13 | GitHub has Forgejo's state: the Dependabot commits | Deleting every push mirror (step 1; stopping Forgejo only pauses them); the commits are reverted | A branch or tag that only GitHub had, only where `--allow-prune` let it go: `mirrors` refuses every other such repository. Nothing brings one back but a clone that has it |
 | 5.14, 5.15 | Forgejo collaborators and protections; `mirror tags` on the GitHub copies | Nothing to undo for the old controller: `mirror tags` only stops a version tag being moved or deleted | |
 | 5.17 on | Production ran on the apps machine | Carrying its volumes back, the same way in the other direction | **What production wrote on the new machine is lost** unless you carry it back. **Pull requests and issues opened on Forgejo stay on Forgejo.** |
 
@@ -1205,7 +1376,10 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    forgejo=https://git.techcraftsmen.net
    api() { printf 'header = "Authorization: token %s"\n' "$FORGE_TOKEN" | curl -fsS --config - "$@"; }
    for repo in $(awk -F'\t' 'NF == 5 { print $1 }' ~/cutover-log/inventory.txt); do
-     for name in $(api "$forgejo/api/v1/repos/artur-rios/$repo/push_mirrors" \
+     if ! listed=$(api "$forgejo/api/v1/repos/artur-rios/$repo/push_mirrors" 2>&1); then
+       echo "$repo skipped: $listed"; continue
+     fi
+     for name in $(printf '%s' "$listed" \
          | python3 -c 'import json, sys; print("\n".join(m["remote_name"] for m in json.load(sys.stdin)))'); do
        api -X DELETE -o /dev/null -w "$repo $name %{http_code}\n" "$forgejo/api/v1/repos/artur-rios/$repo/push_mirrors/$name"
      done
@@ -1214,10 +1388,13 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    - `api`: `curl` with the token in a header it reads from standard input, never in its arguments; `-f` makes an
      error answer fail.
    - `GET .../push_mirrors` lists a repository's push mirrors, each with its `remote_name`; `DELETE
-     .../push_mirrors/<remote_name>` removes one. A repository with none (an archived one) prints nothing.
+     .../push_mirrors/<remote_name>` removes one. A repository with none (an archived one) prints nothing. One
+     whose list fails is skipped with a line, and the loop goes on: a repository the window never imported
+     (`skipped: curl: (22) ... 404`) has no mirror to delete.
 
-   Success: one line `<repository> <remote_name> 204` per mirror, and running the loop again prints nothing. If it
-   fails: `curl: (22) ... 403` on every repository is the token (an empty one too: `read` was not answered).
+   Success: one line `<repository> <remote_name> 204` per mirror, and running the loop again prints only the
+   `skipped: ... 404` lines of the repositories Forgejo does not have. If it fails: `skipped: curl: (22) ... 403`
+   (or `401`) on every repository is the token (an empty one too: `read` was not answered); fix it and run again.
 
    Then as `ygg`, `/opt/yggdrasil/scripts/platform.sh down` on the dev machine (no deploy, no Jenkins) and `ygg env
    stop production --force` on the apps machine. **Start Forgejo again only after the mirrors are gone**, or with mirroring
@@ -1246,6 +1423,10 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
      git push <remote> <branch>
      ```
      `<remote>` is GitHub's: `github` in a clone 5.19 switched to Forgejo, `origin` in one it did not.
+   - the workflows 5.3 disabled (5.3 reached), on your machine:
+     ```bash
+     while read -r repo file; do gh workflow enable "$(basename "$file")" -R "artur-rios/$repo"; done < ~/cutover-log/workflows-disabled.txt
+     ```
 4. **Rulesets** (5.12 reached), every repository's, as 5.9 kept them:
    ```bash
    python3 - <<'EOF'
@@ -1253,16 +1434,24 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    fields = ("name", "target", "enforcement", "bypass_actors", "conditions", "rules")
    for path in sorted(pathlib.Path(os.path.expanduser("~/cutover-log/github-before")).glob("*.json")):
        for ruleset in json.loads(path.read_text(encoding="utf-8"))["rulesets"]:
+           if ruleset is None:
+               print(f"{path.stem}: a ruleset 5.9 could not read: NOT back")
+               continue
            body = {key: ruleset[key] for key in fields if key in ruleset}
-           subprocess.run(["gh", "api", "-X", "POST", f"repos/artur-rios/{path.stem}/rulesets", "--input", "-",
-                           "--silent"], input=json.dumps(body), text=True, check=True)
+           try:
+               subprocess.run(["gh", "api", "-X", "POST", f"repos/artur-rios/{path.stem}/rulesets", "--input", "-",
+                               "--silent"], input=json.dumps(body), text=True, check=True, capture_output=True)
+           except subprocess.CalledProcessError as error:
+               print(f"{path.stem}: ruleset '{body['name']}' NOT back: {(error.stderr or error.stdout).strip()}")
+               continue
            print(f"{path.stem}: ruleset '{body['name']}' back")
    EOF
    ```
    Success: a line for each ruleset 5.9 printed; each repository's **Settings → Rules → Rulesets** lists them
    again, and the `mirror tags` that `rules.py` made (it can stay: it only stops a version tag being moved or
-   deleted). A ruleset that exists already is refused with an error naming it: run the loop for the other
-   repositories (`--only` is not there: move that file out of `github-before/`).
+   deleted). A ruleset GitHub refuses is a `NOT back: ...` line with GitHub's words, and the loop goes on with the
+   next one: one that exists already (an `HTTP 422` that says its name is taken, from an earlier run of the loop) is
+   back, and needs nothing; any other: put it back by hand from its file in `github-before/`.
 
    Without 5.9's snapshot, `rules.py` with the catalog reverted (no `forge` block: GitHub) puts back the catalog
    repositories' rulesets, not quite as they were ([CHANGELOG](../CHANGELOG.md#upgrading-an-existing-github-installation-to-the-pipeline),
@@ -1293,9 +1482,12 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    ```
    Success: no error; a repository's page shows its old description and its Issues tab again, and **Settings →
    Code security** shows automated security fixes on where they were.
-6. **Start the old VPS**: `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start production`. But first, if
-   production took writes on the new machine that you want to keep, carry its volumes back, the way they came. On
-   the apps machine, as `ygg`, with production stopped (step 1):
+6. **Carry production's data back, then start the old VPS.** The data comes first: nothing starts on the old VPS
+   until its volumes hold what they should.
+
+   **Only if production took writes on the new machine that you want to keep** (5.17 reached): carry its volumes
+   back, the way they came; else go to the start below. On the apps machine, as `ygg`, with production stopped
+   (step 1):
    ```bash
    /opt/yggdrasil/scripts/volumes.sh export ~/carry-back $(cut -f1 ~/cutover/manifest.tsv)
    ```
@@ -1314,9 +1506,13 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    sudo bash ~/cutover-tools/volumes.sh import ~/carry-back
    ```
    Success: `volumes: <volume> exists, empty, with the same labels: filling it` for each (`creating <volume>` for one
-   the old VPS never had), then `volumes: imported N volume(s)`. Then start the old VPS as above. The old data is still in `/srv/cutover`, if this goes wrong.
+   the old VPS never had), then `volumes: imported N volume(s)`. The old data is still in `/srv/cutover`, if this
+   goes wrong.
+
+   **Then start the old VPS**, on it as its admin: `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start
+   production` (and the on-demand environments that were on).
 7. **Check**: the old console shows production up; a push to an application's `develop` on GitHub deploys it.
-8. **Tell the users**, and write down where it went wrong before trying again. A new attempt starts at 4.7, with
+8. **Tell the users**, and write down where it went wrong before trying again. A new attempt starts at 4.8, with
    the Forgejo copies deleted first (each one's **Settings → Danger Zone**), which needs Forgejo running: only once
    step 1 has deleted every push mirror.
 
@@ -1363,6 +1559,24 @@ the Cloudflare token, which `acme.env` uses. For a later `rules.py` run, make a 
 
 **Success looks like:** neither is listed any more.
 **Back out:** make new ones.
+
+**The mirror token, later.** Before the expiry date you wrote down in 4.1, or at once if it leaked, give the
+mirrors a new token. A new token reaches no existing mirror: Forgejo keeps each mirror's credentials with the
+mirror (in the repository's git configuration on disk), and its API cannot change them. So the mirrors are made
+again. On your machine, in your clone of yggdrasil (its `main` has the catalog's `forge` and `mirror` blocks
+since 5.9), with a Forgejo owner token made as 2.4 says (7.3 deleted the window's) and a GitHub token that lists
+your private repositories (4.1's classic kind, or `gh auth login`):
+
+1. Make the new fine-grained token as 4.1 does (same name with a date, same permissions).
+2. In one shell: `FORGE_TOKEN`, `GH_TOKEN`, and `MIRROR_GITHUB_TOKEN` (the new one) with `read -rs` and
+   `export`, and `export MIRROR_GITHUB_USER=artur-rios FORGE_JENKINS_URL=https://jenkins.techcraftsmen.net`, as
+   5.2 does. Then `python3 scripts/migrate.py inventory > ~/cutover-log/inventory.txt` (its exit does not matter
+   here: the delete loop reads the names).
+3. [Rollback](#6-rollback) step 1's first block, the loop alone (not what follows it): it deletes every push
+   mirror. Pushes to Forgejo are not mirrored from now until step 4; its first sync carries them.
+4. `python3 scripts/migrate.py mirrors`: each repository gets its mirror again, with the new token. Its check
+   before the first push passes, since GitHub holds Forgejo's state.
+5. A minute later, `python3 scripts/migrate.py verify`: `0 checks failed`. Then delete the old token on GitHub.
 
 ### 7.4 Every clone
 

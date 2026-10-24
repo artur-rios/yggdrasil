@@ -144,11 +144,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   to the two rootless machines, with Forgejo as the git server and GitHub as a push-mirrored copy. In order, each
   step with its commands, what success looks like and how to back out: Cloudflare (both zones, the token, SSL Full
   (strict) and the cache rule by hand, the records), the dev and apps machines, a rehearsal (one import, one mirror,
-  the volumes compared), the maintenance window (the volumes, the DNS switch, the repositories: `inventory`,
+  the volumes compared, one database volume carried and started), the maintenance window (the volumes, the DNS switch, the repositories: `inventory`,
   `import`, `prepare-github`, `mirrors`, `collaborators`, `rules.py`, `verify` as the gate), what can and cannot be
   rolled back at each point, the clean-up, and the checks left to the owner. It drives the tools made for the move:
-  `scripts/migrate.py` (the repositories, idempotent, with `--dry-run`), `scripts/cloudflare_dns.py` (the records of
-  both zones), `scripts/volumes.sh` (Docker volumes carried from a rootful engine to a rootless one, checked by size
+  `scripts/migrate.py` (the repositories, idempotent, with `--dry-run`; `mirrors` refuses a repository whose first
+  `--mirror` push would delete or move a branch or tag only GitHub has, unless `--allow-prune`),
+  `scripts/cloudflare_dns.py` (the records of both zones), `scripts/volumes.sh` (Docker volumes carried from a rootful engine to a rootless one, checked by size
   and SHA-256) and `scripts/prove-machine.sh` (the rootless setup proved on a real machine). The Forgejo token for
   the move needs `read:user` besides `write:repository`: `migrate.py collaborators` looks the bot accounts up, and
   Forgejo refuses that to a token without it. [docs/hosts.md](docs/hosts.md)'s restore and upgrade steps now run the
