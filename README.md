@@ -81,8 +81,12 @@ gitGraph
 - `develop` and `main` only change through pull requests. Required checks: `branch-policy`, the application's checks (the catalog's `checks`, reported by Jenkins; `actionsChecks` are GitHub Actions jobs, required on `develop`), and on `main` one `deploy/<environment>` status per release environment.
 - Into `develop` go only `feature/*`, `fix/*` and `renovate/*` branches cut from `develop`.
 - Into `main` go only `release/x.y.z` branches that are snapshots of `develop`, for a version not yet tagged.
-- `v*` tags can't be moved or deleted.
-- Repository admins (on Forgejo, the owner) can bypass all of it, for emergencies.
+- Version tags (`v*`, or an owner-tagged repository's own pattern) are created only by Jenkins (applications) or the
+  owner. On GitHub, and on a Forgejo installation's GitHub copies, nobody can move or delete them, admins
+  included. On Forgejo whoever creates them can also move or delete them (an accepted gap): the daily
+  `tag-check` job fails naming any that moved or were deleted, and they are repaired from the GitHub copy
+  ([setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
+- Repository admins (on Forgejo, the owner) can bypass the branch rules, for emergencies; not the tag rules.
 
 ### What a release does
 
