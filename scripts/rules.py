@@ -27,7 +27,8 @@ Per repository the model is:
                  environment instead of actionsChecks; merged only by the Jenkins user for an
                  application, by the owner for a repository that tags its own releases
   release/*      only the owner pushes
-  version tags   created by the Jenkins user (applications) or the owner (owner-tag repositories)
+  version tags   created by the Jenkins user (applications) or the owner (owner-tag repositories); on
+                 GitHub, and on a Forgejo mirror's GitHub copies, moved or deleted by nobody
   yggdrasil.yml  protected on develop (Forgejo): only the owner merges a change to it (what Jenkins
                  runs: images, commands, the credentials a check binds); the Jenkinsfile too, which
                  Jenkins no longer reads but a repository may still carry
@@ -37,11 +38,23 @@ rule. It still gets the repository settings (default branch develop, head branch
 merge; on Forgejo the merge styles too) and, on Forgejo when configured, the Jenkins webhook: Jenkins
 builds it too.
 
+Version tags on GitHub: the ruleset `release tags` (update and deletion) has no bypass at all, so not
+even the owner, an administrator, moves or deletes one; an owner-tagged repository also gets `release
+tag creation` (creation, which administrators bypass: the owner creates those tags). On Forgejo the tag
+protection is one list of who may change a matching tag in any way, so whoever creates the tags can also
+move and delete them: the accepted gap docs/setup.md (step 12) states. The tag-check Jenkins job finds a
+release tag that moved or was deleted, and with a `mirror` every repository's GitHub copy
+(<mirror.github>/<repo>) gets the ruleset `mirror tags` (update and deletion, no bypass): the copies keep
+the tags as released, the record to repair Forgejo's from. That needs a GitHub token (GH_TOKEN, else `gh
+auth token`); without one the Forgejo rules are applied, the copies' are not, and the run exits 1. The
+copies get nothing else: no settings, no branch ruleset (the mirror force-pushes their branches).
+
 Nothing is deleted on Forgejo. On GitHub one ruleset is: one named `default`, the ad-hoc protection
 of the default branch from before github/rulesets.py, as that script always did. A protection the
-model no longer has -- a release/* rule or a tag protection (GitHub: a `release tags` ruleset) of a
-repository turned `rules: basic`, a tag protection whose pattern the catalog changed -- is left as it
-is, and the run notes it: deleting it is the owner's call.
+model no longer has -- a release/* rule or a tag protection (GitHub: a `release tags` or `release tag
+creation` ruleset, on a copy `mirror tags`) of a repository turned `rules: basic`, a tag protection
+whose pattern the catalog changed -- is left as it is, and the run notes it: deleting it is the owner's
+call.
 
 On Forgejo a user is kept on a whitelist (merging, pushing, creating tags) only while they have write
 access to the repository: Forgejo leaves anyone else out without an error. The run says so, by name,
@@ -208,17 +221,22 @@ class Api:
         return self._scrub(text[:500])
 
 
-def github_token():
+def find_github_token():
     """GH_TOKEN, else what `gh auth token` prints (read from its output; the token is never passed
-    to a process)."""
+    to a process), else ""."""
     token = os.environ.get("GH_TOKEN", "").strip()
     if token:
         return token
     try:
         done = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, encoding="utf-8")
-        token = done.stdout.strip() if done.returncode == 0 else ""
+        return done.stdout.strip() if done.returncode == 0 else ""
     except OSError:
-        token = ""
+        return ""
+
+
+def github_token():
+    """find_github_token(), refusing to go on without one."""
+    token = find_github_token()
     if not token:
         sys.exit("no GitHub token: set GH_TOKEN, or log in with `gh auth login`")
     return token
@@ -234,8 +252,20 @@ GITHUB_ACTIONS = 15368
 
 GITHUB_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
-# Repository administrators (the owner) bypass every ruleset -- for emergencies.
+# GitHub's REST API: a GitHub installation's server (catalog.py forge()), and where a Forgejo
+# installation's mirror keeps its copies.
+GITHUB_API = "https://api.github.com"
+
+# Repository administrators (the owner) bypass the branch rulesets and the creation of an owner-tagged
+# repository's tags -- for emergencies, and because the owner is who creates those tags. Not the rule that
+# keeps version tags from moving or being deleted: nobody bypasses that one (NO_BYPASS).
 GITHUB_ADMIN_BYPASS = [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
+NO_BYPASS = []
+
+# The rulesets of version tags this script makes, on a GitHub repository or a Forgejo repository's GitHub
+# copy: a repository that no longer has one in its model keeps it, with a note (see _stale).
+TAG_RULESETS = ("release tags", "release tag creation")
+MIRROR_TAGS = "mirror tags"
 
 
 def _status_checks(names, bound=frozenset()):
@@ -266,32 +296,41 @@ def _pull_request(methods):
     }
 
 
-def _ruleset(name, target, ref, rule_list):
+def _ruleset(name, target, ref, rule_list, bypass=GITHUB_ADMIN_BYPASS):
     return {
         "name": name,
         "target": target,
         "enforcement": "active",
-        "bypass_actors": GITHUB_ADMIN_BYPASS,
+        "bypass_actors": list(bypass),
         "conditions": {"ref_name": {"include": [ref], "exclude": []}},
         "rules": rule_list,
     }
 
 
+def _fixed_tags(name, r):
+    """A version names one commit forever: a ruleset that keeps the repository's version tags from moving
+    or being deleted, which nobody bypasses -- the owner neither, an administrator: these tags are the
+    record a moved or deleted Forgejo tag is repaired from (docs/setup.md, step 12). To fix a tag that is
+    wrong, the owner edits the ruleset on GitHub first."""
+    return _ruleset(name, "tag", f"refs/tags/{r.tag_pattern}", [{"type": "update"}, {"type": "deletion"}],
+                    bypass=NO_BYPASS)
+
+
 def github_rulesets(r):
-    """The ruleset payloads of one repository: `develop`, `main` and (release model) `release tags`.
-    The names are the ones github/rulesets.py always used, so existing rulesets are updated in place."""
+    """The ruleset payloads of one repository: `develop`, `main` and (release model) `release tags`, and
+    for an owner-tagged repository `release tag creation`. The first three names are the ones
+    github/rulesets.py always used, so existing rulesets are updated in place."""
     if r.model == "basic":
         # Protection from deletion and force push, nothing else: no pull request, checks or tags.
         basic = [{"type": "deletion"}, {"type": "non_fast_forward"}]
         return [_ruleset("develop", "branch", "refs/heads/develop", basic),
                 _ruleset("main", "branch", "refs/heads/main", list(basic))]
 
-    # A version names one commit forever: its tag cannot be moved or deleted.
-    tag_rules = [{"type": "update"}, {"type": "deletion"}]
-    if r.owner_tags:
-        # A repository the owner tags: only the owner (an administrator, who bypasses the ruleset)
-        # creates its tags. An application's tags are created by Jenkins, which must not be locked out.
-        tag_rules.insert(0, {"type": "creation"})
+    # A repository the owner tags: only the owner creates its tags, through the bypass of a ruleset of its
+    # own -- in the same ruleset as `update` and `deletion`, the bypass would let the owner move and delete
+    # them too. An application's tags are created by Jenkins, which a creation rule would lock out.
+    creation = ([_ruleset("release tag creation", "tag", f"refs/tags/{r.tag_pattern}", [{"type": "creation"}])]
+                if r.owner_tags else [])
 
     return [
         _ruleset("develop", "branch", "refs/heads/develop", [
@@ -308,8 +347,46 @@ def github_rulesets(r):
             _pull_request(["merge"]),
             _status_checks(r.main_checks),
         ]),
-        _ruleset("release tags", "tag", f"refs/tags/{r.tag_pattern}", tag_rules),
+        _fixed_tags("release tags", r),
+        *creation,
     ]
+
+
+def github_mirror_rulesets(r):
+    """The ruleset payloads of a Forgejo repository's GitHub copy (a Forgejo installation with a `mirror`):
+    `mirror tags` alone, for the release model (a basic repository has no version tags). No creation rule
+    (the mirror creates the tags), no branch ruleset and no settings: the mirror force-pushes the branches
+    and the copy is Forgejo's, nothing of it the owner changes on GitHub. A mirror push that would move or
+    delete a version tag is refused, and Forgejo shows that mirror sync failing: intended."""
+    if r.model == "basic":
+        return []
+    return [_fixed_tags(MIRROR_TAGS, r)]
+
+
+def _github_write(api, dry_run, method, path, body, done, would):
+    """One write to GitHub as lines: sent (and `done` reported), or with dry_run only described."""
+    if dry_run:
+        yield f"  would {would}: {method} {path}"
+        if body is not None:
+            yield "    " + json.dumps(body)
+    else:
+        api.request(method, path, body)
+        yield f"  {done}"
+
+
+def _ruleset_steps(api, base, payloads, dry_run):
+    """The repository's rulesets made or updated: matched by name, updated in place. Yields lines, and
+    returns {name: id} of the rulesets the repository had."""
+    existing = {entry["name"]: entry["id"] for entry in api.request("GET", f"{base}/rulesets?per_page=100") or []}
+    for payload in payloads:
+        name = payload["name"]
+        if name in existing:
+            yield from _github_write(api, dry_run, "PUT", f"{base}/rulesets/{existing[name]}", payload,
+                                     f"updated ruleset '{name}'", f"update ruleset '{name}'")
+        else:
+            yield from _github_write(api, dry_run, "POST", f"{base}/rulesets", payload,
+                                     f"created ruleset '{name}'", f"create ruleset '{name}'")
+    return existing
 
 
 def _github_steps(api, owner, r, dry_run):
@@ -318,37 +395,36 @@ def _github_steps(api, owner, r, dry_run):
     base = f"/repos/{owner}/{r.repo}"
     yield f"{owner}/{r.repo}"
 
-    def write(method, path, body, done, would):
-        if dry_run:
-            yield f"  would {would}: {method} {path}"
-            if body is not None:
-                yield "    " + json.dumps(body)
-        else:
-            api.request(method, path, body)
-            yield f"  {done}"
-
     settings = {"default_branch": "develop", "delete_branch_on_merge": True}
-    yield from write("PATCH", base, settings, "default branch develop, delete head branches on merge",
-                     "set the default branch to develop and delete head branches on merge")
+    yield from _github_write(api, dry_run, "PATCH", base, settings, "default branch develop, delete head branches on merge",
+                             "set the default branch to develop and delete head branches on merge")
 
-    existing = {entry["name"]: entry["id"] for entry in api.request("GET", f"{base}/rulesets?per_page=100") or []}
-    for payload in github_rulesets(r):
-        name = payload["name"]
-        if name in existing:
-            yield from write("PUT", f"{base}/rulesets/{existing[name]}", payload,
-                             f"updated ruleset '{name}'", f"update ruleset '{name}'")
-        else:
-            yield from write("POST", f"{base}/rulesets", payload, f"created ruleset '{name}'", f"create ruleset '{name}'")
+    payloads = github_rulesets(r)
+    existing = yield from _ruleset_steps(api, base, payloads, dry_run)
 
     # The previous, ad-hoc protection of the default branch: the rulesets above replace it, and it
     # would otherwise start protecting develop, with its own different rules, once develop is the default.
     if "default" in existing:
-        yield from write("DELETE", f"{base}/rulesets/{existing['default']}", None,
-                         "removed ruleset 'default'", "remove ruleset 'default'")
+        yield from _github_write(api, dry_run, "DELETE", f"{base}/rulesets/{existing['default']}", None,
+                                 "removed ruleset 'default'", "remove ruleset 'default'")
 
-    # A repository turned `rules: basic` keeps its tag ruleset: the run says so, the owner decides.
-    if r.model == "basic" and "release tags" in existing:
-        yield f"  {_stale('ruleset', 'release tags')}"
+    # A tag ruleset the repository's model no longer has -- a repository turned `rules: basic`, an
+    # owner-tagged one that became an application -- is kept: the run says so, the owner decides.
+    for name in sorted((set(TAG_RULESETS) & set(existing)) - {p["name"] for p in payloads}):
+        yield f"  {_stale('ruleset', name)}"
+
+
+def _mirror_steps(api, mirror_owner, r, dry_run):
+    """What applying one repository's GitHub copy (<mirror_owner>/<repo>) does, as lines, as it happens:
+    github_mirror_rulesets, matched by name and updated in place like _github_steps' rulesets."""
+    base = f"/repos/{mirror_owner}/{r.repo}"
+    yield f"{mirror_owner}/{r.repo} (the GitHub copy)"
+    payloads = github_mirror_rulesets(r)
+    existing = yield from _ruleset_steps(api, base, payloads, dry_run)
+    if MIRROR_TAGS in existing and not payloads:
+        yield f"  {_stale('ruleset', MIRROR_TAGS)}"
+    elif not payloads:
+        yield "  no version tags (rules: basic): nothing to apply"
 
 
 def _stale(kind, name):
@@ -361,6 +437,12 @@ def apply_github(api, owner, r, dry_run):
     """Sets one repository's settings and rulesets on GitHub; rulesets are matched by name and
     updated in place. Returns the lines of what it did (or, with dry_run, would do: no write is sent)."""
     return list(_github_steps(api, owner, r, dry_run))
+
+
+def apply_mirror(api, mirror_owner, r, dry_run):
+    """Sets one repository's GitHub copy's rulesets (github_mirror_rulesets), under the mirror's GitHub
+    user or organisation. Returns the lines of what it did (or, with dry_run, would do)."""
+    return list(_mirror_steps(api, mirror_owner, r, dry_run))
 
 
 # --- Forgejo: settings, protections, tags, webhook ----------------------------------------------------
@@ -415,7 +497,8 @@ def forgejo_branch_protections(r):
 def forgejo_tag_protection(r):
     """Who may create the repository's version tags (release model only: a basic repository has none).
     Forgejo's tag protection is one list of who may change a matching tag in any way, so they may also
-    move and delete them: a known gap, which docs/setup.md (step 12) states and the live tests pin."""
+    move and delete them: an accepted gap, which docs/setup.md (step 12) states and the live tests pin;
+    the tag-check job detects it, and the GitHub copies (mirror tags) are the record to repair from."""
     return {"name_pattern": r.tag_pattern, "whitelist_usernames": list(r.tag_creators)}
 
 
@@ -580,6 +663,11 @@ the catalog's git server. --dry-run reads from the server but sends no write.
                      <FORGE_JENKINS_URL>/gitea-webhook/post; with neither, webhooks are skipped
                      (JENKINS_URL, which Jenkins sets in every build, is not read). A hook's secret
                      cannot be read back, so to change it delete the hook in Forgejo and run again.
+  Forgejo with a mirror (catalog.yaml mirror)
+    GH_TOKEN         a token with administration of the GitHub copies (<mirror.github>/<repo>); else
+                     `gh auth token` is used. Each copy gets the ruleset `mirror tags`: nobody moves or
+                     deletes a version tag there. Without a token the Forgejo rules are still applied,
+                     the mirror tags are not, and the run exits 1.
 
 The tokens and the secret are never printed."""
 
@@ -623,13 +711,31 @@ def main(argv=None):
 
     forge = catalog_module.forge(catalog)
     secret = ""
+    mirror, mirror_api = None, None
+    on_copy = [False]  # whether the steps running are a GitHub copy's, for the error message
     if forge["type"] == "forgejo":
         api, webhook, secret = _forgejo_connection(forge)
         if webhook is None:
             print("webhooks skipped: FORGE_JENKINS_URL and FORGE_WEBHOOK_SECRET are not set", flush=True)
+        # The GitHub copies of a mirror: the record a moved or deleted Forgejo tag is repaired from, so
+        # their tags are fixed too. Without a GitHub token Forgejo's rules are still applied (they need
+        # none), and the run fails at the end: the catalog asks for the copies, and an exit 0 would read
+        # as if they were protected.
+        mirror = catalog_module.mirror(catalog)
+        if mirror is not None:
+            token = find_github_token()
+            if token:
+                mirror_api = Api(GITHUB_API, token, "Bearer", GITHUB_HEADERS)
+            else:
+                print(f"mirror tags not applied: no GitHub token for the copies under {mirror['github']} "
+                      "(set GH_TOKEN, or log in with `gh auth login`)", flush=True)
 
         def steps(r):
-            return _forgejo_steps(api, catalog["owner"], r, webhook, dry_run)
+            on_copy[0] = False
+            yield from _forgejo_steps(api, catalog["owner"], r, webhook, dry_run)
+            if mirror_api is not None:
+                on_copy[0] = True
+                yield from _mirror_steps(mirror_api, mirror["github"], r, dry_run)
     else:
         api = Api(forge["api"], github_token(), "Bearer", GITHUB_HEADERS)
 
@@ -644,7 +750,12 @@ def main(argv=None):
                 print(line, flush=True)
         except ApiError as error:
             # A server may echo what it was sent: the webhook secret is masked like the token is.
-            sys.exit(f"{r.repo}: {str(error).replace(secret, '***') if secret else error}")
+            where = f"{r.repo} (GitHub copy {mirror['github']}/{r.repo})" if on_copy[0] else r.repo
+            sys.exit(f"{where}: {str(error).replace(secret, '***') if secret else error}")
+
+    if mirror is not None and mirror_api is None:
+        sys.exit(f"the mirror tags were not applied to the GitHub copies under {mirror['github']}: no GitHub token "
+                 "(set GH_TOKEN, or log in with `gh auth login`, and run again); the Forgejo rules above were applied")
 
 
 if __name__ == "__main__":

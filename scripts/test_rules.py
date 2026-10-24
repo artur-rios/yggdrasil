@@ -217,17 +217,55 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertNotIn("default", [r["name"] for r in api.rulesets.values()])
         self.assertTrue(any("removed ruleset 'default'" in line for line in lines))
 
+    def test_given_any_release_repository_when_built_then_nobody_bypasses_the_move_and_delete_rule(self):
+        # A version names one commit forever, on GitHub the record a moved Forgejo tag is repaired from: no
+        # bypass at all, administrators (the owner) included. To fix a wrong tag the owner edits the ruleset.
+        for repo, pattern in (("shop-api", "v*"), ("toolkit", "[0-9]*"), ("notes", "v*")):
+            tags = ruleset(rules.github_rulesets(by_repo()[repo]), "release tags")
+            self.assertEqual(tags["target"], "tag", repo)
+            self.assertEqual(tags["conditions"]["ref_name"]["include"], [f"refs/tags/{pattern}"], repo)
+            self.assertEqual([r["type"] for r in tags["rules"]], ["update", "deletion"], repo)
+            self.assertEqual(tags["bypass_actors"], [], repo)
+
     def test_given_an_owner_tag_repository_when_built_then_only_admins_create_its_tags(self):
-        tags = ruleset(rules.github_rulesets(by_repo()["toolkit"]), "release tags")
-        self.assertEqual(tags["conditions"]["ref_name"]["include"], ["refs/tags/[0-9]*"])
-        self.assertEqual([r["type"] for r in tags["rules"]], ["creation", "update", "deletion"])
-        self.assertEqual(tags["bypass_actors"], rules.GITHUB_ADMIN_BYPASS)
+        # Creation is a ruleset of its own, so that its administrator bypass (the owner creates the tags)
+        # is not also a bypass of the move and delete rule.
+        creation = ruleset(rules.github_rulesets(by_repo()["toolkit"]), "release tag creation")
+        self.assertEqual((creation["target"], creation["conditions"]["ref_name"]["include"]), ("tag", ["refs/tags/[0-9]*"]))
+        self.assertEqual([r["type"] for r in creation["rules"]], ["creation"])
+        self.assertEqual(creation["bypass_actors"], rules.GITHUB_ADMIN_BYPASS)
 
     def test_given_an_application_when_built_then_its_tags_may_still_be_created_by_jenkins(self):
         # Jenkins creates v* tags itself, so no `creation` rule: it would lock Jenkins out.
-        tags = ruleset(rules.github_rulesets(by_repo()["shop-api"]), "release tags")
+        payloads = rules.github_rulesets(by_repo()["shop-api"])
+        self.assertEqual([p["name"] for p in payloads], ["develop", "main", "release tags"])
+        tags = ruleset(payloads, "release tags")
         self.assertEqual(tags["conditions"]["ref_name"]["include"], ["refs/tags/v*"])
         self.assertEqual([r["type"] for r in tags["rules"]], ["update", "deletion"])
+
+    def test_given_an_owner_tag_repository_when_applied_twice_then_its_four_rulesets_are_updated_in_place(self):
+        api = FakeGitHub(existing=["develop", "main", "release tags"])
+        r = by_repo()["toolkit"]
+        rules.apply_github(api, "artur-rios", r, dry_run=False)
+        # The existing `release tags` (which had the creation rule and the bypass) is updated in place;
+        # `release tag creation` is new.
+        self.assertEqual([(m, b["name"]) for m, _, b in api.writes() if m != "PATCH"],
+                         [("PUT", "develop"), ("PUT", "main"), ("PUT", "release tags"),
+                          ("POST", "release tag creation")])
+        api.calls.clear()
+        rules.apply_github(api, "artur-rios", r, dry_run=False)
+        self.assertEqual([m for m, _, _ in api.writes()], ["PATCH", "PUT", "PUT", "PUT", "PUT"])
+        self.assertEqual(len(api.rulesets), 4)
+
+    def test_given_an_application_with_a_creation_ruleset_when_applied_then_it_is_noted_not_removed(self):
+        # A repository that was owner-tagged before it became an application: Jenkins creates its tags now,
+        # which the old creation ruleset blocks; deleting it is still the owner's call.
+        api = FakeGitHub(existing=["develop", "main", "release tags", "release tag creation"])
+        lines = rules.apply_github(api, "artur-rios", by_repo()["shop-api"], dry_run=False)
+        self.assertNotIn("DELETE", [m for m, _, _ in api.writes()])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("ruleset 'release tag creation'", notes[0])
 
     def test_given_jenkins_acting_as_the_owner_when_built_then_an_applications_tags_are_still_not_locked(self):
         # Whose tags they are is the model's, not a comparison of user names: with forge.jenkinsUser
@@ -269,6 +307,15 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual(len(notes), 1, lines)
         self.assertIn("ruleset 'release tags'", notes[0])
         self.assertIn("left as it is", notes[0])
+
+    def test_given_a_basic_repository_with_both_tag_rulesets_when_applied_then_both_are_noted(self):
+        api = FakeGitHub(existing=["develop", "main", "release tags", "release tag creation"])
+        lines = rules.apply_github(api, "artur-rios", by_repo()["scratch"], dry_run=False)
+        self.assertNotIn("DELETE", [m for m, _, _ in api.writes()])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 2, lines)
+        self.assertIn("ruleset 'release tag creation'", notes[0])
+        self.assertIn("ruleset 'release tags'", notes[1])
 
     def test_given_an_application_when_applied_then_its_release_tags_ruleset_is_not_noted(self):
         api = FakeGitHub(existing=["develop", "main", "release tags"])
@@ -314,10 +361,11 @@ class GitHubRulesetsTests(unittest.TestCase):
                 rules.main(["--dry-run", "shop-api", "ghost", "phantom"])
         self.assertIn("ghost, phantom", str(raised.exception))
 
-    def test_given_todays_catalog_when_built_then_only_the_binding_changed(self):
+    def test_given_todays_catalog_when_built_then_only_the_binding_and_the_tag_bypass_changed(self):
         # The fixture is what github/rulesets.py built before it became a shim, for a catalog of two
         # applications: shop-api (checks test and docker, a production release environment) and
-        # storefront (neither). The one difference: Jenkins' contexts no longer carry integration_id.
+        # storefront (neither). The differences: Jenkins' contexts no longer carry integration_id, and
+        # nobody bypasses `release tags` any more (administrators could move and delete tags before).
         fixture = json.loads((pathlib.Path(__file__).parent / "fixtures" /
                               "github-rulesets-before-plan-2.json").read_text(encoding="utf-8"))
         catalog = copy.deepcopy(CATALOG_GITHUB)
@@ -327,6 +375,9 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual(sorted(built), sorted(fixture))
         for repo, old in fixture.items():
             for payload in old:
+                if payload["name"] == "release tags":
+                    self.assertEqual(payload["bypass_actors"], rules.GITHUB_ADMIN_BYPASS)
+                    payload["bypass_actors"] = []
                 for rule in payload["rules"]:
                     if rule["type"] == "required_status_checks":
                         for check in rule["parameters"]["required_status_checks"]:
@@ -759,7 +810,7 @@ class ForgejoCommandTests(unittest.TestCase):
         fake, made, out, _, exit_ = self.run_main(["--help"], {})
         self.assertEqual(exit_.code, 0)
         self.assertIn("usage:", out)
-        for word in ("--dry-run", "FORGE_TOKEN", "FORGE_JENKINS_URL", "FORGE_WEBHOOK_SECRET", "GH_TOKEN"):
+        for word in ("--dry-run", "FORGE_TOKEN", "FORGE_JENKINS_URL", "FORGE_WEBHOOK_SECRET", "GH_TOKEN", "mirror tags"):
             self.assertIn(word, out)
         self.assertEqual((made, fake.calls), ([], []))
 
@@ -768,6 +819,160 @@ class ForgejoCommandTests(unittest.TestCase):
                               capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("usage:", done.stdout)
+
+
+MIRROR = "artur-rios-mirror"
+CATALOG_MIRROR = {**copy.deepcopy(CATALOG), "mirror": {"github": MIRROR, "releases": False}}
+
+
+class MirrorTagsTests(unittest.TestCase):
+    """The GitHub copies of a Forgejo installation with a `mirror`: one ruleset, `mirror tags`, so that
+    nobody moves or deletes a version tag there and they stay the record to repair Forgejo's from."""
+
+    def test_given_a_release_repository_when_built_then_its_copy_gets_one_tag_ruleset_nobody_bypasses(self):
+        for repo, pattern in (("shop-api", "v*"), ("toolkit", "[0-9]*")):
+            payloads = rules.github_mirror_rulesets(by_repo()[repo])
+            self.assertEqual(payloads, [{
+                "name": "mirror tags", "target": "tag", "enforcement": "active", "bypass_actors": [],
+                "conditions": {"ref_name": {"include": [f"refs/tags/{pattern}"], "exclude": []}},
+                # No creation rule: the mirror creates the tags. No branch rule: it force-pushes branches.
+                "rules": [{"type": "update"}, {"type": "deletion"}]}], repo)
+
+    def test_given_a_basic_repository_when_built_then_its_copy_gets_nothing(self):
+        # A basic repository has no version tags.
+        self.assertEqual(rules.github_mirror_rulesets(by_repo()["scratch"]), [])
+
+    def test_given_a_copy_when_applied_then_only_the_ruleset_is_written_under_the_mirror_owner(self):
+        api = FakeGitHub()
+        lines = rules.apply_mirror(api, MIRROR, by_repo()["shop-api"], dry_run=False)
+        # No settings change and no branch ruleset: the mirror owns the copy's branches.
+        self.assertEqual([(m, p, b["name"]) for m, p, b in api.writes()],
+                         [("POST", f"/repos/{MIRROR}/shop-api/rulesets", "mirror tags")])
+        self.assertEqual(lines[0], f"{MIRROR}/shop-api (the GitHub copy)")
+        self.assertIn("created ruleset 'mirror tags'", lines[1])
+
+    def test_given_a_copy_applied_twice_when_nothing_changed_then_the_ruleset_is_updated_in_place(self):
+        api = FakeGitHub(existing=["something of the owner's"])
+        r = by_repo()["toolkit"]
+        rules.apply_mirror(api, MIRROR, r, dry_run=False)
+        api.calls.clear()
+        rules.apply_mirror(api, MIRROR, r, dry_run=False)
+        self.assertEqual([(m, p) for m, p, _ in api.writes()], [("PUT", f"/repos/{MIRROR}/toolkit/rulesets/2")])
+        self.assertEqual(sorted(r["name"] for r in api.rulesets.values()), ["mirror tags", "something of the owner's"])
+
+    def test_given_a_basic_repository_when_applied_then_nothing_is_written_and_an_old_ruleset_is_noted(self):
+        api = FakeGitHub()
+        self.assertEqual(rules.apply_mirror(api, MIRROR, by_repo()["scratch"], dry_run=False),
+                         [f"{MIRROR}/scratch (the GitHub copy)", "  no version tags (rules: basic): nothing to apply"])
+        api = FakeGitHub(existing=["mirror tags"])
+        lines = rules.apply_mirror(api, MIRROR, by_repo()["scratch"], dry_run=False)
+        self.assertEqual(api.writes(), [])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("ruleset 'mirror tags'", notes[0])
+
+    def test_given_dry_run_when_applied_then_the_payload_is_shown_and_nothing_is_written(self):
+        api = FakeGitHub()
+        lines = rules.apply_mirror(api, MIRROR, by_repo()["shop-api"], dry_run=True)
+        self.assertEqual(api.writes(), [])
+        self.assertIn(f"  would create ruleset 'mirror tags': POST /repos/{MIRROR}/shop-api/rulesets", lines)
+        self.assertIn('"bypass_actors": []', "\n".join(lines))
+
+
+class MirrorCommandTests(unittest.TestCase):
+    ENV = {"FORGE_TOKEN": "fg-tok-123"}
+
+    def run_main(self, args, env, catalog=CATALOG_MIRROR, gh=None):
+        """The command with a fake Forgejo and a fake GitHub (by the scheme each Api is made with), the
+        environment given and nothing of the real one; `gh` is what `gh auth token` answers (None: no gh)."""
+        fakes = {"token": FakeForgejo(), "Bearer": FakeGitHub()}
+        made = []
+
+        def make_api(base, token, scheme, headers=None):
+            made.append((base, token, scheme))
+            return fakes[scheme]
+
+        def run(command, **_):
+            if gh is None:
+                raise FileNotFoundError("gh")
+            return subprocess.CompletedProcess(command, 0 if gh else 1, stdout=gh, stderr="")
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(rules.catalog_module, "load", return_value=catalog), \
+                mock.patch.dict(os.environ, env, clear=True), mock.patch.object(rules, "Api", make_api), \
+                mock.patch("subprocess.run", run), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            try:
+                rules.main(args)
+                exit_ = None
+            except SystemExit as raised:
+                exit_ = raised
+        return fakes, made, out.getvalue(), err.getvalue(), exit_
+
+    def test_given_a_mirror_and_a_github_token_when_run_then_forgejo_and_the_copy_are_both_applied(self):
+        fakes, made, out, err, exit_ = self.run_main(["shop-api"], {**self.ENV, "GH_TOKEN": "gh-tok-456"})
+        self.assertIsNone(exit_, err)
+        self.assertEqual(made, [("https://git.example.com/api/v1", "fg-tok-123", "token"),
+                                ("https://api.github.com", "gh-tok-456", "Bearer")])
+        self.assertEqual([(m, p) for m, p, _ in fakes["Bearer"].writes()], [("POST", f"/repos/{MIRROR}/shop-api/rulesets")])
+        self.assertTrue(fakes["token"].writes())
+        # Forgejo first, then its copy.
+        self.assertLess(out.index("artur-rios/shop-api"), out.index(f"{MIRROR}/shop-api (the GitHub copy)"))
+        self.assertNotIn("gh-tok-456", out + err)
+
+    def test_given_a_mirror_and_gh_logged_in_when_run_then_its_token_is_used(self):
+        _, made, _, _, exit_ = self.run_main(["--dry-run", "shop-api"], self.ENV, gh="from-gh\n")
+        self.assertIsNone(exit_)
+        self.assertEqual(made[1], ("https://api.github.com", "from-gh", "Bearer"))
+
+    def test_given_a_mirror_without_a_github_token_when_run_then_forgejo_is_applied_and_it_exits_1(self):
+        # The catalog asks for GitHub copies; leaving them unprotected without failing would read as done.
+        fakes, made, out, err, exit_ = self.run_main(["shop-api"], self.ENV, gh="")
+        self.assertEqual([scheme for _, _, scheme in made], ["token"])
+        self.assertTrue(fakes["token"].writes())
+        self.assertEqual(fakes["Bearer"].calls, [])
+        self.assertIn("mirror tags not applied", out)
+        # sys.exit with a message: exit status 1, the message on stderr.
+        self.assertIsInstance(exit_.code, str)
+        self.assertIn("mirror tags were not applied", exit_.code)
+        self.assertIn("GH_TOKEN", str(exit_.code))
+
+    def test_given_no_gh_at_all_when_run_with_a_mirror_then_it_is_the_same_as_no_token(self):
+        fakes, _, out, _, exit_ = self.run_main(["--dry-run", "shop-api"], self.ENV, gh=None)
+        self.assertIn("mirror tags not applied", out)
+        self.assertIsNotNone(exit_)
+        self.assertEqual(fakes["Bearer"].calls, [])
+
+    def test_given_no_mirror_when_run_then_github_is_never_asked(self):
+        fakes, made, out, _, exit_ = self.run_main(["shop-api"], self.ENV, catalog=CATALOG, gh=None)
+        self.assertIsNone(exit_)
+        self.assertEqual([scheme for _, _, scheme in made], ["token"])
+        self.assertNotIn("mirror", out)
+
+    def test_given_dry_run_with_a_mirror_when_run_then_the_copys_payload_is_shown_and_nothing_written(self):
+        fakes, _, out, _, exit_ = self.run_main(["--dry-run"], {**self.ENV, "GH_TOKEN": "gh-tok-456"})
+        self.assertIsNone(exit_)
+        self.assertEqual(fakes["Bearer"].writes(), [])
+        self.assertEqual(fakes["token"].writes(), [])
+        self.assertIn(f"would create ruleset 'mirror tags': POST /repos/{MIRROR}/toolkit/rulesets", out)
+        self.assertIn('"include": ["refs/tags/[0-9]*"]', out)
+        # The basic repository's copy is only looked at.
+        self.assertIn(f"{MIRROR}/scratch (the GitHub copy)", out)
+
+    def test_given_the_copy_missing_on_github_when_run_then_the_error_names_the_copy(self):
+        class Missing(FakeGitHub):
+            def request(self, method, path, body=None):
+                raise rules.ApiError(method, path, 404, "Not Found")
+
+        fakes = {"token": FakeForgejo(), "Bearer": Missing()}
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR), \
+                mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True), \
+                mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            with self.assertRaises(SystemExit) as raised:
+                rules.main(["shop-api"])
+        self.assertIn(f"shop-api (GitHub copy {MIRROR}/shop-api)", str(raised.exception))
+        self.assertIn("404", str(raised.exception))
 
 
 class ApiTests(unittest.TestCase):
