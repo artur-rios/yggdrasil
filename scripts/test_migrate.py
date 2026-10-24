@@ -1370,6 +1370,17 @@ class MirrorsTests(unittest.TestCase):
                         failures[1])
         self.assertEqual(forgejo.synced, ["other-lib"])
 
+    def test_given_an_unsynced_mirror_without_a_remote_name_when_refused_then_it_is_named_as_still_armed(self):
+        # Forgejo's list always carries the name; one without it cannot be deleted, so the run says the mirror
+        # is still there to push, rather than staying quiet about it.
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER},
+                           {"refs/heads/develop": SHA_DEVELOP},
+                           mirrors={"toolkit": [push_mirror("toolkit", remote_name="", last_update=None)]})
+        self.assertEqual(run.code, 1)
+        self.assertIn("  toolkit: its unsynced push mirror has no remote_name to delete it by, so Forgejo may push "
+                      "it on its own: delete it on Forgejo", run.err.splitlines())
+        self.assertFalse([call for call in run.forgejo.writes() if call[0] == "DELETE"])
+
     def test_given_an_unsynced_mirror_and_allow_prune_when_mirrored_then_it_is_kept_and_synced(self):
         run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER},
                            {"refs/heads/develop": SHA_DEVELOP}, args=["mirrors", "--allow-prune"],
