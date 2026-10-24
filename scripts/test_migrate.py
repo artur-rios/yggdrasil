@@ -1001,12 +1001,15 @@ class MirrorsTests(unittest.TestCase):
     def test_given_a_mirror_never_synced_when_mirrored_then_the_sync_is_asked_for_again(self):
         # A run that stopped between the creation and the sync leaves a mirror that never pushed; the
         # re-run finishes it (Forgejo's `last_update` is empty until the first push).
-        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
-                              mirrors={"toolkit": [push_mirror("toolkit", last_update=None)]})
-        run = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
-        self.assertEqual(run.code, 0, run.err)
-        self.assertEqual(run.forgejo.writes(), [("POST", f"/repos/{OWNER}/toolkit/push_mirrors-sync", None)])
-        self.assertEqual(run.lines, ["toolkit: push mirror already there, never synced: sync requested"])
+        # Forgejo may answer the zero time instead of nothing: before 1971 is no sync either.
+        for last_update in (None, "", "0001-01-01T00:00:00Z", "1970-01-01T00:00:00Z"):
+            with self.subTest(last_update=last_update):
+                forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                                      mirrors={"toolkit": [push_mirror("toolkit", last_update=last_update)]})
+                run = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+                self.assertEqual(run.code, 0, run.err)
+                self.assertEqual(run.forgejo.writes(), [("POST", f"/repos/{OWNER}/toolkit/push_mirrors-sync", None)])
+                self.assertEqual(run.lines, ["toolkit: push mirror already there, never synced: sync requested"])
 
     def test_given_a_mirror_to_another_address_when_mirrored_then_it_is_reported_not_replaced(self):
         other = "https://github.com/someone-else/toolkit.git"
@@ -1447,7 +1450,7 @@ def verified_world(names=("toolkit",), catalog_names=CATALOG_NAMES, **github_fie
     in_catalog = [n for n in names if n in catalog_names]
     gh = FakeGitHub([repository(n) for n in names], login=MIRROR,
                     refs={n: dict(heads) for n in names},
-                    rulesets={n: [{"id": 5, "name": "mirror tags"}] for n in in_catalog},
+                    rulesets={n: [{"id": 5, "name": "mirror tags", "enforcement": "active"}] for n in in_catalog},
                     settings={n: {"has_issues": False} for n in names}, **github_fields)
     forgejo = FakeForgejo(
         existing={n: forgejo_repository(n) for n in names},
@@ -1543,6 +1546,19 @@ class VerifyTests(unittest.TestCase):
         self.assert_only_failing(run, "toolkit", "webhook")
         self.assertIn(WEBHOOK_URL, self.row(run, "toolkit", "webhook")[3])
 
+    def test_given_the_jenkins_webhook_inactive_or_of_another_type_when_verified_then_it_fails(self):
+        # A hook to the right address that Forgejo never delivers (inactive), or delivers in another format
+        # than the Gitea plugin reads, is no webhook for Jenkins.
+        for label, fields, named in (("inactive", {"active": False}, "inactive"),
+                                     ("type", {"type": "forgejo"}, "forgejo")):
+            with self.subTest(label):
+                gh, forgejo = verified_world()
+                forgejo.hooks["toolkit"] = [{"id": 4, "type": "gitea", "active": True,
+                                             "config": {"url": WEBHOOK_URL}, **fields}]
+                run = self.run_verify((gh, forgejo))
+                self.assert_only_failing(run, "toolkit", "webhook")
+                self.assertIn(named, self.row(run, "toolkit", "webhook")[3])
+
     def test_given_a_trailing_slash_in_the_jenkins_url_when_verified_then_the_webhook_is_still_found(self):
         # rules.py strips it when it makes the hook, so the hook has none.
         run = self.run_verify(env={**VERIFY_ENV, "FORGE_JENKINS_URL": JENKINS + "/"})
@@ -1571,8 +1587,20 @@ class VerifyTests(unittest.TestCase):
         self.assert_only_failing(run, "toolkit", "push mirror")
         self.assertIn("https://github.com/someone-else/toolkit.git", self.row(run, "toolkit", "push mirror")[3])
 
+    def test_given_another_push_mirror_beside_the_right_one_when_verified_then_it_fails_naming_it(self):
+        # It pushes every repository's branches somewhere else too: not the move's, and verify says so.
+        gh, forgejo = verified_world()
+        forgejo.mirrors["toolkit"] = [push_mirror("toolkit"),
+                                      push_mirror("toolkit", "https://someone:secret-pass@example.org/x.git")]
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "push mirror")
+        detail = self.row(run, "toolkit", "push mirror")[3]
+        self.assertIn("another push mirror to https://example.org/x.git", detail)
+        self.assertNotIn("secret-pass", run.out + run.err)
+
     def test_given_a_mirror_that_never_synced_when_verified_then_it_fails(self):
-        for last_update in (None, ""):
+        # Forgejo may answer the zero time instead of nothing: before 1971 is no sync either.
+        for last_update in (None, "", "0001-01-01T00:00:00Z", "1970-01-01T00:00:00Z"):
             with self.subTest(last_update=last_update):
                 gh, forgejo = verified_world()
                 forgejo.mirrors["toolkit"] = [push_mirror("toolkit", last_update=last_update)]
@@ -1700,6 +1728,9 @@ class VerifyTests(unittest.TestCase):
             "missing": ([], "mirror tags"),
             "extra": ([{"id": 5, "name": "mirror tags"}, {"id": 6, "name": "develop"}], "develop"),
             "another": ([{"id": 6, "name": "release tags"}], "mirror tags"),
+            # Made, but not enforced: it protects nothing.
+            "disabled": ([{"id": 5, "name": "mirror tags", "enforcement": "disabled"}], "disabled"),
+            "evaluate": ([{"id": 5, "name": "mirror tags", "enforcement": "evaluate"}], "evaluate"),
         }
         for label, (rulesets, named) in cases.items():
             with self.subTest(label):

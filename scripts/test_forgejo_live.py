@@ -1203,7 +1203,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         """A GitHub for verify whose copy of `repo` is the repository itself, prepared as verify wants it."""
         default = self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}")["default_branch"]
         return GitHubOnForgejo([github_repository(repo, default_branch=default)], self.api[OWNER], login=OWNER,
-                               settings={repo: {"has_issues": False}}, rulesets={repo: [{"id": 1, "name": "mirror tags"}]})
+                               settings={repo: {"has_issues": False}},
+                               rulesets={repo: [{"id": 1, "name": "mirror tags", "enforcement": "active"}]})
 
 
 class CatalogTests(unittest.TestCase):

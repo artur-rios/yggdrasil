@@ -64,16 +64,18 @@ and goes on to the next, so a re-run picks up where it stopped):
   verify      the gate before pushes go to Forgejo. Read only: it sends no write, with or without --dry-run.
               One row per check (tab-separated: repo, check, ok|FAIL, detail), then `<N> repositories, <K> checks
               failed`; exit 1 on any FAIL. Per repository of the GitHub owner: it is on Forgejo (else the
-              rest is skipped); its default branch is GitHub's; its push mirror points at the GitHub copy
-              and has `last_update` set and no `last_error` (the error is printed, scrubbed: Forgejo pushes
-              with --mirror, so GitHub refusing its own refs/pull/* shows up here); every branch and every
+              rest is skipped); its default branch is GitHub's; its push mirror points at the GitHub copy,
+              has synced (a `last_update` after 1970: Forgejo may answer the zero time for none) and has no
+              `last_error` (the error is printed, scrubbed: Forgejo pushes with --mirror, so GitHub refusing
+              its own refs/pull/* shows up here), and no other push mirror is beside it; every branch and every
               tag of GitHub's is at the sha Forgejo has (refs/pull/* and every other namespace are left
               out; a ref on one side only is a FAIL naming the ref and the side; a copy that is not empty
               where neither side lists one is a FAIL, "nothing compared"); GitHub's
-              rulesets are exactly `mirror tags` (a catalog repository of the release model) or none
-              (basic, or not in the catalog; a private repository whose list GitHub refuses with 403 has
-              none to check); GitHub's issues are off. A catalog repository also has the Jenkins webhook
-              (<FORGE_JENKINS_URL>/gitea-webhook/post; without FORGE_JENKINS_URL that row is a FAIL) and the
+              rulesets are exactly `mirror tags`, enforced (`active`), for a catalog repository of the
+              release model, or none (basic, or not in the catalog; a private repository whose list GitHub
+              refuses with 403 has none to check); GitHub's issues are off. A catalog repository also has
+              the Jenkins webhook (<FORGE_JENKINS_URL>/gitea-webhook/post, active, of type gitea; without
+              FORGE_JENKINS_URL that row is a FAIL) and the
               four bots in Forgejo's list of collaborators, with their permission. A repository archived
               on GitHub has no mirror and a frozen copy: its GitHub side is not checked ("archived on
               GitHub: Forgejo only"). A repository whose calls error fails that check and the run goes on.
@@ -650,9 +652,19 @@ def _same_address(first, second):
     return key(first) == key(second)
 
 
+# A `last_update` whose year comes before this one is no sync: the zero time Forgejo may answer for a mirror
+# that never pushed (0001-01-01, or 1970-01-01, the Unix epoch).
+FIRST_SYNC_YEAR = 1971
+
+
 def _synced(mirror):
-    """Whether a push mirror has pushed: Forgejo's `last_update` is empty until its first push."""
-    return bool(mirror.get("last_update"))
+    """Whether a push mirror has pushed: Forgejo's `last_update` is empty, or a zero time, until its first
+    push. A value whose year cannot be read counts as a sync (it is a time Forgejo set)."""
+    last = str(mirror.get("last_update") or "").strip()
+    if not last:
+        return False
+    year = re.match(r"(\d{1,4})-", last)
+    return year is None or int(year.group(1)) >= FIRST_SYNC_YEAR
 
 
 def _request_sync(ctx, name, done):
@@ -939,8 +951,11 @@ def _check_mirror(ctx, name):
     for mirror in right:
         if (mirror.get("last_error") or "").strip():
             problems.append(f"last error: {mirror['last_error']}")
-        if not mirror.get("last_update"):
+        if not _synced(mirror):
             problems.append("never synced")
+    # One to anywhere else pushes the repository there too, with --mirror: not the move's.
+    problems += [f"another push mirror to {_without_credentials(m.get('remote_address') or '?')}"
+                 for m in mirrors if not any(m is r for r in right)]
     if problems:
         return False, "; ".join(problems)
     return True, f"synced {right[0]['last_update']}"
@@ -985,6 +1000,9 @@ def _check_rulesets(ctx, repo, expected):
     have = {ruleset["name"] for ruleset in listed}
     problems = ([f"missing: {', '.join(sorted(expected - have))}"] if expected - have else []) \
         + ([f"unexpected: {', '.join(sorted(have - expected))}"] if have - expected else [])
+    # A ruleset that is there but not enforced (`disabled`, or `evaluate`, which only reports) protects nothing.
+    problems += [f"{ruleset['name']} is {ruleset.get('enforcement') or 'not enforced'}, not active"
+                 for ruleset in listed if ruleset["name"] in expected and ruleset.get("enforcement") != "active"]
     if problems:
         return False, "; ".join(problems)
     return True, ", ".join(sorted(have)) or "none"
@@ -1001,10 +1019,16 @@ def _check_webhook(ctx, name, jenkins_url):
     if not jenkins_url:
         return False, "FORGE_JENKINS_URL not set: can't check the webhook"
     wanted = jenkins_url.rstrip("/") + WEBHOOK_PATH
-    hooks = _paged(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/hooks")
-    if any((hook.get("config") or {}).get("url") == wanted for hook in hooks):
+    hooks = [hook for hook in _paged(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/hooks")
+             if (hook.get("config") or {}).get("url") == wanted]
+    if not hooks:
+        return False, f"no webhook to {wanted}"
+    # One that delivers, in the format Jenkins' Gitea plugin reads (rules.py makes it so).
+    if any(hook.get("active") is True and hook.get("type") == "gitea" for hook in hooks):
         return True, wanted
-    return False, f"no webhook to {wanted}"
+    found = "; ".join(f"{'active' if hook.get('active') is True else 'inactive'}, type {hook.get('type') or 'none'}"
+                      for hook in hooks)
+    return False, f"the webhook to {wanted} is not an active gitea hook ({found})"
 
 
 def _check_collaborators(ctx, name):
