@@ -121,9 +121,19 @@ class FakeForgejo:
     migration answers (500, 0 for no answer at all). Every request is kept in `calls`, with its timeout."""
 
     def __init__(self, existing=None, lookup=None, migrate_status=None, migrate_message=None, files=None,
-                 contents_status=None):
+                 contents_status=None, mirrors=None, mirror_fail=None, users=None, collaborators=None,
+                 collaborator_fail=None, user_fail=None):
         self.existing, self.lookup, self.migrate_status = existing or {}, lookup or {}, migrate_status or {}
         self.migrate_message = migrate_message
+        # What mirrors and collaborators work on. `mirrors`: repository -> the push mirrors it has (as
+        # Forgejo lists them); `mirror_fail`: (method, last path segment) -> status to answer with an error,
+        # for every repository, or (name, method, segment) for one. `users`: the accounts that exist (None:
+        # every one does); `user_fail`: user -> status its lookup answers instead. `collaborators`:
+        # (repository, user) -> permission; `collaborator_fail`: (repository, method) -> status.
+        self.mirrors = {name: list(found) for name, found in (mirrors or {}).items()}
+        self.mirror_fail, self.users, self.user_fail = mirror_fail or {}, users, user_fail or {}
+        self.collaborators, self.collaborator_fail = dict(collaborators or {}), collaborator_fail or {}
+        self.synced = []
         # The files prepare-github looks for: (repository, path) -> the file's sha. `contents_status` maps a
         # repository to a status its contents requests answer instead (500 ...).
         self.files, self.contents_status = dict(files or {}), contents_status or {}
@@ -151,6 +161,10 @@ class FakeForgejo:
         self.timeouts.append(timeout)
         if "/contents/" in path:
             return self._contents(method, path, body)
+        for route in (self._mirror_request, self._collaborator_request):
+            answer = route(method, path, body)
+            if answer is not NotImplemented:
+                return answer
         if method == "GET" and path.startswith(f"/repos/{OWNER}/"):
             name = path.rsplit("/", 1)[1]
             if name in self.lookup:
@@ -165,6 +179,53 @@ class FakeForgejo:
                     "migration failed" if status else "timed out"))
             self.existing[body["repo_name"]] = forgejo_repository(body["repo_name"])
             return self.existing[body["repo_name"]]
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    def _mirror_request(self, method, path, body):
+        """`GET|POST /repos/<owner>/<name>/push_mirrors` and `POST .../push_mirrors-sync`, as Forgejo answers
+        them: the list leaves the credentials out of `remote_address`; the sync answers 200 and runs later."""
+        name, _, last = path[len(f"/repos/{OWNER}/"):].partition("/")
+        if not path.startswith(f"/repos/{OWNER}/") or last not in ("push_mirrors", "push_mirrors-sync"):
+            return NotImplemented
+        for key in ((method, last), (name, method, last)):
+            if key in self.mirror_fail:
+                raise migrate.rules.ApiError(method, path, self.mirror_fail[key], "mirror refused")
+        if (method, last) == ("GET", "push_mirrors"):
+            return list(self.mirrors.get(name, []))
+        if (method, last) == ("POST", "push_mirrors"):
+            made = {"remote_name": f"remote_mirror_{len(self.mirrors.get(name, []))}",
+                    "remote_address": body["remote_address"], "interval": body["interval"],
+                    "sync_on_commit": body["sync_on_commit"], "last_update": None, "last_error": ""}
+            self.mirrors.setdefault(name, []).append(made)
+            return made
+        if (method, last) == ("POST", "push_mirrors-sync"):
+            self.synced.append(name)
+            return None
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    def _collaborator_request(self, method, path, body):
+        """`GET /users/<name>`, and a repository's `GET .../collaborators/<user>/permission` (404 for one who
+        is not a collaborator) and `PUT .../collaborators/<user>` (204)."""
+        if path.startswith("/users/"):
+            user = path.rsplit("/", 1)[1]
+            if user in self.user_fail:
+                raise migrate.rules.ApiError(method, path, self.user_fail[user], "user lookup failed")
+            if self.users is not None and user not in self.users:
+                raise migrate.rules.ApiError(method, path, 404, "user does not exist")
+            return {"login": user}
+        name, _, rest = path[len(f"/repos/{OWNER}/"):].partition("/collaborators/")
+        if not path.startswith(f"/repos/{OWNER}/") or not rest:
+            return NotImplemented
+        user = rest.split("/")[0]
+        if (name, method) in self.collaborator_fail:
+            raise migrate.rules.ApiError(method, path, self.collaborator_fail[(name, method)], "refused")
+        if method == "GET" and rest == f"{user}/permission":
+            if (name, user) not in self.collaborators:
+                raise migrate.rules.ApiError(method, path, 404, "not a collaborator")
+            return {"permission": self.collaborators[(name, user)], "role_name": self.collaborators[(name, user)]}
+        if method == "PUT" and rest == user:
+            self.collaborators[(name, user)] = body["permission"]
+            return None
         raise AssertionError(f"unexpected request: {method} {path}")
 
     def writes(self):
@@ -809,6 +870,368 @@ class PrepareGitHubTests(unittest.TestCase):
         self.assertFalse([c for c in run.gh.calls + run.forgejo.calls if "tok-" in c[1]])
 
 
+MIRROR_ENV = {**ENV, "MIRROR_GITHUB_USER": "mirror-bot", "MIRROR_GITHUB_TOKEN": "mirror-tok-789"}
+MIRROR_CATALOG = {**CATALOG_MIRROR, "repositories": [{"id": "toolkit"}, {"id": "other-lib"}]}
+
+
+def push_mirror(name, address=None, **fields):
+    """A push mirror as Forgejo lists it: the address without credentials."""
+    return {"remote_name": "remote_mirror_x", "remote_address": address or f"https://github.com/{MIRROR}/{name}.git",
+            "interval": "8h0m0s", "sync_on_commit": True, "last_update": "2026-10-24T10:00:00Z", "last_error": "",
+            **fields}
+
+
+class MirrorsTests(unittest.TestCase):
+    ARGS = ["mirrors"]
+
+    def run_mirrors(self, repos, args=None, forgejo=None, env=None, catalog=MIRROR_CATALOG, **github):
+        """Every repository is on Forgejo unless `forgejo` says otherwise. The GitHub owner is the catalog's
+        mirror.github (the token of that user, as `login`)."""
+        forgejo = forgejo or FakeForgejo(existing={r["name"]: forgejo_repository(r["name"]) for r in repos})
+        gh = FakeGitHub(repos, login=MIRROR, **github)
+        return Run(args or self.ARGS, gh, catalog=catalog, env=MIRROR_ENV if env is None else env, forgejo=forgejo)
+
+    def test_given_no_push_mirror_when_mirrored_then_one_syncing_on_commit_every_8h_is_made(self):
+        run = self.run_mirrors([repository("toolkit")])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.forgejo.writes(), [
+            ("POST", f"/repos/{OWNER}/toolkit/push_mirrors",
+             {"remote_address": f"https://github.com/{MIRROR}/toolkit.git", "remote_username": "mirror-bot",
+              "remote_password": "mirror-tok-789", "interval": "8h0m0s", "sync_on_commit": True}),
+            ("POST", f"/repos/{OWNER}/toolkit/push_mirrors-sync", None)])
+        # The first sync is asked for once, so the existing branches and tags go to GitHub now.
+        self.assertEqual(run.forgejo.synced, ["toolkit"])
+        self.assertEqual(run.lines, ["toolkit: push mirror created", "toolkit: sync requested"])
+
+    def test_given_the_mirror_already_there_when_mirrored_then_it_is_kept(self):
+        # Forgejo may list the address with or without `.git`, and never with credentials; neither matters.
+        for address in (f"https://github.com/{MIRROR}/toolkit.git", f"https://github.com/{MIRROR}/toolkit",
+                        f"https://github.com/{MIRROR}/toolkit.git/", f"HTTPS://GitHub.com/{MIRROR}/Toolkit.git",
+                        f"https://mirror-bot:mirror-tok-789@github.com/{MIRROR}/toolkit.git"):
+            with self.subTest(address=address):
+                forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                                      mirrors={"toolkit": [push_mirror("toolkit", address)]})
+                run = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+                self.assertEqual(run.code, 0, run.err)
+                self.assertEqual(run.forgejo.writes(), [])
+                self.assertEqual(run.lines, ["toolkit: push mirror already there"])
+
+    def test_given_a_mirror_never_synced_when_mirrored_then_the_sync_is_asked_for_again(self):
+        # A run that stopped between the creation and the sync leaves a mirror that never pushed; the
+        # re-run finishes it (Forgejo's `last_update` is empty until the first push).
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                              mirrors={"toolkit": [push_mirror("toolkit", last_update=None)]})
+        run = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.forgejo.writes(), [("POST", f"/repos/{OWNER}/toolkit/push_mirrors-sync", None)])
+        self.assertEqual(run.lines, ["toolkit: push mirror already there, never synced: sync requested"])
+
+    def test_given_a_mirror_to_another_address_when_mirrored_then_it_is_reported_not_replaced(self):
+        other = "https://github.com/someone-else/toolkit.git"
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
+                              mirrors={"toolkit": [push_mirror("toolkit", other)]})
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn(f"  toolkit: has a push mirror to {other}, not to https://github.com/{MIRROR}/toolkit.git: "
+                      "not replaced; remove it on Forgejo if it is wrong", run.err.splitlines())
+        # Nothing was written to it (no second mirror, no delete); the next repository went on.
+        self.assertEqual([c[1] for c in run.forgejo.writes()],
+                         [f"/repos/{OWNER}/other-lib/push_mirrors", f"/repos/{OWNER}/other-lib/push_mirrors-sync"])
+        self.assertEqual(forgejo.mirrors["toolkit"], [push_mirror("toolkit", other)])
+
+    def test_given_a_credential_in_the_other_address_when_reported_then_it_is_not_shown(self):
+        # Forgejo never lists one, but a failure line must not depend on that.
+        other = "https://someone:secret-pass@github.com/someone-else/toolkit.git"
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                              mirrors={"toolkit": [push_mirror("toolkit", other)]})
+        run = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertNotIn("secret-pass", run.out + run.err)
+        self.assertIn("https://github.com/someone-else/toolkit.git", run.err)
+
+    def test_given_two_mirrors_one_of_them_right_when_mirrored_then_it_is_kept_and_nothing_is_written(self):
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                              mirrors={"toolkit": [push_mirror("toolkit", "https://example.org/x.git"),
+                                                   push_mirror("toolkit")]})
+        run = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+        self.assertEqual((run.code, run.forgejo.writes()), (0, []))
+
+    def test_given_an_archived_github_repository_when_mirrored_then_it_gets_no_mirror_and_that_is_no_failure(self):
+        run = self.run_mirrors([repository("toolkit", archived=True)])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.lines, ["toolkit: archived on GitHub: no mirror"])
+        self.assertEqual(run.forgejo.writes(), [])
+
+    def test_given_a_repository_forgejo_does_not_have_when_mirrored_then_it_fails_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={"other-lib": forgejo_repository("other-lib")})
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("toolkit: not on Forgejo: run import first", run.err)
+        self.assertIn("other-lib: push mirror created", run.lines)
+        self.assertEqual(forgejo.synced, ["other-lib"])
+
+    def test_given_an_archived_repository_not_on_forgejo_when_mirrored_then_it_is_still_a_failure(self):
+        run = self.run_mirrors([repository("toolkit", archived=True)], forgejo=FakeForgejo())
+        self.assertEqual(run.code, 1)
+        self.assertIn("toolkit: not on Forgejo: run import first", run.err)
+
+    def test_given_a_creation_answering_500_when_mirrored_then_that_repository_fails_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
+                              mirror_fail={("toolkit", "POST", "push_mirrors"): 500})
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("toolkit: could not make the push mirror: POST", run.err)
+        self.assertIn("other-lib: sync requested", run.lines)
+        self.assertEqual(forgejo.synced, ["other-lib"])  # no sync for the one whose creation failed
+
+    def test_given_a_list_that_fails_when_mirrored_then_nothing_is_written_for_that_repository(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
+                              mirror_fail={("toolkit", "GET", "push_mirrors"): 502})
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("toolkit: could not list its push mirrors", run.err)
+        self.assertEqual([c[1] for c in forgejo.writes()],
+                         [f"/repos/{OWNER}/other-lib/push_mirrors", f"/repos/{OWNER}/other-lib/push_mirrors-sync"])
+
+    def test_given_a_sync_that_fails_after_the_mirror_was_made_when_mirrored_then_the_run_again_asks_for_it(self):
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                              mirror_fail={("POST", "push_mirrors-sync"): 500})
+        first = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+        self.assertEqual(first.code, 1)
+        self.assertIn("toolkit: push mirror created", first.lines)
+        self.assertIn("toolkit: could not sync it", first.err)
+        forgejo.mirror_fail.clear()
+        second = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+        self.assertEqual(second.code, 0, second.err)
+        self.assertEqual(forgejo.synced, ["toolkit"])
+        self.assertEqual(len(forgejo.mirrors["toolkit"]), 1)
+
+    def test_given_the_mirrors_made_when_mirrored_again_then_the_second_run_writes_nothing(self):
+        repos = [repository("toolkit")]
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")})
+        self.run_mirrors(repos, forgejo=forgejo)
+        forgejo.mirrors["toolkit"][0]["last_update"] = "2026-10-24T10:00:00Z"  # the sync has run
+        forgejo.calls.clear()
+        again = self.run_mirrors(repos, forgejo=forgejo)
+        self.assertEqual((again.code, forgejo.writes()), (0, []))
+
+    def test_given_a_dry_run_when_mirrored_then_nothing_is_written_and_the_password_is_masked(self):
+        run = self.run_mirrors([repository("toolkit")], args=["--dry-run", "mirrors"])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.forgejo.writes(), [])
+        planned = json.loads(run.lines[0].split("would create a push mirror ", 1)[1])
+        self.assertEqual(planned, {"remote_address": f"https://github.com/{MIRROR}/toolkit.git",
+                                   "remote_username": "mirror-bot", "remote_password": "***",
+                                   "interval": "8h0m0s", "sync_on_commit": True})
+        self.assertEqual(run.lines[1], "toolkit: would request the sync")
+        self.assertNotIn("mirror-tok-789", run.out + run.err)
+
+    def test_given_the_mirror_token_when_mirrored_then_it_goes_only_in_the_request_body(self):
+        run = self.run_mirrors([repository("toolkit")])
+        self.assertNotIn("mirror-tok-789", run.out + run.err)
+        self.assertFalse([c for c in run.gh.calls + run.forgejo.calls if "tok-" in c[1]])
+        self.assertEqual([c for c in run.forgejo.calls if "mirror-tok-789" in json.dumps(c[2])],
+                         [c for c in run.forgejo.calls if c[1].endswith("/push_mirrors") and c[0] == "POST"])
+        self.assertNotIn("mirror-tok-789", json.dumps(run.gh.calls))
+
+    def test_given_an_error_that_echoes_the_mirror_token_when_mirrored_then_it_is_hidden(self):
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")})
+        original = forgejo._mirror_request
+
+        def echoing(method, path, body):
+            if (method, path.rsplit("/", 1)[1]) == ("POST", "push_mirrors"):
+                raise migrate.rules.ApiError(method, path, 500, f"bad password mirror-tok-789 for {body}")
+            return original(method, path, body)
+
+        forgejo._mirror_request = echoing
+        run = self.run_mirrors([repository("toolkit")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertNotIn("mirror-tok-789", run.out + run.err)
+        self.assertIn("***", run.err)
+
+    def test_given_no_mirror_user_or_token_when_mirrored_then_it_exits_2_naming_it_before_anything_is_printed(self):
+        for missing in ("MIRROR_GITHUB_USER", "MIRROR_GITHUB_TOKEN"):
+            with self.subTest(missing=missing):
+                run = self.run_mirrors([repository("toolkit")],
+                                       env={k: v for k, v in MIRROR_ENV.items() if k != missing})
+                self.assertEqual(run.code, 2)
+                self.assertIn(missing, run.err)
+                self.assertEqual((run.out, run.forgejo.calls, run.gh.calls), ("", [], []))
+
+    def test_given_an_empty_mirror_token_when_mirrored_then_it_exits_2(self):
+        run = self.run_mirrors([repository("toolkit")], env={**MIRROR_ENV, "MIRROR_GITHUB_TOKEN": "  "})
+        self.assertEqual(run.code, 2)
+        self.assertIn("MIRROR_GITHUB_TOKEN", run.err)
+
+    def test_given_the_mirror_variables_on_another_command_when_run_then_they_are_not_required(self):
+        run = Run(["--github-owner", OWNER, "prepare-github"], FakeGitHub([repository("a")]),
+                  catalog=FORGEJO_CATALOG, env=ENV, forgejo=FakeForgejo(existing={"a": forgejo_repository("a")}))
+        self.assertEqual(run.code, 0, run.err)
+
+    def test_given_no_forgejo_token_when_mirrored_then_it_exits_2_before_anything_is_printed(self):
+        run = self.run_mirrors([repository("toolkit")],
+                               env={k: v for k, v in MIRROR_ENV.items() if k != "FORGE_TOKEN"})
+        self.assertEqual(run.code, 2)
+        self.assertIn("FORGE_TOKEN", run.err)
+        self.assertEqual(run.out, "")
+
+    def test_given_only_when_mirrored_then_just_those_are_mirrored(self):
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")],
+                               args=["mirrors", "--only", "other-lib"])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.lines, ["other-lib: push mirror created", "other-lib: sync requested"])
+
+    def test_given_an_unknown_name_in_only_when_mirrored_then_it_exits_2_before_writing(self):
+        run = self.run_mirrors([repository("toolkit")], args=["mirrors", "--only", "nope"])
+        self.assertEqual(run.code, 2)
+        self.assertEqual(run.forgejo.writes(), [])
+
+    def test_given_a_repository_outside_the_catalog_when_mirrored_then_it_is_mirrored_too(self):
+        # The move covers every repository of the GitHub owner, forks included; the catalog is for the bots.
+        run = self.run_mirrors([repository("old-fork", fork=True)])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.forgejo.synced, ["old-fork"])
+
+
+COLLABORATOR_USERS = ("jenkins", "jenkins-ci", "renovate", "claude")
+
+
+class CollaboratorsTests(unittest.TestCase):
+    ARGS = ["collaborators"]
+
+    def run_collaborators(self, args=None, forgejo=None, env=None, catalog=CATALOG_MIRROR, gh=None):
+        """The catalog's repositories are shop-api (the application) and toolkit; all are on Forgejo unless
+        `forgejo` says otherwise. GitHub is never asked."""
+        forgejo = forgejo or FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit")})
+        return Run(args or self.ARGS, gh or FakeGitHub([]), catalog=catalog, env=ENV if env is None else env,
+                   forgejo=forgejo)
+
+    def test_given_a_catalog_repository_when_collaborators_run_then_each_bot_gets_its_permission(self):
+        run = self.run_collaborators()
+        self.assertEqual(run.code, 0, run.err)
+        for repo in ("shop-api", "toolkit"):
+            self.assertEqual({user: run.forgejo.collaborators[(repo, user)] for user in COLLABORATOR_USERS},
+                             {"jenkins": "write", "jenkins-ci": "read", "renovate": "write", "claude": "write"})
+        self.assertEqual([c for c in run.forgejo.writes() if c[1].startswith(f"/repos/{OWNER}/toolkit/")], [
+            ("PUT", f"/repos/{OWNER}/toolkit/collaborators/jenkins", {"permission": "write"}),
+            ("PUT", f"/repos/{OWNER}/toolkit/collaborators/jenkins-ci", {"permission": "read"}),
+            ("PUT", f"/repos/{OWNER}/toolkit/collaborators/renovate", {"permission": "write"}),
+            ("PUT", f"/repos/{OWNER}/toolkit/collaborators/claude", {"permission": "write"})])
+        self.assertIn("toolkit: jenkins-ci: read granted", run.lines)
+        self.assertEqual(run.gh.calls, [])
+
+    def test_given_only_the_catalog_when_collaborators_run_then_other_repositories_are_not_touched(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit", "old-fork")})
+        run = self.run_collaborators(forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertFalse([c for c in forgejo.calls if "old-fork" in c[1]])
+
+    def test_given_another_jenkins_user_in_the_catalog_when_collaborators_run_then_that_one_gets_write(self):
+        catalog = {**CATALOG_MIRROR, "forge": {**CATALOG_MIRROR["forge"], "jenkinsUser": "ci-jenkins"}}
+        run = self.run_collaborators(catalog=catalog)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.forgejo.collaborators[("toolkit", "ci-jenkins")], "write")
+        self.assertNotIn(("toolkit", "jenkins"), run.forgejo.collaborators)
+
+    def test_given_a_missing_bot_user_when_collaborators_run_then_it_is_named_and_the_run_exits_1(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit")},
+                              users={"jenkins", "jenkins-ci", "claude"})
+        run = self.run_collaborators(forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        # Named once, however many repositories there are, and the others are still granted.
+        self.assertEqual(run.err.count("renovate"), 1, run.err)
+        self.assertIn("renovate: not on Forgejo: create it first (docs/setup.md 9.7)", run.err)
+        self.assertFalse([c for c in forgejo.calls if "collaborators/renovate" in c[1]])
+        self.assertEqual(forgejo.collaborators[("toolkit", "claude")], "write")
+        self.assertEqual(forgejo.collaborators[("shop-api", "jenkins-ci")], "read")
+
+    def test_given_a_user_lookup_that_fails_when_collaborators_run_then_that_user_is_skipped_and_named_once(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit")},
+                              user_fail={"claude": 500})
+        run = self.run_collaborators(forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertEqual(run.err.count("claude: could not look for the user"), 1, run.err)
+        self.assertNotIn(("toolkit", "claude"), forgejo.collaborators)
+        self.assertEqual(forgejo.collaborators[("toolkit", "renovate")], "write")
+
+    def test_given_a_collaborator_with_the_right_permission_when_collaborators_run_then_it_is_left_unchanged(self):
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                              collaborators={("toolkit", "jenkins"): "write", ("toolkit", "jenkins-ci"): "read"})
+        run = self.run_collaborators(["collaborators", "--only", "toolkit"], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual([c[1].rsplit("/", 1)[1] for c in forgejo.writes()], ["renovate", "claude"])
+        self.assertIn("toolkit: jenkins: already write", run.lines)
+
+    def test_given_a_collaborator_with_another_permission_when_collaborators_run_then_it_is_updated(self):
+        # jenkins-ci is read-only on purpose: a bot that was given more is brought back down.
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                              collaborators={("toolkit", "jenkins-ci"): "write", ("toolkit", "renovate"): "read"})
+        run = self.run_collaborators(["collaborators", "--only", "toolkit"], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual((forgejo.collaborators[("toolkit", "jenkins-ci")],
+                          forgejo.collaborators[("toolkit", "renovate")]), ("read", "write"))
+        self.assertIn("toolkit: jenkins-ci: changed from write to read", run.lines)
+        self.assertIn("toolkit: renovate: changed from read to write", run.lines)
+
+    def test_given_the_collaborators_set_when_run_again_then_the_second_run_writes_nothing(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit")})
+        self.run_collaborators(forgejo=forgejo)
+        forgejo.calls.clear()
+        again = self.run_collaborators(forgejo=forgejo)
+        self.assertEqual((again.code, forgejo.writes()), (0, []))
+
+    def test_given_a_dry_run_when_collaborators_run_then_nothing_is_written_and_the_plan_is_printed(self):
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
+                              collaborators={("toolkit", "renovate"): "read"})
+        run = self.run_collaborators(["--dry-run", "collaborators", "--only", "toolkit"], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(forgejo.writes(), [])
+        self.assertIn("toolkit: jenkins: would grant write", run.lines)
+        self.assertIn("toolkit: renovate: would change from read to write", run.lines)
+
+    def test_given_a_repository_forgejo_does_not_have_when_collaborators_run_then_it_fails_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")})
+        run = self.run_collaborators(forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("shop-api: not on Forgejo: run import first", run.err)
+        self.assertEqual(forgejo.collaborators[("toolkit", "claude")], "write")
+
+    def test_given_a_refused_grant_when_collaborators_run_then_that_repository_fails_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit")},
+                              collaborator_fail={("shop-api", "PUT"): 403})
+        run = self.run_collaborators(forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("shop-api: could not set the collaborators: PUT", run.err)
+        self.assertEqual(forgejo.collaborators[("toolkit", "claude")], "write")
+
+    def test_given_only_when_collaborators_run_then_just_those_are_done_and_a_name_outside_the_catalog_exits_2(self):
+        run = self.run_collaborators(["collaborators", "--only", "toolkit"])
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual({repo for repo, _ in run.forgejo.collaborators}, {"toolkit"})
+        refused = self.run_collaborators(["collaborators", "--only", "old-fork"])
+        self.assertEqual(refused.code, 2)
+        self.assertIn("old-fork", refused.err)
+        self.assertEqual(refused.forgejo.writes(), [])
+
+    def test_given_no_forgejo_token_when_collaborators_run_then_it_exits_2_before_anything_is_printed(self):
+        run = self.run_collaborators(env={})
+        self.assertEqual(run.code, 2)
+        self.assertIn("FORGE_TOKEN", run.err)
+        self.assertEqual(run.out, "")
+
+    def test_given_no_github_token_when_collaborators_run_then_it_still_works(self):
+        # Collaborators are a Forgejo matter: GitHub's token is not looked for.
+        run = Run(self.ARGS, FakeGitHub([]), catalog=CATALOG_MIRROR, env=ENV, token="",
+                  forgejo=FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit")}))
+        self.assertEqual(run.code, 0, run.err)
+
+    def test_given_a_failure_and_no_github_token_when_collaborators_run_then_the_failure_is_still_reported(self):
+        run = Run(self.ARGS, FakeGitHub([]), catalog=CATALOG_MIRROR, env=ENV, token="",
+                  forgejo=FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")}))
+        self.assertEqual(run.code, 1)
+        self.assertIn("shop-api: not on Forgejo: run import first", run.err)
+
+
 class ReportTests(unittest.TestCase):
     def context(self, token):
         ctx = migrate.Context(catalog=CATALOG, dry_run=False, only=[], github_owner=OWNER)
@@ -821,6 +1244,12 @@ class ReportTests(unittest.TestCase):
             shown = migrate._report(self.context("gh-tok-456"), "a: failed: echoed gh-tok-456")
         self.assertEqual(shown, "a: failed: echoed ***")
         self.assertEqual(out.getvalue(), "a: failed: echoed ***\n")
+
+    def test_given_the_mirror_token_in_a_failure_when_reported_then_it_is_hidden_too(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out), mock.patch.dict(os.environ, {"MIRROR_GITHUB_TOKEN": "mirror-tok-789"}):
+            shown = migrate._report(self.context("gh-tok-456"), "a: echoed mirror-tok-789 and gh-tok-456")
+        self.assertEqual(shown, "a: echoed *** and ***")
 
     def test_given_an_empty_or_missing_token_when_reported_then_the_text_is_left_as_it_is(self):
         # str.replace("", "***") would put *** between every character; None would raise.

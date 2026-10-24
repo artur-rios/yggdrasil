@@ -35,6 +35,26 @@ and goes on to the next, so a re-run picks up where it stopped):
               touched on GitHub. A repository archived on GitHub is left as it is there (a note, not a
               failure; its Dependabot file is still deleted on Forgejo). A private repository whose
               rulesets GitHub will not list (403: a plan without them) has none to delete: a note. With --dry-run it prints what it would do and sends no write.
+  mirrors     gives each repository Forgejo has a push mirror to its GitHub copy
+              (https://github.com/<mirror.github>/<repo>.git): every branch and tag, synced on every commit
+              and every 8 hours, then one sync is asked for so what is there goes now. The account is
+              MIRROR_GITHUB_USER and its fine-grained token MIRROR_GITHUB_TOKEN (Contents and Workflows
+              write on the mirrored repositories), both required by this command alone: the token goes
+              only in the request body, and a --dry-run shows it as ***. One that has the mirror is
+              "already there" (the address is compared without credentials, a trailing slash or `.git`);
+              one that never synced gets its sync asked for again, so a run that stopped between the two
+              is finished by the next. A repository with a push mirror to another address is a failure,
+              not replaced: remove that mirror on Forgejo yourself. A repository archived on GitHub gets
+              no mirror (a note, not a failure); one Forgejo does not have is a failure ("not on Forgejo:
+              run import first"). Covers every repository of the GitHub owner, as prepare-github does.
+  collaborators
+              gives the bots their permission on every catalog repository (catalog.py repository-names):
+              forge.jenkinsUser (jenkins) write, jenkins-ci read, renovate write, claude write. Forgejo
+              drops whitelisted users that cannot write, so this runs before rules.py. A bot account
+              Forgejo does not have is named once (not once per repository) and left out: create it first,
+              docs/setup.md 9.7. A collaborator with another permission is set to the right one; one that
+              is right is left alone. Needs only FORGE_TOKEN (the owner's). --only names catalog
+              repositories.
               Runbook order: import, prepare-github, mirrors, collaborators, rules.py, verify.
 
 The move covers every repository of the GitHub owner, forks included. Only the catalog's repositories
@@ -43,9 +63,10 @@ The move covers every repository of the GitHub owner, forks included. Only the c
 The GitHub owner is the catalog's `mirror.github` when a mirror is set, else --github-owner. The Forgejo
 owner is the catalog's `owner`, as for rules.py. Tokens: GitHub's as rules.py finds it (GH_TOKEN, else
 `gh auth token`), Forgejo's in FORGE_TOKEN (the owner's, scope write:repository); they go only in the
-Authorization header, never in a process argument, a URL or a line of output. The one exception is
-GitHub's, which Forgejo's migration API takes in the request body (`auth_token`): import sends it there
-and shows it as *** in a --dry-run. The Forgejo token has to own the target namespace (`repo_owner` is
+Authorization header, never in a process argument, a URL or a line of output. The exceptions are
+GitHub's, which Forgejo's migration API takes in the request body (`auth_token`), and the mirror token, which
+its push-mirror API takes there too (`remote_password`): import and mirrors send them there and show
+them as *** in a --dry-run. The Forgejo token has to own the target namespace (`repo_owner` is
 the catalog's owner): the owner's.
 
 Exit status: 0 done, 1 something failed (each failure on its own line at the end), 2 usage (a missing token
@@ -77,6 +98,13 @@ class UsageError(Exception):
 
 class MigrateError(Exception):
     """A run that cannot go on although it was asked right (exit 1)."""
+
+
+def _required_env(name, what):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise UsageError(f"no {what}: set {name}")
+    return value
 
 
 # --- The shared context -------------------------------------------------------------------------------
@@ -116,6 +144,28 @@ class Context:
         if not token:
             raise UsageError("no Forgejo token: set FORGE_TOKEN (the owner's, scope write:repository)")
         return rules.Api(forge["api"], token, "token")
+
+    @property
+    def mirror_user(self):
+        """The GitHub user that owns the mirror token (MIRROR_GITHUB_USER). Only `mirrors` asks for it."""
+        return _required_env("MIRROR_GITHUB_USER", "the GitHub user that owns the mirror token")
+
+    @property
+    def mirror_token(self):
+        """The mirror's GitHub token (MIRROR_GITHUB_TOKEN), fine-grained: Contents and Workflows write on the
+        mirrored repositories. Only `mirrors` asks for it; it is never printed (see secrets)."""
+        return _required_env("MIRROR_GITHUB_TOKEN", "the fine-grained GitHub token of the mirror")
+
+    def secrets(self):
+        """The tokens a printed line must not carry: GitHub's (if one is to be had; collaborators never need
+        it, so a missing one is no error here) and the mirror's. Longest first, so that one that contains
+        another is hidden whole. Never empty strings: str.replace on "" would put *** between every character."""
+        found = [os.environ.get("MIRROR_GITHUB_TOKEN", "").strip()]
+        try:
+            found.append(self.github_token)
+        except UsageError:
+            pass
+        return sorted({secret for secret in found if secret}, key=len, reverse=True)
 
     @functools.cached_property
     def migrate_timeout(self):
@@ -295,11 +345,10 @@ def _unfinished(found):
 
 def _report(ctx, failure):
     """Prints a failure where it happened (it is listed again at the end) and returns it, with the GitHub
-    token hidden: a server's error text may echo what it was sent. No token (empty, None) hides nothing:
-    str.replace on "" would put *** between every character."""
-    token = ctx.github_token
-    if token:
-        failure = failure.replace(token, "***")
+    and mirror tokens hidden: a server's error text may echo what it was sent. No token (empty, None)
+    hides nothing: str.replace on "" would put *** between every character."""
+    for secret in ctx.secrets():
+        failure = failure.replace(secret, "***")
     print(failure, flush=True)
     return failure
 
@@ -526,7 +575,203 @@ def cmd_prepare_github(ctx, args):
     return failures
 
 
-COMMANDS = {"inventory": cmd_inventory, "import": cmd_import, "prepare-github": cmd_prepare_github}
+# --- mirrors ----------------------------------------------------------------------------------------------
+
+# Every branch and tag go; `sync_on_commit` pushes at each commit and the interval is the net under it.
+MIRROR_INTERVAL = "8h0m0s"
+
+
+def mirror_address(ctx, name):
+    """Where a repository's push mirror points: its GitHub copy, no credentials in it (they go apart, as
+    `remote_username` and `remote_password`)."""
+    return f"https://github.com/{ctx.github_owner}/{name}.git"
+
+
+def mirror_payload(ctx, name):
+    """The body of Forgejo's `POST /api/v1/repos/<owner>/<repo>/push_mirrors`. It carries the mirror token,
+    so it never goes to a log (see _mirror_shown)."""
+    return {"remote_address": mirror_address(ctx, name), "remote_username": ctx.mirror_user,
+            "remote_password": ctx.mirror_token, "interval": MIRROR_INTERVAL, "sync_on_commit": True}
+
+
+def _mirror_shown(payload):
+    """The payload as it may be printed: the password hidden."""
+    return {**payload, "remote_password": "***"}
+
+
+def _without_credentials(address):
+    """The address as it may be printed or compared: `user:password@` dropped. (Forgejo's API never lists
+    one, but a line of output must not depend on that.) An address that is no URL is returned as it is."""
+    address = address.strip()
+    parts = urllib.parse.urlsplit(address)
+    if not parts.netloc:
+        return address
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc.rpartition("@")[2], parts.path, "", ""))
+
+
+def _same_address(first, second):
+    """Whether two remote addresses are the same repository: credentials, a trailing slash or `.git`, and
+    letter case (GitHub's names have none) do not matter. Forgejo's API lists the address with or without
+    the `.git` it was given."""
+    def key(address):
+        address = _without_credentials(address).rstrip("/")
+        address = address[:-len(".git")] if address.endswith(".git") else address
+        return address.rstrip("/").casefold()
+    return key(first) == key(second)
+
+
+def _request_sync(ctx, name, done):
+    """Asks Forgejo to push every push mirror of the repository now (it answers at once and pushes in the
+    background). Returns the failure to report, or None."""
+    try:
+        _write(ctx, name, "request the sync", done,
+               lambda: ctx.forgejo.request("POST", f"/repos/{ctx.forgejo_owner}/{name}/push_mirrors-sync"))
+    except rules.ApiError as error:
+        return _report(ctx, f"{name}: could not sync it: {error}")
+    return None
+
+
+def _mirror_one(ctx, repo):
+    """Gives one repository its push mirror; returns the failure to report, or None. Prints its lines."""
+    name = repo["name"]
+    try:
+        found = _on_forgejo(ctx, name)
+    except rules.ApiError as error:
+        return _report(ctx, f"{name}: could not look for it on Forgejo: {error}")
+    if found is None:
+        return _report(ctx, f"{name}: not on Forgejo: run import first")
+    if repo["archived"]:
+        # GitHub refuses pushes to an archived repository: the mirror would only ever fail.
+        print(f"{name}: archived on GitHub: no mirror", flush=True)
+        return None
+
+    base = f"/repos/{ctx.forgejo_owner}/{name}/push_mirrors"
+    wanted = mirror_address(ctx, name)
+    try:
+        existing = ctx.forgejo.request("GET", base) or []
+    except rules.ApiError as error:
+        return _report(ctx, f"{name}: could not list its push mirrors: {error}")
+    right = [m for m in existing if _same_address(m.get("remote_address") or "", wanted)]
+    if right:
+        if right[0].get("last_update"):
+            print(f"{name}: push mirror already there", flush=True)
+            return None
+        # Made but never pushed: the run that made it stopped before the sync (or the sync failed).
+        return _request_sync(ctx, name, "push mirror already there, never synced: sync requested")
+    if existing:
+        others = ", ".join(_without_credentials(m.get("remote_address") or "?") for m in existing)
+        return _report(ctx, f"{name}: has a push mirror to {others}, not to {wanted}: "
+                            "not replaced; remove it on Forgejo if it is wrong")
+
+    payload = mirror_payload(ctx, name)
+    try:
+        _write(ctx, name, f"create a push mirror {json.dumps(_mirror_shown(payload))}", "push mirror created",
+               lambda: ctx.forgejo.request("POST", base, payload))
+    except rules.ApiError as error:
+        return _report(ctx, f"{name}: could not make the push mirror: {error}")
+    return _request_sync(ctx, name, "sync requested")
+
+
+def cmd_mirrors(ctx, args):
+    """Gives each repository Forgejo has a push mirror (every branch and tag, on every commit and every 8
+    hours) to its GitHub copy, and asks for the first sync. Needs MIRROR_GITHUB_USER and MIRROR_GITHUB_TOKEN."""
+    ctx.forgejo, ctx.mirror_user, ctx.mirror_token  # a missing token or user is a usage error before any output
+    failures = []
+    for repo in github_repositories(ctx.gh, ctx.github_owner, ctx.only):
+        failure = _mirror_one(ctx, repo)
+        if failure:
+            failures.append(failure)
+    return failures
+
+
+# --- collaborators ----------------------------------------------------------------------------------------
+
+def bot_permissions(ctx):
+    """The permission each bot account has on every catalog repository, in the order they are applied:
+    [(user, permission)]. Jenkins' account is the catalog's (forge.jenkinsUser, `jenkins` by default); it
+    writes (statuses, merges, tags, releases). Its read-only twin, the Renovate and claude accounts are fixed
+    names (docs/setup.md 9.7)."""
+    permissions = {catalog_module.forge(ctx.catalog)["jenkinsUser"]: "write"}
+    permissions.update({"jenkins-ci": "read", "renovate": "write", "claude": "write"})
+    return list(permissions.items())
+
+
+def _bots_on_forgejo(ctx, failures):
+    """The bots whose account Forgejo has. Each missing one is named once, here, and left out of every
+    repository (a failure of its own, appended to `failures`), not once per repository."""
+    present = []
+    for user, permission in bot_permissions(ctx):
+        try:
+            ctx.forgejo.request("GET", f"/users/{urllib.parse.quote(user, safe='')}")
+        except rules.ApiError as error:
+            if error.status == 404:
+                failures.append(_report(ctx, f"{user}: not on Forgejo: create it first (docs/setup.md 9.7)"))
+            else:
+                failures.append(_report(ctx, f"{user}: could not look for the user on Forgejo: {error}"))
+            continue
+        present.append((user, permission))
+    return present
+
+
+def _collaborator_permission(ctx, name, user):
+    """What the user has on the repository as a collaborator (`read`, `write`, `admin`), or None when
+    they are not one: Forgejo answers 404, or `none`."""
+    try:
+        answer = ctx.forgejo.request(
+            "GET", f"/repos/{ctx.forgejo_owner}/{name}/collaborators/{urllib.parse.quote(user, safe='')}/permission")
+    except rules.ApiError as error:
+        if error.status == 404:
+            return None
+        raise
+    permission = (answer or {}).get("permission")
+    return None if permission in (None, "", "none") else permission
+
+
+def _collaborators_one(ctx, name, bots):
+    """Sets the bots' permission on one catalog repository; returns the failure to report, or None.
+    A failure stops this repository (the next run does the rest); the others go on."""
+    try:
+        if _on_forgejo(ctx, name) is None:
+            return _report(ctx, f"{name}: not on Forgejo: run import first")
+        for user, wanted in bots:
+            current = _collaborator_permission(ctx, name, user)
+            if current == wanted:
+                print(f"{name}: {user}: already {wanted}", flush=True)
+                continue
+            # The same PUT adds a collaborator and changes the permission of one who is.
+            if current is None:
+                would, done = f"grant {wanted}", f"{wanted} granted"
+            else:
+                would, done = f"change from {current} to {wanted}", f"changed from {current} to {wanted}"
+            _write(ctx, f"{name}: {user}", would, done, lambda user=user, wanted=wanted: ctx.forgejo.request(
+                "PUT", f"/repos/{ctx.forgejo_owner}/{name}/collaborators/{urllib.parse.quote(user, safe='')}",
+                {"permission": wanted}))
+    except rules.ApiError as error:
+        return _report(ctx, f"{name}: could not set the collaborators: {error}")
+    return None
+
+
+def cmd_collaborators(ctx, args):
+    """Gives the bot accounts their permission on every catalog repository: jenkins write, jenkins-ci read,
+    renovate write, claude write. A bot account Forgejo lacks is named once. Needs only FORGE_TOKEN."""
+    ctx.forgejo  # a missing token is a usage error before any output
+    names = catalog_module.repository_names(ctx.catalog)
+    if ctx.only:
+        unknown = sorted(set(ctx.only) - set(names))
+        if unknown:
+            raise UsageError(f"not catalog repositories: {', '.join(unknown)}")
+        names = [name for name in names if name in ctx.only]
+    failures = []
+    bots = _bots_on_forgejo(ctx, failures)
+    for name in names:
+        failure = _collaborators_one(ctx, name, bots)
+        if failure:
+            failures.append(failure)
+    return failures
+
+
+COMMANDS = {"inventory": cmd_inventory, "import": cmd_import, "prepare-github": cmd_prepare_github,
+            "mirrors": cmd_mirrors, "collaborators": cmd_collaborators}
 
 
 # --- The command line ---------------------------------------------------------------------------------
