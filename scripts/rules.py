@@ -320,8 +320,8 @@ def _fixed_tags(name, r):
 
 
 def github_rulesets(r):
-    """The ruleset payloads of one repository: `develop`, `main` and (release model) `release tags`, and
-    for an owner-tagged repository `release tag creation`. The first three names are the ones
+    """The ruleset payloads of one repository, in the order they are written: `develop`, `main`, for an
+    owner-tagged repository `release tag creation`, and (release model) `release tags`. The first three names are the ones
     github/rulesets.py always used, so existing rulesets are updated in place."""
     if r.model == "basic":
         # Protection from deletion and force push, nothing else: no pull request, checks or tags.
@@ -331,7 +331,9 @@ def github_rulesets(r):
 
     # A repository the owner tags: only the owner creates its tags, through the bypass of a ruleset of its
     # own -- in the same ruleset as `update` and `deletion`, the bypass would let the owner move and delete
-    # them too. An application's tags are created by Jenkins, which a creation rule would lock out.
+    # them too. An application's tags are created by Jenkins, which a creation rule would lock out. It is
+    # written before `release tags`: an older `release tags` held the creation rule, and a run that stopped
+    # between the two writes must not leave the creation of the tags unrestricted.
     creation = ([_ruleset("release tag creation", "tag", f"refs/tags/{r.tag_pattern}", [{"type": "creation"}])]
                 if r.owner_tags else [])
 
@@ -350,8 +352,8 @@ def github_rulesets(r):
             _pull_request(["merge"]),
             _status_checks(r.main_checks),
         ]),
-        _fixed_tags("release tags", r),
         *creation,
+        _fixed_tags("release tags", r),
     ]
 
 

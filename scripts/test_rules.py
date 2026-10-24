@@ -248,10 +248,11 @@ class GitHubRulesetsTests(unittest.TestCase):
         r = by_repo()["toolkit"]
         rules.apply_github(api, "artur-rios", r, dry_run=False)
         # The existing `release tags` (which had the creation rule and the bypass) is updated in place;
-        # `release tag creation` is new.
+        # `release tag creation` is new, and written first: a run that fails between the two never leaves
+        # the creation of the tags unrestricted.
         self.assertEqual([(m, b["name"]) for m, _, b in api.writes() if m != "PATCH"],
-                         [("PUT", "develop"), ("PUT", "main"), ("PUT", "release tags"),
-                          ("POST", "release tag creation")])
+                         [("PUT", "develop"), ("PUT", "main"), ("POST", "release tag creation"),
+                          ("PUT", "release tags")])
         api.calls.clear()
         rules.apply_github(api, "artur-rios", r, dry_run=False)
         self.assertEqual([m for m, _, _ in api.writes()], ["PATCH", "PUT", "PUT", "PUT", "PUT"])
