@@ -768,17 +768,46 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual((refused.status, refused.message),
                          (409, "a tag attached to a release cannot be deleted directly"))
         self.assertEqual([self.tag_commit(APP, tag) for tag in tags], [other, None, main])
-        # The release of the deleted tag stays, published, naming a tag that is no longer there.
-        release = self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/tags/{tags[1]}")
-        self.assertEqual((release["tag_name"], release["draft"]), (tags[1], False))
-        # What the tag-check job reads: every release still lists the commit it was released from, so the
-        # moved tag (now on `other`) and the deleted one (tag-sha exits 4) are told from the untouched one.
+        # The release of the deleted tag is turned into a draft once Forgejo has processed the push (in the
+        # background: right after the push it may still read as published), naming a tag that is gone. A
+        # draft is seen only with write access: not by the tag-check job's read credential, which is why that
+        # job remembers the releases it has seen. The moved tag's release keeps the commit it was released
+        # from as its target, and is still published.
+        self.assertTrue(self.wait_for_draft(APP, tags[1]), f"the release of {tags[1]} is still published")
         result = self.forge(JENKINS, "release-tags", APP)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for tag in tags:
-            self.assertIn(f"{tag}\t{main}", result.stdout.splitlines(), tag)
+        listed = result.stdout.splitlines()
+        self.assertIn(f"{tags[0]}	{main}", listed)
+        self.assertIn(f"{tags[2]}	{main}", listed)
+        self.assertNotIn(tags[1], [line.split("	")[0] for line in listed])
         found = [self.forge(JENKINS, "tag-sha", APP, tag) for tag in tags]
         self.assertEqual([(r.returncode, r.stdout.strip()) for r in found], [(0, other), (4, ""), (0, main)])
+        # Pushed back (the repair docs/setup.md describes), the tag is on its commit again and Forgejo
+        # publishes its release again by itself.
+        clone = self.clone(JENKINS, APP)
+        self.assertEqual(self.git(JENKINS, "tag", tags[1], main, cwd=clone).returncode, 0)
+        pushed = self.git(JENKINS, "push", "origin", f"refs/tags/{tags[1]}", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertEqual(self.tag_commit(APP, tags[1]), main)
+        self.assertTrue(self.wait_for_draft(APP, tags[1], draft=False), f"the release of {tags[1]} is still a draft")
+        result = self.forge(JENKINS, "release-tags", APP)
+        self.assertIn(f"{tags[1]}	{main}", result.stdout.splitlines())
+
+    def release_by_tag(self, repo, tag):
+        """The release of the tag as the owner sees it (drafts included), or None."""
+        found = [r for r in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/releases?limit=50") or []
+                 if r["tag_name"] == tag]
+        return found[0] if found else None
+
+    def wait_for_draft(self, repo, tag, seconds=60, draft=True):
+        """Whether the tag's release is a draft (with draft=False: published) within `seconds`."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            release = self.release_by_tag(repo, tag)
+            if release is not None and release["draft"] is draft:
+                return True
+            time.sleep(1)
+        return False
 
     def test_given_a_basic_repository_when_anyone_force_pushes_or_deletes_develop_or_main_then_it_is_refused(self):
         # rules: basic sends develop and main protections with pushing allowed and nothing else: Forgejo

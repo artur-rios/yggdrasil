@@ -1769,6 +1769,17 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.jenkins.post(job_path("tag-check") + "/build", {"delay": "0"})
         return self.wait_for_build("tag-check", None, after=before, timeout=900)
 
+    def wait_for_release(self, repo, tag, draft, seconds=60):
+        """Whether the tag's release is a draft (draft=True) or published (False) within `seconds`: Forgejo
+        changes it after a push that deletes or restores its tag, in the background."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            release = self.release_of(repo, tag)
+            if release is not None and release["draft"] is draft:
+                return True
+            time.sleep(1)
+        return False
+
     def jenkins_moves_tags(self, repo, moves):
         """jenkins (the only user Forgejo lets change an application's v* tags) pushes each tag of `moves`
         ({tag: commit, or None to delete it}) with git, as anyone on the tag protection's list could. Each
@@ -1808,10 +1819,14 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertNotEqual(other, main)
         self.jenkins_moves_tags(APP, {"v0.1.0": other, "v0.2.0": None})
         self.assertEqual((self.tag_commit(APP, "v0.1.0"), self.tag_commit(APP, "v0.2.0")), (other, None))
+        # Forgejo turns the deleted tag's release into a draft, which the read credential does not see: the
+        # job finds it in the record its previous run archived.
+        self.assertTrue(self.wait_for_release(APP, "v0.2.0", draft=True), "v0.2.0's release is still published")
         broken = self.tag_check()
         self.assertEqual(broken.result, "FAILURE", broken.console[-6000:])
         self.assertIn(f"MOVED: {APP} v0.1.0 (tag on {other}, released from {main})", broken.console)
-        self.assertIn(f"DELETED: {APP} v0.2.0 (released from {main}): the tag is gone", broken.console)
+        self.assertIn(f"DELETED: {APP} v0.2.0 (released from {main}): the tag is gone, and its release is no "
+                      "longer published", broken.console)
         self.assertEqual(self.description("tag-check", None, broken.number), "2 release tags moved or deleted")
         # The problems are the last lines before the error, one each (in the order the releases were listed).
         first = min(broken.console.index(f"MOVED: {APP} v0.1.0"), broken.console.index(f"DELETED: {APP} v0.2.0"))
@@ -1823,10 +1838,15 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assert_no_secret(broken.console, "the tag-check log")
 
         # Put back where they were released from, the check passes again (and the later tests see no problem).
+        # Pushing the deleted tag back publishes its release again (Forgejo does it, test_forgejo_live.py).
         self.jenkins_moves_tags(APP, {"v0.1.0": main, "v0.2.0": main})
+        self.assertTrue(self.wait_for_release(APP, "v0.2.0", draft=False), "v0.2.0's release is still a draft")
         repaired = self.tag_check()
         self.assertEqual(repaired.result, "SUCCESS", repaired.console[-6000:])
-        self.assertIn(f"{APP} v0.1.0: ok ({main[:7]})", repaired.console)
+        for tag in ("v0.1.0", "v0.2.0"):
+            self.assertIn(f"{APP} {tag}: ok ({main[:7]})", repaired.console)
+        self.assertEqual(self.description("tag-check", None, repaired.number),
+                         self.description("tag-check", None, untouched.number))
 
     # --- The library's own pieces -----------------------------------------------------------------
 

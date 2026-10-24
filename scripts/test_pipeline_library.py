@@ -1166,8 +1166,8 @@ class TagCheckLibraryTests(unittest.TestCase):
         self.assertNotRegex(self.lib.masked[start:end], r"\bsh\b")
         # A tag name the pipeline would not make is skipped before it is used, a target that is not a
         # commit is printed through printable(), and so is an answer of tag-sha that is not a commit.
-        self.assertLess(body.index("if (!(tag ==~ TAG))"), body.index("['tag-sha', repo, tag]"))
-        self.assertIn("printable(tag)", body)
+        self.assertLess(body.index("if (release.tag ==~ TAG)"), body.index("['tag-sha', repo, tag]"))
+        self.assertIn("printable(release.tag)", body)
         self.assertIn("printable(target)", body)
         self.assertIn("printable(sha)", body)
         self.assertIn("target ==~ COMMIT ? target : null", body)
@@ -1178,7 +1178,7 @@ class TagCheckLibraryTests(unittest.TestCase):
         # exit 4: no such tag; a known target that differs: moved; an unknown one is only logged.
         self.assertRegex(body, r"if \(found == 4\) \{\s*problems << \"DELETED: \$\{repo\} \$\{tag\} \(released from \$\{from\}\)")
         self.assertRegex(body, r"\} else if \(sha != known\) \{\s*problems << \"MOVED: \$\{repo\} \$\{tag\} "
-                               r"\(tag on \$\{sha\}, released from \$\{known\}\)\"")
+                               r"\(tag on \$\{sha\}, released from \$\{known\}\)\$\{unlisted\}\"")
         self.assertIn("unknown target", body)
         self.assertRegex(body, r"if \(known == null\) \{\s*echo ")
         main = self.body("tagCheck")
@@ -1187,6 +1187,28 @@ class TagCheckLibraryTests(unittest.TestCase):
         # A problem fails the build (error, after a line per problem); none is a success with the count.
         self.assertRegex(main, r"for \(Object line : problems \+ unreadable\) \{\s*echo line\.toString\(\)\s*\}\s*error ")
         self.assertRegex(main, r"if \(!problems && !unreadable\) \{\s*currentBuild\.description = ")
+
+    def test_given_a_deleted_tags_release_turned_draft_when_read_then_the_record_of_the_last_run_still_checks_it(self):
+        # Forgejo and GitHub make a deleted tag's release a draft, which the read credential does not see:
+        # what the previous run knew of is read back (on the controller, before any node) and checked too.
+        lib = self.lib
+        self.assertEqual(field_literal(lib, "TAG_RECORD"), ("'", "release-tags.tsv"))
+        main = self.body("tagCheck")
+        node = main.index("node('ci')")
+        self.assertLess(main.index("tagRecordLines(previousTagRecord(currentBuild.rawBuild))"), node)
+        self.assertLess(node, main.index("report = checkReleaseTags(entries, previous)"))
+        # Archived from the ci workspace before it is cleaned, whatever the result.
+        written = main.index("writeFile file: TAG_RECORD, text: tagRecordText(report.record as List)")
+        self.assertLess(main.index("report = checkReleaseTags(entries, previous)"), written)
+        self.assertLess(written, main.index("archiveArtifacts artifacts: TAG_RECORD"))
+        self.assertLess(main.index("archiveArtifacts artifacts: TAG_RECORD"), main.index("cleanWs()"))
+        body = self.body("checkReleaseTags")
+        self.assertIn("List checking = published + unpublished(remembered, published)", body)
+        self.assertIn("record << [repo: repo, tag: tag, target: target]", body)
+        # A repository that could not be read keeps what was known of it.
+        self.assertRegex(body, r"unreadable << [^\n]+\n\s*record\.addAll\(remembered\)\s*continue")
+        self.assertIn("build.artifactManager.root().child(TAG_RECORD)", self.body("previousTagRecord"))
+        self.assertIn("columns[1] ==~ TAG", self.body("tagRecordLines"))
 
     def test_given_the_catalog_when_read_then_tag_check_visits_every_entry_that_releases_once(self):
         body = self.body("releasingRepositories")

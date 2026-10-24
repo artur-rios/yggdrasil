@@ -154,6 +154,8 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final String NUGET_CREDENTIAL = 'nuget-api-key'
 // publish.nuget.packages when the file does not say.
 @Field static final String NUGET_PACKAGES = '**/*.nupkg'
+// What the tag-check job archives each run, and reads back from the run before: the releases it knows of.
+@Field static final String TAG_RECORD = 'release-tags.tsv'
 
 // Run from a directory: exit 3, naming them, when a symbolic link under it leads out of it -- or, with
 // YGG_ANY_LINK set, when there is any link at all (a release's files are files). A build or a check ran as
@@ -1907,17 +1909,25 @@ void actionsRelease() {
 // ---- The tag-check job ----
 
 // The tag-check job (platform/jenkins/controller/casc.yaml, its script jenkins/tag-check.groovy kept in
-// Jenkins), every day and by hand: whether each published release's tag still names the commit it was
-// released from. On Forgejo whoever may create a repository's version tags may also move and delete them
-// (the tag protection is one list of who may change a tag: the accepted gap, docs/setup.md step 12); this
-// is how a moved or deleted one is noticed. For every catalog entry that releases (releasingRepositories),
-// forge.sh release-tags lists its published releases with the commit each was released from (its target,
-// which create-release sets to the release's commit), and forge.sh tag-sha says where each tag is now:
+// Jenkins), every day and by hand: whether each release's tag still names the commit it was released from.
+// On Forgejo whoever may create a repository's version tags may also move and delete them (the tag
+// protection is one list of who may change a tag: the accepted gap, docs/setup.md step 12); this is how a
+// moved or deleted one is noticed. For every catalog entry that releases (releasingRepositories), forge.sh
+// release-tags lists its published releases with the commit each was released from (its target, which
+// create-release sets to the release's commit), and forge.sh tag-sha says where each tag is now:
 //   ok              the tag is on the release's commit
 //   MOVED           the tag is on another commit
 //   DELETED         there is no such tag any more (tag-sha exit 4)
 //   unknown target  the release names no commit (a branch: a release made by hand, or an old one), so
 //                   whether its tag moved is not known: logged, not a failure (a deleted tag is DELETED)
+//
+// A deleted tag's release does not stay published: Forgejo (once it has processed the push) and GitHub turn
+// it into a draft, which the read credential does not see. So the job remembers: every run archives the
+// releases it knows of (TAG_RECORD: those published now and those of the previous run's record), and the
+// next run checks the tags of all of them, published or not. A release seen once is checked from then on;
+// one deleted before the job first saw it is not noticed. An entry leaves the record only with its
+// repository leaving the catalog (or with the job's builds deleted: docs/setup.md).
+//
 // Any MOVED or DELETED fails the build, with a line each at the end of the log and the count in the build's
 // description; so does a repository or a tag that could not be read. The GitHub copies, which nobody can
 // move or delete a tag on (rules.py's mirror tags), are what to repair from (docs/setup.md).
@@ -1925,12 +1935,14 @@ void actionsRelease() {
 // On the ci agent with the read credential only: no write token, no GitHub App, and nothing of any
 // repository is checked out or run -- the releases and the tags are read through the server's API. Tag
 // names and targets come from the server: they reach forge.sh as arguments (toolStatus: environment
-// variables, never part of a script) and the log through printable().
+// variables, never part of a script), the record through writeFile, and the log through printable().
 void tagCheck() {
   Map catalog = loadCatalog()
   List entries = releasingRepositories(catalog)
   Map ctx = [forge: forgeOf(catalog), owner: catalog.owner.toString(),
              repository: (catalog.repository ?: 'yggdrasil').toString()]
+  // Read on the controller, before any node: the record the last run that made one archived.
+  List previous = tagRecordLines(previousTagRecord(currentBuild.rawBuild))
   Map report = null
   timeout(time: 1, unit: 'HOURS') {
     withForgeEnvironment(ctx) {
@@ -1938,7 +1950,9 @@ void tagCheck() {
         node('ci') {
           try {
             checkoutTools()
-            report = checkReleaseTags(entries)
+            report = checkReleaseTags(entries, previous)
+            writeFile file: TAG_RECORD, text: tagRecordText(report.record as List)
+            archiveArtifacts artifacts: TAG_RECORD
           } finally {
             cleanScratch()
             cleanWs()
@@ -1970,42 +1984,53 @@ void tagCheck() {
   error "${currentBuild.description}. Repair a moved or deleted tag from its GitHub copy: docs/setup.md, step 12."
 }
 
-// Stage Check the release tags, on the ci agent (tagCheck): every published release of every entry, with
-// the read token. Returns [checked: how many tags were compared, problems: a MOVED or DELETED line each,
-// unreadable: a line for each repository or tag that could not be read].
-Map checkReleaseTags(List entries) {
+// Stage Check the release tags, on the ci agent (tagCheck): for every entry, its published releases and
+// the ones of the previous record that are not published any more, with the read token. Returns [checked:
+// how many tags were compared, problems: a MOVED or DELETED line each, unreadable: a line for each
+// repository or tag that could not be read, record: what this run knows of, for the next one].
+Map checkReleaseTags(List entries, List previous) {
   String tmp = scratch()
   int checked = 0
   List problems = []
   List unreadable = []
+  List record = []
   for (Map entry : entries) {
     String repo = entry.repo
+    List remembered = recordOf(previous, repo)
     int code = withForgeToken('read') {
       return toolStatus('forge.sh', ['release-tags', repo], "${tmp}/release-tags")
     }
     if (code != 0) {
       unreadable << "NOT CHECKED: ${repo}: forge.sh release-tags exited ${code} (its message is above)".toString()
+      record.addAll(remembered)
       continue
     }
-    List releases = releaseTagLines(readScratch(tmp, 'release-tags'))
-    if (!releases) {
+    List published = []
+    for (Map release : releaseTagLines(readScratch(tmp, 'release-tags'))) {
+      if (release.tag ==~ TAG) {
+        published << [repo: repo, tag: release.tag, target: release.target, published: true]
+      } else {
+        echo "${repo}: skipped the release of '${printable(release.tag)}', which is not a tag name the pipeline makes."
+      }
+    }
+    List checking = published + unpublished(remembered, published)
+    if (!checking) {
       echo "${repo}: no published release."
     }
-    for (Map release : releases) {
+    for (Map release : checking) {
       String tag = release.tag
       String target = release.target
-      if (!(tag ==~ TAG)) {
-        echo "${repo}: skipped the release of '${printable(tag)}', which is not a tag name the pipeline makes."
-        continue
-      }
+      record << [repo: repo, tag: tag, target: target]
       checked++
+      // Not among the published releases any more: a draft (what a deleted tag's release becomes) or gone.
+      String unlisted = release.published ? '' : ', and its release is no longer published'
       int found = withForgeToken('read') {
         return toolStatus('forge.sh', ['tag-sha', repo, tag], "${tmp}/tag-sha")
       }
       String known = target ==~ COMMIT ? target : null
       String from = known ?: "'${printable(target)}'"
       if (found == 4) {
-        problems << "DELETED: ${repo} ${tag} (released from ${from}): the tag is gone".toString()
+        problems << "DELETED: ${repo} ${tag} (released from ${from}): the tag is gone${unlisted}".toString()
         continue
       }
       if (found != 0) {
@@ -2020,13 +2045,15 @@ Map checkReleaseTags(List entries) {
       if (known == null) {
         echo "${repo} ${tag}: unknown target: released from '${printable(target)}', not a commit, so whether the tag moved is not known (it is on ${sha.take(7)})."
       } else if (sha != known) {
-        problems << "MOVED: ${repo} ${tag} (tag on ${sha}, released from ${known})".toString()
-      } else {
+        problems << "MOVED: ${repo} ${tag} (tag on ${sha}, released from ${known})${unlisted}".toString()
+      } else if (release.published) {
         echo "${repo} ${tag}: ok (${sha.take(7)})"
+      } else {
+        echo "${repo} ${tag}: ok (${sha.take(7)}), but its release is not published (a draft, or deleted): publish it again if that was not meant."
       }
     }
   }
-  return [checked: checked, problems: problems, unreadable: unreadable]
+  return [checked: checked, problems: problems, unreadable: unreadable, record: record]
 }
 
 // release-tags lines ("<tag>\t<target>") as [tag, target]; a line without a tab has an empty target.
@@ -2041,6 +2068,51 @@ List releaseTagLines(String text) {
     releases << [tag: columns[0], target: columns.size() > 1 ? columns[1].trim() : '']
   }
   return releases
+}
+
+// The record's entries of one repository, as releases that are not published (until shown otherwise).
+@NonCPS
+List recordOf(List record, String repo) {
+  return record.findAll { it.repo == repo }.collect { [repo: it.repo, tag: it.tag, target: it.target, published: false] }
+}
+
+// The remembered releases whose tag is not among the published ones.
+@NonCPS
+List unpublished(List remembered, List published) {
+  Set tags = published.collect { it.tag } as Set
+  return remembered.findAll { !(it.tag in tags) }
+}
+
+// The record: one line per release, "<repository>\t<tag>\t<target>" (release-tags escapes a tab or a line
+// break in a target, so neither field can split a line).
+@NonCPS
+String tagRecordText(List record) {
+  return record.collect { "${it.repo}\t${it.tag}\t${it.target}" }.join('\n') + (record ? '\n' : '')
+}
+
+@NonCPS
+List tagRecordLines(String text) {
+  List record = []
+  for (String line : (text ?: '').readLines()) {
+    List columns = line.split('\t', 3) as List
+    if (columns.size() == 3 && columns[1] ==~ TAG) {
+      record << [repo: columns[0], tag: columns[1], target: columns[2]]
+    }
+  }
+  return record
+}
+
+// The record the newest earlier build of this job archived ('' when none did: the first run, or every
+// earlier build deleted). On the controller: the build's artifacts are read there.
+@NonCPS
+String previousTagRecord(def run) {
+  for (def build = run?.previousBuild; build != null; build = build.previousBuild) {
+    def file = build.artifactManager.root().child(TAG_RECORD)
+    if (file.isFile()) {
+      return file.open().withCloseable { it.getText('UTF-8') }
+    }
+  }
+  return ''
 }
 
 // The repositories whose releases tag-check checks, once each, in catalog order: every deployable
