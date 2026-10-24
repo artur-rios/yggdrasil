@@ -1212,6 +1212,30 @@ class TagCheckLibraryTests(unittest.TestCase):
         self.assertIn("build.artifactManager.root().child(TAG_RECORD)", self.body("previousTagRecord"))
         self.assertIn("columns[1] ==~ TAG", self.body("tagRecordLines"))
 
+    def test_given_forget_when_read_then_it_is_checked_first_and_only_drops_record_entries(self):
+        # FORGET clears a release deleted on purpose: each line "<repository> <tag>", checked against the
+        # repositories tag-check visits and TAG before anything runs (an invalid line fails the build), then
+        # those entries leave the record this build starts from. It never reaches a shell.
+        main = self.body("tagCheck")
+        parsed = main.index("forgetLines((params.FORGET ?: '').toString(), entries)")
+        self.assertLess(main.index("List entries = releasingRepositories(catalog)"), parsed)
+        self.assertRegex(main, r"if \(forget\.problem\) \{\s*error ")
+        self.assertLess(parsed, main.index("previousTagRecord(currentBuild.rawBuild)"))
+        self.assertLess(main.index("forgotten(previous, forget.lines as List)"), main.index("stage('Check the release tags')"))
+        self.assertLess(main.index("stage('Check the release tags')"), main.index("checkReleaseTags(entries, previous)"))
+        self.assertIn("Forgotten: ", main)
+        self.assertIn("is not in the record: nothing to forget", main)
+        lines = self.body("forgetLines")
+        self.assertIn("columns[1] ==~ TAG", lines)
+        self.assertIn("repos.contains(columns[0])", lines)
+        self.assertIn("printable(line)", lines)
+        start, end = self.lib.functions["tagCheck"]
+        for name in ("forgetLines", "forgotten"):
+            self.assertIn(name, self.lib.reachable(start, end))
+        # Not in any shell script: the only uses of params.FORGET are here.
+        uses = {self.lib.function_at(m.start()) for m in re.finditer(r"params\.FORGET", self.lib.code)}
+        self.assertEqual(uses, {"tagCheck"})
+
     def test_given_the_catalog_when_read_then_tag_check_visits_every_entry_that_releases_once(self):
         body = self.body("releasingRepositories")
         self.assertIn("it.kind != 'platform'", body)

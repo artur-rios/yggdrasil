@@ -112,7 +112,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `tag-sha`). A tag that moved or was deleted fails the build, named `MOVED` or `DELETED` at the end of the log,
   the count in the build's description; a release that names a branch, not a commit, is logged as an unknown
   target. A deleted tag's release becomes a draft (Forgejo, GitHub), which the read credential cannot see, so
-  each run archives the releases it knows of (`release-tags.tsv`) and the next checks those too. [docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs) says how to read it and how to repair a
+  each run archives the releases it knows of (`release-tags.tsv`) and the next checks those too. Its optional
+  `FORGET` parameter (`<repository> <tag>` a line, checked before anything runs) drops releases deleted on
+  purpose from that record. [docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs) says how to read it and how to repair a
   tag from its GitHub copy. Its script, `jenkins/tag-check.groovy`, is mounted by `platform/compose.yml` like the
   other jobs'.
 - **Owner-tagged releases and NuGet**: a `repositories` entry with `release: owner-tag` is released by the owner's

@@ -1361,7 +1361,7 @@ The accepted gap means a mistake, or a stolen token of `forge.jenkinsUser`, can 
 on Forgejo. Two things answer it:
 
 - **The `tag-check` job notices.** Every day (at a time Jenkins picks within the 4 o'clock hour), and whenever
-  you open it and press **Build Now**, it reads every catalog entry that releases (an application with a
+  you run it (**Build with Parameters**, then **Build**), it reads every catalog entry that releases (an application with a
   `trigger: release` environment, an `owner-tag` entry) on the `ci` agent with the read credential: each
   published release (`forge.sh release-tags`) and where its tag is now (`forge.sh tag-sha`). It checks out and
   runs nothing of the repositories and holds no write token. A deleted tag's release does not stay published:
@@ -1391,9 +1391,14 @@ releases), so whether its tag moved cannot be told. A deleted tag is reported `D
 `... ok (<sha>), but its release is not published (a draft, or deleted) ...`: the tag is fine, the release
 was unpublished or deleted (publish it again if that was not meant).
 
-The record keeps a release whose tag you **deleted on purpose** (with its release) red on every run. To start
-the record afresh, delete all of the `tag-check` job's builds (each build's **Delete build**); the next run
-records the releases published then.
+The record keeps a release whose tag you **deleted on purpose** red on every run. **Repair a deletion that was
+not meant first** (below); then, for one that was, run the job with **`FORGET`**: one `<repository> <tag>` a
+line (`shop-api v1.4.0`), the repository as in the `DELETED` line. Each line must name a repository the job
+checks and a tag name the pipeline accepts, or the build fails before it checks anything. The run drops those
+releases from the record it keeps (`Forgotten: <repository> <tag> ...` in the log) and checks the rest as
+usual; a line that names nothing in the record only says so (`... is not in the record: nothing to forget`).
+The later runs, `FORGET` empty, start from that record. A forgotten release whose release is published again is
+checked again.
 
 **Repairing a moved or deleted tag on Forgejo**, as the owner, on your machine:
 
@@ -1424,7 +1429,7 @@ records the releases published then.
      `rules.py` needs `FORGE_TOKEN` as above (and, with a mirror, a GitHub token); it prints `updated tag
      protection 'v*'`.
    - **An `owner-tag` repository's tag.** You may push it already: `git push --force origin "refs/tags/<tag>"`.
-3. Run tag-check again (**Build Now**): it is green once every tag is back, and the push mirror's next sync
+3. Run tag-check again (**Build with Parameters**, `FORGET` empty): it is green once every tag is back, and the push mirror's next sync
    goes through again. On Forgejo pushing a deleted tag back also publishes its release again (the live tests
    pin it); on GitHub, check the release and publish it by hand if it is still a draft.
 

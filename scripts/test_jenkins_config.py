@@ -210,7 +210,9 @@ class TagCheckJobTests(unittest.TestCase):
         # Every day, at a time Jenkins spreads within the hour, and by hand; one run at a time.
         self.assertRegex(script, r"pipelineTriggers \{\s*triggers \{\s*cron \{\s*spec\('H 4 \* \* \*'\)")
         self.assertIn("disableConcurrentBuilds()", script)
-        # No parameters: it checks every entry that releases.
+        # One optional parameter, FORGET (releases deleted on purpose, dropped from the record); a timer
+        # build runs with it empty.
+        self.assertRegex(script, r"parameters \{\s*textParam\('FORGET', '', ")
         self.assertNotIn("stringParam", script)
         self.assertNotIn("${", script)
 

@@ -1013,7 +1013,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # The actions-release, release-resume and tag-check jobs: pipeline jobs running the scripts kept in
         # Jenkins, in the sandbox; tag-check takes no parameters and runs every day.
         parameters = {"actions-release": ["REPOSITORY", "TAG"], "release-resume": ["REPOSITORY", "TAG", "COMMIT"],
-                      "tag-check": None}
+                      "tag-check": ["FORGET"]}
         self.assertEqual(boot["pipeline_jobs"], {name: {
             "sandbox": True, "parameters": wanted,
             "script": (ROOT / "jenkins" / f"{name}.groovy").read_text(encoding="utf-8")}
@@ -1764,9 +1764,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
 
     # --- tag-check ---------------------------------------------------------------------------------
 
-    def tag_check(self):
+    def tag_check(self, forget=""):
         before = self.last_number("tag-check", None)
-        self.jenkins.post(job_path("tag-check") + "/build", {"delay": "0"})
+        self.jenkins.post(job_path("tag-check") + "/buildWithParameters", {"FORGET": forget})
         return self.wait_for_build("tag-check", None, after=before, timeout=900)
 
     def wait_for_release(self, repo, tag, draft, seconds=60):
@@ -1799,7 +1799,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # publishes a release whose target is that commit. v0.3.0's release names a branch instead (one
         # made by hand), so whether its tag moved is not known. The other tests' releases are checked too.
         main = self.head(APP, "main")
-        for tag, target in (("v0.1.0", main), ("v0.2.0", main), ("v0.3.0", "main")):
+        for tag, target in (("v0.1.0", main), ("v0.2.0", main), ("v0.3.0", "main"), ("v0.4.0", main)):
             self.api[JENKINS].request("POST", f"/repos/{OWNER}/{APP}/tags", {"tag_name": tag, "target": main})
             self.api[JENKINS].request("POST", f"/repos/{OWNER}/{APP}/releases", {
                 "tag_name": tag, "target_commitish": target, "name": tag, "body": "", "draft": False,
@@ -1847,6 +1847,39 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             self.assertIn(f"{APP} {tag}: ok ({main[:7]})", repaired.console)
         self.assertEqual(self.description("tag-check", None, repaired.number),
                          self.description("tag-check", None, untouched.number))
+
+        # A release deleted on purpose (its tag deleted; its release, a draft now, kept) stays red until FORGET
+        # names it. v0.2.0, deleted again, is not forgotten: it is still reported, from the record.
+        self.jenkins_moves_tags(APP, {"v0.4.0": None, "v0.2.0": None})
+        for tag in ("v0.4.0", "v0.2.0"):
+            self.assertTrue(self.wait_for_release(APP, tag, draft=True), f"{tag}'s release is still published")
+        # An invalid line fails the build before anything is read.
+        refused = self.tag_check(forget=f"{APP} v0.4.0
+not-a-repository v1.0.0")
+        self.assertEqual(refused.result, "FAILURE", refused.console[-4000:])
+        self.assertIn("FORGET line 2 ('not-a-repository v1.0.0')", refused.console)
+        self.assertNotIn("(Check the release tags)", refused.console)
+        forgot = self.tag_check(forget=f"{APP} v0.4.0
+
+{APP} v9.9.9
+")
+        self.assertEqual(forgot.result, "FAILURE", forgot.console[-6000:])
+        self.assertIn(f"Forgotten: {APP} v0.4.0 (released from {main})", forgot.console)
+        self.assertIn(f"FORGET: {APP} v9.9.9 is not in the record: nothing to forget", forgot.console)
+        self.assertIn(f"DELETED: {APP} v0.2.0 (released from {main})", forgot.console)
+        self.assertNotIn(f"DELETED: {APP} v0.4.0", forgot.console)
+        self.assertEqual(self.description("tag-check", None, forgot.number), "1 release tag moved or deleted")
+        # The next run starts from that build's record: v0.4.0 is gone from it, v0.2.0 is not.
+        again = self.tag_check()
+        self.assertEqual(again.result, "FAILURE", again.console[-6000:])
+        self.assertIn(f"DELETED: {APP} v0.2.0", again.console)
+        self.assertNotIn("v0.4.0", again.console)
+        # v0.2.0 repaired: green, without v0.4.0.
+        self.jenkins_moves_tags(APP, {"v0.2.0": main})
+        self.assertTrue(self.wait_for_release(APP, "v0.2.0", draft=False), "v0.2.0's release is still a draft")
+        clean = self.tag_check()
+        self.assertEqual(clean.result, "SUCCESS", clean.console[-6000:])
+        self.assertNotIn("v0.4.0", clean.console)
 
     # --- The library's own pieces -----------------------------------------------------------------
 

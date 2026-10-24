@@ -1925,8 +1925,11 @@ void actionsRelease() {
 // it into a draft, which the read credential does not see. So the job remembers: every run archives the
 // releases it knows of (TAG_RECORD: those published now and those of the previous run's record), and the
 // next run checks the tags of all of them, published or not. A release seen once is checked from then on;
-// one deleted before the job first saw it is not noticed. An entry leaves the record only with its
-// repository leaving the catalog (or with the job's builds deleted: docs/setup.md).
+// one deleted before the job first saw it is not noticed. An entry leaves the record with its repository
+// leaving the catalog, or when the owner names it in the job's FORGET parameter: one "<repository> <tag>" a
+// line, for a release deleted on purpose (a real deletion is repaired instead). Each line is checked against
+// the repositories the job visits and TAG before anything runs, and an invalid one fails the build; the
+// value is only ever compared in Groovy, never given to a shell.
 //
 // Any MOVED or DELETED fails the build, with a line each at the end of the log and the count in the build's
 // description; so does a repository or a tag that could not be read. The GitHub copies, which nobody can
@@ -1939,10 +1942,24 @@ void actionsRelease() {
 void tagCheck() {
   Map catalog = loadCatalog()
   List entries = releasingRepositories(catalog)
+  // A job made before the parameter existed has no FORGET at all.
+  Map forget = forgetLines((params.FORGET ?: '').toString(), entries)
+  if (forget.problem) {
+    error "${forget.problem}. Nothing was checked."
+  }
   Map ctx = [forge: forgeOf(catalog), owner: catalog.owner.toString(),
              repository: (catalog.repository ?: 'yggdrasil').toString()]
-  // Read on the controller, before any node: the record the last run that made one archived.
+  // Read on the controller, before any node: the record the last run that made one archived, without what
+  // FORGET names.
   List previous = tagRecordLines(previousTagRecord(currentBuild.rawBuild))
+  Map dropped = forgotten(previous, forget.lines as List)
+  previous = dropped.kept as List
+  for (Map entry : dropped.gone as List) {
+    echo "Forgotten: ${entry.repo} ${entry.tag} (released from ${printable(entry.target)}): no longer checked, unless its release is published again."
+  }
+  for (Map line : dropped.unknown as List) {
+    echo "FORGET: ${line.repo} ${line.tag} is not in the record: nothing to forget."
+  }
   Map report = null
   timeout(time: 1, unit: 'HOURS') {
     withForgeEnvironment(ctx) {
@@ -2081,6 +2098,37 @@ List recordOf(List record, String repo) {
 List unpublished(List remembered, List published) {
   Set tags = published.collect { it.tag } as Set
   return remembered.findAll { !(it.tag in tags) }
+}
+
+// FORGET's lines as [repo, tag] (blank lines skipped), or the problem with the first line that is not
+// "<repository> <tag>" of a repository tag-check visits (entries) and a tag name TAG allows.
+@NonCPS
+Map forgetLines(String text, List entries) {
+  Set repos = entries.collect { it.repo } as Set
+  List lines = []
+  int number = 0
+  for (String line : text.readLines()) {
+    number++
+    if (!line.trim()) {
+      continue
+    }
+    List columns = line.trim().split(/\s+/) as List
+    if (columns.size() != 2 || !repos.contains(columns[0]) || !(columns[1] ==~ TAG)) {
+      return [lines: [], problem: "FORGET line ${number} ('${printable(line)}') is not '<repository> <tag>' of a repository this job checks (${repos.sort().join(', ')})".toString()]
+    }
+    lines << [repo: columns[0], tag: columns[1]]
+  }
+  return [lines: lines, problem: null]
+}
+
+// The record split by FORGET's lines: kept, gone (the entries named), unknown (lines naming no entry).
+@NonCPS
+Map forgotten(List record, List lines) {
+  Set named = lines.collect { "${it.repo} ${it.tag}".toString() } as Set
+  Set present = record.collect { "${it.repo} ${it.tag}".toString() } as Set
+  return [kept: record.findAll { !named.contains("${it.repo} ${it.tag}".toString()) },
+          gone: record.findAll { named.contains("${it.repo} ${it.tag}".toString()) },
+          unknown: lines.findAll { !present.contains("${it.repo} ${it.tag}".toString()) }]
 }
 
 // The record: one line per release, "<repository>\t<tag>\t<target>" (release-tags escapes a tab or a line
