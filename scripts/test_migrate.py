@@ -1962,6 +1962,19 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(run.code, 1)
         self.assertIn("API rate limit exceeded", run.err)
 
+    def test_given_a_request_that_fails_echoing_a_token_when_run_then_the_failure_hides_it(self):
+        # An error that stops the command (the repository list, here) is the one failure: it goes through
+        # the same scrubbing as a repository's, since a server's text may echo what it was sent.
+        class Echoing:
+            def request(self, method, path, body=None):
+                raise migrate.rules.ApiError(method, path, 401, "bad credentials gh-tok-456 and fg-tok-123")
+
+        run = Run(["verify"], Echoing(), catalog=MIRROR_CATALOG, env=ENV)
+        self.assertEqual(run.code, 1)
+        self.assertIn("bad credentials *** and ***", run.err)
+        self.assertNotIn("gh-tok-456", run.out + run.err)
+        self.assertNotIn("fg-tok-123", run.out + run.err)
+
     def test_given_a_command_with_failures_when_run_then_each_is_on_its_own_line_and_the_exit_is_1(self):
         def cmd_two_failures(ctx, args):
             print("working")

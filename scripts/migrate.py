@@ -1170,6 +1170,7 @@ def _github_owner(catalog, option):
 def main(argv=None):
     """Runs a command; returns the exit status (0 done, 1 failures, 2 usage)."""
     argv = sys.argv[1:] if argv is None else argv
+    ctx = None
     try:
         args = _parser().parse_args(argv)
         try:
@@ -1183,7 +1184,9 @@ def main(argv=None):
         print(f"migrate.py: {error}", file=sys.stderr)
         return 2
     except (rules.ApiError, MigrateError) as error:
-        failures = [str(error)]
+        # The error that stopped the command is its one failure, scrubbed like any other: a server's text
+        # may echo what it was sent. (No request is sent before the context exists.)
+        failures = [_scrubbed(ctx, str(error)) if ctx is not None else str(error)]
     if failures:
         print(f"{_plural(len(failures), 'failure')}:", file=sys.stderr)
         for failure in failures:
