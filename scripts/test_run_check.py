@@ -166,6 +166,53 @@ class RunCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(self.log.exists(), "docker must not run")
 
+    # --print-host-override: what scripts/prove-machine.sh runs inside a container (with busybox's sh, which
+    # has no bash) to find the address a published port is reached at, the way a --docker check would be told.
+    def test_given_a_default_route_when_the_host_override_is_printed_then_it_is_the_gateway(self):
+        self.fake("ip", FAKE_IP)
+        result = self.run_check("--print-host-override")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "172.17.0.1\n")
+        self.assertFalse(self.log.exists(), "docker must not run")
+
+    def test_given_no_ip_when_the_host_override_is_printed_then_it_comes_from_the_route_table(self):
+        self.fake("ip", NO_ROUTE_IP)
+        result = self.run_check("--print-host-override")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "192.168.65.1\n")
+
+    def test_given_an_override_in_the_environment_when_it_is_printed_then_that_one_wins(self):
+        self.fake("ip", FAKE_IP)
+        result = self.run_check("--print-host-override", TESTCONTAINERS_HOST_OVERRIDE="10.9.8.7")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "10.9.8.7\n")
+
+    def test_given_no_gateway_when_the_host_override_is_printed_then_it_is_empty_and_the_exit_is_zero(self):
+        self.fake("ip", NO_ROUTE_IP)
+        self.route_table.write_text("Iface\tDestination\tGateway\n")
+        result = self.run_check("--print-host-override")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_given_a_plain_sh_when_the_host_override_is_printed_then_it_works_without_bash(self):
+        # The container prove-machine.sh starts has busybox, not bash: the early part of the script is plain
+        # sh. dash and busybox's ash are the strict ones; a machine that has neither skips this.
+        shells = {"dash": ["dash"], "busybox": ["busybox", "sh"]}
+        for shell, command in shells.items():
+            if not shutil.which(command[0]):
+                continue
+            with self.subTest(shell=shell):
+                self.fake("ip", NO_ROUTE_IP)
+                result = subprocess.run([*command, str(SCRIPT), "--print-host-override"], env=self.env,
+                                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if shell == "dash":
+                    self.assertEqual(result.stdout, "192.168.65.1\n")
+                else:
+                    # busybox runs its own `ip` applet before any fake `ip` on PATH, so the gateway is the
+                    # real machine's: all that is proved is that the script ran, without bash, to an address.
+                    self.assertRegex(result.stdout, r"^\d+\.\d+\.\d+\.\d+\n$")
+
     def test_given_a_failing_command_when_run_then_its_exit_code_is_returned(self):
         result = self.run_check("unit", "img", str(self.workspace), "--", "false", FAKE_DOCKER_EXIT="7")
         self.assertEqual(result.returncode, 7)

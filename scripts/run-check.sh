@@ -30,8 +30,50 @@
 #   TESTCONTAINERS_RYUK_DISABLED           Ryuk would need the socket mounted by its host path as well, and
 #                                          the --rm and the engine's own cleanup are enough for a CI run.
 #
+#     scripts/run-check.sh --print-host-override
+#
+#   prints the TESTCONTAINERS_HOST_OVERRIDE this script would set (see above) and exits 0; it needs no other
+#   argument and works under a plain sh, so a container without bash can run it (scripts/prove-machine.sh does).
+#
 # Exit: the command's exit code (docker run passes it through; 125-127 are docker's own failures), 2 on bad
 # usage. Needs YGG_DOCKER_SOCKET with --docker.
+
+# ---- The host override: plain sh ------------------------------------------------------------------------
+# Everything from here to the `set -euo pipefail` below is POSIX sh, no bash: `--print-host-override` is
+# also run INSIDE a container by scripts/prove-machine.sh (`sh run-check.sh --print-host-override` in a
+# busybox image, which has no bash), to find the address a published port is reached at the way a
+# --docker check is told it. One definition, so the proof and the checks cannot drift apart.
+
+# The container's default gateway: `ip` when the image has it, else the kernel's route table, whose default
+# route has destination 00000000 and the gateway as little-endian hex (0141A8C0 is 192.168.65.1).
+default_gateway() {
+  gateway=""
+  if command -v ip >/dev/null 2>&1; then
+    gateway=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 2; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }') || true
+  fi
+  if [ -z "$gateway" ] && [ -r "${YGG_ROUTE_TABLE:-/proc/net/route}" ]; then
+    while read -r _ destination hex _; do
+      [ "$destination" = "00000000" ] || continue
+      # Eight hex digits, or the line is not a gateway.
+      case $hex in
+        [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) ;;
+        *) continue ;;
+      esac
+      gateway=$(printf '%s' "$hex" | sed 's/\(..\)\(..\)\(..\)\(..\)/\4 \3 \2 \1/' \
+        | { read -r a b c d; printf '%d.%d.%d.%d' "0x$a" "0x$b" "0x$c" "0x$d"; })
+      break
+    done <"${YGG_ROUTE_TABLE:-/proc/net/route}"
+  fi
+  printf '%s' "$gateway"
+}
+
+# --print-host-override: prints what this script would set as TESTCONTAINERS_HOST_OVERRIDE (an override
+# already in the environment wins, else the default gateway; nothing when there is neither) and exits 0.
+if [ "${1:-}" = "--print-host-override" ]; then
+  printf '%s\n' "${TESTCONTAINERS_HOST_OVERRIDE:-$(default_gateway)}"
+  exit 0
+fi
+
 set -euo pipefail
 
 usage() {
@@ -65,24 +107,6 @@ done
 [[ "$workspace" == /* ]] || die_usage "the workspace must be an absolute path, not '$workspace'"
 [[ -d "$workspace" ]] || die_usage "the workspace '$workspace' is not a directory"
 [[ -z "$env_file" || -f "$env_file" ]] || die_usage "the env file '$env_file' does not exist"
-
-# The container's default gateway: `ip` when the image has it, else the kernel's route table, whose default
-# route has destination 00000000 and the gateway as little-endian hex (0141A8C0 is 192.168.65.1).
-default_gateway() {
-  local gateway="" destination hex
-  if command -v ip >/dev/null 2>&1; then
-    gateway=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 2; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }') || true
-  fi
-  if [[ -z "$gateway" && -r "${YGG_ROUTE_TABLE:-/proc/net/route}" ]]; then
-    while read -r _ destination hex _; do
-      if [[ "$destination" == "00000000" && "$hex" =~ ^[0-9A-Fa-f]{8}$ ]]; then
-        gateway=$(printf '%d.%d.%d.%d' "0x${hex:6:2}" "0x${hex:4:2}" "0x${hex:2:2}" "0x${hex:0:2}")
-        break
-      fi
-    done <"${YGG_ROUTE_TABLE:-/proc/net/route}"
-  fi
-  printf '%s' "$gateway"
-}
 
 run=(docker run --rm --init --pull missing --user 0:0
      -v "$workspace:$workspace" -w "$workspace")
