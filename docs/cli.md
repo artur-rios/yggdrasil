@@ -9,18 +9,18 @@ otherwise has you do by hand:
 - set up a new API, web front end or worker, and deploy it
 - see what runs on the host, in each of its environments
 - show, change and roll back an application's variables and secrets
-- switch an on-demand| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`on and off
+- switch an on-demand environment on and off
 - start, stop and inspect the platform; read the catalog
 
 It has two faces that do the same things. **Run it with arguments** and it is an ordinary command,
-for scripts and for going straight somewhere: `ygg vars| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`heimdall-api@production
+for scripts and for going straight somewhere: `ygg vars get heimdall-api@production
 HEIMDALL_MASTER_USER_PASSWORD --reveal`. **Run it alone**, in a terminal, and it opens a full-screen
 menu you drive with the arrow keys, where every command and every option is too, as a form that
 shows the command line it builds.
 
-A host runs one| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`or several: `ENVIRONMENTS` in its `platform.env` lists them
+A host runs one environment or several: `ENVIRONMENTS` in its `platform.env` lists them
 (`development,homologation,production` on the VPS of the
-[example](examples/docker-desktop-and-vps/README.md)). Where a command needs one| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`and
+[example](examples/docker-desktop-and-vps/README.md)). Where a command needs one environment and
 the host has several, it takes it as an argument or asks.
 
 It runs the same pieces as the guide: `scripts/host.sh` (the host operations), `scripts/deploy.sh`,
@@ -97,7 +97,7 @@ variable, a scope, a change id) after the same check as the command line. Paths 
 typed, with the usual default filled in. The footer shows the command line as you fill the form, so
 the menu also teaches the command. Deleting, overwriting and stopping commands ask first, with no as
 the default: `vars unset`, `vars rollback`, `vars import --replace`, `env stop`, `platform down`, and
-`deploy` to an| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`that is not on demand.
+`deploy` to an environment that is not on demand.
 
 A command runs in the normal terminal, outside the full screen, so `$EDITOR`, hidden input and long
 output work. When it ends, the menu always waits for **Enter**, so you can read the output, then
@@ -126,8 +126,8 @@ Select a variable for its actions:
 
 | Action | Does | Command line |
 |---|---|---|
-| **Show value** | Shows the value on the screen until you press a key. It is drawn, not printed, so it stays out of the terminal's scrollback. The numbered menu (no terminal, or `YGG_PLAIN`) can only print it, and the row says so | `ygg vars| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`<scope> KEY --reveal` |
-| **Change value** | A secret is typed hidden; another value starts from the current one. Then where: this application in this| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`(the default), the application in every environment, or the environment's shared scope. For a value it inherits, the first choice changes the shared value and another overrides it for this application only | `ygg vars set <scope> KEY=-` (the value on stdin) |
+| **Show value** | Shows the value on the screen until you press a key. It is drawn, not printed, so it stays out of the terminal's scrollback. The numbered menu (no terminal, or `YGG_PLAIN`) can only print it, and the row says so | `ygg vars get <scope> KEY --reveal` |
+| **Change value** | A secret is typed hidden; another value starts from the current one. Then where: this application in this environment (the default), the application in every environment, or the environment's shared scope. For a value it inherits, the first choice changes the shared value and another overrides it for this application only | `ygg vars set <scope> KEY=-` (the value on stdin) |
 | **Mark as secret / not secret** | Masks the value or stops masking it | `ygg vars set <scope> KEY=- --secret` |
 | **Remove** | Deletes it from the scope it comes from, after you confirm | `ygg vars unset <scope> KEY` |
 | **History** | Its changes; select one to roll it back (`--force` when it changed again since) | `ygg vars history`, `ygg vars rollback <id>` |
@@ -146,7 +146,7 @@ When the store can't be read (a lost or wrong key), the screen says why and offe
 screen are in [variables.md](variables.md#commands) and [its recipes](variables.md#recipes).
 
 From the command line, `ygg config <application> <environment>` opens that screen directly, in a
-terminal (one of them left out is asked). An application or| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`that isn't on this host is
+terminal (one of them left out is asked). An application or environment that isn't on this host is
 refused, as without a store (exit 1).
 
 ### On a machine without a store
@@ -154,7 +154,7 @@ refused, as without a store (exit 1).
 Without a variables store (a machine still on env files), **Applications** opens `config`'s own
 screen on the env file, `/etc/yggdrasil/<environment>/<id>.env`, not the list above. Without
 arguments `config` asks for the application, then, when it deploys to more than one of the host's
-environments, for the environment. An| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`that isn't on this host, or that the application
+environments, for the environment. An environment that isn't on this host, or that the application
 doesn't deploy to, is refused. If the file doesn't exist yet, as on a new host, it creates it from
 the stack files as `add` does. Then it offers:
 
@@ -182,7 +182,7 @@ reads it as `ygg` inside its container, can still read it. Changes you don't app
 | Command | Menu | Does |
 |---|---|---|
 | `ygg` | | The menu |
-| `ygg status` | Status | Each| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`of this host, its applications' state, health, version, commit and deploy time |
+| `ygg status` | Status | Each environment of this host, its applications' state, health, version, commit and deploy time |
 | `ygg config [<app>] [<environment>]` | Applications | An application's variables in an environment, and a redeploy |
 | `ygg deploy <environment> <app> [<app-dir>] [<version>] [--leave-running]` | Applications › deploy | Builds and deploys from a checkout (default `$YGG_APPS_DIR/<app>`, version `<latest tag>-<commit>`), rolling back if unhealthy. In a terminal it asks what is missing and, for a stopped on-demand application, whether to leave it running; without a terminal it does not ask and stops it again. `--leave-running` keeps it running |
 | `ygg add` | Applications › add | Sets up a new application |
@@ -206,7 +206,7 @@ Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command,
 |---|---|---|
 | `YGG_SECRETS_DIR` | `/etc/yggdrasil` | Where the variables store (`vars.db`, `vars.key`) or the env files are, as for `deploy.sh` and `platform.sh` |
 | `YGG_APPS_DIR` | `~/yggdrasil-apps` | Where `add` clones the applications it deploys, and where redeploys build from |
-| `YGG_ENVIRONMENT` | `ENVIRONMENTS` in `platform.env` | One| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`this host runs, overriding `platform.env`. Without either (nor the `ENVIRONMENT` of a `platform.env` from before 0.5), it asks. Set it on a laptop, which has no platform |
+| `YGG_ENVIRONMENT` | `ENVIRONMENTS` in `platform.env` | One environment this host runs, overriding `platform.env`. Without either (nor the `ENVIRONMENT` of a `platform.env` from before 0.5), it asks. Set it on a laptop, which has no platform |
 | `YGG_PLAIN` | unset | Any value: numbered prompts instead of the full screen |
 | `EDITOR` | `nano` | The editor of `vars edit` and of `config` |
 
@@ -214,7 +214,7 @@ Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command,
 
 `ygg self-install` installs it for new shells; `source <(ygg completion bash)` turns it on in the
 current one. It completes commands, options, choices, applications, environments, scopes and the
-keys of the scope typed before (`ygg vars| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`heimdall-api@production HEI<Tab>`), from the same lists
+keys of the scope typed before (`ygg vars get heimdall-api@production HEI<Tab>`), from the same lists
 as the menu. Keys need read access to the store's key; without it they are not offered.
 
 ## Check and install
@@ -291,7 +291,7 @@ On the dev machine, the `ci` and `release` users each run a Jenkins build agent 
 `agent.sh` reads `/etc/yggdrasil-<user>/agent.env`, which `ygg install` copied from
 [env/agent.env.example](../env/agent.env.example). The file is `600` and belongs to the service user, which has no
 login, so edit it as the **admin** with `sudoedit`: it opens a copy in your editor and writes it back as the file's
-owner, keeping the| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`and the mode.
+owner, keeping the owner and the mode.
 
 ```bash
 sudoedit /etc/yggdrasil-ci/agent.env
@@ -328,7 +328,7 @@ is `backup.conf`; how to set it up and how to restore is in [hosts.md](hosts.md#
 
 | It asks | Default | Becomes |
 |---|---|---|
-| Id | | The catalog `id`, the image name, and with the| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`the Compose project (`<id>-<environment>`) and the network alias (`<id>.<environment>`) |
+| Id | | The catalog `id`, the image name, and with the environment the Compose project (`<id>-<environment>`) and the network alias (`<id>.<environment>`) |
 | Display name | the id | `name` |
 | Kind | | `kind`: `api`, `web` or `worker` |
 | System | | An existing system, or a new one with its own id, name and description |
@@ -350,7 +350,7 @@ It then writes:
 - **Stack files**, following [setup.md step 4](setup.md#4-write-the-stack-files). Existing files
   are only replaced if you agree:
 
-  | The| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`has | Files |
+  | The repository has | Files |
   |---|---|
   | Only a Dockerfile | `stacks/<id>.yml`: the service, built from the checkout, with the whole env file passed to the container (`env_file`) · `stacks/<id>.proxy.yml`: the edge network and Traefik · `stacks/<id>.ports.yml`: a port on `127.0.0.1`, `HOST_PORT` in the env file |
   | Its own `docker-compose.yml` | `stacks/<id>.proxy.yml`: `ports: !reset []`, the default network kept (for its database, say), edge, and Traefik. In `ports` environments its own Compose file is used as it is |
@@ -362,13 +362,13 @@ It then writes:
 - **The env file** for one of this host's environments (it asks which, when the host has several),
   `/etc/yggdrasil/<environment>/<id>.env`. It holds every variable the stack files read, except the
   ones `deploy.sh` sets itself, plus `PUBLIC_HOST` (`<host><hostSuffix>.<DOMAIN>`, e.g.
-  `shop-dev.example.com` in an| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`with `hostSuffix: -dev`) in a `proxy` environment. It
+  `shop-dev.example.com` in an environment with `hostSuffix: -dev`) in a `proxy` environment. It
   offers to open it in your editor. For the host's other environments, run
   `ygg config <id> <environment>` afterwards.
-- **A first deploy**, if you agree: it clones the| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`into `~/yggdrasil-apps/<id>` (enter
+- **A first deploy**, if you agree: it clones the repository into `~/yggdrasil-apps/<id>` (enter
   the SSH URL for a private repository) and runs `deploy.sh`. The version defaults to
-  `<latest tag>-<commit>`, the way Jenkins labels releases. In a `proxy`| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`the platform
-  must be up first. In an `onDemand`| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`where it isn't running, it asks whether to leave it
+  `<latest tag>-<commit>`, the way Jenkins labels releases. In a `proxy` environment the platform
+  must be up first. In an `onDemand` environment where it isn't running, it asks whether to leave it
   running afterwards; otherwise `deploy.sh` stops it again once it is healthy.
 
 Last, it lists what the catalog can't do for you: push the catalog and stack files to `main`, set up
@@ -379,7 +379,7 @@ The generated files are a starting point, like the examples in `stacks/`: edit t
 
 ## See what runs
 
-`status` lists, for each| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`of this host, every catalog application that deploys to it:
+`status` lists, for each environment of this host, every catalog application that deploys to it:
 
 ```text
 == Development (development), on demand on vps-1 ==
@@ -408,7 +408,7 @@ lines or restart its containers (it asks for the application and environment, e.
 
 ## Start and stop environments
 
-An| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`with `onDemand: true` in the catalog runs only while someone uses it. `env` switches
+An environment with `onDemand: true` in the catalog runs only while someone uses it. `env` switches
 it:
 
 ```bash
@@ -425,16 +425,16 @@ ygg env status
   production       Production           no         running (4 of 4 applications)
 ```
 
-- `start` and `stop` act only on an| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`of this host (`ENVIRONMENTS` in `platform.env`, or
+- `start` and `stop` act only on an environment of this host (`ENVIRONMENTS` in `platform.env`, or
   `YGG_ENVIRONMENT`); any other is refused. They start and stop the containers `deploy.sh` left,
   without building or recreating anything. A start takes as long as the health checks do: `status`
   shows when the applications are healthy.
-- `stop` refuses an| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`that isn't `onDemand` (production, say), because it is meant to
+- `stop` refuses an environment that isn't `onDemand` (production, say), because it is meant to
   stay up: `--force` stops it anyway. Without `--force` it also leaves alone an application whose
   catalog entry sets `onDemand: false` for that environment.
 - Without arguments (`ygg env`, or the menu), it shows `env status` and asks what to do
-  and which environment; stopping an| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`that isn't on demand then asks for confirmation.
+  and which environment; stopping an environment that isn't on demand then asks for confirmation.
 - Deploys respect the switch: Jenkins' deploys on a push to `develop` or `release/*` leave a stopped
-  on-demand| show | public-host | public-path | plan | environment | get | owner | repository | forge | mirror | repositories | repository-entry | repository-names`stopped (after checking the new version is healthy), while a
+  on-demand environment stopped (after checking the new version is healthy), while a
   **Build with Parameters → `DEPLOY_TO`** deploy leaves it running.
 
