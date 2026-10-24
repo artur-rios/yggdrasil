@@ -9,9 +9,10 @@ Jenkinsfile change, push a release branch or create, move or delete a version ta
 repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
 failing checks. Seven tests check migrate.py against this server (below): import (two), prepare-github's
 Forgejo side (Dependabot's file deleted), push mirrors, the guard before a mirror's first push (two: what
-only GitHub has, and a GitHub branch whose commit is not in Forgejo's branch of that name, whose
-unsynced mirror is then deleted), and collaborators. One test pins a known gap instead: jenkins, which creates the version tags, can also move
-and delete them (docs/setup.md, step 12).
+only GitHub has, and GitHub branches whose commit is not in Forgejo's branch of that name -- one
+fast-forwarded to another branch's commit, one unrelated to an orphan branch -- whose unsynced mirror is
+then deleted), and collaborators. One test pins a known gap instead: jenkins, which creates the version
+tags, can also move and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
 container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
@@ -1173,11 +1174,13 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
         self.eventually(lambda: self.head(target, "develop") == self.head(source, "develop"), "develop on the target")
 
-    def test_given_a_github_branch_fast_forwarded_to_another_branchs_commit_when_migrate_mirrors_then_it_is_refused_and_its_unsynced_mirror_deleted(self):
-        # The guard's ancestry, as Forgejo 16's compare decides it (`compare/<Forgejo's head>...<GitHub's sha>`):
-        # the target (GitHub's stand-in) has main fast-forwarded to the head of the source's develop -- a
-        # commit the source has, on develop only, so its main would be set back -- develop equal to the
-        # source's, and a feature branch one commit behind the source's. Only main is refused.
+    def test_given_github_branches_outside_forgejos_same_branch_when_migrate_mirrors_then_they_are_refused_and_the_unsynced_mirror_goes(self):
+        # The guard's ancestry, as Forgejo 16's compare decides it (two counts: GitHub's commit over Forgejo's
+        # head, then Forgejo's head over GitHub's commit). The target (GitHub's stand-in) has main fast-forwarded
+        # to the head of the source's develop -- a commit the source has, on develop only, so its main would be
+        # set back --, pages at the source's main, a commit the source has but unrelated to the source's own
+        # pages (an orphan branch), develop equal to the source's, and a feature branch one commit behind the
+        # source's. Main and pages are refused; develop and feature are not.
         source, target = "ancestry-source", "ancestry-target"
         self.create_repository(source)
         owner = self.api[OWNER]
@@ -1186,20 +1189,29 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         ahead = self.change_file(OWNER, source, "feature.txt", "the feature goes on\n", "feature")
         main = self.head(source, "main")
         self.assertNotEqual(main, develop)
-        owner.request("POST", "/user/repos", {"name": target, "private": True})
         clone = self.clone(OWNER, source)
+        for step in (("checkout", "--quiet", "--orphan", "pages"), ("commit", "--quiet", "-m", "pages: its own history"),
+                     ("push", "--quiet", "origin", "pages")):
+            done = self.git(OWNER, *step, cwd=clone)
+            self.assertEqual(done.returncode, 0, done.stderr)
+        orphan = self.head(source, "pages")
+        owner.request("POST", "/user/repos", {"name": target, "private": True})
         pushed = self.git(OWNER, "push", f"{self.url}/{OWNER}/{target}.git", f"{develop}:refs/heads/main",
-                          f"{develop}:refs/heads/develop", f"{behind}:refs/heads/feature", cwd=clone)
+                          f"{develop}:refs/heads/develop", f"{behind}:refs/heads/feature", f"{main}:refs/heads/pages",
+                          cwd=clone)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.eventually(lambda: not owner.request("GET", f"/repos/{OWNER}/{target}")["empty"]
-                        and self.branch_exists(target, "feature"), "the pushed branches on the target", seconds=60)
+                        and self.branch_exists(target, "pages"), "the pushed branches on the target", seconds=60)
 
-        # What the guard relies on, straight from Forgejo: none for an ancestor or the head itself, one for a
-        # commit of another branch, 404 for a commit the repository does not have.
+        # What the guard relies on, straight from Forgejo: none for an ancestor or the head itself, and the head
+        # counts at least one over its ancestor; one for a commit of another branch; none either way for two
+        # unrelated commits (no merge base: why the second count is needed); 404 for an unknown commit.
         def counted(base, head):
             return owner.request("GET", f"/repos/{OWNER}/{source}/compare/{base}...{head}")["total_commits"]
 
-        self.assertEqual((counted(ahead, behind), counted(develop, develop), counted(main, develop)), (0, 0, 1))
+        self.assertEqual((counted(ahead, behind), counted(behind, ahead), counted(develop, develop),
+                          counted(main, develop)), (0, 1, 0, 1))
+        self.assertEqual((counted(orphan, main), counted(main, orphan)), (0, 0))
         with self.assertRaises(rules.ApiError) as unknown:
             counted(main, "d4" * 20)
         self.assertEqual(unknown.exception.status, 404)
@@ -1230,6 +1242,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         (failure,) = [line for line in err.splitlines() if line.startswith(f"  {source}: ")]
         self.assertIn(f"GitHub's main at {develop[:7]} is not in Forgejo's main ({main[:7]}): "
                       "the first push would rewind it", failure)
+        self.assertIn(f"GitHub's pages at {main[:7]} is not in Forgejo's pages ({orphan[:7]}): "
+                      "the first push would rewind it", failure)
         self.assertNotIn("develop", failure)
         self.assertNotIn("feature", failure)
         # The refused mirror is gone (Forgejo 16 takes `DELETE .../push_mirrors/<remote_name>`), and nothing
@@ -1237,7 +1251,7 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(out.splitlines()[-1],
                          f"{source}: deleted its unsynced push mirror so Forgejo can't push it on its own")
         self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors"), [])
-        self.assertEqual(self.head(target, "main"), develop)
+        self.assertEqual((self.head(target, "main"), self.head(target, "pages")), (develop, main))
 
     def test_given_a_catalog_repository_when_migrate_sets_the_collaborators_then_each_bot_reads_back_with_its_permission(self):
         repo = "bots-lib"

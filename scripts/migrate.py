@@ -46,9 +46,11 @@ and goes on to the next, so a re-run picks up where it stopped):
               is finished by the next. Before that first push (Forgejo pushes with --mirror, which deletes
               on GitHub what Forgejo lacks), GitHub's branches and tags are compared with Forgejo's: a
               repository where GitHub has a branch or tag Forgejo lacks, a branch whose commit is not
-              Forgejo's head of that branch or older in its history (GET .../compare/<Forgejo's head>...
-              <GitHub's sha> counts a commit, or answers 404: having the commit on another branch is not
-              enough) or a tag at another commit is a failure naming each ref, and gets no mirror;
+              Forgejo's head of that branch or older in its history (Forgejo's GET .../compare/<base>...
+              <head> decides: GitHub's sha must count 0 commits over Forgejo's head, and Forgejo's head at
+              least 1 over GitHub's sha, since two unrelated histories count 0 both ways; a 404 is a commit
+              Forgejo lacks; having the commit on another branch is not enough) or a tag at another commit
+              is a failure naming each ref, and gets no mirror;
               --allow-prune names them and makes the mirror anyway. A refused repository whose mirror
               exists but never synced (a run that stopped between the two) has that mirror deleted,
               since Forgejo would make the first push on its own (on a commit, or within 8 hours);
@@ -685,25 +687,38 @@ def _request_sync(ctx, name, done):
     return []
 
 
-def _in_forgejo_history(ctx, name, forgejo_sha, github_sha):
-    """Whether GitHub's commit is Forgejo's head of the branch (`forgejo_sha`) or older in its history, so that
-    the --mirror push only moves GitHub's branch forward. Forgejo decides: `GET .../compare/<base>...<head>`
-    lists the commits `head` has that `base` has not, and counts them (`total_commits`), so with Forgejo's head
-    as the base and GitHub's commit as the head, none means GitHub's is in Forgejo's branch. Forgejo answers 404
-    for a commit the copy does not have at all: not in it either. (Checked on Forgejo 16 in the live suite: an
-    ancestor and the head itself count 0, a commit of another branch 1, an unknown one 404.) Any other error
-    raises, and so does an answer without the count: unsure is not a yes."""
-    path = f"/repos/{ctx.forgejo_owner}/{name}/compare/{forgejo_sha}...{github_sha}"
+def _commits_ahead(ctx, name, base, head):
+    """How many commits `head` has that `base` has not, as Forgejo's `GET .../compare/<base>...<head>` counts
+    them (`total_commits`), or None when Forgejo answers 404: a commit the copy does not have at all. Beware
+    its 0: it also answers 0, an empty list, for two commits with no common ancestor (its merge base fails).
+    Any other error raises, and so does an answer without the count: unsure is not a yes."""
+    path = f"/repos/{ctx.forgejo_owner}/{name}/compare/{base}...{head}"
     try:
         answer = ctx.forgejo.request("GET", path)
     except rules.ApiError as error:
         if error.status == 404:
-            return False
+            return None
         raise
     total = answer.get("total_commits") if isinstance(answer, dict) else None
     if not isinstance(total, int) or isinstance(total, bool):
         raise MigrateError(f"GET {path}: the answer has no total_commits")
-    return total == 0
+    return total
+
+
+def _in_forgejo_history(ctx, name, forgejo_sha, github_sha):
+    """Whether GitHub's commit is Forgejo's head of the branch (`forgejo_sha`) or older in its history, so that
+    the --mirror push only moves GitHub's branch forward. Forgejo decides, with two counts (_commits_ahead):
+    GitHub's commit has nothing Forgejo's head lacks (0), and Forgejo's head has something GitHub's commit
+    lacks (1 or more), which makes GitHub's commit a proper ancestor. The second count is what tells an
+    ancestor from an unrelated history -- an orphan branch, gh-pages style -- for which Forgejo counts 0 both
+    ways. A commit Forgejo does not have (404) is not in its branch either. (Checked on Forgejo 16 in the
+    live suite: an ancestor 0 then at least 1, a commit of another branch 1, an orphan 0 both ways, an unknown
+    one 404.)"""
+    if forgejo_sha == github_sha:
+        return True
+    if _commits_ahead(ctx, name, forgejo_sha, github_sha) != 0:
+        return False
+    return (_commits_ahead(ctx, name, github_sha, forgejo_sha) or 0) >= 1
 
 
 def _taken_from_github(ctx, name):
@@ -801,7 +816,10 @@ def _mirror_one(ctx, repo, allow_prune=False):
     except rules.ApiError as error:
         return [_report(ctx, f"{name}: could not list its push mirrors: {error}")]
     right = [m for m in existing if _same_address(m.get("remote_address") or "", wanted)]
-    if right and _synced(right[0]):
+    # Forgejo sets last_update on a failed sync too: a mirror whose push failed reads as synced, though what
+    # only GitHub has may still be there for the next push to take, so the guard looks again (it only reads).
+    failed = bool(right) and bool((right[0].get("last_error") or "").strip())
+    if right and _synced(right[0]) and not failed:
         print(f"{name}: push mirror already there", flush=True)
         return []
     if existing and not right:
@@ -812,8 +830,13 @@ def _mirror_one(ctx, repo, allow_prune=False):
     # --mirror, which deletes on GitHub what Forgejo lacks.
     failure = _prune_guard(ctx, name, allow_prune)
     if failure:
-        # A mirror made by a run that stopped before its sync would still make that push on its own.
+        # A mirror made by a run that stopped before its sync would still make that push on its own. (One that
+        # has pushed, its last push failed or not, is never deleted: _disarm leaves it.)
         return [failure] + _disarm(ctx, name, right)
+    if right and _synced(right[0]):
+        print(f"{name}: push mirror already there (its last sync failed; the guard finds nothing on GitHub it "
+              "would take)", flush=True)
+        return []
     if right:
         # Made but never pushed: the run that made it stopped before the sync (or the sync failed).
         return _request_sync(ctx, name, "push mirror already there, never synced: sync requested")

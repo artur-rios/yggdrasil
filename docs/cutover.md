@@ -1116,7 +1116,9 @@ tag Forgejo does not have. So before it makes a repository's mirror, `mirrors` c
 tags with Forgejo's (the dry run too: it only reads), and **refuses a repository** where GitHub has a branch or
 tag Forgejo lacks, a branch whose commit is not Forgejo's head of that branch or older in its history (Forgejo
 having the commit on another branch is not enough: GitHub's `main` fast-forwarded to a commit of `develop` would
-be set back), or a tag at another commit. After 5.3's freeze there is none; a refusal is a push that reached
+be set back; nor is a commit of a history unrelated to Forgejo's branch, such as an orphan `gh-pages`, which
+Forgejo's compare counts as 0 commits apart both ways, so `mirrors` asks both ways and wants Forgejo's head
+ahead), or a tag at another commit. After 5.3's freeze there is none; a refusal is a push that reached
 GitHub after 5.11, or a copy left from 4.4.
 
 **Success looks like:** the dry run: `would create a push mirror {...}` (the password `***`) and `would request
@@ -1131,10 +1133,12 @@ scripts/migrate.py mirrors --only <repo> --allow-prune` makes the mirror anyway,
 moves each ref named (the line says which). `could not make the push mirror: ...`: Forgejo's message; a
 `401`/`403` from GitHub later shows in `verify` as the mirror's last error, and is the mirror token (4.1). Run
 again: a mirror that exists and has pushed is `already there`; one that never synced is compared again, then
-gets its sync asked for. A refused repository whose mirror exists but never synced (a run stopped between the two)
-also prints `deleted its unsynced push mirror so Forgejo can't push it on its own`: left there, Forgejo would
-make that first push itself, on a commit or within 8 hours. Having never pushed, it loses nothing; the run that
-passes the guard makes it again. A mirror that has synced is never deleted.
+gets its sync asked for. One whose last sync failed (a `last error`; Forgejo still records the time, so it reads
+as synced) is compared again too, and is refused the same way, or is `already there (its last sync failed; ...)`:
+read its error in `verify`. A refused repository whose mirror exists but never synced (a run stopped between
+the two) also prints `deleted its unsynced push mirror so Forgejo can't push it on its own`: left there, Forgejo
+would make that first push itself, on a commit or within 8 hours. Having never pushed, it loses nothing; the run
+that passes the guard makes it again. A mirror that has synced, its last sync failed or not, is never deleted.
 **Back out:** [Rollback](#6-rollback), step 1: delete every push mirror first. Stopping Forgejo only pauses them:
 the next start pushes Forgejo's state over GitHub again.
 
