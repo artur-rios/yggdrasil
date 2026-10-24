@@ -7,8 +7,10 @@ right: that Forgejo 16.0.6 (the image platform/compose.yml pins) takes those req
 the scripts read it, and that the protections rules.py applies really hold -- `claude` cannot merge a
 Jenkinsfile change, push a release branch or create, move or delete a version tag, a `rules: basic`
 repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
-failing checks. Four tests check migrate.py against this server (below): import, push mirrors and collaborators. One test pins a known gap
-instead: jenkins, which creates the version tags, can also move and delete them (docs/setup.md, step 12).
+failing checks. Six tests check migrate.py against this server (below): import (two), prepare-github's
+Forgejo side (Dependabot's file deleted), push mirrors, the guard before a mirror's first push, and
+collaborators. One test pins a known gap instead: jenkins, which creates the version tags, can also move
+and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
 container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
@@ -1081,6 +1083,45 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn(f"{source}\trefs\tFAIL\trefs/tags/v0.0.2 only on GitHub", out.splitlines())
         self.assertEqual(github.writes(), [])
+
+    def test_given_a_dependabot_file_when_migrate_prepares_github_then_forgejo_deletes_it_on_the_default_branch(self):
+        # prepare-github's Forgejo side, against this server: the contents API finds the file on the
+        # repository's default branch and deletes it in one commit by the token's owner. GitHub's side is the
+        # fake's (test_migrate.py pins it); here it only has to let the run through.
+        repo, path = "dependabot-lib", ".github/dependabot.yml"
+        owner = self.api[OWNER]
+        owner.request("POST", "/user/repos", {"name": repo, "private": True, "auto_init": True,
+                                              "default_branch": "develop"})
+        self.change_file(OWNER, repo, path, "version: 2\nupdates: []\n", "develop")
+        catalog = self.migrate_catalog()
+        github = FakeGitHub([github_repository(repo, default_branch="develop", private=True)], login=OWNER)
+
+        def on_develop():
+            try:
+                return owner.request("GET", f"/repos/{OWNER}/{repo}/contents/{urllib.parse.quote(path)}?ref=develop")
+            except rules.ApiError as error:
+                if error.status == 404:
+                    return None
+                raise
+
+        code, out, err = self.migrate_run(["--dry-run", "prepare-github", "--only", repo], catalog, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertIn(f"{repo}: would delete {path} on develop", out.splitlines())
+        self.assertIsNotNone(on_develop())  # a dry run deletes nothing
+        self.assertEqual(github.writes(), [])
+
+        code, out, err = self.migrate_run(["prepare-github", "--only", repo], catalog, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines()[0], f"{repo}: deleted {path} on develop")
+        self.assertIsNone(on_develop())
+        (latest,) = owner.request("GET", f"/repos/{OWNER}/{repo}/commits?sha=develop&limit=1&stat=false")[:1]
+        self.assertEqual(latest["commit"]["message"].strip(), migrate.DEPENDABOT_MESSAGE)
+        self.assertEqual(latest["commit"]["author"]["name"], OWNER)
+
+        # Run again: no file left, GitHub prepared already; nothing is written.
+        code, out, err = self.migrate_run(["prepare-github", "--only", repo], catalog, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{repo}: no dependabot file", f"{repo}: already prepared on GitHub"])
 
     def test_given_what_only_the_target_has_when_migrate_mirrors_then_it_is_refused_until_allow_prune(self):
         # The guard before the first --mirror push, against this server's answers: the target (GitHub's
