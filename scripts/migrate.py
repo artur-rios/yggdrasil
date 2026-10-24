@@ -743,9 +743,11 @@ def _prune_guard(ctx, name, allow_prune):
         print(f"{name}: --allow-prune: the first mirror push deletes or moves on GitHub: {'; '.join(taken)}",
               flush=True)
         return None
+    # The way past names this repository alone: `mirrors --allow-prune` over every repository would let go
+    # whatever the others have too, unread.
     return _report(ctx, f"{name}: the first mirror push would delete or move what only GitHub has: "
                         f"{'; '.join(taken)}: get it onto Forgejo first (or delete it on GitHub), "
-                        "or run again with --allow-prune to let it go")
+                        f"or run `mirrors --only {name} --allow-prune` once you've checked")
 
 
 # What deleting a refused mirror that never pushed says, after `would delete` in a dry run, `deleted` otherwise.

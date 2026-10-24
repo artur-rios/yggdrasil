@@ -615,8 +615,8 @@ Wait a minute after `mirrors` (it asks for one sync, which Forgejo runs in the b
 Before it makes a mirror, `mirrors` compares GitHub's branches and tags with Forgejo's: the mirror's first push
 deletes on GitHub whatever Forgejo lacks, so a repository where GitHub has a branch or tag Forgejo does not, a
 branch whose commit is not in Forgejo's branch of that name, or a tag at another commit, is refused, each ref
-named, and gets no mirror. Here Forgejo's copy is a minute old, so nothing is refused: the Dependabot commit puts Forgejo's default
-branch ahead of GitHub's, which takes nothing from GitHub.
+named, and gets no mirror. Here Forgejo's copy is a minute old, so nothing is refused: the Dependabot commit puts
+Forgejo's default branch ahead of GitHub's, which takes nothing from GitHub.
 
 **Success looks like:** `deleted .github/dependabot.yml on <default branch>`, then `push mirror created`, `sync
 requested`; then verify's `push mirror ok synced <time>` and `refs ok`. On GitHub, the default branch's latest
@@ -625,10 +625,11 @@ repository's **Settings → Repository → Mirror settings** lists it with its l
 **If it fails:**
 - **`the first mirror push would delete or move what only GitHub has: <ref> ...`**: the guard. Something reached
   GitHub after the import (a push, a merged pull request). Delete the copy on Forgejo (Back out) and start this
-  step again. `mirrors --allow-prune` would make the mirror anyway and delete or move each ref it names: that is
-  `--mirror` working, and from the window on Forgejo is the record (against a Forgejo standing in for GitHub,
-  while writing this page, a branch made on the copy only was refused, then deleted by the first sync with
-  `--allow-prune`), but it is never what the window wants.
+  step again. The refusal ends ``or run `mirrors --only <repo> --allow-prune` once you've checked``: that would
+  make this one repository's mirror anyway and delete or move each ref it names. That is `--mirror` working,
+  and from the window on Forgejo is the record (against a Forgejo standing in for GitHub, while writing this
+  page, a branch made on the copy only was refused, then deleted by the first sync with `--allow-prune`), but it
+  is never what the window wants.
 - **The mirror's last error names `refs/pull/...` (`deny updating a hidden ref`, or similar).** Forgejo keeps
   each imported pull request's head as `refs/pull/<n>/head`, and GitHub refuses pushes there. Against a Forgejo
   stand-in, Forgejo 16 pushed the branches and no `refs/pull/*` and had no error, but GitHub was not there to
@@ -1112,11 +1113,11 @@ GitHub after 5.11, or a copy left from 4.4.
 **Success looks like:** the dry run: `would create a push mirror {...}` (the password `***`) and `would request
 the sync` for each, exit `0`. The real run: `push mirror created` and `sync requested` for each (`archived on
 GitHub: no mirror` for the archived ones), exit `0`.
-**If it fails:** `the first mirror push would delete or move what only GitHub has: <ref> only on GitHub; GitHub's
-<branch> at <sha> is not in Forgejo's <branch> (<sha>): the first push would rewind it`: that repository gets no
-mirror; the others go on. Find who
-pushed it; bring it to Forgejo (a stale copy: delete it on Forgejo and `import --only <repo>` again, then
-`prepare-github --only <repo>`), and run `mirrors` again. Only if what it names must go, `python3
+**If it fails:** ``the first mirror push would delete or move what only GitHub has: <ref> only on GitHub; GitHub's
+<branch> at <sha> is not in Forgejo's <branch> (<sha>): the first push would rewind it: ... or run `mirrors --only
+<repo> --allow-prune` once you've checked``: that repository gets no mirror; the others go on. Find who pushed it;
+bring it to Forgejo (a stale copy: delete it on Forgejo and `import --only <repo>` again, then `prepare-github
+--only <repo>`), and run `mirrors` again. Only if what it names must go, `python3
 scripts/migrate.py mirrors --only <repo> --allow-prune` makes the mirror anyway, and its first push deletes or
 moves each ref named (the line says which). `could not make the push mirror: ...`: Forgejo's message; a
 `401`/`403` from GitHub later shows in `verify` as the mirror's last error, and is the mirror token (4.1). Run

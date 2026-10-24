@@ -1222,7 +1222,11 @@ class MirrorsTests(unittest.TestCase):
         (failure,) = [line for line in run.err.splitlines() if line.startswith("  toolkit: ")]
         self.assertIn("refs/heads/hotfix only on GitHub", failure)
         self.assertIn("refs/tags/v1.1.0 only on GitHub", failure)
-        self.assertIn("--allow-prune", failure)
+        # The way past names this repository alone: --allow-prune over every repository would let go what
+        # the others' guard has not even looked at yet.
+        self.assertTrue(failure.endswith(": get it onto Forgejo first (or delete it on GitHub), or run "
+                                         "`mirrors --only toolkit --allow-prune` once you've checked"), failure)
+        self.assertNotIn("run again with --allow-prune", failure)
         # Nothing was written for it; the next repository got its mirror.
         self.assertEqual(self.made_for(run), ["other-lib"])
         self.assertEqual(run.forgejo.synced, ["other-lib"])
