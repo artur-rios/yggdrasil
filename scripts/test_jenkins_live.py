@@ -1854,15 +1854,11 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         for tag in ("v0.4.0", "v0.2.0"):
             self.assertTrue(self.wait_for_release(APP, tag, draft=True), f"{tag}'s release is still published")
         # An invalid line fails the build before anything is read.
-        refused = self.tag_check(forget=f"{APP} v0.4.0
-not-a-repository v1.0.0")
+        refused = self.tag_check(forget=f"{APP} v0.4.0\nnot-a-repository v1.0.0")
         self.assertEqual(refused.result, "FAILURE", refused.console[-4000:])
         self.assertIn("FORGET line 2 ('not-a-repository v1.0.0')", refused.console)
         self.assertNotIn("(Check the release tags)", refused.console)
-        forgot = self.tag_check(forget=f"{APP} v0.4.0
-
-{APP} v9.9.9
-")
+        forgot = self.tag_check(forget=f"{APP} v0.4.0\n\n{APP} v9.9.9\n")
         self.assertEqual(forgot.result, "FAILURE", forgot.console[-6000:])
         self.assertIn(f"Forgotten: {APP} v0.4.0 (released from {main})", forgot.console)
         self.assertIn(f"FORGET: {APP} v9.9.9 is not in the record: nothing to forget", forgot.console)
