@@ -190,6 +190,9 @@ first release. In short:
 | **Hosts** | Prepare each machine with `ygg install --role dev\|apps`, bring up the dev machine (the controller host) and the apps machine, then the application env files | [8–11](docs/setup.md#8-prepare-each-machine), [hosts.md](docs/hosts.md) |
 | **Finish** | Apply the branch rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-branch-rules) |
 
+**Moving an installation that runs today** (one VPS deploying from GitHub) to the two machines and Forgejo:
+[docs/cutover.md](docs/cutover.md), the runbook for the machines, the maintenance window and the clean-up.
+
 On an Ubuntu host, [`ygg`](docs/cli.md) does the host steps, as a command or from an arrow-key
 menu: it installs the tools, sets up and deploys applications, shows what runs, and shows, changes
 and rolls back each application's variables and secrets (`scripts/ygg.sh self-install` installs it).
@@ -218,6 +221,7 @@ default setup worked through on real hardware:
 | `scripts/publish-release.sh`, `scripts/release_notes.py`, `scripts/nuget-push.sh` | A release made on the git server (and its GitHub copy) with its files checked and its notes written; a library's NuGet packages pushed |
 | `scripts/renovate.sh` | One Renovate run against the catalog's repositories, by the `renovate` user on the dev machine |
 | `scripts/rules.py` | Applies the branching model (protected branches, tags, required checks, webhooks) to every catalog repository, on Forgejo or GitHub |
+| `scripts/migrate.py`, `scripts/cloudflare_dns.py`, `scripts/volumes.sh`, `scripts/prove-machine.sh` | The move from one VPS on GitHub to the two machines: the repositories imported into Forgejo with their GitHub copies and push mirrors, the DNS records of both domains, the Docker volumes carried across, and the rootless setup proved on each machine ([docs/cutover.md](docs/cutover.md)) |
 | `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, the Jenkins controller and the deploy agent (`platform/build-agent.yml` is the CI and release agents') |
 | `jenkins/Jenkinsfile.default`, `jenkins/library/` | The one Jenkinsfile every job runs (a repository's own is never read) and the pinned library it calls: checks, deploys, releases |
 | `github/rulesets.py` | Moved: runs `scripts/rules.py` with the same arguments |
@@ -225,7 +229,7 @@ default setup worked through on real hardware:
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads) |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
+| `docs/` | Catalog reference, setup guide, the two machines (`hosts.md`), the cutover runbook (`cutover.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
 
 ## Day to day
 

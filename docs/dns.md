@@ -169,12 +169,16 @@ issuing fails with an error about not finding the zone. Never use the Global API
 Check the token from any machine with `curl` (on Windows, Git Bash):
 
 ```bash
-export CF_DNS_API_TOKEN=<token>
-curl -s -H "Authorization: Bearer $CF_DNS_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify
-curl -s -H "Authorization: Bearer $CF_DNS_API_TOKEN" "https://api.cloudflare.com/client/v4/zones?name=example.dev"
+read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # paste the token, then Enter
+printf 'header = "Authorization: Bearer %s"\n' "$CF_DNS_API_TOKEN" \
+  | curl -s --config - https://api.cloudflare.com/client/v4/user/tokens/verify
+printf 'header = "Authorization: Bearer %s"\n' "$CF_DNS_API_TOKEN" \
+  | curl -s --config - "https://api.cloudflare.com/client/v4/zones?name=example.dev"
 ```
 
-The first should answer `"status":"active"`, the second list the zone in `result`. An empty
+`read -rs` keeps the token out of your shell history, and `curl --config -` reads the header from `printf` (a shell
+builtin), so the token is never a command's argument, which every user of the machine can see. The first should
+answer `"status":"active"`, the second list the zone in `result`. An empty
 `result` means Zone Read or the zone resource is wrong. If you set IP filtering, run it from one of
 those IPs.
 

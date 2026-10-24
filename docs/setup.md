@@ -49,6 +49,10 @@ flowchart TB
 
 Decide these before touching anything, and write the answers down: every later step uses them.
 
+**Moving an installation that runs today** (one VPS that deploys from GitHub) to this setup: follow
+[cutover.md](cutover.md) rather than this guide straight through. It says which of these steps to do, in which
+order and with which answers, and adds the maintenance window that moves the data and the repositories.
+
 | Decision | Example | Notes |
 |---|---|---|
 | **GitHub owner** | `acme` | The user or organisation that owns the application repositories. Your fork of yggdrasil goes there too. |
@@ -946,8 +950,8 @@ docker exec "$(docker ps -q --filter label=com.docker.compose.project=yggdrasil 
 - `--random-password`: makes a password and prints it once (`generated random password is …`). Sign in with
   it at `https://git.<DOMAIN>` and change it.
 
-Importing existing repositories into Forgejo, and the move of an installation from GitHub, come with a later
-part of the move to Forgejo. The accounts Jenkins and Renovate use are next.
+Importing existing repositories into Forgejo, and the move of a whole installation from GitHub, are in
+[cutover.md](cutover.md). The accounts Jenkins and Renovate use are next.
 
 ### 9.7 The Forgejo accounts and tokens
 
@@ -1002,6 +1006,11 @@ repository's **Settings → Collaborators**). Nothing is visible signed out, so 
 see (a private one it was not given) is a repository Jenkins cannot scan or check out. When all of this exists,
 add `jenkins` to `COMPOSE_PROFILES` and run `platform.sh up` again (9.3).
 
+Moving repositories from GitHub, `scripts/migrate.py collaborators` gives the bots their access instead, on
+every catalog repository: `jenkins` and `renovate` write, `jenkins-ci` read, and a fourth account, **`claude`**,
+write (the AI development user's; it needs no token yet). Make `claude` with `forgejo_user create` as above
+before it runs ([cutover.md](cutover.md#23-forgejo-the-controller-and-the-agents)).
+
 ### 9.8 The CI and release agents
 
 The dev machine runs the repositories' checks and builds on two Jenkins agents of their own, each in the
@@ -1033,11 +1042,9 @@ now hands the agent `YGG_DOCKER_SOCKET`, the host path of the user's socket, whi
 `docker: true` needs. On the apps machine, `scripts/platform.sh up` recreates the deploy agent with
 `YGG_DOMAIN`, the platform's `DOMAIN`, which `deploy.sh` puts under a site's host.
 
-The `ci` engine keeps every image a check pulled and every build cache it made; nothing prunes them yet (a
-scheduled prune is planned with the next part of the move, plan 4). Until then, look at its disk now and then
-and prune it as that user, e.g.
-`sudo -u ci env XDG_RUNTIME_DIR=/run/user/$(id -u ci) docker system prune --filter until=168h` (and the same for
-`release`).
+The `ci` and `release` engines keep every image a check pulled and every build cache it made. A weekly prune of
+each, a systemd user timer that `ygg install` sets up, removes what the last week's builds did not use
+([hosts.md, The CI engines: the weekly prune](hosts.md#the-ci-engines-the-weekly-prune)).
 
 ### 9.9 Renovate
 
@@ -1198,6 +1205,9 @@ python3 scripts/rules.py               # apply
 
 - On an **existing GitHub installation**, read [An existing GitHub installation](#an-existing-github-installation)
   first: run it for a repository only once Jenkins reports that repository's checks.
+- **Moving from GitHub to Forgejo**, the script runs in the maintenance window, after the repositories are imported,
+  their GitHub copies prepared, the push mirrors made and the bots given their access:
+  [cutover.md, 5.15](cutover.md#515-the-rules).
 - `--dry-run` reads from the server and prints what it would write, without writing anything. It still needs
   the token below.
 - Without it, the script applies the rules. It is safe to run again: on Forgejo it writes only what differs
