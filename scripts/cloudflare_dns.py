@@ -2,7 +2,7 @@
 """Applies the DNS records of both domains through Cloudflare's API (docs/hosts.md, "DNS records").
 
     CF_DNS_API_TOKEN=... python3 scripts/cloudflare_dns.py [--dry-run] \\
-        --apps <ipv4> [--apps6 <ipv6>] --dev <ipv4> [--dev6 <ipv6>]
+        --apps <ipv4> [--apps6 <ipv6>] --dev <ipv4> [--dev6 <ipv6>] [--skip-caa <zone>]...
 
 The owner runs it once when building the two machines and again at the cutover, to point the domains
 at the new apps machine; run with the old apps address it is the rollback. It makes, on each of
@@ -27,6 +27,12 @@ Every record it makes carries the comment `yggdrasil`; that comment is how it kn
     the old machine. It is reported ("delete it by hand or pass --apps6") and the run exits 1.
   * Every other record of the zone is not looked at. Note that a specific record wins over the wildcard:
     an old `www` or `blog` CNAME (to Vercel, say) keeps answering until you delete it.
+
+--skip-caa <zone> (repeatable, one of the two zones) leaves that zone's CAA record out: it is neither created,
+updated nor reported, and the run says "CAA skipped on <zone> (--skip-caa)". It is for a zone whose names still
+get certificates another way: artur-rios.tech, while Vercel serves www. and blog. with certificates it renews
+through Let's Encrypt over HTTP-01, which the CAA's validationmethods=dns-01 would refuse. Drop the flag once
+those sites have moved.
 
 --dry-run still reads from Cloudflare (so it needs the token) but sends no write; it prints what a real
 run would change. The token (CF_DNS_API_TOKEN, the name acme.env uses) goes only in the Authorization
@@ -68,10 +74,11 @@ def _address_records(zone, name, v4, v6, proxied):
     return records
 
 
-def desired_records(apps, apps6, dev, dev6):
+def desired_records(apps, apps6, dev, dev6, skip_caa=()):
     """Every record the script makes, as dicts: zone, name (the full name), type, content (or `data` for
     CAA), proxied (not for CAA), comment, ttl (1 is Cloudflare's "automatic"; a proxied record is always
-    automatic). The addresses are strings; apps6 and dev6 may be empty or None: then no AAAA record is wanted."""
+    automatic). The addresses are strings; apps6 and dev6 may be empty or None: then no AAAA record is wanted.
+    `skip_caa`: the zones whose CAA record is left out (--skip-caa)."""
     records = []
     for zone in ZONES:
         records += _address_records(zone, "@", apps, apps6, True)
@@ -79,8 +86,9 @@ def desired_records(apps, apps6, dev, dev6):
         if zone == DEV_ZONE:
             for name in DEV_NAMES:
                 records += _address_records(zone, name, dev, dev6, False)
-        records.append({"zone": zone, "name": zone, "type": "CAA", "data": dict(CAA_DATA),
-                        "comment": COMMENT, "ttl": 1})
+        if zone not in skip_caa:
+            records.append({"zone": zone, "name": zone, "type": "CAA", "data": dict(CAA_DATA),
+                            "comment": COMMENT, "ttl": 1})
     return records
 
 
@@ -289,6 +297,8 @@ def _parser():
     parser.add_argument("--apps6", type=_address(6), metavar="IPV6", help="the apps machine, to make AAAA records")
     parser.add_argument("--dev", required=True, type=_address(4), metavar="IPV4", help="the dev machine")
     parser.add_argument("--dev6", type=_address(6), metavar="IPV6", help="the dev machine, to make AAAA records")
+    parser.add_argument("--skip-caa", action="append", default=[], choices=ZONES, metavar="ZONE",
+                        help="leave this zone's CAA record out (repeatable): neither created, updated nor reported")
     return parser
 
 
@@ -304,7 +314,9 @@ def main(argv=None, environ=None, api=None):
     if not token:
         print("cloudflare_dns.py: no token: set CF_DNS_API_TOKEN (the one acme.env holds)", file=sys.stderr)
         return 2
-    wanted = desired_records(args.apps, args.apps6, args.dev, args.dev6)
+    wanted = desired_records(args.apps, args.apps6, args.dev, args.dev6, skip_caa=args.skip_caa)
+    for zone in dict.fromkeys(args.skip_caa):
+        print(f"CAA skipped on {zone} (--skip-caa)")
     cloudflare = Cloudflare(api or rules.Api(API_BASE, token, "Bearer"))
     problems = apply(cloudflare, wanted, dry_run=args.dry_run)
     if problems:

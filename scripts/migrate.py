@@ -53,7 +53,7 @@ and goes on to the next, so a re-run picks up where it stopped):
               drops whitelisted users that cannot write, so this runs before rules.py. A bot account
               Forgejo does not have is named once (not once per repository) and left out: create it first,
               docs/setup.md 9.7. A collaborator with another permission is set to the right one; one that
-              is right is left alone. Needs only FORGE_TOKEN (the owner's). --only names catalog
+              is right is left alone. Needs only FORGE_TOKEN (the owner's, with read:user). --only names catalog
               repositories.
   verify      the gate before pushes go to Forgejo. Read only: it sends no write, with or without --dry-run.
               One row per check (tab-separated: repo, check, ok|FAIL, detail), then `<N> repositories, <K> checks
@@ -77,7 +77,8 @@ The move covers every repository of the GitHub owner, forks included. Only the c
 
 The GitHub owner is the catalog's `mirror.github` when a mirror is set, else --github-owner. The Forgejo
 owner is the catalog's `owner`, as for rules.py. Tokens: GitHub's as rules.py finds it (GH_TOKEN, else
-`gh auth token`), Forgejo's in FORGE_TOKEN (the owner's, scope write:repository); they go only in the
+`gh auth token`), Forgejo's in FORGE_TOKEN (the owner's, scopes write:repository and read:user: collaborators
+looks the bot accounts up under /users, which Forgejo refuses to a token without read:user); they go only in the
 Authorization header, never in a process argument, a URL or a line of output. The exceptions are
 GitHub's, which Forgejo's migration API takes in the request body (`auth_token`), and the mirror token, which
 its push-mirror API takes there too (`remote_password`): import and mirrors send them there and show
@@ -158,7 +159,7 @@ class Context:
             raise UsageError("catalog.yaml has no `forge: {type: forgejo, url: ...}` block: there is no Forgejo to talk to")
         token = os.environ.get("FORGE_TOKEN", "").strip()
         if not token:
-            raise UsageError("no Forgejo token: set FORGE_TOKEN (the owner's, scope write:repository)")
+            raise UsageError("no Forgejo token: set FORGE_TOKEN (the owner's, scopes write:repository and read:user)")
         return rules.Api(forge["api"], token, "token")
 
     @property

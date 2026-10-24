@@ -673,6 +673,8 @@ class ImportTests(unittest.TestCase):
         run = self.run_import([repository("a")], env={})
         self.assertEqual(run.code, 2)
         self.assertIn("FORGE_TOKEN", run.err)
+        # Both scopes are named: collaborators looks the bots up under /users, which needs read:user.
+        self.assertIn("scopes write:repository and read:user", run.err)
         self.assertEqual(run.out, "")
 
     def test_given_only_when_imported_then_just_those_are_imported(self):

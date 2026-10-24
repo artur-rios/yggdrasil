@@ -338,6 +338,72 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(fake.writes(), [])
 
 
+class SkipCaaTests(unittest.TestCase):
+    """--skip-caa <zone>: that zone's CAA is left out of the desired set, so nothing about it is created,
+    updated or reported (artur-rios.tech while Vercel renews www. and blog. over HTTP-01)."""
+
+    SKIP = ARGS + ["--skip-caa", "artur-rios.tech"]
+
+    def test_given_a_skipped_zone_when_desired_then_only_the_other_zone_has_a_caa(self):
+        wanted = wanted_by_key(skip_caa=("artur-rios.tech",))
+        self.assertNotIn(("CAA", "artur-rios.tech"), wanted)
+        self.assertIn(("CAA", "techcraftsmen.net"), wanted)
+        self.assertIn(("A", "artur-rios.tech"), wanted)  # only the CAA goes
+
+    def test_given_empty_zones_when_run_with_skip_caa_then_that_caa_is_not_created_and_the_skip_is_said(self):
+        fake = FakeCloudflare()
+        status, out, err = run(fake, self.SKIP)
+        self.assertEqual((status, err), (0, ""))
+        self.assertEqual(fake.find("artur-rios.tech", "artur-rios.tech", "CAA"), [])
+        self.assertEqual(len(fake.find("techcraftsmen.net", "techcraftsmen.net", "CAA")), 1)
+        self.assertIn("CAA skipped on artur-rios.tech (--skip-caa)", out.splitlines())
+        self.assertIn("0 of 9 records already right", out)
+
+    def test_given_a_caa_made_by_hand_on_a_skipped_zone_when_run_then_it_is_not_reported(self):
+        fake = FakeCloudflare()
+        fake.seed_right()
+        fake.find("artur-rios.tech", "artur-rios.tech", "CAA")[0]["comment"] = ""  # made by hand
+        status, out, err = run(fake, self.SKIP)
+        self.assertEqual((status, err), (0, ""))
+        self.assertEqual(fake.writes(), [])
+        self.assertNotIn("made by hand", out + err)
+
+    def test_given_an_owned_caa_with_other_data_on_a_skipped_zone_when_run_then_it_is_not_updated(self):
+        fake = FakeCloudflare()
+        fake.seed_right()
+        fake.find("artur-rios.tech", "artur-rios.tech", "CAA")[0]["data"] = {"flags": 0, "tag": "issue",
+                                                                           "value": "letsencrypt.org"}
+        status, out, err = run(fake, self.SKIP)
+        self.assertEqual((status, err), (0, ""))
+        self.assertEqual(fake.writes(), [])
+        self.assertNotIn("update CAA", out)
+
+    def test_given_the_zone_twice_and_the_other_once_when_run_then_each_skip_is_said_once(self):
+        fake = FakeCloudflare()
+        status, out, _ = run(fake, ARGS + ["--skip-caa", "artur-rios.tech", "--skip-caa", "artur-rios.tech",
+                                           "--skip-caa", "techcraftsmen.net"])
+        self.assertEqual(status, 0)
+        self.assertEqual(out.count("CAA skipped on artur-rios.tech (--skip-caa)"), 1)
+        self.assertEqual(out.count("CAA skipped on techcraftsmen.net (--skip-caa)"), 1)
+        self.assertFalse([c for c in fake.writes() if c[2] and c[2].get("type") == "CAA"])
+
+    def test_given_a_dry_run_with_skip_caa_when_run_then_the_skip_is_said_and_nothing_is_sent(self):
+        fake = FakeCloudflare()
+        status, out, _ = run(fake, ["--dry-run"] + self.SKIP)
+        self.assertEqual(status, 0)
+        self.assertEqual(fake.writes(), [])
+        self.assertIn("CAA skipped on artur-rios.tech (--skip-caa)", out)
+        self.assertNotIn("would create CAA artur-rios.tech", out)
+        self.assertIn("would create CAA techcraftsmen.net", out)
+
+    def test_given_a_zone_that_is_not_ours_when_skipped_then_it_exits_2(self):
+        fake = FakeCloudflare()
+        status, _, err = run(fake, ARGS + ["--skip-caa", "example.com"])
+        self.assertEqual(status, 2)
+        self.assertIn("--skip-caa", err)
+        self.assertEqual(fake.calls, [])
+
+
 class Unused:
     """An api that fails the test if it is used: the commands that must stop before any request."""
 
