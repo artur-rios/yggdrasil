@@ -746,23 +746,24 @@ def _taken_from_github(ctx, name):
 
 
 def _prune_guard(ctx, name, allow_prune):
-    """Stands before a repository's first --mirror push: returns the failure to report when the push would
-    take from GitHub what only GitHub has, else None. With --allow-prune it is named and let go."""
+    """Stands before a repository's first --mirror push. Returns (failure, let_go): the failure to report when
+    the push would take from GitHub what only GitHub has (else None), and whether --allow-prune named such refs
+    and let them go, so the caller knows that push is now one the operator asked for."""
     try:
         taken = _taken_from_github(ctx, name)
     except (rules.ApiError, MigrateError) as error:
-        return _report(ctx, f"{name}: could not compare its branches and tags with GitHub's: {error}")
+        return _report(ctx, f"{name}: could not compare its branches and tags with GitHub's: {error}"), False
     if not taken:
-        return None
+        return None, False
     if allow_prune:
         print(f"{name}: --allow-prune: the first mirror push deletes or moves on GitHub: {'; '.join(taken)}",
               flush=True)
-        return None
+        return None, True
     # The way past names this repository alone: `mirrors --allow-prune` over every repository would let go
     # whatever the others have too, unread.
     return _report(ctx, f"{name}: the first mirror push would delete or move what only GitHub has: "
                         f"{'; '.join(taken)}: get it onto Forgejo first (or delete it on GitHub), "
-                        f"or run `mirrors --only {name} --allow-prune` once you've checked")
+                        f"or run `mirrors --only {name} --allow-prune` once you've checked"), False
 
 
 # What deleting a refused mirror that never pushed says, after `would delete` in a dry run, `deleted` otherwise.
@@ -828,12 +829,17 @@ def _mirror_one(ctx, repo, allow_prune=False):
                              "not replaced; remove it on Forgejo if it is wrong")]
     # The first push is still to come (the mirror's own sync, or the one asked for next): it pushes with
     # --mirror, which deletes on GitHub what Forgejo lacks.
-    failure = _prune_guard(ctx, name, allow_prune)
+    failure, let_go = _prune_guard(ctx, name, allow_prune)
     if failure:
         # A mirror made by a run that stopped before its sync would still make that push on its own. (One that
         # has pushed, its last push failed or not, is never deleted: _disarm leaves it.)
         return [failure] + _disarm(ctx, name, right)
     if right and _synced(right[0]):
+        if let_go:
+            # The operator just accepted what this push deletes or moves: make it now, where they read the
+            # line above, rather than at the mirror's next commit or 8-hour sync, hours later.
+            return _request_sync(ctx, name, "push mirror already there, its last sync failed: sync requested "
+                                            "(the push --allow-prune let go)")
         print(f"{name}: push mirror already there (its last sync failed; the guard finds nothing on GitHub it "
               "would take)", flush=True)
         return []

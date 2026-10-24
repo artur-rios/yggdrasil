@@ -1430,6 +1430,20 @@ class MirrorsTests(unittest.TestCase):
         self.assertEqual([c for c in run.forgejo.writes() if "/toolkit/" in c[1]], [])
         self.assertTrue([c for c in run.gh.calls if "/toolkit/git/" in c[1]])  # the refs were compared
 
+    def test_given_a_failed_mirror_and_allow_prune_when_mirrored_then_the_prune_it_names_is_synced_now(self):
+        # --allow-prune says the push deletes or moves what it names: the run makes that push now, where the
+        # operator reads it, instead of leaving it to the mirror's next commit or 8-hour sync.
+        failed = push_mirror("toolkit", last_error="remote: error: GH013: Repository rule violations found")
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER},
+                           {"refs/heads/develop": SHA_DEVELOP}, args=["mirrors", "--allow-prune"],
+                           mirrors={"toolkit": [failed]})
+        self.assertEqual(run.code, 0, run.err)
+        self.assertIn("toolkit: push mirror already there, its last sync failed: sync requested (the push "
+                      "--allow-prune let go)", run.lines)
+        self.assertNotIn("the guard finds nothing on GitHub", run.out)
+        self.assertEqual(run.forgejo.synced, ["toolkit", "other-lib"])
+        self.assertEqual(run.forgejo.mirrors["toolkit"], [failed])
+
     def test_given_the_mirror_already_synced_when_mirrored_then_the_refs_are_not_compared(self):
         # It has pushed: GitHub holds Forgejo's state already, and what differs now is verify's to say.
         run = self.guarded({"refs/heads/hotfix": SHA_OTHER}, {"refs/heads/develop": SHA_DEVELOP},

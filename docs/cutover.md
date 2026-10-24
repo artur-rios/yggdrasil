@@ -1135,7 +1135,8 @@ moves each ref named (the line says which). `could not make the push mirror: ...
 again: a mirror that exists and has pushed is `already there`; one that never synced is compared again, then
 gets its sync asked for. One whose last sync failed (a `last error`; Forgejo still records the time, so it reads
 as synced) is compared again too, and is refused the same way, or is `already there (its last sync failed; ...)`:
-read its error in `verify`. A refused repository whose mirror exists but never synced (a run stopped between
+read its error in `verify`. With `--only <repo> --allow-prune` such a mirror gets its sync asked for at once
+(`its last sync failed: sync requested (the push --allow-prune let go)`), so the push you accepted happens now. A refused repository whose mirror exists but never synced (a run stopped between
 the two) also prints `deleted its unsynced push mirror so Forgejo can't push it on its own`: left there, Forgejo
 would make that first push itself, on a commit or within 8 hours. Having never pushed, it loses nothing; the run
 that passes the guard makes it again. A mirror that has synced, its last sync failed or not, is never deleted.
