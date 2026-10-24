@@ -115,6 +115,23 @@ On each domain:
 A specific record wins over the wildcard, so these four names reach the dev machine and
 everything else reaches the apps machine.
 
+`scripts/cloudflare_dns.py` makes all of these through Cloudflare's API, with the comment `yggdrasil` on
+each. Run it once when building the machines, and again at the cutover with the new apps machine's address
+(with the old address it is the rollback):
+
+```bash
+CF_DNS_API_TOKEN=... python3 scripts/cloudflare_dns.py --dry-run     --apps <apps ipv4> [--apps6 <apps ipv6>] --dev <dev ipv4> [--dev6 <dev ipv6>]
+```
+
+Take `--dry-run` off to apply. The token is the one in `acme.env` (`CF_DNS_API_TOKEN`) and is read from the
+environment, never from an argument. `AAAA` records are made only when `--apps6` / `--dev6` is given. The
+script creates what is missing, updates in place a record it made whose address or proxy flag is wrong,
+and never deletes anything. It reports, and exits 1 for, what it must leave to you: a record of the same
+name and type without the `yggdrasil` comment (made by hand, such as a Vercel `A` on the bare domain), a
+`CNAME` at a name where it wants an `A` (Cloudflare allows none beside a `CNAME`), and an `AAAA` it made for
+an address you no longer pass ("stale: delete it by hand or pass `--apps6`"). It does not look at other
+names: an old `www` or `blog` `CNAME` keeps winning over the wildcard until you delete it.
+
 The `CAA` record, one per zone: `0 issue "letsencrypt.org; validationmethods=dns-01"`: only Let's Encrypt may issue certificates for
 the zone, and only after a DNS-01 proof, which needs the Cloudflare API token. Traefik proves control by DNS-01
 alone, so nothing legitimate is lost; without the record, whoever answers on port 80 of a name's address (a
