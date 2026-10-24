@@ -41,8 +41,8 @@ flowchart LR
 The diagram shows the finished design. What `ygg install` and the platform Compose file build is the machines
 themselves: Traefik, Forgejo, the Jenkins controller, the monitoring, the deploy agent and the build agents.
 The pipeline that runs on them (the checks on the CI agent, the release builds on the release agent, Renovate)
-is [setup.md, The pipeline](setup.md#the-pipeline). Setting up the git mirror, and moving existing repositories
-to Forgejo, come with later parts.
+is [setup.md, The pipeline](setup.md#the-pipeline). Moving an installation from one VPS on GitHub to these machines,
+its repositories to Forgejo with their GitHub mirrors, is [cutover.md](cutover.md).
 
 | | Dev machine (`--role dev`) | Apps machine (`--role apps`) |
 |---|---|---|
@@ -115,6 +115,26 @@ On each domain:
 A specific record wins over the wildcard, so these four names reach the dev machine and
 everything else reaches the apps machine.
 
+`scripts/cloudflare_dns.py` makes all of these through Cloudflare's API, with the comment `yggdrasil` on
+each. Run it once when building the machines, and again at the cutover with the new apps machine's address
+(with the old address it is the rollback):
+
+```bash
+read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # paste the token, then Enter
+python3 scripts/cloudflare_dns.py --dry-run --apps <apps ipv4> [--apps6 <apps ipv6>] --dev <dev ipv4> [--dev6 <dev ipv6>] [--skip-caa <zone>]
+```
+
+(`read -rs` keeps the token out of the shell's history and off the screen; `export` hands it to the script.)
+
+Take `--dry-run` off to apply. The token is the one in `acme.env` (`CF_DNS_API_TOKEN`) and is read from the
+environment, never from an argument. `AAAA` records are made only when `--apps6` / `--dev6` is given. The
+script creates what is missing, updates in place a record it made whose address or proxy flag is wrong,
+and never deletes anything. It reports, and exits 1 for, what it must leave to you: a record of the same
+name and type without the `yggdrasil` comment (made by hand, such as a Vercel `A` on the bare domain), a
+`CNAME` at a name where it wants an `A` (Cloudflare allows none beside a `CNAME`), and an `AAAA` it made for
+an address you no longer pass ("stale: delete it by hand or pass `--apps6`"). It does not look at other
+names: an old `www` or `blog` `CNAME` keeps winning over the wildcard until you delete it.
+
 The `CAA` record, one per zone: `0 issue "letsencrypt.org; validationmethods=dns-01"`: only Let's Encrypt may issue certificates for
 the zone, and only after a DNS-01 proof, which needs the Cloudflare API token. Traefik proves control by DNS-01
 alone, so nothing legitimate is lost; without the record, whoever answers on port 80 of a name's address (a
@@ -122,6 +142,12 @@ process on the dev machine that got there before Traefik, say) could pass Let's 
 certificate for `git.` or `jenkins.`. The dev machine also keeps its other users off
 ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-portsconf-dev-machine)); the record
 covers what that can't.
+
+Something that gets its certificates over HTTP-01 is refused by that record too. `artur-rios.tech`'s `www.` and
+`blog.` are served by Vercel until their sites move, and Vercel renews their certificates through Let's Encrypt over
+HTTP-01, so that zone's `CAA` waits: `--skip-caa artur-rios.tech` leaves it out ("CAA skipped on artur-rios.tech
+(--skip-caa)"): neither created, updated nor reported. Drop the flag once those sites have moved
+([cutover.md, 1.5](cutover.md#15-the-records)).
 
 Why the dev machine is not proxied:
 
@@ -477,9 +503,38 @@ run went; `journalctl --user -u yggdrasil-renovate` (as `renovate`) has its log,
 `scripts/renovate.sh run` starts one by hand, which is how to try it once before relying on the timer
 ([setup.md 9.9](setup.md#99-renovate)).
 
+`RENOVATE_GITHUB_COM_TOKEN` is optional: a GitHub fine-grained token with read-only access to public
+repositories (no permissions of its own). With it, Renovate reads the release notes and changelogs of
+dependencies hosted on GitHub as that account; without it, it asks anonymously and meets GitHub's rate limit,
+and the pull requests lose their notes. `renovate.sh` passes it to the container as `GITHUB_COM_TOKEN`, through
+the same run-scoped env file as the Forgejo token (never an argument), and never prints it; `ygg check` warns
+(`renovate github token`) while it is empty, and says nothing of its value.
+
 To update Renovate, change `RENOVATE_IMAGE` in `scripts/renovate.sh` to a newer version and its digest
 (`docker buildx imagetools inspect renovate/renovate:<version>`) in a pull request, after reading the release
 notes.
+
+### The CI engines: the weekly prune
+
+Dev machine only. Every build in `ci`'s and `release`'s rootless engines leaves images and build cache behind,
+and nothing else removes them. `ygg install` (step `prune-timer`, right after the engines) copies
+[platform/systemd](../platform/systemd)'s `yggdrasil-prune.service` and `yggdrasil-prune.timer` into
+`~/.config/systemd/user/` of **each** of `ci` and `release`, as that user, and enables the timer, the same way
+as the backup's and Renovate's. The timer fires on Sundays at 03:00 (plus a random delay of up to an hour;
+`Persistent=true`, so a machine that was off then prunes when it is next on). The service runs, after the
+user's own `docker.service` and against its own engine (`DOCKER_HOST=unix://%t/docker.sock`):
+
+```bash
+docker system prune --all --force --filter until=168h
+docker builder prune --all --force --filter until=168h
+```
+
+That is, every image no container uses and all build cache that has not been used for a week; what a build of
+the last seven days could still reuse stays. Volumes are never pruned. `ygg check --role dev` has a row
+`prune timer ci` and `prune timer release`, which is `ok` while the units are the checkout's copies and the
+timer is enabled; `systemctl --user list-timers` and `journalctl --user -u yggdrasil-prune` (as that user) show
+the next and the last run. No other user's engine is pruned: `ygg`'s holds the platform and the deployed
+applications, which are not leftovers.
 
 ### Other files and rules
 
@@ -549,7 +604,10 @@ restrict 80 and 443 to Cloudflare.
 **Isolation, checked.** `ygg check --role dev` proves that `ci`, `release`, `dev` and `renovate` cannot read
 `ygg`'s engine socket or `/etc/yggdrasil/platform.env`, and that `ci` cannot read `release`'s engine socket or
 `/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that
-the path exists) so a green row means something.
+the path exists) so a green row means something. `scripts/prove-machine.sh dev` (or `apps`), run once by the admin on
+a new machine, proves the rest on the real thing: from a container of `ci`'s engine, `ygg`'s socket, home and secrets
+are out of reach; Testcontainers reaches a published port; no service runs as root; and, on the apps machine, which
+client addresses Traefik logs ([cutover.md, 2.6](cutover.md#26-the-rootless-proofs)).
 
 ## 6. Credentials
 
@@ -564,12 +622,13 @@ holds one only while the build step it is bound to runs.
 | `forge-read`: the Forgejo token of `jenkins-ci` (read-only), `FORGE_READ_TOKEN_FILE` | The Jenkins controller; bound for repository scans (controller) and for checkouts on every agent: CI, release and deploy | Read every repository, including yggdrasil's own (the library and the scripts) | now: setup.md 9.7 |
 | `forge-webhook`: the webhook secret, `FORGE_WEBHOOK_SECRET_FILE` | The Jenkins controller; the same value is `FORGE_WEBHOOK_SECRET` in the operator's shell for `rules.py` | Signs the webhooks `rules.py` creates. The Gitea plugin verifies no signature, so Jenkins checks nothing with it (a forged webhook only triggers a scan); it stays here as the one place the secret lives. Forgejo never shows it again: to change it, delete the hooks and run `rules.py` again | now: setup.md 9.7 |
 | Forgejo `renovate` bot token (`write:repository`, `write:issue`), `RENOVATE_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Push `renovate/*` branches (and any unprotected branch) and open pull requests | now: [Renovate](#renovate-the-daily-run) |
+| GitHub fine-grained token (read-only, public repositories, no permissions; optional), `RENOVATE_GITHUB_COM_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Read the release notes and changelogs of GitHub-hosted dependencies without the anonymous rate limit | now: [Renovate](#renovate-the-daily-run) |
 | Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
-| Forgejo owner token (`write:repository`), `FORGE_TOKEN` | The operator's shell, for the one run of `python3 scripts/rules.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules) |
-| GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev) | Push to the GitHub copies. It cannot move or delete a version tag there: nobody bypasses the copies' `mirror tags` ruleset, so such a push fails and Forgejo shows the mirror's sync failing ([setup.md](setup.md#version-tags-tag-check-and-repairs)) | later |
+| Forgejo owner token (`write:repository`; for the move, `read:user` too, which `migrate.py collaborators` needs to look the bots up), `FORGE_TOKEN` | The operator's shell, for a run of `python3 scripts/rules.py` or `scripts/migrate.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks; import the repositories, make their push mirrors, give the bots their access | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules), [cutover.md](cutover.md#24-the-owners-token) |
+| GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev): with each push mirror, in that repository's git configuration on disk, inside Forgejo's data volume. So the nightly Forgejo dump ([Backups](#7-backups-and-restore)) carries it, and a copy of it sits in the apps machine's `~/received/from-dev` | Push to the GitHub copies. It cannot move or delete a version tag there: nobody bypasses the copies' `mirror tags` ruleset, so such a push fails and Forgejo shows the mirror's sync failing ([setup.md](setup.md#version-tags-tag-check-and-repairs)) | at the move: `scripts/migrate.py mirrors` hands it to Forgejo ([cutover.md](cutover.md#41-the-two-github-tokens)). A new token reaches no existing mirror: rotating it means making the mirrors again ([cutover.md, 7.3](cutover.md#73-the-windows-tokens)) |
 | GitHub token for the copies' rulesets (`gh auth login`, or `GH_TOKEN`; Administration read and write on the mirrored repositories) | The operator's shell, for `python3 scripts/rules.py` on a Forgejo installation with a `mirror` (not kept in a file) | Set the `mirror tags` ruleset on each GitHub copy | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules) |
-| `github-app`: the GitHub App `yggdrasil` (App ID, PKCS#8 key `GITHUB_APP_KEY_FILE`). On a GitHub installation it is the git server's write identity and everything below; on Forgejo it exists only with a `mirror`, reduced to Actions read and write, Checks read, Contents read and write, Metadata read | The Jenkins controller; bound by Jenkins on the **publish agent** only (Forgejo with a mirror), never on the `ci` or `release` agent | On Forgejo: read Actions results, download Actions artifacts, dispatch workflows, create releases on GitHub and upload their files. Contents write is needed for releases; it could also push to the GitHub copy, which the next mirror push would overwrite. It no longer writes statuses or pull requests | [setup.md step 7](setup.md#7-create-the-github-app); reduced later |
+| `github-app`: the GitHub App `yggdrasil` (App ID, PKCS#8 key `GITHUB_APP_KEY_FILE`). On a GitHub installation it is the git server's write identity and everything below; on Forgejo it exists only with a `mirror`, reduced to Actions read and write, Checks read, Contents read and write, Metadata read | The Jenkins controller; bound by Jenkins on the **publish agent** only (Forgejo with a mirror), never on the `ci` or `release` agent | On Forgejo: read Actions results, download Actions artifacts, dispatch workflows, create releases on GitHub and upload their files. Contents write is needed for releases; it could also push to the GitHub copy, which the next mirror push would overwrite. It no longer writes statuses or pull requests | [setup.md step 7](setup.md#7-create-the-github-app); reduced after the move ([cutover.md](cutover.md#72-the-github-app-reduced)) |
 | `github-read`: a second, read-only GitHub App (contents, metadata, pull requests, commit statuses), `GITHUB_READ_APP_ID`, `GITHUB_READ_APP_KEY_FILE` | The Jenkins controller; optional, GitHub installations only; bound for the CI agent's checkout and status reads | Read the repositories. Without it the CI agent uses `github-app`, whose token can write: an accepted risk, and every build log says so | now: [setup.md 9.2](setup.md#92-the-env-files-first-pass) |
 | Jenkins agent secrets | Each agent's env file: `/etc/yggdrasil-ci/agent.env`, `/etc/yggdrasil-release/agent.env`, and the deploy agent's `JENKINS_AGENT_SECRET` in `platform.env` | Connect as that agent | now: [setup.md 9.8](setup.md#98-the-ci-and-release-agents) |
 | Application secrets, platform passwords | `/etc/yggdrasil` of the machine that uses them (`platform.env`, `<environment>/<application>.env`, or the [variables store](variables.md)) | As today | now |
@@ -787,12 +846,13 @@ and the data directory. Put the steps in this order: Forgejo must be stopped whi
    ```
 2. Replace the volume's content with the dump's:
    ```bash
-   docker run --rm -v yggdrasil_forgejo-data:/var/lib/gitea -v "$HOME/restore/2026-10-22":/backup:ro busybox sh -c '
+   docker run --rm -v yggdrasil_forgejo-data:/var/lib/gitea -v "$HOME/restore/2026-10-22":/backup:ro busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e sh -c '
      set -e
      find /var/lib/gitea -mindepth 1 -delete
      mkdir /tmp/dump && cd /tmp/dump && unzip -q /backup/forgejo.zip
      cp -a data/. /var/lib/gitea/
-     mkdir -p /var/lib/gitea/git/repositories
+     mkdir -p /var/lib/gitea/data /var/lib/gitea/git/repositories
+     if [ -d /var/lib/gitea/attachments ]; then mv /var/lib/gitea/attachments /var/lib/gitea/data/; fi
      if [ -d repos ]; then cp -a repos/. /var/lib/gitea/git/repositories/; fi
      chown -R 1000:1000 /var/lib/gitea'
    ```
@@ -802,7 +862,15 @@ and the data directory. Put the steps in this order: Forgejo must be stopped whi
      mixed in.
    - `unzip`, then `cp -a data/.`: the dump's `data/` is Forgejo's whole data directory (database, keys,
      settings, indexes). `repos/` holds the git repositories and goes to `git/repositories`.
+   - `mv … attachments`: the dump stores the attachments (release files, issue attachments) as
+     `data/attachments`, which the copy above puts in `/var/lib/gitea/attachments`; Forgejo reads them from
+     `/var/lib/gitea/data/attachments`. Without this step everything looks restored, and every release file
+     answers `500`.
    - `chown -R 1000:1000`: Forgejo runs as uid 1000 inside the container.
+   - `busybox:1.37.0@sha256:…`: the image `backup.sh` and `volumes.sh` use (`TAR_IMAGE` in
+     `scripts/docker-engine.sh`), pinned by version and digest so that a restore runs what the tests ran, never
+     whatever `busybox` is on the day you need it. It has `find`, `unzip`, `cp` and `tar`; the volume restore below and
+     [section 9](#9-upgrading-a-host-from-rootful-docker) use it too.
 3. Start it and look:
    ```bash
    docker start "$forgejo"
@@ -815,7 +883,7 @@ and the data directory. Put the steps in this order: Forgejo must be stopped whi
 home, `scripts/platform.sh down`).
 
 ```bash
-docker run --rm -v yggdrasil_jenkins:/volume -v "$HOME/restore/2026-10-22":/backup:ro busybox \
+docker run --rm -v yggdrasil_jenkins:/volume -v "$HOME/restore/2026-10-22":/backup:ro busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e \
   tar -C /volume -xzf /backup/volume-yggdrasil_jenkins.tar.gz
 ```
 
@@ -869,7 +937,7 @@ downtime: the applications are off while you move their data.
    application's, and your databases), and a copy of the secrets:
    ```bash
    sudo install -d -m 700 -o "$USER" /srv/migration
-   docker run --rm -v <volume>:/volume:ro -v /srv/migration:/out busybox tar -C /volume -czf /out/volume-<volume>.tar.gz .
+   docker run --rm -v <volume>:/volume:ro -v /srv/migration:/out busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e tar -C /volume -czf /out/volume-<volume>.tar.gz .
    sudo cp -a /etc/yggdrasil /srv/migration/etc-yggdrasil
    ```
    - `install -d -m 700 -o "$USER"`: creates `/srv/migration`, readable by you only. The archives hold your
@@ -908,7 +976,7 @@ downtime: the applications are off while you move their data.
    ```
    Then log in as `ygg` (`ssh ygg@<host>`; the install copied your key) and unpack each one:
    ```bash
-   docker run --rm -v <volume>:/volume -v /srv/migration:/backup:ro busybox tar -C /volume -xzf /backup/volume-<volume>.tar.gz
+   docker run --rm -v <volume>:/volume -v /srv/migration:/backup:ro busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e tar -C /volume -xzf /backup/volume-<volume>.tar.gz
    ```
    The images are not moved: the next deploy builds them again.
 6. **Edit `platform.env`**: add `apps` to `COMPOSE_PROFILES` (`apps,agent`, or `apps,jenkins,agent` if this

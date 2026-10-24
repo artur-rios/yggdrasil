@@ -147,6 +147,49 @@ class RenovateTests(unittest.TestCase):
         self.assertFalse(copy.exists())
         self.assertEqual(list(self.runtime.iterdir()), [])
 
+    def test_given_a_github_com_token_when_run_then_it_reaches_renovate_only_through_the_env_file(self):
+        github = "ghp_Fine-grained.token_123"
+        self.env_file.write_text(STATIC + f"RENOVATE_GITHUB_COM_TOKEN={github}\n")
+        result = self.renovate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Renovate reads GITHUB_COM_TOKEN; the owner's name for it is not passed on, so it is there once.
+        container = self.container_env()
+        self.assertEqual(container["GITHUB_COM_TOKEN"], github)
+        self.assertNotIn("RENOVATE_GITHUB_COM_TOKEN", container)
+        # Like the Forgejo token: not an argument (ps shows those), not a -e value, not in anything printed.
+        self.assertNotIn(github, "\n".join(self.calls()))
+        self.assertNotIn(github, result.stdout + result.stderr)
+        self.assertNotRegex(self.run_call(), r"(^| )(-e|--env)( |=)")
+        self.assertEqual(pathlib.Path(f"{self.log}.mode").read_text().strip(), "600")
+        self.assertFalse(pathlib.Path(pathlib.Path(f"{self.log}.path").read_text().strip()).exists())
+
+    def test_given_no_github_com_token_when_run_then_the_container_gets_none(self):
+        for text in (STATIC, STATIC + "RENOVATE_GITHUB_COM_TOKEN=\n"):
+            with self.subTest(text=text[-40:]):
+                self.log.write_text("")
+                self.env_file.write_text(text)
+                result = self.renovate()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("GITHUB_COM_TOKEN", self.container_env())
+
+    def test_given_a_github_com_token_with_odd_characters_when_run_then_it_is_refused_without_printing_it(self):
+        bad = "ghp_has space"
+        self.env_file.write_text(STATIC + f"RENOVATE_GITHUB_COM_TOKEN={bad}\n")
+        result = self.renovate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("RENOVATE_GITHUB_COM_TOKEN", result.stderr)
+        self.assertNotIn(bad, result.stdout + result.stderr)
+        self.assertEqual(self.container_runs(), [])
+
+    def test_given_a_file_with_the_containers_own_github_name_when_run_then_it_is_refused(self):
+        # GITHUB_COM_TOKEN is renovate.sh's to write, from RENOVATE_GITHUB_COM_TOKEN: a second source
+        # would be a second place for the token to be.
+        self.env_file.write_text(STATIC + "GITHUB_COM_TOKEN=abc\n")
+        result = self.renovate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GITHUB_COM_TOKEN", result.stderr)
+        self.assertEqual(self.container_runs(), [])
+
     def test_given_the_catalog_when_run_then_every_repository_is_listed_under_the_owner(self):
         result = self.renovate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -253,6 +296,8 @@ class RenovateTests(unittest.TestCase):
         for name in ("RENOVATE_TOKEN=$", "RENOVATE_ENDPOINT=$", "RENOVATE_PLATFORM=gitea$", "RENOVATE_AUTODISCOVER=false$"):
             self.assertRegex(text, rf"(?m)^{name}")
         self.assertNotRegex(text, r"(?m)^RENOVATE_(REPOSITORIES|CONFIG)=")
+        # The GitHub token is optional: in the template, empty.
+        self.assertRegex(text, r"(?m)^RENOVATE_GITHUB_COM_TOKEN=$")
 
     def test_given_the_script_when_listed_by_git_then_it_is_executable(self):
         # `git update-index --chmod=+x`: a checkout on Linux must be able to run it, as the unit does.

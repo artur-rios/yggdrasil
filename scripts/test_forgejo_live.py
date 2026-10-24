@@ -7,8 +7,12 @@ right: that Forgejo 16.0.6 (the image platform/compose.yml pins) takes those req
 the scripts read it, and that the protections rules.py applies really hold -- `claude` cannot merge a
 Jenkinsfile change, push a release branch or create, move or delete a version tag, a `rules: basic`
 repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
-failing checks. One test pins a known gap instead: jenkins, which creates the version tags, can also
-move and delete them (docs/setup.md, step 12).
+failing checks. Seven tests check migrate.py against this server (below): import (two), prepare-github's
+Forgejo side (Dependabot's file deleted), push mirrors, the guard before a mirror's first push (two: what
+only GitHub has, and GitHub branches whose commit is not in Forgejo's branch of that name -- one
+fast-forwarded to another branch's commit, one unrelated to an orphan branch -- whose unsynced mirror is
+then deleted), and collaborators. One test pins a known gap instead: jenkins, which creates the version
+tags, can also move and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
 container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
@@ -21,7 +25,9 @@ that container. CI runs it (job platform).
 """
 
 import base64
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import pathlib
@@ -36,9 +42,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from unittest import mock
 
 import catalog as catalog_module
+import migrate
 import rules
+from test_migrate import FakeGitHub, repository as github_repository
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FORGE_SH = ROOT / "scripts" / "forge.sh"
@@ -77,6 +86,27 @@ def test_catalog():
         ]}],
         "repositories": [{"id": DOTTED, "rules": "basic"}],
     }
+
+
+class GitHubOnForgejo(FakeGitHub):
+    """The GitHub migrate.py asks, with its refs read from this very Forgejo: GitHub's `git/matching-refs/<prefix>`
+    becomes Forgejo's `git/refs/<prefix>` on the repository that `stands_in` names (a repository's own name when
+    it names none). GitHub's client cannot be pointed at Forgejo as it is (the two APIs differ), and this is
+    the one route verify needs from it that Forgejo has; the rest -- the repository list, the rulesets, the
+    issues -- is FakeGitHub's."""
+
+    def __init__(self, repos, forgejo, stands_in=None, **fields):
+        super().__init__(repos, **fields)
+        self.forgejo, self.stands_in = forgejo, stands_in or {}
+
+    def request(self, method, path, body=None):
+        before, found, after = path.partition("/git/matching-refs/")
+        if not found:
+            return super().request(method, path, body)
+        self.calls.append((method, path, body))
+        _, _, name = before.rpartition("/")
+        stand_in = self.stands_in.get(name, name)
+        return self.forgejo.request(method, f"/repos/{OWNER}/{stand_in}/git/refs/{after}")
 
 
 def docker(*arguments, check=True, timeout=300):
@@ -246,6 +276,10 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
                # As in compose.yml: nothing is visible signed out, so a wrong token or repository is a 404.
                "--env=FORGEJO__service__DISABLE_REGISTRATION=true",
                "--env=FORGEJO__service__REQUIRE_SIGNIN_VIEW=true",
+               # Only so that the migrate.py tests can migrate from this very server (GitHub itself is out
+               # of reach here): Forgejo refuses a clone from a local address by default, and production
+               # keeps that default. No other test migrates, so it changes nothing for them.
+               "--env=FORGEJO__migrations__ALLOW_LOCALNETWORKS=true",
                pinned_image())
         cls.wait_for_health()
 
@@ -855,6 +889,452 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         pushed = self.git(CLAUDE, "push", "origin", "HEAD:refs/heads/feature/claude-push", cwd=clone)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.assertTrue(self.branch_exists(APP, "feature/claude-push"))
+
+    # --- migrate.py --------------------------------------------------------------------------------
+
+    def migrate_import(self, github_names, *arguments, private=True):
+        """`migrate.py import` run for real against this Forgejo, with the GitHub side a fake that lists
+        `github_names` (GitHub itself is not reachable from here).
+
+        What this proves: the endpoint (`POST /repos/migrate`), `repo_owner`, `repo_name`, `private` and
+        `mirror: false` are taken by Forgejo 16, which makes a finished copy of the source; its repository
+        JSON has the `empty` and `mirror` fields import reads; a second run says "already imported".
+        What it does not prove: the GitHub-specific part of the request (`service: github`, `clone_addr`,
+        `auth_token`, and issues, labels, milestones, releases, pull requests and wiki being copied from
+        GitHub) -- the migration's source is replaced here, so that shape is pinned by test_migrate.py
+        alone. The replacement: `service` is `git`, the clone address this very server as the container
+        itself reaches it (127.0.0.1:3000 inside, not the published port), and the owner's token goes as
+        the git password, because Forgejo's `auth_token` is for the hosting services. Everything else in
+        the body is what import sends. Returns (exit code, stdout, stderr)."""
+        real_payload, real_api = migrate.migration_payload, rules.Api
+        catalog = {**test_catalog(), "forge": {**test_catalog()["forge"], "url": self.url},
+                   "mirror": {"github": OWNER}}
+        github = FakeGitHub([github_repository(name, private=private, default_branch="main")
+                             for name in github_names])
+
+        def from_this_forgejo(ctx, repo):
+            payload = real_payload(ctx, repo)
+            del payload["auth_token"]
+            payload.update(service="git", clone_addr=f"http://127.0.0.1:3000/{OWNER}/{APP}.git",
+                           auth_username=OWNER, auth_password=self.tokens[OWNER])
+            return payload
+
+        def api(base, token, scheme, headers=None):
+            return github if scheme == "Bearer" else real_api(base, token, scheme, headers)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(migrate.catalog_module, "load", return_value=catalog), \
+                mock.patch.dict(os.environ, {"FORGE_TOKEN": self.tokens[OWNER]}), \
+                mock.patch.object(migrate.rules, "Api", api), \
+                mock.patch.object(migrate.rules, "find_github_token", return_value="not-a-real-github-token"), \
+                mock.patch.object(migrate, "migration_payload", from_this_forgejo), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = migrate.main(list(arguments) or ["import"])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_given_a_repository_when_migrate_imports_it_then_forgejo_copies_it_and_a_second_run_says_already_imported(self):
+        copy = "shop-api-imported"
+        code, out, err = self.migrate_import([copy])
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{copy}: imported"])
+
+        # Forgejo took the request import sends (owner, name, private, mirror false and the rest of its
+        # body; not the GitHub-specific service and clone address, see migrate_import) and made a
+        # finished copy of the source: its branches, its Jenkinsfile, private as the (fake) GitHub says.
+        owner = self.api[OWNER]
+        found = owner.request("GET", f"/repos/{OWNER}/{copy}")
+        self.assertEqual((found["private"], found["empty"], found["mirror"]), (True, False, False))
+        # (The default branch is not asserted: a plain git migration picks its own; GitHub's carries over.)
+        self.assertTrue(self.branch_exists(copy, "develop"))
+        contents = owner.request("GET", f"/repos/{OWNER}/{copy}/contents/Jenkinsfile?ref=main")
+        self.assertEqual(base64.b64decode(contents["content"]).decode(), JENKINSFILE)
+        self.assertEqual(self.head(copy, "main"), self.head(APP, "main"))
+
+        # Run again: the repository is there, finished, and import leaves it alone -- no write at all.
+        api = RecordingApi(self.url + "/api/v1", self.tokens[OWNER], "token")
+        with mock.patch.object(rules, "Api", lambda *a, **k: api):
+            code, out, err = self.migrate_import([copy])
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{copy}: already imported"])
+        self.assertEqual(api.calls, [("GET", f"/repos/{OWNER}/{copy}")])
+
+    def test_given_an_empty_repository_when_migrate_imports_then_it_is_unfinished_and_never_deleted(self):
+        # What an interrupted migration leaves: a repository with nothing in it. Forgejo 16 says so in
+        # the repository's JSON (`empty`), which is what import reads.
+        half = "half-migrated"
+        self.api[OWNER].request("POST", "/user/repos", {"name": half, "private": True})
+        self.assertTrue(self.api[OWNER].request("GET", f"/repos/{OWNER}/{half}")["empty"])
+        code, out, err = self.migrate_import([half])
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"  {half}: exists but looks unfinished (empty): delete it on Forgejo and run import again",
+                      err.splitlines())
+        self.assertTrue(self.api[OWNER].request("GET", f"/repos/{OWNER}/{half}")["empty"])  # still there, untouched
+
+        # Deleted by hand, import goes through (the source is shop-api, as for every migration here).
+        self.api[OWNER].request("DELETE", f"/repos/{OWNER}/{half}")
+        code, out, err = self.migrate_import([half])
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertFalse(self.api[OWNER].request("GET", f"/repos/{OWNER}/{half}")["empty"])
+
+    def migrate_run(self, arguments, catalog, github_names=(), env=None, mirror_to=None, github=None):
+        """migrate.py run for real against this Forgejo, with the GitHub side a fake that lists `github_names`
+        (GitHub itself is not reachable from here). `mirror_to` replaces the address a push mirror points at
+        (mirror_address): this very server stands in for GitHub, as the container itself reaches it
+        (127.0.0.1:3000 inside, not the published port). `github` replaces the fake GitHub. Returns (exit code,
+        stdout, stderr)."""
+        real_api = rules.Api
+        github = github or FakeGitHub([github_repository(name, default_branch="main") for name in github_names],
+                                      login=OWNER)
+
+        def api(base, token, scheme, headers=None):
+            return github if scheme == "Bearer" else real_api(base, token, scheme, headers)
+
+        out, err = io.StringIO(), io.StringIO()
+        environment = {"FORGE_TOKEN": self.tokens[OWNER], **(env or {})}
+        with mock.patch.object(migrate.catalog_module, "load", return_value=catalog), \
+                mock.patch.dict(os.environ, environment), \
+                mock.patch.object(migrate.rules, "Api", api), \
+                mock.patch.object(migrate.rules, "find_github_token", return_value="not-a-real-github-token"), \
+                mock.patch.object(migrate, "mirror_address",
+                                  (lambda ctx, name: mirror_to(name)) if mirror_to else migrate.mirror_address), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = migrate.main(arguments)
+        return code, out.getvalue(), err.getvalue()
+
+    def migrate_catalog(self, **fields):
+        """The suite's catalog, pointing at this server, with the GitHub owner set to the same name (the
+        fake GitHub lists that owner's repositories)."""
+        return {**test_catalog(), "forge": {**test_catalog()["forge"], "url": self.url},
+                "mirror": {"github": OWNER}, **fields}
+
+    def eventually(self, check, what, seconds=120):
+        """Forgejo pushes a mirror in the background: polls `check` until it is true, or fails at the deadline."""
+        deadline = time.monotonic() + seconds
+        while not check():
+            if time.monotonic() > deadline:
+                self.fail(f"{what}: not so after {seconds} seconds")
+            time.sleep(1)
+
+    def tags(self, repo):
+        return [tag["name"] for tag in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/tags") or []]
+
+    def test_given_a_repository_when_migrate_mirrors_it_then_forgejo_pushes_its_branches_and_a_new_tag_to_the_target(self):
+        # The second repository of this very server stands in for the GitHub copy. Forgejo only pushes to a
+        # local address because the container allows it ([migrations] ALLOW_LOCALNETWORKS, set in setUpClass
+        # for the import tests; production keeps the default, and its target is github.com).
+        source, target = "mirror-source", "mirror-target"
+        self.create_repository(source)
+        owner = self.api[OWNER]
+        owner.request("POST", "/user/repos", {"name": target, "private": True})
+        catalog = self.migrate_catalog()
+        address = f"http://127.0.0.1:3000/{OWNER}/{target}.git"
+        env = {"MIRROR_GITHUB_USER": OWNER, "MIRROR_GITHUB_TOKEN": self.tokens[OWNER]}
+        code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, [source], env, lambda name: address)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{source}: push mirror created", f"{source}: sync requested"])
+        self.assertNotIn(self.tokens[OWNER], out + err)
+
+        # What Forgejo lists: no credentials in the address, and what was asked for.
+        (mirror,) = owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors")
+        self.assertNotIn("@", mirror["remote_address"])
+        self.assertTrue(migrate._same_address(mirror["remote_address"], address), mirror["remote_address"])
+        self.assertEqual((mirror["interval"], mirror["sync_on_commit"]), ("8h0m0s", True))
+
+        # The sync asked for pushes the branches that are there...
+        self.eventually(lambda: self.branch_exists(target, "develop"), "the develop branch on the target")
+        self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
+
+        # ...and a tag pushed to the source later goes with the next sync.
+        clone = self.clone(OWNER, source)
+        self.assertEqual(self.git(OWNER, "tag", "v0.0.1", cwd=clone).returncode, 0)
+        pushed = self.git(OWNER, "push", "origin", "v0.0.1", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        owner.request("POST", f"/repos/{OWNER}/{source}/push_mirrors-sync")
+        self.eventually(lambda: "v0.0.1" in self.tags(target), "the tag on the target")
+
+        # Run again: the mirror is there and has pushed, so nothing is written.
+        code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, [source], env, lambda name: address)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{source}: push mirror already there"])
+
+        # verify reads it back: the mirror Forgejo lists has pushed (last_update) and has no error, and the
+        # refs of the target -- standing in for GitHub's copy, see GitHubOnForgejo -- are the source's.
+        self.eventually(lambda: self.tags(target) == self.tags(source), "the tags on the target")
+        default = owner.request("GET", f"/repos/{OWNER}/{source}")["default_branch"]
+        github = GitHubOnForgejo([github_repository(source, default_branch=default, private=True)], owner, {source: target},
+                                 login=OWNER, settings={source: {"has_issues": False}})
+        code, out, err = self.migrate_run(["verify", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual([line.split("\t")[1:3] for line in out.splitlines()[:-1]],
+                         [["on Forgejo", "ok"], ["default branch", "ok"], ["visibility", "ok"], ["push mirror", "ok"],
+                          ["refs", "ok"], ["rulesets", "ok"], ["issues", "ok"]])
+        self.assertEqual(out.splitlines()[-1], "1 repositories, 0 checks failed")
+        # develop, main and the tag were compared, not nothing; and Forgejo's refs/pull/* did not count.
+        self.assertIn("\t3 refs the same", out)
+        self.assertEqual(github.writes(), [])
+
+        # A tag only the target (GitHub's stand-in) has is a failure naming the tag and the side. (On the
+        # target, which nothing syncs again: a tag pushed to the source could be mirrored before verify looks.)
+        clone = self.clone(OWNER, target)
+        self.assertEqual(self.git(OWNER, "tag", "v0.0.2", cwd=clone).returncode, 0)
+        pushed = self.git(OWNER, "push", "origin", "v0.0.2", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        code, out, err = self.migrate_run(["verify", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{source}\trefs\tFAIL\trefs/tags/v0.0.2 only on GitHub", out.splitlines())
+        self.assertEqual(github.writes(), [])
+
+    def test_given_a_dependabot_file_when_migrate_prepares_github_then_forgejo_deletes_it_on_the_default_branch(self):
+        # prepare-github's Forgejo side, against this server: the contents API finds the file on the
+        # repository's default branch and deletes it in one commit by the token's owner. GitHub's side is the
+        # fake's (test_migrate.py pins it); here it only has to let the run through.
+        repo, path = "dependabot-lib", ".github/dependabot.yml"
+        owner = self.api[OWNER]
+        owner.request("POST", "/user/repos", {"name": repo, "private": True, "auto_init": True,
+                                              "default_branch": "develop"})
+        self.change_file(OWNER, repo, path, "version: 2\nupdates: []\n", "develop")
+        catalog = self.migrate_catalog()
+        github = FakeGitHub([github_repository(repo, default_branch="develop", private=True)], login=OWNER)
+
+        def on_develop():
+            try:
+                return owner.request("GET", f"/repos/{OWNER}/{repo}/contents/{urllib.parse.quote(path)}?ref=develop")
+            except rules.ApiError as error:
+                if error.status == 404:
+                    return None
+                raise
+
+        code, out, err = self.migrate_run(["--dry-run", "prepare-github", "--only", repo], catalog, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertIn(f"{repo}: would delete {path} on develop", out.splitlines())
+        self.assertIsNotNone(on_develop())  # a dry run deletes nothing
+        self.assertEqual(github.writes(), [])
+
+        code, out, err = self.migrate_run(["prepare-github", "--only", repo], catalog, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines()[0], f"{repo}: deleted {path} on develop")
+        self.assertIsNone(on_develop())
+        (latest,) = owner.request("GET", f"/repos/{OWNER}/{repo}/commits?sha=develop&limit=1&stat=false")[:1]
+        self.assertEqual(latest["commit"]["message"].strip(), migrate.DEPENDABOT_MESSAGE)
+        self.assertEqual(latest["commit"]["author"]["name"], OWNER)
+
+        # Run again: no file left, GitHub prepared already; nothing is written.
+        code, out, err = self.migrate_run(["prepare-github", "--only", repo], catalog, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{repo}: no dependabot file", f"{repo}: already prepared on GitHub"])
+
+    def test_given_what_only_the_target_has_when_migrate_mirrors_then_it_is_refused_until_allow_prune(self):
+        # The guard before the first --mirror push, against this server's answers: the target (GitHub's
+        # stand-in) starts as a copy of the source, then gets a branch of its own and a commit on main that
+        # the source never had, while the source's develop moves on. Forgejo's compare must answer 404 for the
+        # commit it lacks and count none for the one older in the source's develop.
+        source, target = "prune-source", "prune-target"
+        self.create_repository(source)
+        owner = self.api[OWNER]
+        owner.request("POST", "/user/repos", {"name": target, "private": True})
+        clone = self.clone(OWNER, source)
+        pushed = self.git(OWNER, "push", f"{self.url}/{OWNER}/{target}.git", "refs/remotes/origin/main:refs/heads/main",
+                          "refs/remotes/origin/develop:refs/heads/develop", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        # Forgejo takes the first push into an empty repository in the background: until then its API still
+        # calls it empty and refuses a branch made from develop.
+        self.eventually(lambda: not owner.request("GET", f"/repos/{OWNER}/{target}")["empty"]
+                        and self.branch_exists(target, "develop"), "the pushed develop on the target", seconds=60)
+        self.change_file(OWNER, source, "ahead.txt", "the source moved on\n", "develop")
+        owner.request("POST", f"/repos/{OWNER}/{target}/branches",
+                      {"new_branch_name": "github-only", "old_branch_name": "develop"})
+        lost = self.change_file(OWNER, target, "only-on-github.txt", "pushed to GitHub after the import\n", "main")
+
+        catalog = self.migrate_catalog()
+        address = f"http://127.0.0.1:3000/{OWNER}/{target}.git"
+        env = {"MIRROR_GITHUB_USER": OWNER, "MIRROR_GITHUB_TOKEN": self.tokens[OWNER]}
+        github = GitHubOnForgejo([github_repository(source, default_branch="main", private=True)], owner,
+                                 {source: target}, login=OWNER)
+
+        code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual(code, 1, out)
+        (failure,) = [line for line in err.splitlines() if line.startswith(f"  {source}: ")]
+        self.assertIn("refs/heads/github-only only on GitHub", failure)
+        self.assertIn(f"GitHub's main at {lost[:7]} is not in Forgejo's main ({self.head(source, 'main')[:7]}): "
+                      "the first push would rewind it", failure)
+        self.assertNotIn("develop", failure)  # the target's develop is older in the source's develop
+        self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors"), [])
+        self.assertTrue(self.branch_exists(target, "github-only"))
+
+        code, out, err = self.migrate_run(["mirrors", "--only", source, "--allow-prune"], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines()[1:], [f"{source}: push mirror created", f"{source}: sync requested"])
+        self.assertTrue(out.splitlines()[0].startswith(f"{source}: --allow-prune: "), out)
+        # What --allow-prune let go is gone from the target, and it holds the source's state.
+        self.eventually(lambda: not self.branch_exists(target, "github-only"), "the target's own branch deleted")
+        self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
+        self.eventually(lambda: self.head(target, "develop") == self.head(source, "develop"), "develop on the target")
+
+    def test_given_github_branches_outside_forgejos_same_branch_when_migrate_mirrors_then_they_are_refused_and_the_unsynced_mirror_goes(self):
+        # The guard's ancestry, as Forgejo 16's compare decides it (two counts: GitHub's commit over Forgejo's
+        # head, then Forgejo's head over GitHub's commit). The target (GitHub's stand-in) has main fast-forwarded
+        # to the head of the source's develop -- a commit the source has, on develop only, so its main would be
+        # set back --, pages at the source's main, a commit the source has but unrelated to the source's own
+        # pages (an orphan branch), develop equal to the source's, and a feature branch one commit behind the
+        # source's. Main and pages are refused; develop and feature are not.
+        source, target = "ancestry-source", "ancestry-target"
+        self.create_repository(source)
+        owner = self.api[OWNER]
+        develop = self.change_file(OWNER, source, "develop.txt", "on develop only\n", "develop")
+        behind = self.change_file(OWNER, source, "feature.txt", "the feature starts\n", "develop", new_branch="feature")
+        ahead = self.change_file(OWNER, source, "feature.txt", "the feature goes on\n", "feature")
+        main = self.head(source, "main")
+        self.assertNotEqual(main, develop)
+        clone = self.clone(OWNER, source)
+        for step in (("checkout", "--quiet", "--orphan", "pages"), ("commit", "--quiet", "-m", "pages: its own history"),
+                     ("push", "--quiet", "origin", "pages")):
+            done = self.git(OWNER, *step, cwd=clone)
+            self.assertEqual(done.returncode, 0, done.stderr)
+        orphan = self.head(source, "pages")
+        owner.request("POST", "/user/repos", {"name": target, "private": True})
+        pushed = self.git(OWNER, "push", f"{self.url}/{OWNER}/{target}.git", f"{develop}:refs/heads/main",
+                          f"{develop}:refs/heads/develop", f"{behind}:refs/heads/feature", f"{main}:refs/heads/pages",
+                          cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.eventually(lambda: not owner.request("GET", f"/repos/{OWNER}/{target}")["empty"]
+                        and self.branch_exists(target, "pages"), "the pushed branches on the target", seconds=60)
+
+        # What the guard relies on, straight from Forgejo: none for an ancestor or the head itself, and the head
+        # counts at least one over its ancestor; one for a commit of another branch; none either way for two
+        # unrelated commits (no merge base: why the second count is needed); 404 for an unknown commit.
+        def counted(base, head):
+            return owner.request("GET", f"/repos/{OWNER}/{source}/compare/{base}...{head}")["total_commits"]
+
+        self.assertEqual((counted(ahead, behind), counted(behind, ahead), counted(develop, develop),
+                          counted(main, develop)), (0, 1, 0, 1))
+        self.assertEqual((counted(orphan, main), counted(main, orphan)), (0, 0))
+        with self.assertRaises(rules.ApiError) as unknown:
+            counted(main, "d4" * 20)
+        self.assertEqual(unknown.exception.status, 404)
+
+        catalog = self.migrate_catalog()
+        address = f"http://127.0.0.1:3000/{OWNER}/{target}.git"
+        env = {"MIRROR_GITHUB_USER": OWNER, "MIRROR_GITHUB_TOKEN": self.tokens[OWNER]}
+        github = GitHubOnForgejo([github_repository(source, default_branch="main", private=True)], owner,
+                                 {source: target}, login=OWNER)
+        # The mirror a run that stopped before its sync leaves: made, never pushed. (Its own push is set off
+        # by a commit or the interval, neither of which comes during this test.)
+        owner.request("POST", f"/repos/{OWNER}/{source}/push_mirrors",
+                      {"remote_address": address, "remote_username": OWNER, "remote_password": self.tokens[OWNER],
+                       "interval": "8h0m0s", "sync_on_commit": False})
+        (left,) = owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors")
+        self.assertFalse(migrate._synced(left), left)
+
+        code, out, err = self.migrate_run(["--dry-run", "mirrors", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{source}: would delete its unsynced push mirror so Forgejo can't push it on its own",
+                      out.splitlines())
+        self.assertEqual(len(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors")), 1)
+
+        code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual(code, 1, out)
+        (failure,) = [line for line in err.splitlines() if line.startswith(f"  {source}: ")]
+        self.assertIn(f"GitHub's main at {develop[:7]} is not in Forgejo's main ({main[:7]}): "
+                      "the first push would rewind it", failure)
+        self.assertIn(f"GitHub's pages at {main[:7]} is not in Forgejo's pages ({orphan[:7]}): "
+                      "the first push would rewind it", failure)
+        self.assertNotIn("develop", failure)
+        self.assertNotIn("feature", failure)
+        # The refused mirror is gone (Forgejo 16 takes `DELETE .../push_mirrors/<remote_name>`), and nothing
+        # was pushed: no sync was asked for.
+        self.assertEqual(out.splitlines()[-1],
+                         f"{source}: deleted its unsynced push mirror so Forgejo can't push it on its own")
+        self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors"), [])
+        self.assertEqual((self.head(target, "main"), self.head(target, "pages")), (develop, main))
+
+    def test_given_a_catalog_repository_when_migrate_sets_the_collaborators_then_each_bot_reads_back_with_its_permission(self):
+        repo = "bots-lib"
+        owner = self.api[OWNER]
+        # develop is its default branch, as rules.py leaves every catalog repository (verify expects it).
+        owner.request("POST", "/user/repos", {"name": repo, "private": True, "auto_init": True,
+                                              "default_branch": "develop"})
+        catalog = self.migrate_catalog(systems=[], repositories=[{"id": repo}])
+
+        def permission(user):
+            try:
+                found = owner.request("GET", f"/repos/{OWNER}/{repo}/collaborators/{user}/permission")["permission"]
+            except rules.ApiError as error:
+                if error.status == 404:
+                    return None
+                raise
+            # Forgejo 16 answers 200 {"permission": "none"} for one who is not a collaborator.
+            return None if found == "none" else found
+
+        # Two of the bots have no account yet: each is named once, and the others are still set.
+        self.assertEqual((permission("jenkins"), permission("renovate")), (None, None))
+        code, out, err = self.migrate_run(["collaborators"], catalog)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(err.splitlines()[:3], ["2 failures:", "  jenkins-ci: not on Forgejo: create it first (docs/setup.md 9.7)",
+                                                "  renovate: not on Forgejo: create it first (docs/setup.md 9.7)"])
+        # (A failure is printed where it happens, then listed again at the end.)
+        self.assertEqual(out.splitlines()[2:], [f"{repo}: jenkins: write granted", f"{repo}: claude: write granted"])
+        self.assertEqual((permission("jenkins"), permission("claude")), ("write", "write"))
+
+        for user in ("jenkins-ci", "renovate"):
+            self.admin_cli("create", "--username", user, "--password", f"throwaway-{uuid.uuid4().hex}",
+                           "--email", f"{user}@example.com", "--must-change-password=false")
+        code, out, err = self.migrate_run(["collaborators"], catalog)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{repo}: jenkins: already write", f"{repo}: jenkins-ci: read granted",
+                                            f"{repo}: renovate: write granted", f"{repo}: claude: already write"])
+        self.assertEqual({user: permission(user) for user in ("jenkins", "jenkins-ci", "renovate", "claude")},
+                         {"jenkins": "write", "jenkins-ci": "read", "renovate": "write", "claude": "write"})
+
+        # A bot whose permission was changed is brought back; a second run changes nothing.
+        owner.request("PUT", f"/repos/{OWNER}/{repo}/collaborators/claude", {"permission": "read"})
+        code, out, err = self.migrate_run(["collaborators"], catalog)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertIn(f"{repo}: claude: changed from read to write", out.splitlines())
+        self.assertEqual(permission("claude"), "write")
+        code, out, err = self.migrate_run(["collaborators"], catalog)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(len(out.splitlines()), 4)
+        self.assertTrue(all(": already " in line for line in out.splitlines()), out)
+
+        # verify reads the webhook and the collaborators back from Forgejo's own lists. GitHub's side is this
+        # repository itself (GitHubOnForgejo), so the refs agree; it has no push mirror, the one failure.
+        jenkins = "http://jenkins.invalid"
+        env = {"FORGE_JENKINS_URL": jenkins}
+
+        def verified():
+            code, out, err = self.migrate_run(["verify", "--only", repo], catalog, env=env, github=self.github_of(repo))
+            return code, out, {line.split("\t")[1]: line.split("\t")[2:] for line in out.splitlines() if "\t" in line}
+
+        code, out, rows = verified()
+        self.assertEqual(rows["webhook"][0], "FAIL", out)
+        self.assertIn(f"{jenkins}/gitea-webhook/post", rows["webhook"][1])
+        self.assertEqual(rows["collaborators"], ["ok", "jenkins write, jenkins-ci read, renovate write, claude write"])
+        owner.request("POST", f"/repos/{OWNER}/{repo}/hooks",
+                      rules.forgejo_webhook({"url": f"{jenkins}/gitea-webhook/post", "secret": "a-throwaway-secret"}))
+        code, out, rows = verified()
+        self.assertEqual({check: row[0] for check, row in rows.items()},
+                         {"on Forgejo": "ok", "default branch": "ok", "visibility": "ok", "push mirror": "FAIL", "refs": "ok",
+                          "rulesets": "ok", "issues": "ok", "webhook": "ok", "collaborators": "ok"}, out)
+        self.assertEqual((code, rows["push mirror"][1]), (1, "no push mirror"))
+
+        # A bot taken off the repository is named: the collaborators list no longer has it.
+        owner.request("DELETE", f"/repos/{OWNER}/{repo}/collaborators/renovate")
+        code, out, rows = verified()
+        self.assertEqual(rows["collaborators"], ["FAIL", "renovate: not a collaborator"], out)
+
+    def github_of(self, repo):
+        """A GitHub for verify whose copy of `repo` is the repository itself, prepared as verify wants it."""
+        found = self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}")
+        return GitHubOnForgejo([github_repository(repo, default_branch=found["default_branch"], private=found["private"])],
+                               self.api[OWNER], login=OWNER,
+                               settings={repo: {"has_issues": False}},
+                               rulesets={repo: [{"id": 1, "name": "mirror tags", "enforcement": "active"}]})
 
 
 class CatalogTests(unittest.TestCase):

@@ -324,6 +324,11 @@ services:
       # Without it the first visit is the install wizard, which anyone could complete.
       FORGEJO__security__INSTALL_LOCK: "true"
       FORGEJO__log__MODE: console
+      # Where its webhooks may go. Forgejo's default is `external` (public addresses only), which is what
+      # the public https://jenkins.DOMAIN of setup.md step 12 needs; `jenkins` adds the controller by its
+      # Compose service name on the shared network, so http://jenkins:8080 works as a webhook address too
+      # (the other private addresses stay refused).
+      FORGEJO__webhook__ALLOWED_HOST_LIST: "external,jenkins"
     ports:
       - "${FORGEJO_SSH_PORT:-2222}:2222"
     volumes:

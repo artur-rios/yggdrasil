@@ -192,8 +192,10 @@ class Api:
         self._token = token
         self._headers = {"Accept": "application/json", **(headers or {}), "Authorization": f"{scheme} {token}"}
 
-    def request(self, method, path, body=None):
-        """The parsed JSON answer, or None when the answer is empty. `path` starts with a slash."""
+    def request(self, method, path, body=None, timeout=60):
+        """The parsed JSON answer, or None when the answer is empty. `path` starts with a slash. `timeout`
+        (seconds) is how long the server may stay silent; a request that does long work (a repository
+        migration) asks for more."""
         headers = dict(self._headers)
         data = None
         if body is not None:
@@ -201,7 +203,7 @@ class Api:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 text = response.read().decode("utf-8")
         except urllib.error.HTTPError as error:
             raise ApiError(method, path, error.code, self._message(error.read())) from None
