@@ -55,6 +55,21 @@ and goes on to the next, so a re-run picks up where it stopped):
               docs/setup.md 9.7. A collaborator with another permission is set to the right one; one that
               is right is left alone. Needs only FORGE_TOKEN (the owner's). --only names catalog
               repositories.
+  verify      the gate before pushes go to Forgejo. Read only: it sends no write, with or without --dry-run.
+              One row per check (tab-separated: repo, check, ok|FAIL, detail), then `<N> repositories, <K> checks
+              failed`; exit 1 on any FAIL. Per repository of the GitHub owner: it is on Forgejo (else the
+              rest is skipped); its default branch is GitHub's; its push mirror points at the GitHub copy
+              and has `last_update` set and no `last_error` (the error is printed, scrubbed: Forgejo pushes
+              with --mirror, so GitHub refusing its own refs/pull/* shows up here); GitHub's branches
+              develop and main and every tag are at the sha Forgejo has (refs/pull/* and every other
+              namespace are left out; a ref on one side only is a FAIL naming the ref and the side); GitHub's
+              rulesets are exactly `mirror tags` (a catalog repository of the release model) or none
+              (basic, or not in the catalog; a private repository whose list GitHub refuses with 403 has
+              none to check); GitHub's issues are off. A catalog repository also has the Jenkins webhook
+              (<FORGE_JENKINS_URL>/gitea-webhook/post; without FORGE_JENKINS_URL that row is a FAIL) and the
+              four bots in Forgejo's list of collaborators, with their permission. A repository archived
+              on GitHub has no mirror and a frozen copy: its GitHub side is not checked ("archived on
+              GitHub: Forgejo only"). A repository whose calls error fails that check and the run goes on.
               Runbook order: import, prepare-github, mirrors, collaborators, rules.py, verify.
 
 The move covers every repository of the GitHub owner, forks included. Only the catalog's repositories
@@ -84,6 +99,7 @@ import functools
 import json
 import os
 import pathlib
+import re
 import sys
 import urllib.parse
 
@@ -158,9 +174,9 @@ class Context:
 
     def secrets(self):
         """The tokens a printed line must not carry: GitHub's (if one is to be had; collaborators never need
-        it, so a missing one is no error here) and the mirror's. Longest first, so that one that contains
+        it, so a missing one is no error here), the mirror's and Forgejo's. Longest first, so that one that contains
         another is hidden whole. Never empty strings: str.replace on "" would put *** between every character."""
-        found = [os.environ.get("MIRROR_GITHUB_TOKEN", "").strip()]
+        found = [os.environ.get("MIRROR_GITHUB_TOKEN", "").strip(), os.environ.get("FORGE_TOKEN", "").strip()]
         try:
             found.append(self.github_token)
         except UsageError:
@@ -343,12 +359,18 @@ def _unfinished(found):
     return None
 
 
-def _report(ctx, failure):
-    """Prints a failure where it happened (it is listed again at the end) and returns it, with the GitHub
-    and mirror tokens hidden: a server's error text may echo what it was sent. No token (empty, None)
-    hides nothing: str.replace on "" would put *** between every character."""
+def _scrubbed(ctx, text):
+    """The text with the tokens hidden: a server's error text may echo what it was sent. No token (empty,
+    None) hides nothing: str.replace on "" would put *** between every character."""
     for secret in ctx.secrets():
-        failure = failure.replace(secret, "***")
+        text = text.replace(secret, "***")
+    return text
+
+
+def _report(ctx, failure):
+    """Prints a failure where it happened (it is listed again at the end) and returns it, with the tokens
+    hidden."""
+    failure = _scrubbed(ctx, failure)
     print(failure, flush=True)
     return failure
 
@@ -770,8 +792,215 @@ def cmd_collaborators(ctx, args):
     return failures
 
 
+# --- verify -----------------------------------------------------------------------------------------------
+
+# What Jenkins' Gitea plugin listens on, after FORGE_JENKINS_URL (as rules.py makes the hook).
+WEBHOOK_PATH = "/gitea-webhook/post"
+# `user:password@` in an address a server echoed in an error text.
+URL_CREDENTIALS = re.compile(r"(//)[^/@\s]+@")
+# The refs that are compared: develop, main and every tag. Nothing else (refs/pull/* is Forgejo's own, and
+# GitHub may refuse it as a hidden ref).
+VERIFIED_BRANCHES = ("refs/heads/develop", "refs/heads/main")
+VERIFIED_PREFIXES = ("heads/develop", "heads/main", "tags")
+
+
+def _row(ctx, name, check, ok, detail):
+    """Prints one row (tab-separated: repo, check, ok|FAIL, detail), and returns the failure to report (None when ok).
+    The detail is one line with the tokens, and any credentials in an address, hidden: it may be a server's
+    own words (a mirror's last_error)."""
+    detail = URL_CREDENTIALS.sub(r"\1***@", _scrubbed(ctx, detail))
+    detail = " ".join(detail.split())
+    print(f"{name}\t{check}\t{'ok' if ok else 'FAIL'}\t{detail}", flush=True)
+    return None if ok else f"{name}: {check}: {detail}"
+
+
+def _refs(api, base):
+    """{full ref name: sha} of the branches and tags that are compared, under `base` + each prefix. Paged
+    until a page brings nothing new, which also ends a listing for a server that ignores `page` (Forgejo's
+    git/refs may). A prefix nothing matches is {} (GitHub: [], Forgejo: 404; an empty GitHub repository
+    answers 409). A prefix matches by its start (heads/develop is also heads/develop-old), so the names are
+    filtered."""
+    found = {}
+    for prefix in VERIFIED_PREFIXES:
+        listed = {}
+        for page in range(1, MAX_PAGES + 1):
+            try:
+                batch = api.request("GET", f"{base}{prefix}?per_page=100&page={page}") or []
+            except rules.ApiError as error:
+                if page == 1 and error.status in (404, 409):
+                    break
+                raise
+            fresh = {ref["ref"]: ref["object"]["sha"] for ref in batch if ref["ref"] not in listed}
+            if not fresh:
+                break
+            listed.update(fresh)
+        else:
+            raise MigrateError(f"{base}{prefix}: more than {MAX_PAGES} pages; stopped")
+        found.update({ref: sha for ref, sha in listed.items()
+                      if ref in VERIFIED_BRANCHES or ref.startswith("refs/tags/")})
+    return found
+
+
+def _check_default_branch(repo, found):
+    # Expected `develop` when GitHub's default is develop, else GitHub's own: either way it is GitHub's (the
+    # mirror never changes GitHub's default branch, and the import keeps it on Forgejo).
+    if found.get("empty"):
+        return True, "empty repository: no branch yet"
+    have, wanted = found.get("default_branch") or "", repo["default_branch"]
+    if have == wanted:
+        return True, have
+    return False, f"{have or 'none'} on Forgejo, {wanted} on GitHub"
+
+
+def _check_mirror(ctx, name):
+    mirrors = ctx.forgejo.request("GET", f"/repos/{ctx.forgejo_owner}/{name}/push_mirrors") or []
+    if not mirrors:
+        return False, "no push mirror"
+    wanted = mirror_address(ctx, name)
+    right = [m for m in mirrors if _same_address(m.get("remote_address") or "", wanted)]
+    if not right:
+        others = ", ".join(_without_credentials(m.get("remote_address") or "?") for m in mirrors)
+        return False, f"push mirror points at {others}, not {wanted}"
+    problems = []
+    for mirror in right:
+        if (mirror.get("last_error") or "").strip():
+            problems.append(f"last error: {mirror['last_error']}")
+        if not mirror.get("last_update"):
+            problems.append("never synced")
+    if problems:
+        return False, "; ".join(problems)
+    return True, f"synced {right[0]['last_update']}"
+
+
+def _check_refs(ctx, name):
+    on_github = _refs(ctx.gh, f"/repos/{ctx.github_owner}/{name}/git/matching-refs/")
+    on_forgejo = _refs(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/git/refs/")
+    problems = []
+    for ref in sorted(set(on_github) | set(on_forgejo)):
+        if ref not in on_forgejo:
+            problems.append(f"{ref} only on GitHub")
+        elif ref not in on_github:
+            problems.append(f"{ref} only on Forgejo")
+        elif on_github[ref] != on_forgejo[ref]:
+            problems.append(f"{ref} differs (GitHub {on_github[ref][:12]}, Forgejo {on_forgejo[ref][:12]})")
+    if problems:
+        return False, "; ".join(problems)
+    return True, f"{_plural(len(on_github), 'ref')} the same" if on_github else "no branch or tag on either side"
+
+
+def _check_rulesets(ctx, repo, expected):
+    try:
+        listed = ctx.gh.request("GET", f"/repos/{ctx.github_owner}/{repo['name']}/rulesets?per_page=100") or []
+    except rules.ApiError as error:
+        if repo["private"] and error.status == 403:
+            return True, "rulesets not available here"
+        raise
+    have = {ruleset["name"] for ruleset in listed}
+    problems = ([f"missing: {', '.join(sorted(expected - have))}"] if expected - have else []) \
+        + ([f"unexpected: {', '.join(sorted(have - expected))}"] if have - expected else [])
+    if problems:
+        return False, "; ".join(problems)
+    return True, ", ".join(sorted(have)) or "none"
+
+
+def _check_issues(ctx, name):
+    now = ctx.gh.request("GET", f"/repos/{ctx.github_owner}/{name}") or {}
+    if now.get("has_issues") is False:
+        return True, "off"
+    return False, "issues are on"
+
+
+def _check_webhook(ctx, name, jenkins_url):
+    if not jenkins_url:
+        return False, "FORGE_JENKINS_URL not set: can't check the webhook"
+    wanted = jenkins_url.rstrip("/") + WEBHOOK_PATH
+    hooks = _paged(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/hooks")
+    if any((hook.get("config") or {}).get("url") == wanted for hook in hooks):
+        return True, wanted
+    return False, f"no webhook to {wanted}"
+
+
+def _check_collaborators(ctx, name):
+    """The bots are collaborators (Forgejo's list of them) with the permission of bot_permissions. The list
+    decides who is one: the permission endpoint answers `read` for anyone on a public repository. The
+    permission is asked of the ones who are in the list, where it is what the collaborator has."""
+    listed = {user.get("login", "").casefold()
+              for user in _paged(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/collaborators")}
+    problems = []
+    for user, wanted in bot_permissions(ctx):
+        if user.casefold() not in listed:
+            problems.append(f"{user}: not a collaborator")
+            continue
+        current = _collaborator_permission(ctx, name, user)
+        if current != wanted:
+            problems.append(f"{user}: has {current or 'none'}, wants {wanted}")
+    if problems:
+        return False, "; ".join(problems)
+    return True, ", ".join(f"{user} {permission}" for user, permission in bot_permissions(ctx))
+
+
+def _verify_one(ctx, repo, catalog_names, models, jenkins_url):
+    """Verifies one repository; prints its rows and returns its failures. Each check is on its own: a call that
+    errors fails that check, not the repository's other rows."""
+    name, failures = repo["name"], []
+
+    def check(label, run):
+        try:
+            ok, detail = run()
+        except (rules.ApiError, MigrateError) as error:
+            ok, detail = False, f"could not check: {error}"
+        failure = _row(ctx, name, label, ok, detail)
+        if failure:
+            failures.append(failure)
+
+    try:
+        found = _on_forgejo(ctx, name)
+        problem = "not on Forgejo: run import first"
+    except rules.ApiError as error:
+        found, problem = None, f"could not look for it on Forgejo: {error}"
+    if found is None:
+        # Nothing of it to check on Forgejo; its GitHub side waits for the import.
+        return [_row(ctx, name, "on Forgejo", False, problem)]
+    _row(ctx, name, "on Forgejo", True, "present")
+
+    check("default branch", lambda: _check_default_branch(repo, found))
+    if repo["archived"]:
+        # Frozen on GitHub: no mirror pushes to it, nothing there changes, and it takes no setting.
+        _row(ctx, name, "github", True, "archived on GitHub: Forgejo only")
+    else:
+        check("push mirror", lambda: _check_mirror(ctx, name))
+        check("refs", lambda: _check_refs(ctx, name))
+        expected = {rules.MIRROR_TAGS} if models.get(name) == "release" else set()
+        check("rulesets", lambda: _check_rulesets(ctx, repo, expected))
+        check("issues", lambda: _check_issues(ctx, name))
+    if name in catalog_names:
+        check("webhook", lambda: _check_webhook(ctx, name, jenkins_url))
+        check("collaborators", lambda: _check_collaborators(ctx, name))
+    return failures
+
+
+def cmd_verify(ctx, args):
+    """The gate before pushes go to Forgejo: per repository, on Forgejo, default branch, push mirror, refs,
+    GitHub's rulesets and issues, and for catalog repositories the webhook and the bots. Read only."""
+    ctx.forgejo  # a missing token is a usage error before any output
+    repos = github_repositories(ctx.gh, ctx.github_owner, ctx.only)
+    catalog_names = ctx.catalog_repositories()
+    # The release model gets `mirror tags` on its GitHub copy (rules.py); basic ones and repositories outside the
+    # catalog get none.
+    models = {r.repo: r.model for r in rules.desired_rules(ctx.catalog)}
+    jenkins_url = os.environ.get("FORGE_JENKINS_URL", "").strip()
+    failures = []
+    for repo in repos:
+        failures += _verify_one(ctx, repo, catalog_names, models, jenkins_url)
+    if not ctx.only:
+        for name in sorted(catalog_names - {r["name"] for r in repos}):
+            print(f"note: {name} is in the catalog but not on GitHub under {ctx.github_owner}", flush=True)
+    print(f"{len(repos)} repositories, {len(failures)} checks failed", flush=True)
+    return failures
+
+
 COMMANDS = {"inventory": cmd_inventory, "import": cmd_import, "prepare-github": cmd_prepare_github,
-            "mirrors": cmd_mirrors, "collaborators": cmd_collaborators}
+            "mirrors": cmd_mirrors, "collaborators": cmd_collaborators, "verify": cmd_verify}
 
 
 # --- The command line ---------------------------------------------------------------------------------

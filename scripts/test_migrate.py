@@ -31,8 +31,11 @@ class FakeGitHub:
     its own per_page loses the rest."""
 
     def __init__(self, repos, pulls=None, kind="User", login=OWNER, page_size=30, pulls_fail=(), empty=(),
-                 commits_status=None, rulesets=None, settings=None, fail=None):
+                 commits_status=None, rulesets=None, settings=None, fail=None, refs=None, refs_fail=()):
         self.repos, self.pulls, self.pulls_fail = repos, pulls or {}, set(pulls_fail)
+        # What verify reads: `refs` (name -> {full ref name: sha}, served by git/matching-refs by prefix,
+        # in pages) and `refs_fail` (names whose refs answer 502).
+        self.refs, self.refs_fail = refs or {}, set(refs_fail)
         self.empty, self.commits_status = set(empty), commits_status or {}
         self.kind, self.login, self.page_size = kind, login, page_size
         # What prepare-github works on, per repository: `rulesets` (name -> [rulesets, as {id, name}]),
@@ -83,6 +86,19 @@ class FakeGitHub:
         size = min(int(query.get("per_page", "30")), self.page_size)
         return items[(page - 1) * size:page * size]
 
+    def _matching_refs(self, method, path, segments, query):
+        """`GET /repos/<o>/<r>/git/matching-refs/<prefix>`: the refs that start with `refs/<prefix>`, in pages
+        (an empty repository answers 409, as GitHub does)."""
+        name = segments[3]
+        if name in self.refs_fail:
+            raise migrate.rules.ApiError(method, path, 502, "Bad Gateway")
+        if name in self.empty:
+            raise migrate.rules.ApiError(method, path, 409, "Git Repository is empty.")
+        prefix = "refs/" + "/".join(segments[6:])
+        found = [{"ref": ref, "object": {"sha": sha, "type": "commit"}}
+                 for ref, sha in sorted(self.refs.get(name, {}).items()) if ref.startswith(prefix)]
+        return self._page(found, query)
+
     def request(self, method, path, body=None):
         self.calls.append((method, path, body))
         route, _, raw = path.partition("?")
@@ -99,6 +115,8 @@ class FakeGitHub:
             return {"login": self.login}
         if route in ("/user/repos", f"/orgs/{OWNER}/repos"):
             return self._page(self.repos, query)
+        if segments[:2] == ["", "repos"] and segments[4:6] == ["git", "matching-refs"]:
+            return self._matching_refs(method, path, segments, query)
         if segments[:2] == ["", "repos"] and segments[4] == "commits":
             # GitHub answers 409 "Git Repository is empty." for a repository without a commit.
             if segments[3] in self.commits_status:
@@ -122,8 +140,17 @@ class FakeForgejo:
 
     def __init__(self, existing=None, lookup=None, migrate_status=None, migrate_message=None, files=None,
                  contents_status=None, mirrors=None, mirror_fail=None, users=None, collaborators=None,
-                 collaborator_fail=None, user_fail=None):
+                 collaborator_fail=None, user_fail=None, refs=None, hooks=None, verify_fail=None, ref_page=30,
+                 effective_read=False):
         self.existing, self.lookup, self.migrate_status = existing or {}, lookup or {}, migrate_status or {}
+        # What verify reads. `refs`: repository -> {full ref name: sha} (every namespace, `refs/pull/*`
+        # included), served by git/refs/<prefix> in pages of `ref_page` (None: all at once on every page, as
+        # a server that ignores `page` does); `hooks`: repository -> its webhooks; `verify_fail`: (repository,
+        # "git/refs" | "hooks" | "collaborators" | "push_mirrors") -> status to answer with an error;
+        # `effective_read`: the permission endpoint answers `read` for anyone who is not a collaborator
+        # (what Forgejo does on a public repository).
+        self.refs, self.hooks, self.verify_fail = refs or {}, hooks or {}, verify_fail or {}
+        self.ref_page, self.effective_read = ref_page, effective_read
         self.migrate_message = migrate_message
         # What mirrors and collaborators work on. `mirrors`: repository -> the push mirrors it has (as
         # Forgejo lists them); `mirror_fail`: (method, last path segment) -> status to answer with an error,
@@ -161,7 +188,7 @@ class FakeForgejo:
         self.timeouts.append(timeout)
         if "/contents/" in path:
             return self._contents(method, path, body)
-        for route in (self._mirror_request, self._collaborator_request):
+        for route in (self._verify_request, self._mirror_request, self._collaborator_request):
             answer = route(method, path, body)
             if answer is not NotImplemented:
                 return answer
@@ -180,6 +207,40 @@ class FakeForgejo:
             self.existing[body["repo_name"]] = forgejo_repository(body["repo_name"])
             return self.existing[body["repo_name"]]
         raise AssertionError(f"unexpected request: {method} {path}")
+
+    def _verify_request(self, method, path, body):
+        """What verify reads: `GET /repos/<owner>/<name>/git/refs[/<prefix>]` (Forgejo answers 404 for a prefix
+        nothing matches), `.../hooks` and the collaborators list `.../collaborators` (logins only)."""
+        route, _, raw = path.partition("?")
+        if not route.startswith(f"/repos/{OWNER}/") or method != "GET":
+            return NotImplemented
+        name, _, rest = route[len(f"/repos/{OWNER}/"):].partition("/")
+        kind = next((k for k in ("git/refs", "hooks", "collaborators", "push_mirrors")
+                     if rest == k or (k == "git/refs" and rest.startswith("git/refs/"))), None)
+        if kind is None:
+            return NotImplemented
+        if (name, kind) in self.verify_fail:
+            raise migrate.rules.ApiError(method, path, self.verify_fail[(name, kind)], "refused")
+        query = dict(part.split("=") for part in raw.split("&") if part)
+        if kind == "push_mirrors":
+            return NotImplemented
+        if kind == "hooks":
+            return self._listed(self.hooks.get(name, []), query)
+        if kind == "collaborators":
+            return self._listed([{"login": user} for repo, user in sorted(self.collaborators) if repo == name], query)
+        prefix = "refs/" + rest[len("git/refs/"):] if rest != "git/refs" else "refs/"
+        found = [{"ref": ref, "object": {"sha": sha, "type": "commit"}}
+                 for ref, sha in sorted(self.refs.get(name, {}).items()) if ref.startswith(prefix)]
+        if not found and rest != "git/refs":
+            raise migrate.rules.ApiError(method, path, 404, "The target couldn't be found.")
+        return self._listed(found, query, self.ref_page)
+
+    def _listed(self, items, query, size=30):
+        """One page of a Forgejo list (`size` per page; None: every item on every page)."""
+        if size is None:
+            return list(items)
+        page = int(query.get("page", "1"))
+        return items[(page - 1) * size:page * size]
 
     def _mirror_request(self, method, path, body):
         """`GET|POST /repos/<owner>/<name>/push_mirrors` and `POST .../push_mirrors-sync`, as Forgejo answers
@@ -221,6 +282,8 @@ class FakeForgejo:
             raise migrate.rules.ApiError(method, path, self.collaborator_fail[(name, method)], "refused")
         if method == "GET" and rest == f"{user}/permission":
             if (name, user) not in self.collaborators:
+                if self.effective_read:
+                    return {"permission": "read", "role_name": "read"}
                 raise migrate.rules.ApiError(method, path, 404, "not a collaborator")
             return {"permission": self.collaborators[(name, user)], "role_name": self.collaborators[(name, user)]}
         if method == "PUT" and rest == user:
@@ -1230,6 +1293,370 @@ class CollaboratorsTests(unittest.TestCase):
                   forgejo=FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")}))
         self.assertEqual(run.code, 1)
         self.assertIn("shop-api: not on Forgejo: run import first", run.err)
+
+
+JENKINS = "https://jenkins.example.com"
+VERIFY_ENV = {**ENV, "FORGE_JENKINS_URL": JENKINS}
+WEBHOOK_URL = f"{JENKINS}/gitea-webhook/post"
+SHA_DEVELOP, SHA_MAIN, SHA_TAG, SHA_OTHER = "a1" * 20, "b2" * 20, "c3" * 20, "d4" * 20
+# The repositories of MIRROR_CATALOG: the application shop-api's and two `repositories` entries. Any other is not
+# in the catalog.
+CATALOG_NAMES = ("shop-api", "toolkit", "other-lib")
+
+
+def verified_world(names=("toolkit",), catalog_names=CATALOG_NAMES, **github_fields):
+    """A GitHub and a Forgejo in which every one of `names` is moved and prepared as verify wants it: the same
+    develop, main and tag on both sides (Forgejo also has a pull request ref, which is left out), a healthy
+    push mirror, GitHub with `mirror tags` and issues off; a catalog repository also with its Jenkins webhook
+    and the four bots. Returns (gh, forgejo); a test breaks one thing and runs verify."""
+    heads = {"refs/heads/develop": SHA_DEVELOP, "refs/heads/main": SHA_MAIN, "refs/tags/v1.0.0": SHA_TAG}
+    in_catalog = [n for n in names if n in catalog_names]
+    gh = FakeGitHub([repository(n) for n in names], login=MIRROR,
+                    refs={n: dict(heads) for n in names},
+                    rulesets={n: [{"id": 5, "name": "mirror tags"}] for n in in_catalog},
+                    settings={n: {"has_issues": False} for n in names}, **github_fields)
+    forgejo = FakeForgejo(
+        existing={n: forgejo_repository(n) for n in names},
+        mirrors={n: [push_mirror(n)] for n in names},
+        refs={n: {**heads, "refs/pull/1/head": SHA_OTHER} for n in names},
+        hooks={n: [{"id": 4, "type": "gitea", "active": True, "config": {"url": WEBHOOK_URL}}] for n in in_catalog},
+        collaborators={(n, user): permission for n in in_catalog for user, permission in
+                       (("jenkins", "write"), ("jenkins-ci", "read"), ("renovate", "write"), ("claude", "write"))})
+    return gh, forgejo
+
+
+class VerifyTests(unittest.TestCase):
+    ARGS = ["verify"]
+
+    def run_verify(self, world=None, args=None, env=None, catalog=MIRROR_CATALOG):
+        gh, forgejo = world or verified_world()
+        return Run(args or self.ARGS, gh, catalog=catalog, env=VERIFY_ENV if env is None else env, forgejo=forgejo)
+
+    def rows(self, run, repo=None):
+        """The rows [repository, check, ok|FAIL, detail] the run printed, for one repository or all."""
+        rows = [line.split("\t") for line in run.lines if "\t" in line]
+        return [row for row in rows if repo in (None, row[0])]
+
+    def row(self, run, repo, check):
+        (found,) = [row for row in self.rows(run, repo) if row[1] == check]
+        return found
+
+    def assert_only_failing(self, run, repo, *checks):
+        self.assertEqual([row[1] for row in self.rows(run, repo) if row[2] == "FAIL"], list(checks), run.out)
+
+    def test_given_everything_in_place_when_verified_then_every_row_is_ok(self):
+        world = verified_world(("toolkit", "old-fork"))
+        run = self.run_verify(world)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertEqual({row[2] for row in self.rows(run)}, {"ok"})
+        # A catalog repository gets all eight checks; one that is not in the catalog has no webhook, no bots.
+        self.assertEqual([row[1] for row in self.rows(run, "toolkit")],
+                         ["on Forgejo", "default branch", "push mirror", "refs", "rulesets", "issues", "webhook",
+                          "collaborators"])
+        self.assertEqual([row[1] for row in self.rows(run, "old-fork")],
+                         ["on Forgejo", "default branch", "push mirror", "refs", "rulesets", "issues"])
+        self.assertEqual(run.lines[-1], "2 repositories, 0 checks failed")
+        self.assertEqual({len(line.split("\t")) for line in run.lines if not line.startswith("note: ")} - {1}, {4})
+        # Read only, however it goes: no write to either server.
+        self.assertEqual((world[0].writes(), world[1].writes()), ([], []))
+
+    def test_given_a_tag_on_another_commit_on_github_when_verified_then_it_fails_naming_the_tag(self):
+        gh, forgejo = verified_world()
+        gh.refs["toolkit"]["refs/tags/v1.0.0"] = SHA_OTHER
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 1)
+        self.assert_only_failing(run, "toolkit", "refs")
+        detail = self.row(run, "toolkit", "refs")[3]
+        self.assertIn("refs/tags/v1.0.0", detail)
+        self.assertIn(SHA_OTHER[:12], detail)
+        self.assertIn(SHA_TAG[:12], detail)
+        self.assertEqual(run.lines[-1], "1 repositories, 1 checks failed")
+        self.assertIn("  toolkit: refs: " + detail, run.err.splitlines())
+
+    def test_given_a_mirror_with_a_last_error_when_verified_then_it_fails_with_the_error(self):
+        gh, forgejo = verified_world()
+        # What GitHub says to a --mirror push that carries Forgejo's own pull request refs, on two lines and
+        # with the address as git echoes it, credentials and all.
+        error = ("push to https://mirror-bot:mirror-tok-789@github.com/x/toolkit.git failed:\n"
+                 "! [remote rejected] refs/pull/1/head -> refs/pull/1/head (deny updating a hidden ref)")
+        forgejo.mirrors["toolkit"] = [push_mirror("toolkit", last_error=error)]
+        run = self.run_verify((gh, forgejo), env={**VERIFY_ENV, "MIRROR_GITHUB_TOKEN": "mirror-tok-789"})
+        self.assertEqual(run.code, 1)
+        self.assert_only_failing(run, "toolkit", "push mirror")
+        detail = self.row(run, "toolkit", "push mirror")[3]
+        self.assertIn("deny updating a hidden ref", detail)
+        self.assertIn("refs/pull/1/head", detail)
+        # One line, and the token and the credentials are gone from the row and from the failure list.
+        self.assertNotIn("mirror-tok-789", run.out + run.err)
+        self.assertNotIn("mirror-bot:", run.out + run.err)
+
+    def test_given_a_repository_missing_on_forgejo_when_verified_then_it_fails(self):
+        gh, forgejo = verified_world(("toolkit", "other-lib"))
+        del forgejo.existing["other-lib"]
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 1)
+        self.assertEqual(self.row(run, "other-lib", "on Forgejo")[2:], ["FAIL", "not on Forgejo: run import first"])
+        # Nothing else is asked of a repository that is not there; the next one is verified in full.
+        self.assertEqual([row[1] for row in self.rows(run, "other-lib")], ["on Forgejo"])
+        self.assertEqual({row[2] for row in self.rows(run, "toolkit")}, {"ok"})
+        self.assertEqual(run.lines[-1], "2 repositories, 1 checks failed")
+
+    def test_given_a_catalog_repository_without_its_webhook_when_verified_then_it_fails(self):
+        gh, forgejo = verified_world()
+        forgejo.hooks["toolkit"] = [{"id": 9, "config": {"url": "https://elsewhere.example.com/gitea-webhook/post"}}]
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 1)
+        self.assert_only_failing(run, "toolkit", "webhook")
+        self.assertIn(WEBHOOK_URL, self.row(run, "toolkit", "webhook")[3])
+
+    def test_given_a_trailing_slash_in_the_jenkins_url_when_verified_then_the_webhook_is_still_found(self):
+        # rules.py strips it when it makes the hook, so the hook has none.
+        run = self.run_verify(env={**VERIFY_ENV, "FORGE_JENKINS_URL": JENKINS + "/"})
+        self.assertEqual(run.code, 0, run.out)
+
+    def test_given_no_jenkins_url_when_verified_then_the_webhook_of_a_catalog_repository_fails(self):
+        run = self.run_verify(verified_world(("toolkit", "old-fork")), env=ENV)
+        self.assertEqual(run.code, 1)
+        self.assertEqual(self.row(run, "toolkit", "webhook")[2:],
+                         ["FAIL", "FORGE_JENKINS_URL not set: can't check the webhook"])
+        self.assert_only_failing(run, "toolkit", "webhook")
+        # A repository outside the catalog has no webhook to check.
+        self.assertEqual({row[2] for row in self.rows(run, "old-fork")}, {"ok"})
+
+    def test_given_no_push_mirror_when_verified_then_it_fails(self):
+        gh, forgejo = verified_world()
+        forgejo.mirrors["toolkit"] = []
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "push mirror")
+        self.assertIn("no push mirror", self.row(run, "toolkit", "push mirror")[3])
+
+    def test_given_a_mirror_to_another_address_when_verified_then_it_fails_naming_it(self):
+        gh, forgejo = verified_world()
+        forgejo.mirrors["toolkit"] = [push_mirror("toolkit", "https://github.com/someone-else/toolkit.git")]
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "push mirror")
+        self.assertIn("https://github.com/someone-else/toolkit.git", self.row(run, "toolkit", "push mirror")[3])
+
+    def test_given_a_mirror_that_never_synced_when_verified_then_it_fails(self):
+        for last_update in (None, ""):
+            with self.subTest(last_update=last_update):
+                gh, forgejo = verified_world()
+                forgejo.mirrors["toolkit"] = [push_mirror("toolkit", last_update=last_update)]
+                run = self.run_verify((gh, forgejo))
+                self.assert_only_failing(run, "toolkit", "push mirror")
+                self.assertIn("never synced", self.row(run, "toolkit", "push mirror")[3])
+
+    def test_given_the_mirror_address_in_another_spelling_when_verified_then_it_is_the_same_mirror(self):
+        gh, forgejo = verified_world()
+        forgejo.mirrors["toolkit"] = [push_mirror("toolkit", f"https://github.com/{MIRROR}/toolkit")]
+        self.assertEqual(self.run_verify((gh, forgejo)).code, 0)
+
+    def test_given_a_ref_on_one_side_only_when_verified_then_it_fails_naming_the_ref_and_the_side(self):
+        gh, forgejo = verified_world()
+        del gh.refs["toolkit"]["refs/heads/main"]               # Forgejo has main, GitHub has not
+        forgejo.refs["toolkit"]["refs/tags/v2.0.0"] = SHA_TAG  # a tag GitHub lacks
+        gh.refs["toolkit"]["refs/tags/v0.9.0"] = SHA_TAG        # a tag Forgejo lacks
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "refs")
+        detail = self.row(run, "toolkit", "refs")[3]
+        self.assertIn("refs/heads/main only on Forgejo", detail)
+        self.assertIn("refs/tags/v2.0.0 only on Forgejo", detail)
+        self.assertIn("refs/tags/v0.9.0 only on GitHub", detail)
+
+    def test_given_refs_outside_branches_and_tags_when_verified_then_they_are_not_compared(self):
+        gh, forgejo = verified_world()
+        forgejo.refs["toolkit"].update({"refs/pull/2/head": SHA_OTHER, "refs/heads/feature/x": SHA_OTHER})
+        gh.refs["toolkit"].update({"refs/pull/9/head": SHA_MAIN, "refs/heads/develop-old": SHA_OTHER})
+        self.assertEqual(self.run_verify((gh, forgejo)).code, 0)
+
+    def test_given_more_refs_than_a_page_when_verified_then_all_are_compared_whichever_side_pages(self):
+        for forgejo_page in (30, 100, None):  # None: a server that ignores `page` and answers everything each time
+            with self.subTest(forgejo_page=forgejo_page):
+                gh, forgejo = verified_world()
+                forgejo.ref_page = forgejo_page
+                for n in range(75):
+                    gh.refs["toolkit"][f"refs/tags/v2.{n}.0"] = SHA_TAG
+                    forgejo.refs["toolkit"][f"refs/tags/v2.{n}.0"] = SHA_TAG
+                self.assertEqual(self.run_verify((gh, forgejo)).code, 0)
+                # The last tag, far past the first pages, is one that counts.
+                gh.refs["toolkit"]["refs/tags/v2.74.0"] = SHA_OTHER
+                run = self.run_verify((gh, forgejo))
+                self.assertIn("refs/tags/v2.74.0", self.row(run, "toolkit", "refs")[3])
+
+    def test_given_no_branch_or_tag_on_either_side_when_verified_then_the_refs_agree(self):
+        gh, forgejo = verified_world()
+        gh.refs["toolkit"], forgejo.refs["toolkit"] = {}, {}
+        # GitHub answers a prefix nothing matches with [], Forgejo with 404: neither is an error.
+        self.assertEqual(self.row(self.run_verify((gh, forgejo)), "toolkit", "refs")[2], "ok")
+
+    def test_given_an_empty_repository_when_verified_then_githubs_409_is_no_refs(self):
+        gh, forgejo = verified_world()
+        gh.empty.add("toolkit")
+        gh.refs["toolkit"], forgejo.refs["toolkit"] = {}, {}
+        forgejo.existing["toolkit"] = forgejo_repository("toolkit", empty=True, default_branch="")
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 0, run.out)
+
+    def test_given_a_default_branch_that_is_not_githubs_when_verified_then_it_fails(self):
+        gh, forgejo = verified_world()
+        forgejo.existing["toolkit"] = forgejo_repository("toolkit", default_branch="main")
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "default branch")
+        detail = self.row(run, "toolkit", "default branch")[3]
+        self.assertIn("develop", detail)
+        self.assertIn("main", detail)
+
+    def test_given_githubs_default_branch_is_not_develop_when_verified_then_forgejos_must_be_the_same(self):
+        gh, forgejo = verified_world()
+        gh.repos[0] = repository("toolkit", default_branch="main")
+        forgejo.existing["toolkit"] = forgejo_repository("toolkit", default_branch="main")
+        self.assertEqual(self.run_verify((gh, forgejo)).code, 0)
+        forgejo.existing["toolkit"] = forgejo_repository("toolkit", default_branch="develop")
+        self.assert_only_failing(self.run_verify((gh, forgejo)), "toolkit", "default branch")
+
+    def test_given_an_archived_repository_when_verified_then_only_forgejo_is_checked(self):
+        gh, forgejo = verified_world(("toolkit", "old-fork"))
+        gh.repos[1] = repository("old-fork", archived=True)
+        forgejo.mirrors["old-fork"] = []                      # none expected
+        gh.refs["old-fork"]["refs/tags/v1.0.0"] = SHA_OTHER   # GitHub's copy is frozen: not compared
+        gh.settings["old-fork"] = {"has_issues": True}
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 0, run.out)
+        self.assertEqual(self.rows(run, "old-fork"),
+                         [["old-fork", "on Forgejo", "ok", "present"],
+                          ["old-fork", "default branch", "ok", "develop"],
+                          ["old-fork", "github", "ok", "archived on GitHub: Forgejo only"]])
+        self.assertFalse([c for c in gh.calls if c[1].startswith(f"/repos/{MIRROR}/old-fork")])
+        # Its presence on Forgejo still counts.
+        del forgejo.existing["old-fork"]
+        self.assertEqual(self.row(self.run_verify((gh, forgejo)), "old-fork", "on Forgejo")[2], "FAIL")
+
+    def test_given_rulesets_when_verified_then_a_release_repository_has_exactly_mirror_tags(self):
+        cases = {
+            "missing": ([], "mirror tags"),
+            "extra": ([{"id": 5, "name": "mirror tags"}, {"id": 6, "name": "develop"}], "develop"),
+            "another": ([{"id": 6, "name": "release tags"}], "mirror tags"),
+        }
+        for label, (rulesets, named) in cases.items():
+            with self.subTest(label):
+                gh, forgejo = verified_world()
+                gh.rulesets["toolkit"] = rulesets
+                run = self.run_verify((gh, forgejo))
+                self.assert_only_failing(run, "toolkit", "rulesets")
+                self.assertIn(named, self.row(run, "toolkit", "rulesets")[3])
+
+    def test_given_a_basic_or_non_catalog_repository_when_verified_then_it_must_have_no_rulesets(self):
+        catalog = {**MIRROR_CATALOG, "repositories": [{"id": "toolkit", "rules": "basic"}, {"id": "other-lib"}]}
+        gh, forgejo = verified_world(("toolkit", "old-fork"), catalog_names=("other-lib",))
+        run = self.run_verify((gh, forgejo), catalog=catalog)
+        self.assertEqual(self.row(run, "toolkit", "rulesets")[2], "ok")
+        self.assertEqual(self.row(run, "old-fork", "rulesets")[2], "ok")
+        for name in ("toolkit", "old-fork"):
+            with self.subTest(name):
+                # (A new world each time: the fake keeps a repository's state from its first request.)
+                gh, forgejo = verified_world(("toolkit", "old-fork"), catalog_names=("other-lib",))
+                gh.rulesets[name] = [{"id": 5, "name": "mirror tags"}]
+                run = self.run_verify((gh, forgejo), catalog=catalog)
+                self.assertEqual(self.row(run, name, "rulesets")[2], "FAIL")
+                self.assertIn("mirror tags", self.row(run, name, "rulesets")[3])
+
+    def test_given_a_private_repository_whose_rulesets_are_refused_when_verified_then_it_is_not_a_failure(self):
+        gh, forgejo = verified_world(("toolkit", "old-fork"))
+        gh.repos[0] = repository("toolkit", private=True)
+        gh.fail = {"toolkit": {("GET", "/rulesets"): 403}, "old-fork": {("GET", "/rulesets"): 403}}
+        run = self.run_verify((gh, forgejo))
+        # Private: a plan without rulesets, there are none to check. Public: a real refusal.
+        self.assertEqual(self.row(run, "toolkit", "rulesets")[2:], ["ok", "rulesets not available here"])
+        self.assertEqual(self.row(run, "old-fork", "rulesets")[2], "FAIL")
+        self.assertIn("403", self.row(run, "old-fork", "rulesets")[3])
+
+    def test_given_issues_on_when_verified_then_it_fails(self):
+        gh, forgejo = verified_world()
+        gh.settings["toolkit"] = {"has_issues": True}
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "issues")
+
+    def test_given_a_bot_that_is_not_a_collaborator_when_verified_then_it_fails_though_the_repository_reads_for_anyone(self):
+        gh, forgejo = verified_world()
+        # A public repository: the permission endpoint says `read` for jenkins-ci whether it is one or not,
+        # so only the collaborators list tells.
+        forgejo.effective_read = True
+        del forgejo.collaborators[("toolkit", "jenkins-ci")]
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "collaborators")
+        self.assertIn("jenkins-ci: not a collaborator", self.row(run, "toolkit", "collaborators")[3])
+
+    def test_given_a_bot_with_another_permission_when_verified_then_it_fails_naming_both(self):
+        gh, forgejo = verified_world()
+        forgejo.collaborators[("toolkit", "claude")] = "read"
+        forgejo.collaborators[("toolkit", "jenkins-ci")] = "write"
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "collaborators")
+        detail = self.row(run, "toolkit", "collaborators")[3]
+        self.assertIn("claude: has read, wants write", detail)
+        self.assertIn("jenkins-ci: has write, wants read", detail)
+
+    def test_given_another_jenkins_user_in_the_catalog_when_verified_then_that_one_is_the_bot_looked_for(self):
+        catalog = {**MIRROR_CATALOG, "forge": {**MIRROR_CATALOG["forge"], "jenkinsUser": "ci-jenkins"}}
+        run = self.run_verify(catalog=catalog)
+        self.assertIn("ci-jenkins: not a collaborator", self.row(run, "toolkit", "collaborators")[3])
+
+    def test_given_calls_that_error_when_verified_then_only_those_checks_fail_and_the_run_goes_on(self):
+        gh, forgejo = verified_world(("toolkit", "other-lib"))
+        forgejo.verify_fail[("toolkit", "hooks")] = 500
+        forgejo.verify_fail[("toolkit", "git/refs")] = 502
+        forgejo.mirror_fail[("toolkit", "GET", "push_mirrors")] = 500
+        gh.refs_fail.add("other-lib")
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 1)
+        self.assert_only_failing(run, "toolkit", "push mirror", "refs", "webhook")
+        self.assertIn("could not check", self.row(run, "toolkit", "webhook")[3])
+        self.assertIn("500", self.row(run, "toolkit", "webhook")[3])
+        self.assert_only_failing(run, "other-lib", "refs")
+        self.assertEqual(self.row(run, "other-lib", "collaborators")[2], "ok")
+        self.assertEqual(run.lines[-1], "2 repositories, 4 checks failed")
+
+    def test_given_a_forgejo_lookup_that_errors_when_verified_then_the_repository_fails_and_the_run_goes_on(self):
+        gh, forgejo = verified_world(("toolkit", "other-lib"))
+        forgejo.lookup["toolkit"] = 500
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 1)
+        self.assertIn("could not look for it on Forgejo", self.row(run, "toolkit", "on Forgejo")[3])
+        self.assertEqual({row[2] for row in self.rows(run, "other-lib")}, {"ok"})
+
+    def test_given_only_when_verified_then_just_those_are_verified_and_an_unknown_name_exits_2(self):
+        gh, forgejo = verified_world(("toolkit", "other-lib"))
+        run = self.run_verify((gh, forgejo), ["verify", "--only", "other-lib"])
+        self.assertEqual(run.code, 0, run.out)
+        self.assertEqual({row[0] for row in self.rows(run)}, {"other-lib"})
+        self.assertEqual(run.lines[-1], "1 repositories, 0 checks failed")
+        self.assertFalse([c for c in forgejo.calls if "toolkit" in c[1]])
+        refused = self.run_verify((gh, forgejo), ["verify", "--only", "nope"])
+        self.assertEqual(refused.code, 2)
+
+    def test_given_a_dry_run_when_verified_then_it_is_the_same_read_only_run(self):
+        world = verified_world()
+        run = self.run_verify(world, ["--dry-run", "verify"])
+        self.assertEqual(run.code, 0, run.out)
+        self.assertEqual((world[0].writes(), world[1].writes()), ([], []))
+
+    def test_given_a_catalog_repository_not_on_github_when_verified_then_it_is_noted_not_verified(self):
+        run = self.run_verify(verified_world(("toolkit",)))
+        self.assertIn(f"note: other-lib is in the catalog but not on GitHub under {MIRROR}", run.lines)
+        self.assertEqual(run.code, 0, run.out)
+
+    def test_given_no_forgejo_token_when_verified_then_it_exits_2_before_anything_is_printed(self):
+        run = self.run_verify(env={})
+        self.assertEqual(run.code, 2)
+        self.assertIn("FORGE_TOKEN", run.err)
+        self.assertEqual(run.out, "")
+
+    def test_given_the_forgejo_token_in_an_error_when_verified_then_it_is_hidden(self):
+        gh, forgejo = verified_world()
+        forgejo.mirrors["toolkit"] = [push_mirror("toolkit", last_error="denied for fg-tok-123")]
+        run = self.run_verify((gh, forgejo))
+        self.assertIn("denied for ***", self.row(run, "toolkit", "push mirror")[3])
+        self.assertNotIn("fg-tok-123", run.out + run.err)
 
 
 class ReportTests(unittest.TestCase):
