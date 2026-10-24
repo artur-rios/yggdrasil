@@ -242,6 +242,13 @@ tags` ruleset (updated in place, by name): from then on you can no longer move o
 without disabling the ruleset first. For an owner-tagged repository it also creates the ruleset `release tag
 creation` (only administrators create its tags), and `release tags` loses the creation rule it had.
 
+### Upgrading: start tag-check's record
+
+Right after `scripts/platform.sh up` has created the `tag-check` job, run it once by hand (**Build with
+Parameters**, `FORGET` empty). It remembers only the releases it has seen published, and a deleted tag's release
+turns into a draft it cannot see, so the sooner its first run, the fewer deletions can slip by
+([docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
+
 ### Upgrading a host from rootful Docker
 
 For a VPS set up with the earlier guide, on the same server: stop the platform and applications with the old checkout,

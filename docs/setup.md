@@ -1368,7 +1368,9 @@ on Forgejo. Two things answer it:
   Forgejo (a moment after the push) and GitHub turn it into a draft, which the read credential cannot see. So
   each run archives the releases it knows of (`release-tags.tsv`, an artifact of the build) and the next run
   checks those too, published or not: a release the job has seen once is checked on every run after. One whose
-  tag was deleted before the job's first run is not noticed.
+  tag was deleted before the job's first run is not noticed, so **run it once by hand as soon as the job
+  exists** (after the upgrade's `platform.sh up`, or [9.4](#94-jenkins-and-the-webhook) on a new installation)
+  to start the record, rather than waiting for the night.
 - **The GitHub copies keep the tags as they were released.** With a `mirror`, `rules.py` puts `mirror tags` on
   every copy, so the push mirror cannot move or delete a version tag there: GitHub refuses a mirror push that
   would, and Forgejo shows that repository's push mirror failing to sync (its **Settings → Repository**, the
