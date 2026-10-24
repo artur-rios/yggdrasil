@@ -1129,7 +1129,9 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
     def test_given_a_catalog_repository_when_migrate_sets_the_collaborators_then_each_bot_reads_back_with_its_permission(self):
         repo = "bots-lib"
         owner = self.api[OWNER]
-        owner.request("POST", "/user/repos", {"name": repo, "private": True, "auto_init": True})
+        # develop is its default branch, as rules.py leaves every catalog repository (verify expects it).
+        owner.request("POST", "/user/repos", {"name": repo, "private": True, "auto_init": True,
+                                              "default_branch": "develop"})
         catalog = self.migrate_catalog(systems=[], repositories=[{"id": repo}])
 
         def permission(user):

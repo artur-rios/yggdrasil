@@ -64,7 +64,8 @@ and goes on to the next, so a re-run picks up where it stopped):
   verify      the gate before pushes go to Forgejo. Read only: it sends no write, with or without --dry-run.
               One row per check (tab-separated: repo, check, ok|FAIL, detail), then `<N> repositories, <K> checks
               failed`; exit 1 on any FAIL. Per repository of the GitHub owner: it is on Forgejo (else the
-              rest is skipped); its default branch is GitHub's; its push mirror points at the GitHub copy,
+              rest is skipped); its default branch is `develop` for a catalog repository (rules.py sets it),
+              GitHub's for any other; its push mirror points at the GitHub copy,
               has synced (a `last_update` after 1970: Forgejo may answer the zero time for none) and has no
               `last_error` (the error is printed, scrubbed: Forgejo pushes with --mirror, so GitHub refusing
               its own refs/pull/* shows up here), and no other push mirror is beside it; every branch and every
@@ -927,12 +928,17 @@ def _refs(api, base):
     return found
 
 
-def _check_default_branch(repo, found):
-    # Expected `develop` when GitHub's default is develop, else GitHub's own: either way it is GitHub's (the
-    # mirror never changes GitHub's default branch, and the import keeps it on Forgejo).
+def _check_default_branch(repo, found, in_catalog):
+    # A catalog repository's is `develop`: rules.py sets it on Forgejo (5.15, before verify). Any other keeps
+    # GitHub's: the import copies it and nothing changes it (the mirror never changes GitHub's either).
     if found.get("empty"):
         return True, "empty repository: no branch yet"
-    have, wanted = found.get("default_branch") or "", repo["default_branch"]
+    have = found.get("default_branch") or ""
+    if in_catalog:
+        if have == "develop":
+            return True, have
+        return False, f"{have or 'none'} on Forgejo, wants develop (a catalog repository: rules.py sets it)"
+    wanted = repo["default_branch"]
     if have == wanted:
         return True, have
     return False, f"{have or 'none'} on Forgejo, {wanted} on GitHub"
@@ -1074,7 +1080,7 @@ def _verify_one(ctx, repo, catalog_names, models, jenkins_url):
         return [_row(ctx, name, "on Forgejo", False, problem)]
     _row(ctx, name, "on Forgejo", True, "present")
 
-    check("default branch", lambda: _check_default_branch(repo, found))
+    check("default branch", lambda: _check_default_branch(repo, found, name in catalog_names))
     if repo["archived"]:
         # Frozen on GitHub: no mirror pushes to it, nothing there changes, and it takes no setting.
         _row(ctx, name, "github", True, "archived on GitHub: Forgejo only")

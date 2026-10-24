@@ -1698,13 +1698,28 @@ class VerifyTests(unittest.TestCase):
         self.assertIn("develop", detail)
         self.assertIn("main", detail)
 
-    def test_given_githubs_default_branch_is_not_develop_when_verified_then_forgejos_must_be_the_same(self):
+    def test_given_githubs_default_branch_is_not_develop_when_verified_then_a_non_catalog_copy_keeps_githubs(self):
+        # Outside the catalog nothing sets the default branch: the import keeps GitHub's.
+        gh, forgejo = verified_world(("toolkit", "old-fork"))
+        gh.repos[1] = repository("old-fork", default_branch="main")
+        forgejo.existing["old-fork"] = forgejo_repository("old-fork", default_branch="main")
+        self.assertEqual(self.run_verify((gh, forgejo)).code, 0)
+        forgejo.existing["old-fork"] = forgejo_repository("old-fork", default_branch="develop")
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "old-fork", "default branch")
+        self.assertEqual(self.row(run, "old-fork", "default branch")[3], "develop on Forgejo, main on GitHub")
+
+    def test_given_a_catalog_repository_when_verified_then_its_default_branch_is_develop_whatever_githubs(self):
+        # rules.py (5.15) sets develop as the default branch of every catalog repository, before verify runs.
         gh, forgejo = verified_world()
         gh.repos[0] = repository("toolkit", default_branch="main")
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 0, run.out)
+        self.assertEqual(self.row(run, "toolkit", "default branch")[2:], ["ok", "develop"])
         forgejo.existing["toolkit"] = forgejo_repository("toolkit", default_branch="main")
-        self.assertEqual(self.run_verify((gh, forgejo)).code, 0)
-        forgejo.existing["toolkit"] = forgejo_repository("toolkit", default_branch="develop")
-        self.assert_only_failing(self.run_verify((gh, forgejo)), "toolkit", "default branch")
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "default branch")
+        self.assertIn("main on Forgejo, wants develop", self.row(run, "toolkit", "default branch")[3])
 
     def test_given_an_archived_repository_when_verified_then_only_forgejo_is_checked(self):
         gh, forgejo = verified_world(("toolkit", "old-fork"))
