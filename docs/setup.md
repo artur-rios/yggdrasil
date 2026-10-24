@@ -1429,6 +1429,11 @@ checked again.
      `rules.py` needs `FORGE_TOKEN` as above (and, with a mirror, a GitHub token); it prints `updated tag
      protection 'v*'`.
    - **An `owner-tag` repository's tag.** You may push it already: `git push --force origin "refs/tags/<tag>"`.
+     If the tag is less than a day old (an annotated tag is dated when it was made, a lightweight one by its
+     commit), Jenkins sees it as a new tag and **builds it again** ([Owner tags and NuGet](#owner-tags-and-nuget)):
+     the release is redone from the tag the way `release-resume` does it, reusing the release and the NuGet
+     versions already there but rebuilding the files (the cautions of [Finishing a release that
+     stopped](#finishing-a-release-that-stopped) apply). Abort that build in Jenkins if you don't want it.
 3. Run tag-check again (**Build with Parameters**, `FORGET` empty): it is green once every tag is back, and the push mirror's next sync
    goes through again. On Forgejo pushing a deleted tag back also publishes its release again (the live tests
    pin it); on GitHub, check the release and publish it by hand if it is still a draft.
