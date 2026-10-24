@@ -1011,7 +1011,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
         self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED})
         # The actions-release, release-resume and tag-check jobs: pipeline jobs running the scripts kept in
-        # Jenkins, in the sandbox; tag-check takes no parameters and runs every day.
+        # Jenkins, in the sandbox; tag-check takes only FORGET and runs every day.
         parameters = {"actions-release": ["REPOSITORY", "TAG"], "release-resume": ["REPOSITORY", "TAG", "COMMIT"],
                       "tag-check": ["FORGET"]}
         self.assertEqual(boot["pipeline_jobs"], {name: {

@@ -986,7 +986,10 @@ class MirrorCommandTests(unittest.TestCase):
         """main() with a fake Forgejo and the given fake GitHub: (forgejo, out, the SystemExit or None)."""
         fakes = {"token": PerRepoForgejo(), "Bearer": github}
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR),                 mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True),                 mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]),                 mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR), \
+                mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True), \
+                mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
             try:
                 rules.main(list(args))
                 exit_ = None
@@ -1042,7 +1045,10 @@ class MirrorCommandTests(unittest.TestCase):
                 return super().request(method, path, body)
 
         fakes = {"token": PerRepoForgejo(Failing), "Bearer": FakeGitHub()}
-        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR),                 mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True),                 mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]),                 mock.patch("sys.stdout", io.StringIO()):
+        with mock.patch.object(rules.catalog_module, "load", return_value=CATALOG_MIRROR), \
+                mock.patch.dict(os.environ, {**self.ENV, "GH_TOKEN": "gh-tok-456"}, clear=True), \
+                mock.patch.object(rules, "Api", lambda base, token, scheme, headers=None: fakes[scheme]), \
+                mock.patch("sys.stdout", io.StringIO()):
             with self.assertRaises(SystemExit) as raised:
                 rules.main([])
         self.assertTrue(str(raised.exception).startswith("storefront: "), raised.exception)
