@@ -141,7 +141,7 @@ class FakeForgejo:
     def __init__(self, existing=None, lookup=None, migrate_status=None, migrate_message=None, files=None,
                  contents_status=None, mirrors=None, mirror_fail=None, users=None, collaborators=None,
                  collaborator_fail=None, user_fail=None, refs=None, hooks=None, verify_fail=None, ref_page=30,
-                 effective_read=False, commits=None):
+                 effective_read=False, ancestry=None):
         self.existing, self.lookup, self.migrate_status = existing or {}, lookup or {}, migrate_status or {}
         # What verify reads. `refs`: repository -> {full ref name: sha} (every namespace, `refs/pull/*`
         # included), served by git/refs/<prefix> in pages of `ref_page` (None: all at once on every page, as
@@ -151,10 +151,12 @@ class FakeForgejo:
         # (what Forgejo does on a public repository).
         self.refs, self.hooks, self.verify_fail = refs or {}, hooks or {}, verify_fail or {}
         self.ref_page, self.effective_read = ref_page, effective_read
-        # What mirrors' guard asks of a GitHub sha, `GET .../git/commits/<sha>`: a repository knows the commits
-        # its refs point at and those `commits` (repository -> shas) adds, older ones of its history; any
-        # other is 404, as Forgejo answers a commit it does not have. verify_fail's "git/commits" fails it.
-        self.commits = {name: set(shas) for name, shas in (commits or {}).items()}
+        # What mirrors' guard asks of a GitHub sha, `GET .../compare/<forgejo head>...<github sha>`: a repository
+        # knows the commits its refs point at and those of `ancestry` (repository -> {sha: the shas of its
+        # history}), older ones; a sha is in a head's branch when it is the head or in the head's history. Any
+        # other commit is 404, as Forgejo answers one it does not have. verify_fail's "compare" fails it.
+        self.ancestry = {name: {sha: set(older) for sha, older in history.items()}
+                         for name, history in (ancestry or {}).items()}
         self.migrate_message = migrate_message
         # What mirrors and collaborators work on. `mirrors`: repository -> the push mirrors it has (as
         # Forgejo lists them); `mirror_fail`: (method, last path segment) -> status to answer with an error,
@@ -192,8 +194,8 @@ class FakeForgejo:
         self.timeouts.append(timeout)
         if "/contents/" in path:
             return self._contents(method, path, body)
-        if "/git/commits/" in path:
-            return self._commit(method, path)
+        if "/compare/" in path:
+            return self._compare(method, path)
         for route in (self._verify_request, self._mirror_request, self._collaborator_request):
             answer = route(method, path, body)
             if answer is not NotImplemented:
@@ -214,16 +216,22 @@ class FakeForgejo:
             return self.existing[body["repo_name"]]
         raise AssertionError(f"unexpected request: {method} {path}")
 
-    def _commit(self, method, path):
-        """`GET /repos/<owner>/<name>/git/commits/<sha>`: the commit when the repository has it, else 404."""
+    def _compare(self, method, path):
+        """`GET /repos/<owner>/<name>/compare/<base>...<head>` as Forgejo 16 answers it (the live suite pins it):
+        the commits `head` has that `base` has not, and how many (`total_commits`): none when `head` is `base`
+        or older in its history. 404 when either is a commit the repository does not have."""
         assert method == "GET", path
         route = path.partition("?")[0]
-        name, _, sha = route[len(f"/repos/{OWNER}/"):].partition("/git/commits/")
-        if (name, "git/commits") in self.verify_fail:
-            raise migrate.rules.ApiError(method, path, self.verify_fail[(name, "git/commits")], "refused")
-        if sha in set(self.refs.get(name, {}).values()) | self.commits.get(name, set()):
-            return {"sha": sha}
-        raise migrate.rules.ApiError(method, path, 404, "commit does not exist")
+        name, _, spec = route[len(f"/repos/{OWNER}/"):].partition("/compare/")
+        if (name, "compare") in self.verify_fail:
+            raise migrate.rules.ApiError(method, path, self.verify_fail[(name, "compare")], "refused")
+        base, _, head = spec.partition("...")
+        history = self.ancestry.get(name, {})
+        known = set(self.refs.get(name, {}).values()) | set(history) | set().union(*history.values())
+        if base not in known or head not in known:
+            raise migrate.rules.ApiError(method, path, 404, "The target couldn't be found.")
+        behind = head == base or head in history.get(base, set())
+        return {"commits": [] if behind else [{"sha": head}], "total_commits": 0 if behind else 1, "files": []}
 
     def _verify_request(self, method, path, body):
         """What verify reads: `GET /repos/<owner>/<name>/git/refs[/<prefix>]` (Forgejo answers 404 for a prefix
@@ -1179,12 +1187,14 @@ class MirrorsTests(unittest.TestCase):
 
     # --- The guard: the first --mirror push must take nothing from GitHub -----------------------------------
 
-    def guarded(self, github_refs, forgejo_refs, args=None, commits=None, mirrors=None):
-        """mirrors over toolkit (whose refs the test gives, GitHub's and Forgejo's) and other-lib (the same
-        develop on both sides, a repository the guard lets through)."""
+    def guarded(self, github_refs, forgejo_refs, args=None, ancestry=None, mirrors=None):
+        """mirrors over toolkit (whose refs the test gives, GitHub's and Forgejo's, and the history of Forgejo's
+        commits, `ancestry`: {sha: older shas}) and other-lib (the same develop on both sides, a repository the
+        guard lets through)."""
         same = {"refs/heads/develop": SHA_DEVELOP}
         forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
-                              refs={"toolkit": forgejo_refs, "other-lib": same}, commits=commits, mirrors=mirrors)
+                              refs={"toolkit": forgejo_refs, "other-lib": same},
+                              ancestry={"toolkit": ancestry or {}}, mirrors=mirrors)
         return self.run_mirrors([repository("toolkit"), repository("other-lib")], args=args, forgejo=forgejo,
                                 refs={"toolkit": github_refs, "other-lib": same})
 
@@ -1209,31 +1219,64 @@ class MirrorsTests(unittest.TestCase):
 
     def test_given_a_github_branch_at_a_commit_forgejo_lacks_when_mirrored_then_it_is_refused(self):
         # A stale copy -- 4.4's rehearsal import left in place reads "already imported" -- misses the commits
-        # made on GitHub since: the mirror push would rewind GitHub's develop and drop them.
+        # made on GitHub since: the mirror push would rewind GitHub's develop and drop them. Forgejo's compare
+        # answers 404 for a commit the copy does not have at all.
         run = self.guarded({"refs/heads/develop": SHA_OTHER}, {"refs/heads/develop": SHA_DEVELOP})
         self.assertEqual(run.code, 1)
-        self.assertIn(f"refs/heads/develop at {SHA_OTHER[:12]} on GitHub, a commit Forgejo does not have", run.err)
+        self.assertIn(f"GitHub's develop at {SHA_OTHER[:7]} is not in Forgejo's develop ({SHA_DEVELOP[:7]}): "
+                      "the first push would rewind it", run.err)
         self.assertEqual(self.made_for(run), ["other-lib"])
-        # The commit was asked of the repository's own Forgejo copy.
-        self.assertIn(f"/repos/{OWNER}/toolkit/git/commits/{SHA_OTHER}",
+
+    def test_given_a_github_branch_fast_forwarded_to_a_commit_forgejo_has_on_another_branch_when_mirrored_then_it_is_refused(self):
+        # GitHub's main was fast-forwarded after the import to develop's head: a commit Forgejo has, but on
+        # develop only. Forgejo's main is still the old one, and the --mirror push sets GitHub's main back to
+        # it: having the commit somewhere is not enough, it has to be in Forgejo's main.
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/main": SHA_DEVELOP},
+                           {"refs/heads/develop": SHA_DEVELOP, "refs/heads/main": SHA_MAIN},
+                           ancestry={SHA_DEVELOP: {SHA_MAIN}})
+        self.assertEqual(run.code, 1)
+        (failure,) = [line for line in run.err.splitlines() if line.startswith("  toolkit: ")]
+        self.assertIn(f"GitHub's main at {SHA_DEVELOP[:7]} is not in Forgejo's main ({SHA_MAIN[:7]}): "
+                      "the first push would rewind it", failure)
+        self.assertNotIn("develop at", failure)  # develop is the same on both sides
+        self.assertEqual(self.made_for(run), ["other-lib"])
+        # The ancestry was asked of the repository's own copy: is GitHub's commit in the history of Forgejo's
+        # head of main? (compare/<base>...<head> lists what head has that base has not.)
+        self.assertIn(f"/repos/{OWNER}/toolkit/compare/{SHA_MAIN}...{SHA_DEVELOP}",
                       [path.partition("?")[0] for _, path, _ in run.forgejo.calls])
 
     def test_given_forgejo_ahead_of_github_when_mirrored_then_the_mirror_is_made(self):
         # The usual case: prepare-github's Dependabot commit is on Forgejo's develop, on top of GitHub's
-        # develop, which Forgejo has; and a branch only Forgejo has is pushed, not lost. Nothing on GitHub goes.
+        # develop, which is in its history; and a branch only Forgejo has is pushed, not lost. Nothing on
+        # GitHub goes.
         run = self.guarded({"refs/heads/develop": SHA_MAIN, "refs/tags/v1.0.0": SHA_TAG},
                            {"refs/heads/develop": SHA_DEVELOP, "refs/heads/feature/x": SHA_OTHER,
                             "refs/tags/v1.0.0": SHA_TAG},
-                           commits={"toolkit": {SHA_MAIN}})
+                           ancestry={SHA_DEVELOP: {SHA_MAIN}})
         self.assertEqual(run.code, 0, run.err)
         self.assertEqual(self.made_for(run), ["toolkit", "other-lib"])
+
+    def test_given_a_github_branch_equal_to_forgejos_when_mirrored_then_no_ancestry_is_asked(self):
+        # The same commit on both sides takes nothing: the two lists are enough to say so.
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP}, {"refs/heads/develop": SHA_DEVELOP})
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(self.made_for(run), ["toolkit", "other-lib"])
+        self.assertFalse([path for _, path, _ in run.forgejo.calls if "/compare/" in path])
+
+    def test_given_a_github_branch_in_another_forgejo_branchs_history_only_when_mirrored_then_it_is_refused(self):
+        # GitHub's hotfix is in the history of Forgejo's develop, but Forgejo has no hotfix: the push deletes it.
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_MAIN},
+                           {"refs/heads/develop": SHA_DEVELOP}, ancestry={SHA_DEVELOP: {SHA_MAIN}})
+        self.assertEqual(run.code, 1)
+        self.assertIn("refs/heads/hotfix only on GitHub", run.err)
+        self.assertEqual(self.made_for(run), ["other-lib"])
 
     def test_given_a_tag_forgejo_has_at_another_commit_when_mirrored_then_it_is_refused(self):
         # A version names one commit for ever: a tag moved on one side is not the mirror's to settle, even
         # when Forgejo knows the commit GitHub's tag names.
         run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/tags/v1.0.0": SHA_TAG},
                            {"refs/heads/develop": SHA_DEVELOP, "refs/tags/v1.0.0": SHA_OTHER},
-                           commits={"toolkit": {SHA_TAG}})
+                           ancestry={SHA_OTHER: {SHA_TAG}})
         self.assertEqual(run.code, 1)
         self.assertIn(f"refs/tags/v1.0.0 at {SHA_TAG[:12]} on GitHub, {SHA_OTHER[:12]} on Forgejo", run.err)
 
@@ -1244,7 +1287,7 @@ class MirrorsTests(unittest.TestCase):
         self.assertEqual(self.made_for(run), ["toolkit", "other-lib"])
         (note,) = [line for line in run.lines if line.startswith("toolkit: --allow-prune")]
         self.assertIn("refs/heads/hotfix only on GitHub", note)
-        self.assertIn("refs/heads/develop at", note)
+        self.assertIn("GitHub's develop at", note)
 
     def test_given_a_mirror_never_synced_and_what_only_github_has_when_mirrored_then_no_sync_is_asked(self):
         # A mirror made by a run that stopped before its sync has pushed nothing yet: the sync asked for would
@@ -1272,20 +1315,34 @@ class MirrorsTests(unittest.TestCase):
         self.assertIn("other-lib: would create a push mirror", run.out)
 
     def test_given_refs_that_cannot_be_read_when_mirrored_then_that_repository_fails_unmirrored(self):
-        for side in ("github", "forgejo", "commit"):
+        for side in ("github", "forgejo", "compare"):
             with self.subTest(side=side):
                 forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
                                       refs={"toolkit": {"refs/heads/develop": SHA_DEVELOP}})
                 if side == "forgejo":
                     forgejo.verify_fail[("toolkit", "git/refs")] = 502
-                if side == "commit":
-                    forgejo.verify_fail[("toolkit", "git/commits")] = 500
+                if side == "compare":
+                    forgejo.verify_fail[("toolkit", "compare")] = 500
                 run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo,
                                        refs={"toolkit": {"refs/heads/develop": SHA_OTHER}},
                                        refs_fail={"toolkit"} if side == "github" else ())
                 self.assertEqual(run.code, 1)
                 self.assertIn("toolkit: could not compare its branches and tags with GitHub's", run.err)
                 self.assertEqual(self.made_for(run), ["other-lib"])
+
+    def test_given_a_compare_answer_without_its_count_when_mirrored_then_that_repository_fails_unmirrored(self):
+        # The count is what says GitHub's commit is in Forgejo's branch: an answer without it is no yes.
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
+                              refs={"toolkit": {"refs/heads/develop": SHA_DEVELOP}},
+                              ancestry={"toolkit": {SHA_DEVELOP: {SHA_MAIN}}})
+        forgejo._compare = lambda method, path: {"commits": []}
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo,
+                               refs={"toolkit": {"refs/heads/develop": SHA_MAIN}})
+        self.assertEqual(run.code, 1)
+        self.assertIn("toolkit: could not compare its branches and tags with GitHub's: GET "
+                      f"/repos/{OWNER}/toolkit/compare/{SHA_DEVELOP}...{SHA_MAIN}: the answer has no total_commits",
+                      run.err)
+        self.assertEqual(self.made_for(run), ["other-lib"])
 
     def test_given_allow_prune_on_another_command_when_run_then_it_is_unknown_there(self):
         run = Run(["--github-owner", OWNER, "verify", "--allow-prune"], env=ENV)

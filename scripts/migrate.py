@@ -45,9 +45,11 @@ and goes on to the next, so a re-run picks up where it stopped):
               one that never synced gets its sync asked for again, so a run that stopped between the two
               is finished by the next. Before that first push (Forgejo pushes with --mirror, which deletes
               on GitHub what Forgejo lacks), GitHub's branches and tags are compared with Forgejo's: a
-              repository where GitHub has a branch or tag Forgejo lacks, a branch at a commit Forgejo does
-              not have (GET .../git/commits/<sha> answers 404) or a tag at another commit is a failure
-              naming each ref, and gets no mirror; --allow-prune names them and makes the mirror anyway.
+              repository where GitHub has a branch or tag Forgejo lacks, a branch whose commit is not
+              Forgejo's head of that branch or older in its history (GET .../compare/<Forgejo's head>...
+              <GitHub's sha> counts a commit, or answers 404: having the commit on another branch is not
+              enough) or a tag at another commit is a failure naming each ref, and gets no mirror;
+              --allow-prune names them and makes the mirror anyway.
               A push to GitHub after the import, or a stale copy that reads "already imported", is what
               this catches. A repository with a push mirror to another address is a failure,
               not replaced: remove that mirror on Forgejo yourself. A repository archived on GitHub gets
@@ -679,25 +681,35 @@ def _request_sync(ctx, name, done):
     return None
 
 
-def _forgejo_has_commit(ctx, name, sha):
-    """Whether Forgejo's copy has the commit (`GET .../git/commits/<sha>`: 404 when it has not). Any other
-    error raises: unsure is not a yes."""
+def _in_forgejo_history(ctx, name, forgejo_sha, github_sha):
+    """Whether GitHub's commit is Forgejo's head of the branch (`forgejo_sha`) or older in its history, so that
+    the --mirror push only moves GitHub's branch forward. Forgejo decides: `GET .../compare/<base>...<head>`
+    lists the commits `head` has that `base` has not, and counts them (`total_commits`), so with Forgejo's head
+    as the base and GitHub's commit as the head, none means GitHub's is in Forgejo's branch. Forgejo answers 404
+    for a commit the copy does not have at all: not in it either. (Checked on Forgejo 16 in the live suite: an
+    ancestor and the head itself count 0, a commit of another branch 1, an unknown one 404.) Any other error
+    raises, and so does an answer without the count: unsure is not a yes."""
+    path = f"/repos/{ctx.forgejo_owner}/{name}/compare/{forgejo_sha}...{github_sha}"
     try:
-        ctx.forgejo.request("GET", f"/repos/{ctx.forgejo_owner}/{name}/git/commits/{sha}"
-                                   "?stat=false&verification=false&files=false")
+        answer = ctx.forgejo.request("GET", path)
     except rules.ApiError as error:
         if error.status == 404:
             return False
         raise
-    return True
+    total = answer.get("total_commits") if isinstance(answer, dict) else None
+    if not isinstance(total, int) or isinstance(total, bool):
+        raise MigrateError(f"GET {path}: the answer has no total_commits")
+    return total == 0
 
 
 def _taken_from_github(ctx, name):
     """What the first --mirror push would take from GitHub, one text per ref: a GitHub branch or tag Forgejo
-    lacks (the push deletes it), a branch at a commit Forgejo does not have (the push rewinds it and drops
-    the commits), and a tag Forgejo has at another commit (the push moves it; a version names one commit, so
-    knowing the commit is not enough). A branch Forgejo has further on -- prepare-github's Dependabot commit
-    on top of GitHub's -- takes nothing. Raises ApiError or MigrateError."""
+    lacks (the push deletes it), a branch whose commit is not in Forgejo's branch of the same name (the push
+    rewinds it to Forgejo's head and drops the commits), and a tag Forgejo has at another commit (the push
+    moves it; a version names one commit, so knowing the commit is not enough). Forgejo having GitHub's commit
+    somewhere is not enough for a branch either: GitHub's main fast-forwarded to a commit Forgejo has on
+    develop only would still be set back to Forgejo's main. A branch Forgejo has further on -- prepare-github's
+    Dependabot commit on top of GitHub's -- takes nothing. Raises ApiError or MigrateError."""
     on_github, on_forgejo = _github_refs(ctx, name), _forgejo_refs(ctx, name)
     taken = []
     for ref, sha in sorted(on_github.items()):
@@ -707,8 +719,10 @@ def _taken_from_github(ctx, name):
             continue
         elif ref.startswith("refs/tags/"):
             taken.append(f"{ref} at {sha[:12]} on GitHub, {on_forgejo[ref][:12]} on Forgejo")
-        elif not _forgejo_has_commit(ctx, name, sha):
-            taken.append(f"{ref} at {sha[:12]} on GitHub, a commit Forgejo does not have")
+        elif not _in_forgejo_history(ctx, name, on_forgejo[ref], sha):
+            branch = ref[len("refs/heads/"):]
+            taken.append(f"GitHub's {branch} at {sha[:7]} is not in Forgejo's {branch} ({on_forgejo[ref][:7]}): "
+                         "the first push would rewind it")
     return taken
 
 

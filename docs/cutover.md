@@ -614,8 +614,8 @@ Wait a minute after `mirrors` (it asks for one sync, which Forgejo runs in the b
 
 Before it makes a mirror, `mirrors` compares GitHub's branches and tags with Forgejo's: the mirror's first push
 deletes on GitHub whatever Forgejo lacks, so a repository where GitHub has a branch or tag Forgejo does not, a
-branch at a commit Forgejo does not have, or a tag at another commit, is refused, each ref named, and gets no
-mirror. Here Forgejo's copy is a minute old, so nothing is refused: the Dependabot commit puts Forgejo's default
+branch whose commit is not in Forgejo's branch of that name, or a tag at another commit, is refused, each ref
+named, and gets no mirror. Here Forgejo's copy is a minute old, so nothing is refused: the Dependabot commit puts Forgejo's default
 branch ahead of GitHub's, which takes nothing from GitHub.
 
 **Success looks like:** `deleted .github/dependabot.yml on <default branch>`, then `push mirror created`, `sync
@@ -1104,14 +1104,17 @@ commit and every 8 hours, with the mirror token, and one sync is asked for at on
 push` workflows (5.3 disabled the ones that publish or deploy), and it would delete on GitHub every branch and
 tag Forgejo does not have. So before it makes a repository's mirror, `mirrors` compares GitHub's branches and
 tags with Forgejo's (the dry run too: it only reads), and **refuses a repository** where GitHub has a branch or
-tag Forgejo lacks, a branch at a commit Forgejo does not have, or a tag at another commit. After 5.3's freeze
-there is none; a refusal is a push that reached GitHub after 5.11, or a copy left from 4.4.
+tag Forgejo lacks, a branch whose commit is not Forgejo's head of that branch or older in its history (Forgejo
+having the commit on another branch is not enough: GitHub's `main` fast-forwarded to a commit of `develop` would
+be set back), or a tag at another commit. After 5.3's freeze there is none; a refusal is a push that reached
+GitHub after 5.11, or a copy left from 4.4.
 
 **Success looks like:** the dry run: `would create a push mirror {...}` (the password `***`) and `would request
 the sync` for each, exit `0`. The real run: `push mirror created` and `sync requested` for each (`archived on
 GitHub: no mirror` for the archived ones), exit `0`.
-**If it fails:** `the first mirror push would delete or move what only GitHub has: <ref> only on GitHub; <ref> at
-<sha> on GitHub, a commit Forgejo does not have`: that repository gets no mirror; the others go on. Find who
+**If it fails:** `the first mirror push would delete or move what only GitHub has: <ref> only on GitHub; GitHub's
+<branch> at <sha> is not in Forgejo's <branch> (<sha>): the first push would rewind it`: that repository gets no
+mirror; the others go on. Find who
 pushed it; bring it to Forgejo (a stale copy: delete it on Forgejo and `import --only <repo>` again, then
 `prepare-github --only <repo>`), and run `mirrors` again. Only if what it names must go, `python3
 scripts/migrate.py mirrors --only <repo> --allow-prune` makes the mirror anyway, and its first push deletes or

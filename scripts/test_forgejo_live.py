@@ -7,8 +7,9 @@ right: that Forgejo 16.0.6 (the image platform/compose.yml pins) takes those req
 the scripts read it, and that the protections rules.py applies really hold -- `claude` cannot merge a
 Jenkinsfile change, push a release branch or create, move or delete a version tag, a `rules: basic`
 repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
-failing checks. Six tests check migrate.py against this server (below): import (two), prepare-github's
-Forgejo side (Dependabot's file deleted), push mirrors, the guard before a mirror's first push, and
+failing checks. Seven tests check migrate.py against this server (below): import (two), prepare-github's
+Forgejo side (Dependabot's file deleted), push mirrors, the guard before a mirror's first push (two: what
+only GitHub has, and a GitHub branch whose commit is not in Forgejo's branch of that name), and
 collaborators. One test pins a known gap instead: jenkins, which creates the version tags, can also move
 and delete them (docs/setup.md, step 12).
 
@@ -1126,8 +1127,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
     def test_given_what_only_the_target_has_when_migrate_mirrors_then_it_is_refused_until_allow_prune(self):
         # The guard before the first --mirror push, against this server's answers: the target (GitHub's
         # stand-in) starts as a copy of the source, then gets a branch of its own and a commit on main that
-        # the source never had, while the source's develop moves on. Forgejo's `git/commits/<sha>` must
-        # answer 404 for the commit it lacks and 200 for the one it has.
+        # the source never had, while the source's develop moves on. Forgejo's compare must answer 404 for the
+        # commit it lacks and count none for the one older in the source's develop.
         source, target = "prune-source", "prune-target"
         self.create_repository(source)
         owner = self.api[OWNER]
@@ -1156,8 +1157,9 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(code, 1, out)
         (failure,) = [line for line in err.splitlines() if line.startswith(f"  {source}: ")]
         self.assertIn("refs/heads/github-only only on GitHub", failure)
-        self.assertIn(f"refs/heads/main at {lost[:12]} on GitHub, a commit Forgejo does not have", failure)
-        self.assertNotIn("refs/heads/develop", failure)  # the target's develop is a commit the source has
+        self.assertIn(f"GitHub's main at {lost[:7]} is not in Forgejo's main ({self.head(source, 'main')[:7]}): "
+                      "the first push would rewind it", failure)
+        self.assertNotIn("develop", failure)  # the target's develop is older in the source's develop
         self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors"), [])
         self.assertTrue(self.branch_exists(target, "github-only"))
 
@@ -1170,6 +1172,53 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.eventually(lambda: not self.branch_exists(target, "github-only"), "the target's own branch deleted")
         self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
         self.eventually(lambda: self.head(target, "develop") == self.head(source, "develop"), "develop on the target")
+
+    def test_given_a_github_branch_fast_forwarded_to_another_branchs_commit_when_migrate_mirrors_then_it_is_refused(self):
+        # The guard's ancestry, as Forgejo 16's compare decides it (`compare/<Forgejo's head>...<GitHub's sha>`):
+        # the target (GitHub's stand-in) has main fast-forwarded to the head of the source's develop -- a
+        # commit the source has, on develop only, so its main would be set back -- develop equal to the
+        # source's, and a feature branch one commit behind the source's. Only main is refused.
+        source, target = "ancestry-source", "ancestry-target"
+        self.create_repository(source)
+        owner = self.api[OWNER]
+        develop = self.change_file(OWNER, source, "develop.txt", "on develop only\n", "develop")
+        behind = self.change_file(OWNER, source, "feature.txt", "the feature starts\n", "develop", new_branch="feature")
+        ahead = self.change_file(OWNER, source, "feature.txt", "the feature goes on\n", "feature")
+        main = self.head(source, "main")
+        self.assertNotEqual(main, develop)
+        owner.request("POST", "/user/repos", {"name": target, "private": True})
+        clone = self.clone(OWNER, source)
+        pushed = self.git(OWNER, "push", f"{self.url}/{OWNER}/{target}.git", f"{develop}:refs/heads/main",
+                          f"{develop}:refs/heads/develop", f"{behind}:refs/heads/feature", cwd=clone)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.eventually(lambda: not owner.request("GET", f"/repos/{OWNER}/{target}")["empty"]
+                        and self.branch_exists(target, "feature"), "the pushed branches on the target", seconds=60)
+
+        # What the guard relies on, straight from Forgejo: none for an ancestor or the head itself, one for a
+        # commit of another branch, 404 for a commit the repository does not have.
+        def counted(base, head):
+            return owner.request("GET", f"/repos/{OWNER}/{source}/compare/{base}...{head}")["total_commits"]
+
+        self.assertEqual((counted(ahead, behind), counted(develop, develop), counted(main, develop)), (0, 0, 1))
+        with self.assertRaises(rules.ApiError) as unknown:
+            counted(main, "d4" * 20)
+        self.assertEqual(unknown.exception.status, 404)
+
+        catalog = self.migrate_catalog()
+        address = f"http://127.0.0.1:3000/{OWNER}/{target}.git"
+        env = {"MIRROR_GITHUB_USER": OWNER, "MIRROR_GITHUB_TOKEN": self.tokens[OWNER]}
+        github = GitHubOnForgejo([github_repository(source, default_branch="main", private=True)], owner,
+                                 {source: target}, login=OWNER)
+        code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual(code, 1, out)
+        (failure,) = [line for line in err.splitlines() if line.startswith(f"  {source}: ")]
+        self.assertIn(f"GitHub's main at {develop[:7]} is not in Forgejo's main ({main[:7]}): "
+                      "the first push would rewind it", failure)
+        self.assertNotIn("develop", failure)
+        self.assertNotIn("feature", failure)
+        self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors"), [])
+        self.assertEqual(self.head(target, "main"), develop)  # nothing was pushed
 
     def test_given_a_catalog_repository_when_migrate_sets_the_collaborators_then_each_bot_reads_back_with_its_permission(self):
         repo = "bots-lib"
