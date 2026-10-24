@@ -34,6 +34,15 @@ class ForgejoServiceTests(unittest.TestCase):
         self.assertEqual(environment["FORGEJO__service__DISABLE_REGISTRATION"], "true")
         self.assertEqual(environment["FORGEJO__service__REQUIRE_SIGNIN_VIEW"], "true")
 
+    def test_given_the_forgejo_service_when_read_then_webhooks_may_reach_jenkins_internally(self):
+        # Forgejo refuses webhook targets on private addresses unless the host list allows them: `external`
+        # keeps the public https://jenkins.<DOMAIN> working (docs/setup.md step 12), and `jenkins` -- the
+        # controller's Compose service name -- makes http://jenkins:8080 on the shared network work too.
+        hosts = forgejo()["environment"]["FORGEJO__webhook__ALLOWED_HOST_LIST"].split(",")
+        self.assertEqual(hosts, ["external", "jenkins"])
+        services = yaml.safe_load(COMPOSE.read_text())["services"]
+        self.assertIn("jenkins", services)
+
     def test_given_the_forgejo_service_when_read_then_ssh_is_published_on_2222_by_default(self):
         service = forgejo()
         self.assertIn("${FORGEJO_SSH_PORT:-2222}:2222", service["ports"])

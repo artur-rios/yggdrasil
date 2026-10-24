@@ -16,6 +16,7 @@ is), and `chmod` only touches what is under the test's temporary directory.
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -2067,6 +2068,98 @@ class MachineRoleTests(unittest.TestCase):
             self.assertIn("not checked", self.row(rows, name), stdout)
         self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
 
+    # ---- The prune timers ------------------------------------------------------------------------
+
+    PRUNE_UNITS = ("yggdrasil-prune.service", "yggdrasil-prune.timer")
+
+    def prune_row(self, rows, user):
+        return self.row(rows, f"prune timer {user}")
+
+    def prune_changes(self):
+        return [c for c in self.calls() if "yggdrasil-prune" in c and c.startswith("sudo -u")]
+
+    def test_given_role_dev_when_installed_then_ci_and_release_get_a_weekly_prune_timer(self):
+        self.install("dev")
+        calls = self.calls()
+        stdout, rows = self.rows("dev")
+        for user in ("ci", "release"):
+            with self.subTest(user=user):
+                for name in self.PRUNE_UNITS:
+                    self.assertEqual((self.unit_dir(user) / name).read_text(), self.repo_unit(name))
+                # Written by the user itself (the homes are closed to the admin), into its own manager.
+                written = self.as_user(user, "tee", str(self.unit_dir(user) / "yggdrasil-prune.timer"))
+                self.assertIn(written, calls)
+                reload_call = calls.index(self.as_user(user, "systemctl --user daemon-reload"), calls.index(written))
+                enable = self.as_user(user, "systemctl --user enable --now yggdrasil-prune.timer")
+                self.assertIn(enable, calls)
+                self.assertLess(reload_call, calls.index(enable))
+                # After the engine it prunes.
+                self.assertLess(calls.index(self.as_user(user, "systemctl --user enable --now docker")),
+                                calls.index(enable))
+                line = self.prune_row(rows, user)
+                self.assertIsNotNone(line, stdout)
+                self.assertTrue(line.startswith("  ok "), line)
+                self.assertIn("Sundays at 03:00", line)
+        # Only those two users: the others have engines too, and no one asked for theirs to be pruned.
+        for user in ("ygg", "renovate", "dev"):
+            for name in self.PRUNE_UNITS:
+                self.assertFalse((self.unit_dir(user) / name).exists(), (user, name))
+            self.assertIsNone(self.prune_row(rows, user), stdout)
+        # The step comes right after the engines, before the backup and renovate timers.
+        self.assertLess(calls.index(self.as_user("release", "systemctl --user enable --now yggdrasil-prune.timer")),
+                        calls.index(self.as_user("ygg", "systemctl --user enable --now yggdrasil-backup.timer")))
+
+    def test_given_role_apps_when_installed_then_no_prune_timer_is_made(self):
+        self.install("apps")
+        # ci and release do not exist on the apps machine; ygg's engine is the deploys', not CI's.
+        for name in self.PRUNE_UNITS:
+            self.assertFalse((self.unit_dir("ygg") / name).exists(), name)
+        self.assertEqual([c for c in self.calls() if "prune" in c], [])
+        stdout, rows = self.rows("apps")
+        self.assertEqual([line for line in rows if "prune" in line], [], stdout)
+
+    def test_given_the_prune_timers_installed_when_installed_again_then_nothing_is_written_or_enabled(self):
+        self.install("dev")
+        before = self.prune_changes()
+        self.assertTrue(before)
+        self.install("dev")
+        self.assertEqual(self.prune_changes(), before)
+
+    def test_given_a_changed_prune_unit_when_checked_then_it_is_not_ok_and_install_writes_the_checkouts_copy(self):
+        self.install("dev")
+        service = self.unit_dir("release") / "yggdrasil-prune.service"
+        service.write_text("[Service]\nExecStart=/bin/true\n")
+        stdout, rows = self.rows("dev")
+        self.assertFalse(self.prune_row(rows, "release").startswith("  ok "), stdout)
+        self.assertIn("yggdrasil-prune.service", self.prune_row(rows, "release"))
+        self.assertTrue(self.prune_row(rows, "ci").startswith("  ok "), stdout)
+        self.install("dev")
+        self.assertEqual(service.read_text(), self.repo_unit("yggdrasil-prune.service"))
+
+    def test_given_a_prune_timer_that_is_not_enabled_when_checked_then_it_is_missing_and_install_enables_it(self):
+        self.install("dev")
+        (self.state / "user-enabled-ci").write_text("")
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.prune_row(rows, "ci").startswith("  -- "), stdout)
+        self.install("dev")
+        self.assertTrue(self.prune_row(self.rows("dev")[1], "ci").startswith("  ok "))
+
+    def test_given_no_ci_user_yet_when_checked_then_the_prune_timer_is_missing_and_nothing_runs_as_it(self):
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.prune_row(rows, "ci").startswith("  -- "), stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith(("sudo -u ci", "sudo -n -u ci"))], [])
+
+    def test_given_sudo_asking_for_a_password_when_checked_then_the_prune_timers_are_not_checked(self):
+        self.install("dev")
+        (self.state / "sudo-denied").write_text("")
+        calls_before = len(self.calls())
+        stdout, rows = self.rows("dev")
+        for user in ("ci", "release"):
+            line = self.prune_row(rows, user)
+            self.assertTrue(line.startswith("  !! "), stdout)
+            self.assertIn("not checked", line)
+        self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
+
     # ---- The renovate timer ----------------------------------------------------------------------
 
     RENOVATE_UNITS = ("yggdrasil-renovate.service", "yggdrasil-renovate.timer")
@@ -2077,7 +2170,8 @@ class MachineRoleTests(unittest.TestCase):
     def renovate_working(self):
         """What the owner adds after install on the dev machine: the token in renovate.env, a run that succeeded."""
         env = self.etc("yggdrasil-renovate/renovate.env")
-        env.write_text(env.read_text().replace("RENOVATE_TOKEN=\n", "RENOVATE_TOKEN=t0ken\n"))
+        env.write_text(env.read_text().replace("RENOVATE_TOKEN=\n", "RENOVATE_TOKEN=t0ken\n")
+                       .replace("RENOVATE_GITHUB_COM_TOKEN=\n", "RENOVATE_GITHUB_COM_TOKEN=gh0ken\n"))
         (self.state / "user-show-renovate").write_text(f"Result=success\nExecMainStartTimestamp={self.LAST_RUN}\n")
 
     def renovate_changes(self):
@@ -2152,7 +2246,7 @@ class MachineRoleTests(unittest.TestCase):
         line = self.renovate_row(rows)
         self.assertTrue(line.startswith("  !! "), stdout)
         self.assertIn("not checked", line)
-        for name in ("renovate.env", "last renovate run"):
+        for name in ("renovate.env", "renovate github token", "last renovate run"):
             self.assertIn("not checked", self.row(rows, name), stdout)
         self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
 
@@ -2173,6 +2267,19 @@ class MachineRoleTests(unittest.TestCase):
         stdout, rows = self.rows("dev")
         self.assertIn("env/renovate.env.example", self.row(rows, "renovate.env"))
 
+    def test_given_the_template_copy_when_checked_then_the_optional_github_token_is_a_warning_until_it_is_filled(self):
+        self.install("dev")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "renovate github token")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("release notes and changelogs from GitHub will be rate-limited", line)
+        env = self.etc("yggdrasil-renovate/renovate.env")
+        env.write_text(env.read_text().replace("RENOVATE_GITHUB_COM_TOKEN=\n", "RENOVATE_GITHUB_COM_TOKEN=gh0ken\n"))
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.row(rows, "renovate github token").startswith("  ok "), stdout)
+        # The token itself is never printed by the check.
+        self.assertNotIn("gh0ken", stdout)
+
     def test_given_renovate_runs_when_checked_then_the_last_run_is_reported(self):
         self.install("dev")
         stdout, rows = self.rows("dev")
@@ -2188,6 +2295,33 @@ class MachineRoleTests(unittest.TestCase):
         self.assertTrue(line.startswith("  !! "), line)
         self.assertIn("exit-code", line)
         self.assertIn("journalctl --user -u yggdrasil-renovate", line)
+
+
+class PruneUnitTests(unittest.TestCase):
+    """The two units of the prune timers, read as text: what they run and when."""
+
+    UNITS = HOST.parent.parent / "platform" / "systemd"
+
+    def test_given_the_timer_when_read_then_it_fires_on_sundays_at_three_with_catch_up_and_a_delay(self):
+        text = (self.UNITS / "yggdrasil-prune.timer").read_text()
+        self.assertRegex(text, r"(?m)^OnCalendar=Sun 03:00$")
+        self.assertRegex(text, r"(?m)^Persistent=true$")
+        self.assertRegex(text, r"(?m)^RandomizedDelaySec=1h$")
+        self.assertRegex(text, r"(?m)^WantedBy=timers\.target$")
+
+    def test_given_the_service_when_read_then_it_prunes_the_users_own_engine_of_what_is_a_week_old(self):
+        text = (self.UNITS / "yggdrasil-prune.service").read_text()
+        self.assertRegex(text, r"(?m)^After=docker\.service$")
+        self.assertRegex(text, r"(?m)^Type=oneshot$")
+        # A user unit doesn't read .profile: it names the user's own engine itself, never the system's.
+        self.assertRegex(text, r"(?m)^Environment=DOCKER_HOST=unix://%t/docker\.sock$")
+        self.assertNotIn("/var/run/docker.sock", text)
+        self.assertEqual(
+            re.findall(r"(?m)^ExecStart=(.*)$", text),
+            ["/usr/bin/docker system prune --all --force --filter until=168h",
+             "/usr/bin/docker builder prune --all --force --filter until=168h"])
+        # No volume is pruned (a build's cache volumes are state), and nothing here runs as another user.
+        self.assertNotRegex(text, r"(?m)--volumes|volume prune|^User=")
 
 
 if __name__ == "__main__":

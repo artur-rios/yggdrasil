@@ -24,7 +24,7 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines backup-timer renovate-timer role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -400,6 +400,15 @@ machine_wait_for_user_manager() {
   done
   die "the systemd user manager of $1 did not start (loginctl enable-linger $1 and journalctl -u user@$(passwd_field "$1" 3))"
 }
+
+# ---- The prune timers ---------------------------------------------------------------------------
+
+# The user units of the weekly prune (platform/systemd), dev machine only: the same pair for ci and release,
+# the users whose rootless engines keep the images and build cache of every build. Each user gets its own
+# copy in its own systemd directory and its own timer, and prunes its own engine.
+MACHINE_PRUNE_UNITS=(yggdrasil-prune.service yggdrasil-prune.timer)
+MACHINE_PRUNE_USERS=(ci release)
+machine_prune_unit_dir() { echo "$(passwd_field "$1" 6)/.config/systemd/user"; }
 
 # ---- The backup timer ---------------------------------------------------------------------------
 
@@ -1028,6 +1037,42 @@ machine_check_cannot_read() {
   fi
 }
 
+# machine_check_prune_timer: dev only. For ci and for release: its two prune units are the checkout's
+# copies, and its timer is enabled; asked of the user itself (its home is closed to the admin), through sudo
+# without a password.
+machine_check_prune_timer() {
+  [[ "$machine_current_role" == dev ]] || return 0
+  title "CI engine prunes"
+  local user dir unit held stale unit_state
+  for user in "${MACHINE_PRUNE_USERS[@]}"; do
+    if ! user_exists "$user"; then
+      row missing "prune timer $user" "no $user user yet: install creates it, then the weekly prune of its engine"
+      machine_need prune-timer
+      continue
+    fi
+    if ! machine_can_read_as_users; then
+      row warn "prune timer $user" "the home of $user is closed to you and sudo would ask for a password: not checked (run check with sudo)"
+      continue
+    fi
+    dir=$(machine_prune_unit_dir "$user")
+    stale=()
+    for unit in "${MACHINE_PRUNE_UNITS[@]}"; do
+      if ! held=$(read_as_user "$user" cat "$dir/$unit" 2>/dev/null) || [[ "$held" != "$(<"$root/platform/systemd/$unit")" ]]; then
+        stale+=("$unit")
+      fi
+    done
+    if ((${#stale[@]})); then
+      row missing "prune timer $user" "$dir: ${stale[*]} not there or not the checkout's copy: install writes them"
+      machine_need prune-timer
+    elif ! unit_state=$(read_as_user "$user" systemctl --user is-enabled yggdrasil-prune.timer 2>/dev/null); then
+      row missing "prune timer $user" "yggdrasil-prune.timer is ${unit_state:-not enabled}: install enables it (Sundays at 03:00)"
+      machine_need prune-timer
+    else
+      row ok "prune timer $user" "yggdrasil-prune.timer enabled for $user, Sundays at 03:00 ($dir)"
+    fi
+  done
+}
+
 # machine_check_backup_timer: ygg's two units are the checkout's copies, and its timer is enabled. Both
 # are asked of ygg itself (its home is closed to the admin), through sudo without a password.
 machine_check_backup_timer() {
@@ -1076,7 +1121,7 @@ machine_check_renovate_timer() {
   fi
   if ! machine_can_read_as_users; then
     row warn "renovate timer" "the home of renovate is closed to you and sudo would ask for a password: not checked (run check with sudo)"
-    for unit in renovate.env "last renovate run"; do
+    for unit in renovate.env "renovate github token" "last renovate run"; do
       row warn "$unit" "asking renovate needs sudo without a password: not checked"
     done
     return 0
@@ -1110,6 +1155,18 @@ machine_check_renovate_health() {
     row ok "renovate.env" "$env_file, with a token"
   else
     row warn "renovate.env" "RENOVATE_TOKEN is empty in $env_file: put the renovate user's Forgejo token there (docs/hosts.md): every daily run fails until then"
+  fi
+
+  # Optional: Renovate works without it, but fetching the release notes and changelogs of the dependencies
+  # hosted on GitHub from one shared address runs into GitHub's anonymous rate limit. Only whether it is set is
+  # asked of the file (grep -q): the value is never read here, let alone printed.
+  # (A file that is not there has its row above.)
+  if read_as_user renovate test -f "$env_file" 2>/dev/null; then
+    if read_as_user renovate grep -q '^RENOVATE_GITHUB_COM_TOKEN=.' "$env_file" 2>/dev/null; then
+      row ok "renovate github token" "RENOVATE_GITHUB_COM_TOKEN is set in $env_file"
+    else
+      row warn "renovate github token" "RENOVATE_GITHUB_COM_TOKEN is empty in $env_file: release notes and changelogs from GitHub will be rate-limited (optional; a fine-grained, read-only, public-repositories token: docs/hosts.md)"
+    fi
   fi
 
   if shown=$(read_as_user renovate systemctl --user show yggdrasil-renovate.service -p Result -p ExecMainStartTimestamp 2>/dev/null); then
@@ -1229,6 +1286,7 @@ machine_step_text() {
       fi
       ;;
     engines) echo "Give each service user ($(role_users "$machine_current_role" | paste -sd' ' -)) its own rootless Docker engine: linger on, slirp4netns network and port driver, started now and at boot, and DOCKER_HOST in its .profile." ;;
+    prune-timer) echo "Install the weekly Docker prune for ${MACHINE_PRUNE_USERS[*]} (dev machine): the units yggdrasil-prune.service and .timer into each one's ~/.config/systemd/user (as that user), and enable the timer (Sundays at 03:00). Each prunes its own engine of what has not been used for a week." ;;
     backup-timer) echo "Install the nightly backup for ygg: the units yggdrasil-backup.service and .timer into $(machine_backup_unit_dir) (as ygg), and enable the timer (03:30). What is backed up, and where to, is in $(secrets_dir_of ygg)/backup.conf (env/backup.conf.example)." ;;
     renovate-timer) echo "Install the daily Renovate run for renovate (dev machine): the units yggdrasil-renovate.service and .timer into $(machine_renovate_unit_dir) (as renovate), and enable the timer (05:00). Its Forgejo token goes in $(secrets_dir_of renovate)/renovate.env (env/renovate.env.example)." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
@@ -1536,6 +1594,28 @@ step_engines() {
     current=$(user_file_read "$user" "$profile")
     wanted=$(profile_with_block "$user" "$current")
     [[ "$current" == "$wanted" ]] || user_file_write "$user" "$profile" "$wanted"
+  done
+}
+
+# The prune units are copied by ci and by release themselves, each into its own home, and each timer is
+# enabled now and at boot after its user's engine (the prune happens in it). Nothing to configure: unlike the
+# backup, it needs no file from the owner.
+step_prune_timer() {
+  local user dir unit
+  for user in "${MACHINE_PRUNE_USERS[@]}"; do
+    if ! user_exists "$user"; then
+      warn "there is no $user user yet: its prune timer is left for the next install."
+      continue
+    fi
+    dir=$(machine_prune_unit_dir "$user")
+    machine_wait_for_user_manager "$user"
+    run_as_user "$user" mkdir -p "$dir"
+    for unit in "${MACHINE_PRUNE_UNITS[@]}"; do
+      [[ -f "$root/platform/systemd/$unit" ]] || die "$root/platform/systemd/$unit is missing from the checkout"
+      run_as_user "$user" tee "$dir/$unit" <"$root/platform/systemd/$unit" >/dev/null
+    done
+    run_as_user "$user" systemctl --user daemon-reload
+    run_as_user "$user" systemctl --user enable --now yggdrasil-prune.timer
   done
 }
 

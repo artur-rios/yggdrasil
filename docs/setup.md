@@ -895,9 +895,10 @@ from step 3:
    `FORGE_WEBHOOK_SECRET_FILE`. Jenkins' Gitea plugin verifies **no** signature (it has no field for the
    secret), so the secret proves nothing to Jenkins; a forged request can only start a scan, which reads
    Forgejo again with Jenkins' own read token. Forgejo refuses to deliver a webhook to a private address
-   by default (`webhook.ALLOWED_HOST_LIST`); the public name `jenkins.<DOMAIN>` is not one, and nothing in
-   `platform/compose.yml` sets the option: moving an installation onto Forgejo, a later part, sets it to
-   where Jenkins' webhook address points.
+   by default (`webhook.ALLOWED_HOST_LIST`); `platform/compose.yml` sets it to `external,jenkins`, so both
+   the public `https://jenkins.<DOMAIN>` of step 12 (the default) and, over the Docker network of the dev
+   machine, `http://jenkins:8080` (the controller's service name) are allowed as `FORGE_JENKINS_URL`;
+   any other private address is still refused. Restart Forgejo (`platform.sh up`) after changing the setting.
 
 ### 9.5 The env files, second pass: this host's agent
 
@@ -1049,6 +1050,10 @@ write access to every repository, then as the admin:
 sudoedit /etc/yggdrasil-renovate/renovate.env       # RENOVATE_TOKEN=<the token>; the rest can stay
 cd /opt/yggdrasil && sudo -u renovate env XDG_RUNTIME_DIR=/run/user/$(id -u renovate) scripts/renovate.sh run
 ```
+
+Optionally, put a GitHub token in the same file as `RENOVATE_GITHUB_COM_TOKEN=`: a fine-grained personal access
+token with read-only access to public repositories and no permissions, so Renovate can read the release notes of
+GitHub-hosted dependencies without GitHub's anonymous rate limit. `ygg check` warns while it is empty.
 
 Run it **once by hand first**, as above, and read what it says: the unit then runs it every day at 05:00. It
 visits only the repositories of the catalog and, with `requireConfig: required`, skips a repository that has no

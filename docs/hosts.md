@@ -494,9 +494,38 @@ run went; `journalctl --user -u yggdrasil-renovate` (as `renovate`) has its log,
 `scripts/renovate.sh run` starts one by hand, which is how to try it once before relying on the timer
 ([setup.md 9.9](setup.md#99-renovate)).
 
+`RENOVATE_GITHUB_COM_TOKEN` is optional: a GitHub fine-grained token with read-only access to public
+repositories (no permissions of its own). With it, Renovate reads the release notes and changelogs of
+dependencies hosted on GitHub as that account; without it, it asks anonymously and meets GitHub's rate limit,
+and the pull requests lose their notes. `renovate.sh` passes it to the container as `GITHUB_COM_TOKEN`, through
+the same run-scoped env file as the Forgejo token (never an argument), and never prints it; `ygg check` warns
+(`renovate github token`) while it is empty, and says nothing of its value.
+
 To update Renovate, change `RENOVATE_IMAGE` in `scripts/renovate.sh` to a newer version and its digest
 (`docker buildx imagetools inspect renovate/renovate:<version>`) in a pull request, after reading the release
 notes.
+
+### The CI engines: the weekly prune
+
+Dev machine only. Every build in `ci`'s and `release`'s rootless engines leaves images and build cache behind,
+and nothing else removes them. `ygg install` (step `prune-timer`, right after the engines) copies
+[platform/systemd](../platform/systemd)'s `yggdrasil-prune.service` and `yggdrasil-prune.timer` into
+`~/.config/systemd/user/` of **each** of `ci` and `release`, as that user, and enables the timer, the same way
+as the backup's and Renovate's. The timer fires on Sundays at 03:00 (plus a random delay of up to an hour;
+`Persistent=true`, so a machine that was off then prunes when it is next on). The service runs, after the
+user's own `docker.service` and against its own engine (`DOCKER_HOST=unix://%t/docker.sock`):
+
+```bash
+docker system prune --all --force --filter until=168h
+docker builder prune --all --force --filter until=168h
+```
+
+That is, every image no container uses and all build cache that has not been used for a week; what a build of
+the last seven days could still reuse stays. Volumes are never pruned. `ygg check --role dev` has a row
+`prune timer ci` and `prune timer release`, which is `ok` while the units are the checkout's copies and the
+timer is enabled; `systemctl --user list-timers` and `journalctl --user -u yggdrasil-prune` (as that user) show
+the next and the last run. No other user's engine is pruned: `ygg`'s holds the platform and the deployed
+applications, which are not leftovers.
 
 ### Other files and rules
 
@@ -581,6 +610,7 @@ holds one only while the build step it is bound to runs.
 | `forge-read`: the Forgejo token of `jenkins-ci` (read-only), `FORGE_READ_TOKEN_FILE` | The Jenkins controller; bound for repository scans (controller) and for checkouts on every agent: CI, release and deploy | Read every repository, including yggdrasil's own (the library and the scripts) | now: setup.md 9.7 |
 | `forge-webhook`: the webhook secret, `FORGE_WEBHOOK_SECRET_FILE` | The Jenkins controller; the same value is `FORGE_WEBHOOK_SECRET` in the operator's shell for `rules.py` | Signs the webhooks `rules.py` creates. The Gitea plugin verifies no signature, so Jenkins checks nothing with it (a forged webhook only triggers a scan); it stays here as the one place the secret lives. Forgejo never shows it again: to change it, delete the hooks and run `rules.py` again | now: setup.md 9.7 |
 | Forgejo `renovate` bot token (`write:repository`, `write:issue`), `RENOVATE_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Push `renovate/*` branches (and any unprotected branch) and open pull requests | now: [Renovate](#renovate-the-daily-run) |
+| GitHub fine-grained token (read-only, public repositories, no permissions; optional), `RENOVATE_GITHUB_COM_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Read the release notes and changelogs of GitHub-hosted dependencies without the anonymous rate limit | now: [Renovate](#renovate-the-daily-run) |
 | Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
 | Forgejo owner token (`write:repository`), `FORGE_TOKEN` | The operator's shell, for the one run of `python3 scripts/rules.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules) |

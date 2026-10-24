@@ -1,0 +1,23 @@
+# The weekly prune of a CI engine, a user unit of `ci` and of `release` on the dev machine: it is installed
+# into ~ci/.config/systemd/user/ and ~release/.config/systemd/user/ by `ygg install` (step prune-timer) and
+# started by the timer next to it. Their rootless engines keep the images and build cache of every build, and
+# nothing else would ever remove them.
+[Unit]
+Description=Prune the Docker images and build cache this user's CI engine has not used for a week
+# The prune runs against the user's own rootless engine, which is the user unit docker.service: a catch-up
+# run at boot (the timer is Persistent) must wait for it.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# A user unit doesn't read the user's .profile, which is where its shells get DOCKER_HOST: %t is the user's
+# runtime directory, where its rootless engine keeps the socket. Never the system's engine.
+Environment=DOCKER_HOST=unix://%t/docker.sock
+# Everything unused for a week (--all: tagged images no container uses too, not only dangling ones), then the
+# build cache the same way. `until` keeps what a build of the last seven days could still reuse. Volumes
+# are not pruned: they hold state, not leftovers.
+ExecStart=/usr/bin/docker system prune --all --force --filter until=168h
+ExecStart=/usr/bin/docker builder prune --all --force --filter until=168h
+# A prune that hangs (an engine that never answers) must not hold next week's off for ever.
+TimeoutStartSec=2h
