@@ -60,9 +60,10 @@ and goes on to the next, so a re-run picks up where it stopped):
               failed`; exit 1 on any FAIL. Per repository of the GitHub owner: it is on Forgejo (else the
               rest is skipped); its default branch is GitHub's; its push mirror points at the GitHub copy
               and has `last_update` set and no `last_error` (the error is printed, scrubbed: Forgejo pushes
-              with --mirror, so GitHub refusing its own refs/pull/* shows up here); GitHub's branches
-              develop and main and every tag are at the sha Forgejo has (refs/pull/* and every other
-              namespace are left out; a ref on one side only is a FAIL naming the ref and the side); GitHub's
+              with --mirror, so GitHub refusing its own refs/pull/* shows up here); every branch and every
+              tag of GitHub's is at the sha Forgejo has (refs/pull/* and every other namespace are left
+              out; a ref on one side only is a FAIL naming the ref and the side; a copy that is not empty
+              where neither side lists one is a FAIL, "nothing compared"); GitHub's
               rulesets are exactly `mirror tags` (a catalog repository of the release model) or none
               (basic, or not in the catalog; a private repository whose list GitHub refuses with 403 has
               none to check); GitHub's issues are off. A catalog repository also has the Jenkins webhook
@@ -799,10 +800,11 @@ def cmd_collaborators(ctx, args):
 WEBHOOK_PATH = "/gitea-webhook/post"
 # `user:password@` in an address a server echoed in an error text.
 URL_CREDENTIALS = re.compile(r"(//)[^/@\s]+@")
-# The refs that are compared: develop, main and every tag. Nothing else (refs/pull/* is Forgejo's own, and
-# GitHub may refuse it as a hidden ref).
-VERIFIED_BRANCHES = ("refs/heads/develop", "refs/heads/main")
-VERIFIED_PREFIXES = ("heads/develop", "heads/main", "tags")
+# The refs that are compared: every branch and every tag. After a --mirror push GitHub holds exactly
+# Forgejo's, so any difference is a push the mirror has not carried, or one made on GitHub. Nothing else is
+# (refs/pull/* is Forgejo's own, and GitHub refuses it as a hidden ref).
+COMPARED_PREFIXES = ("heads", "tags")
+COMPARED_REFS = ("refs/heads/", "refs/tags/")
 
 
 def _row(ctx, name, check, ok, detail):
@@ -816,13 +818,13 @@ def _row(ctx, name, check, ok, detail):
 
 
 def _refs(api, base):
-    """{full ref name: sha} of the branches and tags that are compared, under `base` + each prefix. Paged
-    until a page brings nothing new, which also ends a listing for a server that ignores `page` (Forgejo's
-    git/refs may). A prefix nothing matches is {} (GitHub: [], Forgejo: 404; an empty GitHub repository
-    answers 409). A prefix matches by its start (heads/develop is also heads/develop-old), so the names are
+    """{full ref name: sha} of every branch and tag, under `base` + each prefix. Paged until a page brings
+    nothing new, which also ends a listing for a server that ignores `page` (Forgejo's git/refs may). A
+    prefix nothing matches is {} (GitHub: [], Forgejo: 404; an empty GitHub repository answers 409). A
+    prefix matches by its start (GitHub's `heads` would also match a `refs/headsx`), so the names are
     filtered."""
     found = {}
-    for prefix in VERIFIED_PREFIXES:
+    for prefix in COMPARED_PREFIXES:
         listed = {}
         for page in range(1, MAX_PAGES + 1):
             try:
@@ -837,8 +839,7 @@ def _refs(api, base):
             listed.update(fresh)
         else:
             raise MigrateError(f"{base}{prefix}: more than {MAX_PAGES} pages; stopped")
-        found.update({ref: sha for ref, sha in listed.items()
-                      if ref in VERIFIED_BRANCHES or ref.startswith("refs/tags/")})
+        found.update({ref: sha for ref, sha in listed.items() if ref.startswith(COMPARED_REFS)})
     return found
 
 
@@ -873,9 +874,22 @@ def _check_mirror(ctx, name):
     return True, f"synced {right[0]['last_update']}"
 
 
-def _check_refs(ctx, name):
-    on_github = _refs(ctx.gh, f"/repos/{ctx.github_owner}/{name}/git/matching-refs/")
-    on_forgejo = _refs(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/git/refs/")
+def _github_refs(ctx, name):
+    return _refs(ctx.gh, f"/repos/{ctx.github_owner}/{name}/git/matching-refs/")
+
+
+def _forgejo_refs(ctx, name):
+    return _refs(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/git/refs/")
+
+
+def _check_refs(ctx, name, found):
+    on_github, on_forgejo = _github_refs(ctx, name), _forgejo_refs(ctx, name)
+    if not on_github and not on_forgejo:
+        # Only an empty copy has no branch: one Forgejo says is not empty has one, so a listing that brings
+        # none compared nothing, and `ok` would say the sides agree without having looked.
+        if found.get("empty"):
+            return True, "empty repository: no branch or tag on either side"
+        return False, "nothing compared: neither side lists a branch or tag, but Forgejo's copy is not empty"
     problems = []
     for ref in sorted(set(on_github) | set(on_forgejo)):
         if ref not in on_forgejo:
@@ -886,7 +900,7 @@ def _check_refs(ctx, name):
             problems.append(f"{ref} differs (GitHub {on_github[ref][:12]}, Forgejo {on_forgejo[ref][:12]})")
     if problems:
         return False, "; ".join(problems)
-    return True, f"{_plural(len(on_github), 'ref')} the same" if on_github else "no branch or tag on either side"
+    return True, f"{_plural(len(on_github), 'ref')} the same"
 
 
 def _check_rulesets(ctx, repo, expected):
@@ -970,7 +984,7 @@ def _verify_one(ctx, repo, catalog_names, models, jenkins_url):
         _row(ctx, name, "github", True, "archived on GitHub: Forgejo only")
     else:
         check("push mirror", lambda: _check_mirror(ctx, name))
-        check("refs", lambda: _check_refs(ctx, name))
+        check("refs", lambda: _check_refs(ctx, name, found))
         expected = {rules.MIRROR_TAGS} if models.get(name) == "release" else set()
         check("rulesets", lambda: _check_rulesets(ctx, repo, expected))
         check("issues", lambda: _check_issues(ctx, name))

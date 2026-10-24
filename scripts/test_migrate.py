@@ -1466,10 +1466,35 @@ class VerifyTests(unittest.TestCase):
         self.assertIn("refs/tags/v0.9.0 only on GitHub", detail)
 
     def test_given_refs_outside_branches_and_tags_when_verified_then_they_are_not_compared(self):
+        # refs/pull/* is Forgejo's own (and GitHub's, for its pull requests); notes are neither a branch nor
+        # a tag. Neither side's are compared.
         gh, forgejo = verified_world()
-        forgejo.refs["toolkit"].update({"refs/pull/2/head": SHA_OTHER, "refs/heads/feature/x": SHA_OTHER})
-        gh.refs["toolkit"].update({"refs/pull/9/head": SHA_MAIN, "refs/heads/develop-old": SHA_OTHER})
-        self.assertEqual(self.run_verify((gh, forgejo)).code, 0)
+        forgejo.refs["toolkit"].update({"refs/pull/2/head": SHA_OTHER, "refs/notes/commits": SHA_OTHER})
+        gh.refs["toolkit"].update({"refs/pull/9/head": SHA_MAIN})
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(run.code, 0, run.out)
+        self.assertEqual(self.row(run, "toolkit", "refs")[3], "3 refs the same")
+
+    def test_given_any_branch_on_one_side_or_differing_when_verified_then_every_branch_is_compared(self):
+        # After a --mirror push GitHub holds exactly Forgejo's branches, so every one is compared, not only
+        # develop and main: one that differs is a push the mirror has not carried (or one made on GitHub).
+        gh, forgejo = verified_world()
+        forgejo.refs["toolkit"]["refs/heads/feature/x"] = SHA_OTHER
+        gh.refs["toolkit"]["refs/heads/develop-old"] = SHA_OTHER
+        gh.refs["toolkit"]["refs/heads/release/1.0"] = SHA_MAIN
+        forgejo.refs["toolkit"]["refs/heads/release/1.0"] = SHA_DEVELOP
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "refs")
+        detail = self.row(run, "toolkit", "refs")[3]
+        self.assertIn("refs/heads/feature/x only on Forgejo", detail)
+        self.assertIn("refs/heads/develop-old only on GitHub", detail)
+        self.assertIn(f"refs/heads/release/1.0 differs (GitHub {SHA_MAIN[:12]}, Forgejo {SHA_DEVELOP[:12]})", detail)
+        # The same branches on both sides: they count among the refs compared.
+        gh.refs["toolkit"]["refs/heads/feature/x"] = SHA_OTHER
+        forgejo.refs["toolkit"]["refs/heads/develop-old"] = SHA_OTHER
+        forgejo.refs["toolkit"]["refs/heads/release/1.0"] = SHA_MAIN
+        run = self.run_verify((gh, forgejo))
+        self.assertEqual(self.row(run, "toolkit", "refs")[2:], ["ok", "6 refs the same"])
 
     def test_given_more_refs_than_a_page_when_verified_then_all_are_compared_whichever_side_pages(self):
         for forgejo_page in (30, 100, None):  # None: a server that ignores `page` and answers everything each time
@@ -1485,11 +1510,15 @@ class VerifyTests(unittest.TestCase):
                 run = self.run_verify((gh, forgejo))
                 self.assertIn("refs/tags/v2.74.0", self.row(run, "toolkit", "refs")[3])
 
-    def test_given_no_branch_or_tag_on_either_side_when_verified_then_the_refs_agree(self):
+    def test_given_no_branch_or_tag_on_either_side_of_a_copy_that_is_not_empty_when_verified_then_it_fails(self):
+        # GitHub answers a prefix nothing matches with [], Forgejo with 404: neither is an error. But a copy
+        # Forgejo says is not empty has a branch: when neither side lists one, nothing was compared, and an
+        # `ok` would say the two agree without having looked.
         gh, forgejo = verified_world()
         gh.refs["toolkit"], forgejo.refs["toolkit"] = {}, {}
-        # GitHub answers a prefix nothing matches with [], Forgejo with 404: neither is an error.
-        self.assertEqual(self.row(self.run_verify((gh, forgejo)), "toolkit", "refs")[2], "ok")
+        run = self.run_verify((gh, forgejo))
+        self.assert_only_failing(run, "toolkit", "refs")
+        self.assertIn("nothing compared", self.row(run, "toolkit", "refs")[3])
 
     def test_given_an_empty_repository_when_verified_then_githubs_409_is_no_refs(self):
         gh, forgejo = verified_world()
@@ -1498,6 +1527,7 @@ class VerifyTests(unittest.TestCase):
         forgejo.existing["toolkit"] = forgejo_repository("toolkit", empty=True, default_branch="")
         run = self.run_verify((gh, forgejo))
         self.assertEqual(run.code, 0, run.out)
+        self.assertIn("empty", self.row(run, "toolkit", "refs")[3])
 
     def test_given_a_default_branch_that_is_not_githubs_when_verified_then_it_fails(self):
         gh, forgejo = verified_world()
