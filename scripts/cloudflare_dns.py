@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Applies the DNS records of both domains through Cloudflare's API (docs/hosts.md, "DNS records").
 
-    CF_DNS_API_TOKEN=... python3 scripts/cloudflare_dns.py [--dry-run] \\
+    read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # the token, then Enter: never on a command line
+    python3 scripts/cloudflare_dns.py [--dry-run] \\
         --apps <ipv4> [--apps6 <ipv6>] --dev <ipv4> [--dev6 <ipv6>] [--skip-caa <zone>]...
 
 The owner runs it once when building the two machines and again at the cutover, to point the domains

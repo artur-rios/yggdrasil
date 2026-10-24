@@ -120,8 +120,11 @@ each. Run it once when building the machines, and again at the cutover with the 
 (with the old address it is the rollback):
 
 ```bash
-CF_DNS_API_TOKEN=... python3 scripts/cloudflare_dns.py --dry-run     --apps <apps ipv4> [--apps6 <apps ipv6>] --dev <dev ipv4> [--dev6 <dev ipv6>] [--skip-caa <zone>]
+read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # paste the token, then Enter
+python3 scripts/cloudflare_dns.py --dry-run --apps <apps ipv4> [--apps6 <apps ipv6>] --dev <dev ipv4> [--dev6 <dev ipv6>] [--skip-caa <zone>]
 ```
+
+(`read -rs` keeps the token out of the shell's history and off the screen; `export` hands it to the script.)
 
 Take `--dry-run` off to apply. The token is the one in `acme.env` (`CF_DNS_API_TOKEN`) and is read from the
 environment, never from an argument. `AAAA` records are made only when `--apps6` / `--dev6` is given. The
