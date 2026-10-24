@@ -22,7 +22,7 @@ CATALOG_MIRROR = {**CATALOG, "forge": {"type": "forgejo", "url": "https://git.ex
 def repository(name, **fields):
     """A repository as GitHub's list answers it (more fields than migrate keeps, as the real one does)."""
     return {"id": 1, "name": name, "full_name": f"x/{name}", "private": False, "fork": False, "archived": False,
-            "default_branch": "develop", "has_wiki": False, "open_issues_count": 0, **fields}
+            "default_branch": "develop", "has_wiki": False, "size": 120, "open_issues_count": 0, **fields}
 
 
 class FakeGitHub:
@@ -30,8 +30,10 @@ class FakeGitHub:
     like GitHub does, in pages of at most `page_size` however many are asked for, so a caller that trusts
     its own per_page loses the rest."""
 
-    def __init__(self, repos, pulls=None, kind="User", login=OWNER, page_size=30, pulls_fail=()):
+    def __init__(self, repos, pulls=None, kind="User", login=OWNER, page_size=30, pulls_fail=(), empty=(),
+                 commits_status=None):
         self.repos, self.pulls, self.pulls_fail = repos, pulls or {}, set(pulls_fail)
+        self.empty, self.commits_status = set(empty), commits_status or {}
         self.kind, self.login, self.page_size = kind, login, page_size
         self.calls = []
 
@@ -52,6 +54,13 @@ class FakeGitHub:
             return {"login": self.login}
         if route in ("/user/repos", f"/orgs/{OWNER}/repos"):
             return self._page(self.repos, query)
+        if segments[:2] == ["", "repos"] and segments[4] == "commits":
+            # GitHub answers 409 "Git Repository is empty." for a repository without a commit.
+            if segments[3] in self.commits_status:
+                raise migrate.rules.ApiError(method, path, self.commits_status[segments[3]], "Server Error")
+            if segments[3] in self.empty:
+                raise migrate.rules.ApiError(method, path, 409, "Git Repository is empty.")
+            return [{"sha": "abc123"}]
         if segments[:2] == ["", "repos"] and segments[4] == "pulls":
             assert query.get("state") == "open", path
             if segments[3] in self.pulls_fail:
@@ -66,8 +75,9 @@ class FakeForgejo:
     a name to a status its GET answers instead (403, 500 ...); `migrate_status` maps a name to the status its
     migration answers (500, 0 for no answer at all). Every request is kept in `calls`, with its timeout."""
 
-    def __init__(self, existing=None, lookup=None, migrate_status=None):
+    def __init__(self, existing=None, lookup=None, migrate_status=None, migrate_message=None):
         self.existing, self.lookup, self.migrate_status = existing or {}, lookup or {}, migrate_status or {}
+        self.migrate_message = migrate_message
         self.calls, self.timeouts = [], []
 
     def request(self, method, path, body=None, timeout=None):
@@ -83,7 +93,8 @@ class FakeForgejo:
         if (method, path) == ("POST", "/repos/migrate"):
             status = self.migrate_status.get(body["repo_name"])
             if status is not None:
-                raise migrate.rules.ApiError(method, path, status, "migration failed" if status else "timed out")
+                raise migrate.rules.ApiError(method, path, status, self.migrate_message or (
+                    "migration failed" if status else "timed out"))
             self.existing[body["repo_name"]] = forgejo_repository(body["repo_name"])
             return self.existing[body["repo_name"]]
         raise AssertionError(f"unexpected request: {method} {path}")
@@ -118,7 +129,7 @@ class GitHubRepositoriesTests(unittest.TestCase):
                                     default_branch="main")], pulls={"shop-api": 3})
         self.assertEqual(migrate.github_repositories(gh, OWNER),
                          [{"name": "shop-api", "private": True, "fork": True, "archived": True,
-                           "default_branch": "main", "has_wiki": True}])
+                           "default_branch": "main", "has_wiki": True, "size": 120}])
         # The pull requests are counted apart, one repository at a time (open_pull_requests), so a command
         # can print a repository's line as soon as it has it and one that fails does not stop the others.
         self.assertFalse([c for c in gh.calls if "/pulls" in c[1]])
@@ -269,8 +280,8 @@ ENV = {"FORGE_TOKEN": "fg-tok-123"}
 class ImportTests(unittest.TestCase):
     ARGS = ["--github-owner", OWNER, "import"]
 
-    def run_import(self, repos, args=None, env=None, forgejo=None, pulls=None, pulls_fail=()):
-        gh = FakeGitHub(repos, pulls=pulls, pulls_fail=pulls_fail)
+    def run_import(self, repos, args=None, env=None, forgejo=None, pulls=None, pulls_fail=(), **github):
+        gh = FakeGitHub(repos, pulls=pulls, pulls_fail=pulls_fail, **github)
         return Run(args or self.ARGS, gh, catalog=FORGEJO_CATALOG, env=ENV if env is None else env, forgejo=forgejo)
 
     def test_given_a_new_repository_when_imported_then_the_migration_asks_for_issues_pulls_and_releases(self):
@@ -339,6 +350,46 @@ class ImportTests(unittest.TestCase):
         # Never deleted, migrated over or patched: the only write is the other repository's migration.
         self.assertEqual([c[:2] for c in forgejo.writes()], [("POST", "/repos/migrate")])
         self.assertEqual([m["repo_name"] for m in forgejo.migrations()], ["other"])
+
+    def test_given_an_empty_repository_on_github_too_when_imported_then_it_is_already_imported_not_unfinished(self):
+        # A repository without a commit imports as an empty one, and deleting and importing it again gives the
+        # same: "unfinished" for it would never end. GitHub is asked (409 = empty) before believing it.
+        forgejo = FakeForgejo(existing={"blank": forgejo_repository("blank", empty=True)})
+        run = self.run_import([repository("blank", size=0)], forgejo=forgejo, empty={"blank"})
+        self.assertEqual((run.code, run.err), (0, ""), run.out)
+        self.assertEqual(run.lines, ["blank: already imported (empty on GitHub too)"])
+        self.assertIn(("GET", f"/repos/{OWNER}/blank/commits?per_page=1", None), run.gh.calls)
+        self.assertEqual(forgejo.writes(), [])
+
+    def test_given_an_empty_copy_of_a_repository_that_shows_size_0_but_has_commits_when_imported_then_it_is_unfinished(self):
+        # `size` is in KB and lags a fresh push: 0 alone must not hide a half-done copy.
+        forgejo = FakeForgejo(existing={"fresh": forgejo_repository("fresh", empty=True)})
+        run = self.run_import([repository("fresh", size=0)], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertIn("  fresh: exists but looks unfinished (empty): delete it on Forgejo and run import again",
+                      run.err.splitlines())
+        self.assertEqual(forgejo.writes(), [])
+
+    def test_given_an_empty_copy_of_a_repository_with_size_when_imported_then_github_is_not_asked(self):
+        forgejo = FakeForgejo(existing={"half": forgejo_repository("half", empty=True)})
+        run = self.run_import([repository("half", size=300)], forgejo=forgejo, empty={"half"})
+        self.assertEqual(run.code, 1)
+        self.assertFalse([c for c in run.gh.calls if "/commits" in c[1]])
+
+    def test_given_github_failing_to_say_whether_it_is_empty_when_imported_then_that_repository_fails_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={"blank": forgejo_repository("blank", empty=True)})
+        run = self.run_import([repository("blank", size=0), repository("next")], forgejo=forgejo,
+                              commits_status={"blank": 500})
+        self.assertEqual(run.code, 1)
+        self.assertIn("  blank: could not tell whether it is empty on GitHub too", run.err)
+        self.assertIn("next: imported", run.lines)
+
+    def test_given_an_error_that_echoes_the_github_token_when_imported_then_it_is_hidden_in_the_failure(self):
+        forgejo = FakeForgejo(migrate_status={"a": 500}, migrate_message="clone failed: auth gh-tok-456 rejected")
+        run = self.run_import([repository("a")], forgejo=forgejo)
+        self.assertEqual(run.code, 1)
+        self.assertNotIn("gh-tok-456", run.out + run.err)
+        self.assertIn("a: import failed: POST /repos/migrate: 500 clone failed: auth *** rejected", run.err)
 
     def test_given_a_repository_that_exists_as_a_mirror_when_imported_then_it_is_reported_unfinished(self):
         forgejo = FakeForgejo(existing={"half": forgejo_repository("half", mirror=True)})

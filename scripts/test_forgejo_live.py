@@ -7,11 +7,8 @@ right: that Forgejo 16.0.6 (the image platform/compose.yml pins) takes those req
 the scripts read it, and that the protections rules.py applies really hold -- `claude` cannot merge a
 Jenkinsfile change, push a release branch or create, move or delete a version tag, a `rules: basic`
 repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
-failing checks. Two tests check migrate.py's import: it asks Forgejo for a migration the way Forgejo takes
-it (from the suite's own server with `service: git`, since GitHub is out of reach), leaves what is imported
-alone on a second run, and reports an empty repository as unfinished. One test pins a known gap instead:
-jenkins, which creates the version tags, can also
-move and delete them (docs/setup.md, step 12).
+failing checks. Two tests check migrate.py's import against this server (below). One test pins a known gap
+instead: jenkins, which creates the version tags, can also move and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
 container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
@@ -872,11 +869,18 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
 
     def migrate_import(self, github_names, *arguments, private=True):
         """`migrate.py import` run for real against this Forgejo, with the GitHub side a fake that lists
-        `github_names` (GitHub itself is not reachable from here). The one thing replaced on the way to
-        Forgejo is the migration's source: the request keeps the shape import sends, but `service` is `git`
-        and the clone address this very server, as the container itself reaches it (127.0.0.1:3000 inside,
-        not the published port), with the owner's token as the git password -- Forgejo's `auth_token` is
-        for the hosting services. Returns (exit code, stdout, stderr)."""
+        `github_names` (GitHub itself is not reachable from here).
+
+        What this proves: the endpoint (`POST /repos/migrate`), `repo_owner`, `repo_name`, `private` and
+        `mirror: false` are taken by Forgejo 16, which makes a finished copy of the source; its repository
+        JSON has the `empty` and `mirror` fields import reads; a second run says "already imported".
+        What it does not prove: the GitHub-specific part of the request (`service: github`, `clone_addr`,
+        `auth_token`, and issues, labels, milestones, releases, pull requests and wiki being copied from
+        GitHub) -- the migration's source is replaced here, so that shape is pinned by test_migrate.py
+        alone. The replacement: `service` is `git`, the clone address this very server as the container
+        itself reaches it (127.0.0.1:3000 inside, not the published port), and the owner's token goes as
+        the git password, because Forgejo's `auth_token` is for the hosting services. Everything else in
+        the body is what import sends. Returns (exit code, stdout, stderr)."""
         real_payload, real_api = migrate.migration_payload, rules.Api
         catalog = {**test_catalog(), "forge": {**test_catalog()["forge"], "url": self.url},
                    "mirror": {"github": OWNER}}
@@ -909,8 +913,9 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual((code, err), (0, ""), out)
         self.assertEqual(out.splitlines(), [f"{copy}: imported"])
 
-        # Forgejo took the request import sends (every option of it) and made a finished copy of the
-        # source: its branches, its Jenkinsfile, private as the (fake) GitHub says.
+        # Forgejo took the request import sends (owner, name, private, mirror false and the rest of its
+        # body; not the GitHub-specific service and clone address, see migrate_import) and made a
+        # finished copy of the source: its branches, its Jenkinsfile, private as the (fake) GitHub says.
         owner = self.api[OWNER]
         found = owner.request("GET", f"/repos/{OWNER}/{copy}")
         self.assertEqual((found["private"], found["empty"], found["mirror"]), (True, False, False))

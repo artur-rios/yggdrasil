@@ -16,7 +16,9 @@ and goes on to the next, so a re-run picks up where it stopped):
               reported as a failure: delete it on Forgejo yourself, then run import again; this script
               never deletes anything. Refuses to start while any repository has open pull requests,
               unless --allow-open-pulls. A migration may take long: the wait for each one is 30 minutes,
-              MIGRATE_TIMEOUT (seconds) changes it.
+              MIGRATE_TIMEOUT (seconds) changes it. After a client timeout Forgejo may still be copying:
+              wait for it to finish (watch the repository on Forgejo) before running import again, or
+              the half-copied repository is reported as unfinished.
 
 The move covers every repository of the GitHub owner, forks included. Only the catalog's repositories
 (catalog.py repository-names) get the bots as collaborators and the webhook; `inventory` shows both.
@@ -154,7 +156,7 @@ def _list_path(gh, owner):
 
 def github_repositories(gh, owner, only=None):
     """Every repository of the owner, forks included, as {name, private, fork, archived, default_branch,
-    has_wiki}. With `only` (names), just those; a name the owner has not is a UsageError. The open pull
+    has_wiki, size} (size: GitHub's, in KB, which lags a fresh push). With `only` (names), just those; a name the owner has not is a UsageError. The open pull
     requests are counted apart (open_pull_requests), one repository at a time."""
     listed = _paged(gh, _list_path(gh, owner))
     if only:
@@ -163,7 +165,7 @@ def github_repositories(gh, owner, only=None):
             raise UsageError(f"not repositories of {owner} on GitHub: {', '.join(unknown)}")
         listed = [r for r in listed if r["name"] in only]
     return [{"name": r["name"], "private": r["private"], "fork": r["fork"], "archived": r["archived"],
-             "default_branch": r["default_branch"], "has_wiki": r["has_wiki"]} for r in listed]
+             "default_branch": r["default_branch"], "has_wiki": r["has_wiki"], "size": r["size"]} for r in listed]
 
 
 def open_pull_requests(gh, owner, name):
@@ -271,10 +273,28 @@ def _unfinished(found):
     return None
 
 
-def _report(failure):
-    """Prints a failure where it happened (it is listed again at the end) and returns it."""
+def _report(ctx, failure):
+    """Prints a failure where it happened (it is listed again at the end) and returns it, with the GitHub
+    token hidden: a server's error text may echo what it was sent."""
+    failure = failure.replace(ctx.github_token, "***")
     print(failure, flush=True)
     return failure
+
+
+def _empty_on_github_too(ctx, repo):
+    """Whether GitHub's repository has no commit either, so that Forgejo's empty copy is a finished import
+    (deleting it and importing again would give the same empty repository). `size` 0 is only the hint to
+    ask: it is in KB and lags a fresh push, so a just-pushed repository can show 0. The commits list is
+    the proof: GitHub answers 409 for a repository without a commit. Raises ApiError when it cannot tell."""
+    if repo["size"] != 0:
+        return False
+    try:
+        ctx.gh.request("GET", f"/repos/{ctx.github_owner}/{repo['name']}/commits?per_page=1")
+    except rules.ApiError as error:
+        if error.status == 409:
+            return True
+        raise
+    return False
 
 
 def _import_one(ctx, repo):
@@ -283,11 +303,19 @@ def _import_one(ctx, repo):
     try:
         found = _on_forgejo(ctx, name)
     except rules.ApiError as error:
-        return _report(f"{name}: could not look for it on Forgejo: {error}")
+        return _report(ctx, f"{name}: could not look for it on Forgejo: {error}")
     if found is not None:
         why = _unfinished(found)
+        if why == "empty":
+            try:
+                if _empty_on_github_too(ctx, repo):
+                    print(f"{name}: already imported (empty on GitHub too)", flush=True)
+                    return None
+            except rules.ApiError as error:
+                return _report(ctx, f"{name}: could not tell whether it is empty on GitHub too: {error}")
         if why:
-            return _report(f"{name}: exists but looks unfinished ({why}): delete it on Forgejo and run import again")
+            return _report(ctx, f"{name}: exists but looks unfinished ({why}): "
+                                "delete it on Forgejo and run import again")
         print(f"{name}: already imported", flush=True)
         return None
     payload = migration_payload(ctx, repo)
@@ -297,7 +325,7 @@ def _import_one(ctx, repo):
     try:
         ctx.forgejo.request("POST", "/repos/migrate", payload, timeout=ctx.migrate_timeout)
     except rules.ApiError as error:
-        return _report(f"{name}: import failed: {error}")
+        return _report(ctx, f"{name}: import failed: {error}")
     print(f"{name}: imported", flush=True)
     return None
 
@@ -315,7 +343,7 @@ def cmd_import(ctx, args):
         for r in repos:
             failure = _count_open_pulls(ctx, r)
             if failure:
-                failures.append(_report(failure))
+                failures.append(_report(ctx, failure))
                 found = found or r["open_pulls"] is not None
         if found:
             failures.append("nothing imported: finish or close the open pull requests, "
