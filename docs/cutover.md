@@ -1203,20 +1203,41 @@ Then the protections, which `verify` does not read: `rules.py` again, as a dry r
 on Forgejo.
 
 ```bash
-python3 scripts/rules.py --dry-run | tee ~/cutover-log/rules-after.txt \
-  | awk '/^[^ ]/ { copy = /\(the GitHub copy\)$/ || /\(GitHub copy /; next } !copy && !/ unchanged/'
+python3 scripts/rules.py --dry-run > ~/cutover-log/rules-after.txt 2> ~/cutover-log/rules-after.err; echo "exit $?"
+tr -d '\r' < ~/cutover-log/rules-after.txt | awk '
+  /^artur-rios\/[^ ]+$/ { copy = 0; next }
+  /^[^ ]+ \(the GitHub copy\)$/ || /^[^ ]+ \(GitHub copy [^ ]+\): not applied: / { copy = 1; next }
+  !copy && !/ unchanged/'
+diff <(python3 scripts/catalog.py repository-names | tr -d '\r' | sort) \
+     <(tr -d '\r' < ~/cutover-log/rules-after.txt | sed -n 's|^artur-rios/\([^ ]*\)$|\1|p' | sort)
+tr -d '\r' < ~/cutover-log/rules-after.err | grep -Ev '^the mirror tags were not applied to [0-9]+ GitHub (copy|copies): '
 ```
 
 `rules.py` prints a repository's Forgejo side under its name (`artur-rios/<repo>`), then its GitHub copy's under
-`artur-rios/<repo> (the GitHub copy)`. The `awk` keeps the Forgejo side's lines that do not say `unchanged`.
+`artur-rios/<repo> (the GitHub copy)`, or one line `<repo> (GitHub copy artur-rios/<repo>): not applied: ...` for
+a copy GitHub refused. Both streams go to the log: `rules-after.txt` and `rules-after.err`. A run that stops on an
+error (`<repo>: <error>` on stderr) leaves out every repository after it, and a check of what it printed alone
+would pass, so there are three checks, and each prints nothing when it holds:
 
-**Success looks like:** the `awk` prints nothing: on Forgejo every line is `repository settings unchanged`,
-`protection of branch '...' unchanged`, `tag protection 'v*' unchanged` or `Jenkins webhook unchanged (...)`.
-Under each copy, `would update ruleset 'mirror tags'` is expected: `rules.py` rewrites that ruleset on every run
-without comparing it. The run's own exit is `1` when 5.15's was (the private copies on a plan without rulesets).
-**If it fails:** a `would ...` line names what differs on Forgejo (a protection changed by hand since 5.15, a
-bot dropped from a list): run 5.15's real `rules.py` again, then this check. A `note: ...` line is a protection
-the model does not have: look at it on Forgejo, and delete it there if it is stale.
+- the `awk`: the lines on Forgejo's side that do not say `unchanged`, and any line outside a repository (`webhooks
+  skipped: ...`, `mirror tags not applied: ...`). `tr -d '\r'` first: Python on Windows ends its lines with
+  `\r\n`, which the patterns would not match.
+- the `diff`: every catalog repository has its `artur-rios/<repo>` line. A name after `<` was never reached.
+- the `grep`: stderr holds nothing but the one line `the mirror tags were not applied to N GitHub copies: ...`,
+  when that applies.
+
+**Success looks like:** `exit 0`, or `exit 1` with that one line in `rules-after.err`, naming the same copies as
+5.15 (the private ones on a plan without rulesets); and the `awk`, the `diff` and the `grep` all print nothing.
+On Forgejo every line is `repository settings unchanged`, `protection of branch '...' unchanged`, `tag protection
+'v*' unchanged` or `Jenkins webhook unchanged (...)`. Under each copy, `would update ruleset 'mirror tags'` is
+expected: `rules.py` rewrites that ruleset on every run without comparing it.
+**If it fails:** a `would ...` line from the `awk` names what differs on Forgejo (a protection changed by hand
+since 5.15, a bot dropped from a list): run 5.15's real `rules.py` again, then this check. A `note: ...` line is a
+protection the model does not have: look at it on Forgejo, and delete it there if it is stale. `webhooks skipped:
+...`: the shell lacks 5.10's `FORGE_JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, so the hooks were not compared:
+export them, run again. Names from the `diff`, with `<repo>: <error>` from the `grep`: the run stopped at `<repo>`;
+fix what the error names (a `5xx`: run again), then run the whole check again. Any other line from the `grep` (a
+traceback, `no GitHub token`): fix that first.
 
 **Back out:** read only, both.
 
