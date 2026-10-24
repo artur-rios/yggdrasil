@@ -1246,7 +1246,7 @@ deletion and nothing else of the table, plus the settings in its first row and, 
 | `develop` | A protected branch: no direct push (force push and deletion are always refused), changes only through a pull request whose required checks pass: `branch-policy`, the application's `checks` and its `actionsChecks`. Merged by the owner and `forge.developers` | A `develop` ruleset: no deletion or force push, a pull request (squash or merge commit), the same required checks. `actionsChecks` are bound to GitHub Actions, so only that app can satisfy them; the other checks (Jenkins') are bound to nobody |
 | `main` | The same, with `branch-policy`, `checks` and one `deploy/<environment>` per release environment. Merged only by `forge.jenkinsUser` for an application, only by the owner for an `owner-tag` repository | A `main` ruleset: the same required checks, all bound to nobody (`actionsChecks` are not required on `main`), merge commit only. Who merges is not restricted: the checks are the gate |
 | `release/*` | Only the owner pushes | No rule (none today) |
-| Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner. Nobody else can create, move or delete them (in an application's repository not even the owner). **Accepted gap:** a Forgejo tag protection is one list of who may change a matching tag in any way, so the user who creates the tags can also **move** them (a forced push) and **delete** them (a push; through the API too, unless the tag has a release): `forge.jenkinsUser` an application's `v*` tags, the owner an `owner-tag` repository's. A release whose tag was deleted stays, naming a tag that is gone. The live tests (`scripts/test_forgejo_live.py`) pin this. The `tag-check` job detects it, and with a `mirror` each repository's GitHub copy gets a `mirror tags` ruleset that keeps its tags as released: [Version tags: tag-check and repairs](#version-tags-tag-check-and-repairs) | A `release tags` ruleset: tags cannot be moved or deleted, by **anyone** (it has no bypass: the owner neither). For an `owner-tag` repository a second ruleset, `release tag creation`: only repository administrators (the owner) create its tags |
+| Version tags | A tag protection: `v*` can be created only by `forge.jenkinsUser` for an application; for an `owner-tag` repository, its `tags` pattern only by the owner. Nobody else can create, move or delete them (in an application's repository not even the owner). **Accepted gap:** a Forgejo tag protection is one list of who may change a matching tag in any way, so the user who creates the tags can also **move** them (a forced push) and **delete** them (a push; through the API too, unless the tag has a release): `forge.jenkinsUser` an application's `v*` tags, the owner an `owner-tag` repository's. A release whose tag was deleted becomes a draft (a moment after the push), naming a tag that is gone; pushing the tag back publishes it again. The live tests (`scripts/test_forgejo_live.py`) pin this. The `tag-check` job detects it, and with a `mirror` each repository's GitHub copy gets a `mirror tags` ruleset that keeps its tags as released: [Version tags: tag-check and repairs](#version-tags-tag-check-and-repairs) | A `release tags` ruleset: tags cannot be moved or deleted, by **anyone** (it has no bypass: the owner neither). For an `owner-tag` repository a second ruleset, `release tag creation`: only repository administrators (the owner) create its tags |
 | The owner | Not bound by the protections, for emergencies (see below) | A repository administrator bypasses all the rulesets but `release tags` |
 | `yggdrasil.yml` (and `Jenkinsfile`) | **Protected files** on `develop` only: a pull request that changes one can be merged only by the owner, with a forced merge (below); being on the list of who may merge is not enough (`forge.developers` included). `yggdrasil.yml` says what Jenkins runs for the repository (images, commands, which allowed credential a check binds), so every change to it reaches `develop` through the owner, **Renovate's too**: a `renovate/*` pull request that bumps an image in `yggdrasil.yml` passes its checks and then waits for the owner's **Merge anyway**. `main` has no protected file: it receives only snapshots of `develop`, merged by `forge.jenkinsUser`, which a release that changes `yggdrasil.yml` must not stop. Jenkins no longer reads a repository's `Jenkinsfile` ([why](#how-a-build-runs)); it stays on the list, harmlessly, for repositories that still carry one | Not applied: GitHub cannot restrict who may merge a given file. On GitHub a change to `yggdrasil.yml` is guarded only by who may merge into `develop` |
 
@@ -1363,7 +1363,11 @@ on Forgejo. Two things answer it:
   you open it and press **Build Now**, it reads every catalog entry that releases (an application with a
   `trigger: release` environment, an `owner-tag` entry) on the `ci` agent with the read credential: each
   published release (`forge.sh release-tags`) and where its tag is now (`forge.sh tag-sha`). It checks out and
-  runs nothing of the repositories and holds no write token.
+  runs nothing of the repositories and holds no write token. A deleted tag's release does not stay published:
+  Forgejo (a moment after the push) and GitHub turn it into a draft, which the read credential cannot see. So
+  each run archives the releases it knows of (`release-tags.tsv`, an artifact of the build) and the next run
+  checks those too, published or not: a release the job has seen once is checked on every run after. One whose
+  tag was deleted before the job's first run is not noticed.
 - **The GitHub copies keep the tags as they were released.** With a `mirror`, `rules.py` puts `mirror tags` on
   every copy, so the push mirror cannot move or delete a version tag there: GitHub refuses a mirror push that
   would, and Forgejo shows that repository's push mirror failing to sync (its **Settings → Repository**, the
@@ -1382,7 +1386,13 @@ description counts them (`2 release tags moved or deleted`), and the last lines 
 
 A line `<repository> <tag>: unknown target: released from '<name>', not a commit ...` earlier in the log is not
 a failure: that release names a branch instead of a commit (one made by hand, or from before the pipeline made
-releases), so whether its tag moved cannot be told. A deleted tag is reported `DELETED` either way.
+releases), so whether its tag moved cannot be told. A deleted tag is reported `DELETED` either way. Nor is
+`... ok (<sha>), but its release is not published (a draft, or deleted) ...`: the tag is fine, the release
+was unpublished or deleted (publish it again if that was not meant).
+
+The record keeps a release whose tag you **deleted on purpose** (with its release) red on every run. To start
+the record afresh, delete all of the `tag-check` job's builds (each build's **Delete build**); the next run
+records the releases published then.
 
 **Repairing a moved or deleted tag on Forgejo**, as the owner, on your machine:
 
@@ -1414,7 +1424,8 @@ releases), so whether its tag moved cannot be told. A deleted tag is reported `D
      protection 'v*'`.
    - **An `owner-tag` repository's tag.** You may push it already: `git push --force origin "refs/tags/<tag>"`.
 3. Run tag-check again (**Build Now**): it is green once every tag is back, and the push mirror's next sync
-   goes through again.
+   goes through again. On Forgejo pushing a deleted tag back also publishes its release again (the live tests
+   pin it); on GitHub, check the release and publish it by hand if it is still a draft.
 
 **A wrong tag on GitHub.** Nobody bypasses `release tags` or `mirror tags`, so to fix a tag on GitHub (one
 created on the wrong commit, say), edit the ruleset first: the repository's **Settings → Rules → Rulesets**,
