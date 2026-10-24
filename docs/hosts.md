@@ -120,7 +120,7 @@ each. Run it once when building the machines, and again at the cutover with the 
 (with the old address it is the rollback):
 
 ```bash
-CF_DNS_API_TOKEN=... python3 scripts/cloudflare_dns.py --dry-run     --apps <apps ipv4> [--apps6 <apps ipv6>] --dev <dev ipv4> [--dev6 <dev ipv6>]
+CF_DNS_API_TOKEN=... python3 scripts/cloudflare_dns.py --dry-run     --apps <apps ipv4> [--apps6 <apps ipv6>] --dev <dev ipv4> [--dev6 <dev ipv6>] [--skip-caa <zone>]
 ```
 
 Take `--dry-run` off to apply. The token is the one in `acme.env` (`CF_DNS_API_TOKEN`) and is read from the
@@ -139,6 +139,12 @@ process on the dev machine that got there before Traefik, say) could pass Let's 
 certificate for `git.` or `jenkins.`. The dev machine also keeps its other users off
 ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-portsconf-dev-machine)); the record
 covers what that can't.
+
+Something that gets its certificates over HTTP-01 is refused by that record too. `artur-rios.tech`'s `www.` and
+`blog.` are served by Vercel until their sites move, and Vercel renews their certificates through Let's Encrypt over
+HTTP-01, so that zone's `CAA` waits: `--skip-caa artur-rios.tech` leaves it out ("CAA skipped on artur-rios.tech
+(--skip-caa)"): neither created, updated nor reported. Drop the flag once those sites have moved
+([cutover.md, 1.5](cutover.md#15-the-records)).
 
 Why the dev machine is not proxied:
 

@@ -59,7 +59,7 @@ Fill this in first; later steps use every line.
 | The old VPS's address and admin | Your provider | `<old ip>`, `<old admin>` |
 | The release the old VPS runs | On the old VPS: `git -C /opt/yggdrasil describe --tags` | e.g. `v0.7.4` |
 | The old controller's address | On the old VPS: `grep '^JENKINS_URL=' /etc/yggdrasil/platform.env` | e.g. `https://jenkins.<old domain>/` |
-| Today's domain(s) | `DOMAIN` and `EXTRA_DOMAINS` in the same file | `<old domains>` |
+| Today's domain(s) | `DOMAIN` in the same file (v0.7.4 has no `EXTRA_DOMAINS`), and any other domain the applications' env files name (0.4) | `<old domains>` |
 | What production runs, per application | On the old VPS: `ygg status`: the `VERSION` and `COMMIT` columns of production | e.g. `heimdall-api 1.4.0 3f2a9c1` |
 | The new machines | Two fresh Ubuntu 24.04 servers, rented now: their addresses are needed for DNS in section 1 | `<dev ip>`, `<apps ip>` |
 | Whether the old VPS serves names under `techcraftsmen.net` or `artur-rios.tech` | Is one of them in `<old domains>`? | yes / no |
@@ -239,14 +239,20 @@ Records → Import and Export → Export**): it is the record of what was there,
 your machine, with the token of 1.2:
 
 ```bash
-python3 scripts/cloudflare_dns.py --dry-run --apps <old ip or apps ip> --dev <dev ip>
+python3 scripts/cloudflare_dns.py --dry-run --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech
 ```
+
+`--skip-caa artur-rios.tech` leaves that zone's `CAA` out (`CAA skipped on artur-rios.tech (--skip-caa)`): the
+record allows Let's Encrypt only through DNS-01, and Vercel renews the certificates of `www.` and `blog.` through
+Let's Encrypt over HTTP-01, so it would break them at their next renewal, weeks later, where no check made today
+would see it. Every `cloudflare_dns.py` command of this page passes the flag. Drop it once `www.` and `blog.` have
+moved off Vercel (plan 5); the next run then makes the record.
 
 Read every line. The run is not trusted until you have: the wildcard's name filter and the format of the
 `CAA` value were never checked against Cloudflare itself.
 
 - `would create A git.techcraftsmen.net: <dev ip> (DNS only)`, the same for `jenkins.`, `traefik-dev.` and
-  `grafana-dev.`, and `would create CAA ...: 0 issue "letsencrypt.org; validationmethods=dns-01"` per zone:
+  `grafana-dev.`, and `would create CAA techcraftsmen.net: 0 issue "letsencrypt.org; validationmethods=dns-01"`:
   expected.
 - `... made by hand; change it or delete it yourself` for today's records (the bare domain and `*` of a zone
   the old VPS serves, the Vercel record at `artur-rios.tech`): expected now. Leave them; 5.8 deals with the
@@ -260,22 +266,30 @@ Read every line. The run is not trusted until you have: the wildcard's name filt
   them, and the old one only sees a change at its daily rescan (or **Scan Repository Now** in each job). The dev
   machine needs its names from 2.3 on, so in that case run the real command below when you start 2.3, keep 2.3
   to the window within a few days, and plan no release in between.
+- **A hand-made `A jenkins.techcraftsmen.net`** (or `git.`, `traefik-dev.`, `grafana-dev.`) is reported `made by
+  hand` and the script makes no record of its own beside it, so that name never reaches the dev machine. When
+  you start 2.3, delete it, or set its *Comment* to `yggdrasil` so the script updates it in place, and run again.
+  (5.8 checks it once more.)
 
-Then the same without `--dry-run`.
+Then the same without `--dry-run`:
 
-**Success looks like:** `create` lines for what was missing (at least the dev names and the `CAA`s), `N of 10
-records already right`, and an exit status (`echo $?`) of `0`, or of `1` with a `to see to:` list that holds
-**only** the hand-made records above. From any
-machine, `nslookup git.techcraftsmen.net 1.1.1.1` prints `<dev ip>`. In each zone, **SSL/TLS → Edge
-Certificates** still shows the Universal certificate **Active**, and after the `CAA` is there Vercel's
-**Domains** page shows `www.` and `blog.` valid: a `CAA` that allows Let's Encrypt only through DNS-01 is new to
-that zone, and Vercel renews its certificates through Let's Encrypt.
+```bash
+python3 scripts/cloudflare_dns.py --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech
+```
+
+**Success looks like:** `CAA skipped on artur-rios.tech (--skip-caa)`, `create` lines for what was missing (at
+least the dev names and the `CAA` of `techcraftsmen.net`), `N of 9 records already right`, and an exit status
+(`echo $?`) of `0`, or of `1` with a `to see to:` list that holds **only** the hand-made records above. From any
+machine, `nslookup git.techcraftsmen.net 1.1.1.1` prints `<dev ip>`. In `techcraftsmen.net`, **SSL/TLS → Edge
+Certificates** still shows the Universal certificate **Active**. That proves only today: the edge certificate,
+and the certificates of anything else under the zone, renew later, against the new `CAA`. Cloudflare's own
+renewals are its business with the CAs it uses; if one of yours fails in the weeks after, the `CAA` is the first
+thing to look at (Back out).
 **If it fails:** `zone ... not found: does the token have access to it?` is the token's *Zone Resources*
 (1.2); a `CAA` that Cloudflare refuses names its value: report it before going on.
 **Back out:** delete the records with the comment `yggdrasil` in the dashboard (**DNS → Records**, the
-*Comment* column); nothing else was changed. If Vercel's domains turn invalid because of the `CAA`, delete the
-`artur-rios.tech` `CAA` and add a hand-made one, `0 issue "letsencrypt.org"` without a comment: the script then
-reports it instead of making its own, until the sites move.
+*Comment* column); nothing else was changed. A `CAA` that turns out to block a certificate: delete it and pass
+`--skip-caa techcraftsmen.net` too until the cause is gone.
 
 ## 2. The dev machine
 
@@ -801,18 +815,23 @@ First, by hand in each zone's **DNS → Records**, the records the script leaves
 sending visitors to the old VPS:
 
 - a hand-made `A` at the bare domain or `*` (1.5 reported it): **Edit**, set its *Comment* to `yggdrasil`, so the
-  script updates it in place; a hand-made `CNAME` there: delete it;
+  script updates it in place; a hand-made `CNAME` there: delete it, **except** at `artur-rios.tech`'s bare domain
+  when it points at Vercel (`cname.vercel-dns.com`), which stays until that site moves (plan 5), like the other
+  Vercel records;
+- a hand-made `A` at `jenkins.`, `git.`, `traefik-dev.` or `grafana-dev.` (1.5's last bullet, if it was not dealt
+  with then): delete it, or give it the comment;
 - a hand-made `AAAA` at the bare domain or `*` (the old VPS's IPv6, noted in 1.5): delete it, or pass the new
   machine's IPv6 as `--apps6` and give it the comment;
 - a hand-made record at a name of an application or of the platform (`heimdall`, `yggdrasil`, ...): a specific
   record wins over the wildcard: delete it;
-- the Vercel records of `artur-rios.tech` stay as they are.
+- the Vercel records of `artur-rios.tech` (`www`, `blog`, and the bare domain's if it points there) stay as they
+  are.
 
 Then, on your machine:
 
 ```bash
-python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip>
-python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip>
+python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech
+python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech
 ```
 
 **Success looks like:** the dry run's `would update A techcraftsmen.net: address <old ip> -> <apps ip>` (and
@@ -824,7 +843,8 @@ new machine's console behind it (a `200`, or Traefik's `404` for an application 
 `nslookup jenkins.techcraftsmen.net 1.1.1.1` prints `<dev ip>`.
 **If it fails:** a `made by hand` line for a record that should move: its comment is not exactly `yggdrasil`.
 **Back out:** the same command with `--apps <old ip>` ([Rollback](#6-rollback)). Records it made proxied stay
-proxied: turn the proxy off by hand where it was off before (1.5's export).
+proxied: turn the proxy off by hand where it was off before, and put back what you deleted above, both from
+1.5's zone export.
 
 ### 5.9 The catalog goes to `main`
 
@@ -834,6 +854,24 @@ GitHub, to put it back in a rollback. On your machine:
 
 ```bash
 gh repo list artur-rios --limit 200 --json name,description,hasIssuesEnabled,isArchived > ~/cutover-log/github-before.json
+python3 - <<'EOF'
+import json, os, pathlib, subprocess
+def gh(path):
+    done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    return json.loads(done.stdout) if done.returncode == 0 else None
+log = pathlib.Path(os.path.expanduser("~/cutover-log/github-before"))
+log.mkdir(exist_ok=True)
+for repo in json.load(open(log.parent / "github-before.json", encoding="utf-8")):
+    if repo["isArchived"]:
+        continue
+    base = f"repos/artur-rios/{repo['name']}"
+    listed = gh(f"{base}/rulesets?includes_parents=false&per_page=100")
+    rulesets = [gh(f"{base}/rulesets/{ruleset['id']}") for ruleset in listed or []]
+    fixes = (gh(f"{base}/automated-security-fixes") or {}).get("enabled")
+    (log / f"{repo['name']}.json").write_text(json.dumps(
+        {"rulesets": rulesets, "rulesets_listed": listed is not None, "security_fixes": fixes}, indent=2), encoding="utf-8")
+    print(f"{repo['name']}: {len(rulesets)} rulesets, automated security fixes {fixes}")
+EOF
 git switch main && git pull
 git add catalog.yaml && git commit -m "chore: move the git server to forgejo" && git push origin main
 git rev-parse HEAD > ~/cutover-log/catalog-commit.txt
@@ -842,9 +880,16 @@ git rev-parse HEAD > ~/cutover-log/catalog-commit.txt
 (Your local change of 4.2 is the commit; if `git pull` refuses because of it, `git stash`, `git pull`, `git
 stash pop`.)
 
-**Success looks like:** `github-before.json` lists 4.3's `<N>` repositories; the push goes through; `python3
-scripts/catalog.py forge type` prints `forgejo`.
-**If it fails:** a refused push names the rule; you are the repository's administrator.
+- `github-before.json`: each repository's description and whether its issues are on.
+- `github-before/<repository>.json`: each ruleset in full (every repository's, the catalog's and the others',
+  which nothing else could put back) and whether automated security fixes were on (`true`, `false`, or `null`
+  where GitHub does not say, a repository without the feature). A private repository on a plan without rulesets
+  has `"rulesets_listed": false` and none to keep.
+
+**Success looks like:** `github-before.json` lists 4.3's `<N>` repositories, the loop prints a line for each one
+that is not archived, the push goes through, and `python3 scripts/catalog.py forge type` prints `forgejo`.
+**If it fails:** a refused push names the rule; you are the repository's administrator. A `0 rulesets` line for
+a public repository that has some: `GH_TOKEN` cannot read them (the `repo` scope, 4.1); fix it and run again.
 **Back out:** `git revert --no-edit "$(cat ~/cutover-log/catalog-commit.txt)" && git push origin main`.
 
 ### 5.10 The repository move: the shell has everything
@@ -881,7 +926,9 @@ to 30 minutes (`MIGRATE_TIMEOUT`).
 client timeout, wait for Forgejo to finish that repository before running again, and delete an `unfinished
 (empty)` one by hand. A repository whose import timed out but has commits reads `already imported` on the next
 run although its issues or pull requests may be incomplete: compare its counts on Forgejo and GitHub by eye, and
-if they differ, delete it on Forgejo and import it again with `--only <repository>`.
+if they differ, delete it on Forgejo and import it again with `--only <repository>`. `nothing imported: finish
+or close the open pull requests`: Dependabot opened one since 5.2 (it runs until 5.12 turns it off); close it on
+GitHub and run again.
 **Back out:** the copies are Forgejo's only; GitHub was only read.
 
 ### 5.12 Prepare the GitHub copies
@@ -922,7 +969,8 @@ the archived ones), exit `0`.
 **If it fails:** `could not make the push mirror: ...`: Forgejo's message; a `401`/`403` from GitHub later shows
 in `verify` as the mirror's last error, and is the mirror token (4.1). Run again: a mirror that exists is `already
 there`, one that never synced gets its sync asked for again.
-**Back out:** [Rollback](#6-rollback): stopping Forgejo pauses every mirror at once.
+**Back out:** [Rollback](#6-rollback), step 1: delete every push mirror first. Stopping Forgejo only pauses them:
+the next start pushes Forgejo's state over GitHub again.
 
 ### 5.14 The bots' access
 
@@ -1056,7 +1104,8 @@ and response `200`; Renovate skips every repository, which has no Renovate confi
 failing to load the library: `YGGDRASIL_LIBRARY_VERSION` is not a tag on Forgejo's yggdrasil, or `jenkins-ci`
 cannot read yggdrasil (5.14). A webhook delivery refused by Forgejo: 2.5. More in
 [setup.md, Troubleshooting](setup.md#troubleshooting).
-**Back out:** `platform.sh down` on the dev machine stops Jenkins (and Forgejo, and with it the mirrors).
+**Back out:** `platform.sh down` on the dev machine stops Jenkins (and Forgejo, which pauses the mirrors only
+until it starts again: [Rollback](#6-rollback), step 1).
 
 ### 5.19 Your clones point at Forgejo
 
@@ -1137,25 +1186,53 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
 | Up to | What changed | Undone by | Not undone |
 |---|---|---|---|
 | 5.3 to 5.7 | The old VPS is stopped; its volumes were read; copies on the apps machine | Starting the old VPS (step 5 below) | Nothing |
-| 5.8 | DNS points at the apps machine | `cloudflare_dns.py --apps <old ip>` | A record that was DNS only before stays proxied until you switch it back by hand |
+| 5.8 | DNS points at the apps machine | `cloudflare_dns.py --apps <old ip>`, and the records deleted by hand in 5.8 put back from 1.5's zone export | A record that was DNS only before stays proxied until you switch it back by hand |
 | 5.9 | `catalog.yaml` on `main` names Forgejo | Reverting the commit | Nothing |
 | 5.11 | Copies on Forgejo | Nothing to undo on GitHub | The copies stay on Forgejo; delete them before trying the window again, or they are `already imported` and stale |
-| 5.12 | GitHub: rulesets deleted, issues off, the description, automated security fixes off. Forgejo: the Dependabot commits | `github-before.json`, `rules.py` with a GitHub catalog, and a revert per repository | The old rulesets come back as `rules.py` writes them, not byte for byte |
-| 5.13 | GitHub has Forgejo's state: the Dependabot commits, and no branch or tag that only GitHub had | Stopping Forgejo pauses every mirror; the commits are reverted | **Branches and tags that only GitHub had are deleted.** After a frozen window there are none, but nothing brings one back but a clone that has it |
+| 5.12 | GitHub: rulesets deleted, issues off, the description, automated security fixes off. Forgejo: the Dependabot commits | 5.9's snapshot (`github-before.json`, `github-before/`): descriptions, issues, every ruleset and the security fixes that were on; a revert per repository | A ruleset 5.9 could not read (a private repository on a plan without them has none) |
+| 5.13 | GitHub has Forgejo's state: the Dependabot commits, and no branch or tag that only GitHub had | Deleting every push mirror (step 1; stopping Forgejo only pauses them); the commits are reverted | **Branches and tags that only GitHub had are deleted.** After a frozen window there are none, but nothing brings one back but a clone that has it |
 | 5.14, 5.15 | Forgejo collaborators and protections; `mirror tags` on the GitHub copies | Nothing to undo for the old controller: `mirror tags` only stops a version tag being moved or deleted | |
 | 5.17 on | Production ran on the apps machine | Carrying its volumes back, the same way in the other direction | **What production wrote on the new machine is lost** unless you carry it back. **Pull requests and issues opened on Forgejo stay on Forgejo.** |
 
 **Going back, in order.** Skip the steps the window never reached.
 
-1. **Stop the new system.** As `ygg`, `/opt/yggdrasil/scripts/platform.sh down` on the dev machine (Forgejo and
-   Jenkins: no more mirror pushes, no deploy), and `ygg env stop production --force` on the apps machine.
+1. **Delete every push mirror, then stop the new system** (5.13 reached). Stopping Forgejo is not enough: the next
+   `platform.sh up` starts its mirror schedule again, and the first sync pushes Forgejo's state over GitHub with
+   `--mirror`, undoing the reverts below and deleting whatever was pushed to GitHub since. So first, on your
+   machine, with the owner's token (2.4) and 5.2's `inventory.txt`:
+   ```bash
+   read -rs FORGE_TOKEN && export FORGE_TOKEN
+   forgejo=https://git.techcraftsmen.net
+   api() { printf 'header = "Authorization: token %s"\n' "$FORGE_TOKEN" | curl -fsS --config - "$@"; }
+   for repo in $(awk -F'\t' 'NF == 5 { print $1 }' ~/cutover-log/inventory.txt); do
+     for name in $(api "$forgejo/api/v1/repos/artur-rios/$repo/push_mirrors" \
+         | python3 -c 'import json, sys; print("\n".join(m["remote_name"] for m in json.load(sys.stdin)))'); do
+       api -X DELETE -o /dev/null -w "$repo $name %{http_code}\n" "$forgejo/api/v1/repos/artur-rios/$repo/push_mirrors/$name"
+     done
+   done
+   ```
+   - `api`: `curl` with the token in a header it reads from standard input, never in its arguments; `-f` makes an
+     error answer fail.
+   - `GET .../push_mirrors` lists a repository's push mirrors, each with its `remote_name`; `DELETE
+     .../push_mirrors/<remote_name>` removes one. A repository with none (an archived one) prints nothing.
+
+   Success: one line `<repository> <remote_name> 204` per mirror, and running the loop again prints nothing. If it
+   fails: `curl: (22) ... 403` on every repository is the token (an empty one too: `read` was not answered).
+
+   Then as `ygg`, `/opt/yggdrasil/scripts/platform.sh down` on the dev machine (no deploy, no Jenkins) and `ygg env
+   stop production --force` on the apps machine. **Start Forgejo again only after the mirrors are gone**, or with mirroring
+   off: `FORGEJO__mirror__ENABLED: "false"` added to the `forgejo` service's `environment` in
+   `/opt/yggdrasil/platform/compose.yml` (a local change; `git checkout -- platform/compose.yml` undoes it). Forgejo
+   then refuses every mirror request with `Mirror feature is disabled`.
+   Before 5.13 there is no mirror: `platform.sh down` alone.
 2. **DNS back** (5.8 reached), on your machine:
    ```bash
-   python3 scripts/cloudflare_dns.py --apps <old ip> --dev <dev ip>
+   python3 scripts/cloudflare_dns.py --apps <old ip> --dev <dev ip> --skip-caa artur-rios.tech
    ```
    Success: `update A techcraftsmen.net: address <apps ip> -> <old ip>` and the same for `*` and
-   `artur-rios.tech`. If the old controller's name was `jenkins.techcraftsmen.net`, set that record back to
-   `<old ip>` by hand, and remove its comment so the script leaves it alone.
+   `artur-rios.tech`. Then put back, from 1.5's zone export, the records you deleted by hand in 5.8, and turn the
+   proxy off where it was off. If the old controller's name was `jenkins.techcraftsmen.net`, set that record back
+   to `<old ip>` by hand, and remove its comment so the script leaves it alone.
 3. **The repositories on GitHub** (5.9 reached). The rulesets were deleted, so these pushes go through:
    - the catalog: in your clone of yggdrasil, `git switch main && git pull github main` (or `origin`, if 5.19
      has not run), `git revert --no-edit "$(cat ~/cutover-log/catalog-commit.txt)"`, `git push <that remote>
@@ -1164,40 +1241,84 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    - the Dependabot files (5.13 reached): for each repository that `prepare-github.txt` says `deleted
      .github/dependabot.yml on <branch>`, in a clone from GitHub:
      ```bash
-     git switch <branch> && git pull
+     git switch <branch> && git pull <remote> <branch>
      git revert --no-edit "$(git log -1 --format=%H --grep='^chore: stop dependabot; renovate replaces it$')"
-     git push origin <branch>
+     git push <remote> <branch>
      ```
-4. **Rulesets** (5.12 reached). With the catalog reverted (no `forge` block: GitHub), in your clone:
+     `<remote>` is GitHub's: `github` in a clone 5.19 switched to Forgejo, `origin` in one it did not.
+4. **Rulesets** (5.12 reached), every repository's, as 5.9 kept them:
+   ```bash
+   python3 - <<'EOF'
+   import json, os, pathlib, subprocess
+   fields = ("name", "target", "enforcement", "bypass_actors", "conditions", "rules")
+   for path in sorted(pathlib.Path(os.path.expanduser("~/cutover-log/github-before")).glob("*.json")):
+       for ruleset in json.loads(path.read_text(encoding="utf-8"))["rulesets"]:
+           body = {key: ruleset[key] for key in fields if key in ruleset}
+           subprocess.run(["gh", "api", "-X", "POST", f"repos/artur-rios/{path.stem}/rulesets", "--input", "-",
+                           "--silent"], input=json.dumps(body), text=True, check=True)
+           print(f"{path.stem}: ruleset '{body['name']}' back")
+   EOF
+   ```
+   Success: a line for each ruleset 5.9 printed; each repository's **Settings → Rules → Rulesets** lists them
+   again, and the `mirror tags` that `rules.py` made (it can stay: it only stops a version tag being moved or
+   deleted). A ruleset that exists already is refused with an error naming it: run the loop for the other
+   repositories (`--only` is not there: move that file out of `github-before/`).
+
+   Without 5.9's snapshot, `rules.py` with the catalog reverted (no `forge` block: GitHub) puts back the catalog
+   repositories' rulesets, not quite as they were ([CHANGELOG](../CHANGELOG.md#upgrading-an-existing-github-installation-to-the-pipeline),
+   [setup.md, An existing GitHub installation](setup.md#an-existing-github-installation)): `branch-policy` and the
+   `checks` are required but bound to no app, not to GitHub Actions; `release tags` has no administrator bypass any
+   more, so not even you can move or delete a version tag without disabling it; an owner-tagged repository gets a
+   new ruleset, `release tag creation`. The other repositories' rulesets are gone for good then.
    ```bash
    python3 scripts/rules.py --dry-run
    python3 scripts/rules.py
    ```
-   The `develop`, `main` and `release tags` rulesets come back. One difference from the old ones:
-   `branch-policy` and the `checks` are required but no longer bound to GitHub Actions
-   ([setup.md, An existing GitHub installation](setup.md#an-existing-github-installation)); the old pipeline's
-   statuses satisfy them as before. The `mirror tags` rulesets can stay or be deleted by hand.
-5. **GitHub settings** (5.12 reached): issues and descriptions as they were, and automated security fixes back on:
+5. **GitHub settings** (5.12 reached): issues and descriptions as they were, and automated security fixes back on
+   where 5.9 found them on:
    ```bash
    python3 - <<'EOF'
-   import json, os, subprocess
-   for repo in json.load(open(os.path.expanduser("~/cutover-log/github-before.json"))):
+   import json, os, pathlib, subprocess
+   log = pathlib.Path(os.path.expanduser("~/cutover-log"))
+   for repo in json.load(open(log / "github-before.json", encoding="utf-8")):
        if repo["isArchived"]:
            continue
        name = f"artur-rios/{repo['name']}"
        subprocess.run(["gh", "repo", "edit", name, "--description", repo["description"] or "",
                        f"--enable-issues={str(repo['hasIssuesEnabled']).lower()}"], check=True)
-       subprocess.run(["gh", "api", "-X", "PUT", f"repos/{name}/automated-security-fixes", "--silent"])
+       saved = log / "github-before" / f"{repo['name']}.json"
+       if saved.exists() and json.loads(saved.read_text(encoding="utf-8"))["security_fixes"]:
+           subprocess.run(["gh", "api", "-X", "PUT", f"repos/{name}/automated-security-fixes", "--silent"], check=True)
    EOF
    ```
-   Success: no error; a repository's page shows its old description and its Issues tab again.
-6. **Start the old VPS**: `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start production`. If production
-   took writes on the new machine you want to keep, first carry its volumes back: `volumes.sh export` as `ygg` on
-   the apps machine (its applications stopped), copy, and on the old VPS `docker volume rm` the old ones (their
-   tars are in `/srv/cutover`) and `sudo bash ~/cutover-tools/volumes.sh import <dir>`.
+   Success: no error; a repository's page shows its old description and its Issues tab again, and **Settings →
+   Code security** shows automated security fixes on where they were.
+6. **Start the old VPS**: `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start production`. But first, if
+   production took writes on the new machine that you want to keep, carry its volumes back, the way they came. On
+   the apps machine, as `ygg`, with production stopped (step 1):
+   ```bash
+   /opt/yggdrasil/scripts/volumes.sh export ~/carry-back $(cut -f1 ~/cutover/manifest.tsv)
+   ```
+   If 4.6 renamed a volume, rename it back the same way in `~/carry-back` (its `.tar` and the first three columns
+   of its `manifest.tsv` line), to the old VPS's name. Copy `~/carry-back` to the old VPS as 5.5 did in the other
+   direction (`scp -3 -r ygg@<apps ip>:carry-back <old admin>@<old ip>:`). There, the old containers still exist,
+   only stopped, and `ygg env start` restarts exactly those, so the volumes cannot be removed: empty each one in
+   place, then import into it, which fills an existing empty volume whose labels match (and creates one the old VPS
+   never had):
+   ```bash
+   for volume in $(cut -f1 ~/carry-back/manifest.tsv); do
+     sudo docker volume inspect "$volume" >/dev/null 2>&1 || continue   # not there: the import creates it
+     sudo docker run --rm -v "$volume":/v busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e \
+       sh -c 'find /v -mindepth 1 -delete'
+   done
+   sudo bash ~/cutover-tools/volumes.sh import ~/carry-back
+   ```
+   Success: `volumes: <volume> exists, empty, with the same labels: filling it` for each (`creating <volume>` for one
+   the old VPS never had), then `volumes: imported N volume(s)`. Then start the old VPS as above. The old data is still in `/srv/cutover`, if this goes wrong.
 7. **Check**: the old console shows production up; a push to an application's `develop` on GitHub deploys it.
 8. **Tell the users**, and write down where it went wrong before trying again. A new attempt starts at 4.7, with
-   the Forgejo copies deleted first.
+   the Forgejo copies deleted first (each one's **Settings → Danger Zone**), which needs Forgejo running: only once
+   step 1 has deleted every push mirror.
 
 ## 7. Clean up
 
@@ -1209,7 +1330,10 @@ At the provider, take a snapshot of the old VPS (or keep `/srv/cutover` somewher
 it when you no longer want the way back.
 
 **Success looks like:** the provider shows it stopped; nothing of yours answers at `<old ip>`.
-**Back out:** power it on; 6 applies.
+**Back out:** power it on; section 6 applies as long as 7.2 has not run. Once 7.2 has deleted the old
+controller's key and reduced the App, the old controller can no longer act on GitHub: going back then also means
+a new private key for it (setup.md 7.4, 9.1 on the old VPS) and the App's permissions and webhook as setup.md 7.2
+lists them.
 
 ### 7.2 The GitHub App, reduced
 
