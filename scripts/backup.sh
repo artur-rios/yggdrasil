@@ -16,7 +16,8 @@ umask 077
 die() { echo "backup: $*" >&2; exit 1; }
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-# docker_socket, require_rootless and use_rootless_engine, shared with platform.sh.
+# docker_socket, require_rootless, use_rootless_engine and TAR_IMAGE (what tars a volume), shared with
+# platform.sh and volumes.sh.
 # shellcheck source=docker-engine.sh
 source "$root/scripts/docker-engine.sh"
 secrets=${YGG_SECRETS_DIR:-/etc/yggdrasil}
@@ -32,9 +33,6 @@ FORGEJO_PROJECT=yggdrasil
 FORGEJO_SERVICE=forgejo
 FORGEJO_CONFIG=/var/lib/gitea/custom/conf/app.ini
 FORGEJO_DUMP=/tmp/forgejo-dump.zip
-# What tars a volume: pinned by version and digest, like the platform's images, so the night's run
-# never pulls whatever "latest" is that day.
-BUSYBOX=busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 # A day of ~/backups is a directory named by its date.
 DAY_PATTERN='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 
@@ -191,10 +189,10 @@ dump_forgejo() {
   return "$status"
 }
 
-# dump_volume <name> <file>: a throwaway busybox container with the volume mounted read-only: the data is
-# only read, and whatever uses the volume doesn't have to stop.
+# dump_volume <name> <file>: a throwaway container of the pinned TAR_IMAGE with the volume mounted
+# read-only: the data is only read, and whatever uses the volume doesn't have to stop.
 dump_volume() {
-  docker run --rm --volume "$1:/volume:ro" "$BUSYBOX" tar -C /volume -czf - . >"$2.partial" || return 1
+  docker run --rm --volume "$1:/volume:ro" "$TAR_IMAGE" tar -C /volume -czf - . >"$2.partial" || return 1
 }
 
 # dump_postgres <container> <user> <file>

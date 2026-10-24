@@ -1,7 +1,13 @@
 # shellcheck shell=bash
 # The Docker engine a yggdrasil script talks to: the invoking user's own rootless one. Sourced (not run)
-# by scripts/platform.sh and scripts/agent.sh, which define die() -- it prefixes the message with the
-# script's name.
+# by scripts/platform.sh, scripts/agent.sh, scripts/backup.sh, scripts/renovate.sh and scripts/volumes.sh,
+# which define die() -- it prefixes the message with the script's name.
+
+# What tars a volume (backup.sh) and untars one (volumes.sh): pinned by version and digest, like the
+# platform's images, so a night's backup or the day of the cutover never pulls whatever "latest" is then.
+# One definition for both, so they cannot drift apart. It is used by the scripts that source this file.
+# shellcheck disable=SC2034
+TAR_IMAGE=busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 
 # The path of the invoking user's own Docker socket: DOCKER_HOST when it is unix://..., else the
 # socket in the user's runtime directory (XDG_RUNTIME_DIR, /run/user/<uid> by default). Never
