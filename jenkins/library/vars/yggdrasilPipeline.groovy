@@ -1589,10 +1589,12 @@ void releaseResume() {
 }
 
 // Stage Tag the merge, for release-resume's COMMIT. On the release agent with the read token (nothing of
-// the repository runs): the commit checked out with every branch, and it must be on main, a merge commit
-// (two parents) and titled as mergeAndTag titles a release's merge, "release: <tag> (#N)". Only
-// forge.jenkinsUser merges into an application's main, and only mergeAndTag writes that title, so such a
-// commit is the merge of that release -- not any commit of main the owner names. A tag already there is
+// the repository runs): the commit checked out with every branch, and it must be on main's first-parent
+// line, a merge commit (two parents) and titled as mergeAndTag titles a release's merge, "release: <tag>
+// (#N)". Only forge.jenkinsUser merges into an application's main, and only mergeAndTag writes that title
+// on main's own line, so such a commit is the merge of that release -- not any commit of main the owner
+// names. Being an ancestor of main is not enough: a branch can carry a hand-made two-parent commit with that
+// title, which reaches main as a commit merged in from develop, off the first-parent line. A tag already there is
 // left as it is when it is on the commit, and fails the job on any other. Then the tag is made on the
 // publish agent, by ensureTag, the release pull request's own step.
 void tagReleaseMerge(Map ctx, String tag, String commit) {
@@ -1615,9 +1617,10 @@ void tagReleaseMerge(Map ctx, String tag, String commit) {
           error "forge.sh tag-sha exited ${code}; its message is above."
         }
         withEnv(["YGG_SHA=${commit}"]) {
-          int onMain = sh(script: 'git -C app merge-base --is-ancestor "$YGG_SHA" refs/remotes/origin/main', returnStatus: true)
+          // grep finds nothing when rev-list fails too, so an unreadable main refuses the commit as well.
+          int onMain = sh(script: 'git -C app rev-list --first-parent refs/remotes/origin/main | grep -qx "$YGG_SHA"', returnStatus: true)
           if (onMain != 0) {
-            error "Not released: ${commit.take(7)} is not on main (git merge-base exit ${onMain})."
+            error "Not released: ${commit.take(7)} is not one of main's own merges (on main's first-parent line)."
           }
           List parents = sh(script: 'git -C app rev-list --parents -n 1 "$YGG_SHA"', returnStdout: true).trim().split(/\s+/) as List
           String subject = sh(script: 'git -C app log -1 --format=%s "$YGG_SHA"', returnStdout: true).trim()

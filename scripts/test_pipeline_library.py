@@ -1075,16 +1075,19 @@ class TagReleaseLibraryTests(unittest.TestCase):
         reading = body.index("node('release')")
         self.assertLess(reading, body.index("checkoutCommit(ctx, commit)"))
         self.assertIn("toolStatus('forge.sh', ['tag-sha', ctx.repo, tag]", body)
-        # On main, a merge commit (two parents), titled as mergeAndTag titles the release's merge.
-        for wanted in ('merge-base --is-ancestor "$YGG_SHA" refs/remotes/origin/main',
+        # On main's first-parent line (main's own merges, not a commit merged into it from a branch), a
+        # merge commit (two parents), titled as mergeAndTag titles the release's merge.
+        for wanted in ('git -C app rev-list --first-parent refs/remotes/origin/main | grep -qx "$YGG_SHA"',
                        'git -C app rev-list --parents -n 1 "$YGG_SHA"', 'git -C app log -1 --format=%s "$YGG_SHA"',
                        "java.util.regex.Pattern.quote(tag)"):
             self.assertIn(wanted, body)
+        # Being an ancestor of main is not enough: a branch can carry a hand-made merge with that title.
+        self.assertNotIn("merge-base --is-ancestor", body)
         self.assertIn(r"'release: ' + java.util.regex.Pattern.quote(tag) + ' \\(#[0-9]+\\)'", body)
         # The checks come before the tag, which is made by ensureTag on the publish agent, with the write
         # token (onPublishAgent's write), and nowhere else.
         tagging = body.index("onPublishAgent(ctx, true, false)")
-        for check in ("merge-base", "rev-list --parents", "log -1 --format=%s"):
+        for check in ("rev-list --first-parent", "rev-list --parents", "log -1 --format=%s"):
             self.assertLess(body.index(check), tagging)
         self.assertLess(tagging, body.index("ensureTag(ctx, tag, commit)"))
         self.assertNotIn("create-tag", body)

@@ -1643,9 +1643,11 @@ not reproducible can give a file with the same size and other bytes than the one
 GitHub copy would then differ in content; a different size stops the run. And if the merge went through but the
 tag did not, the message says *merged as `<sha>`, but not tagged* and names a third parameter: run
 `release-resume` with `COMMIT=<sha>` too. Only the Jenkins user may create an application's `v*` tags (on
-Forgejo not even you), so the job makes it: it checks that the commit is on `main`, is a merge commit and is
-titled `release: vx.y.z (#N)` for that very `TAG` (only Jenkins merges into an application's `main`, and only a
-release pull request's merge has that title, so no other commit can be tagged this way), then tags it on the
+Forgejo not even you), so the job makes it: it checks that the commit is one of `main`'s own merges (on its
+first-parent line, not a commit merged into it from a branch), is a merge commit and is titled
+`release: vx.y.z (#N)` for that very `TAG` (only Jenkins merges into an application's `main`, and only a release
+pull request's merge has that title there, so no other commit can be tagged this way — not even a hand-made
+commit with that title brought in through `develop`), then tags it on the
 publish agent and goes on as above. A tag of that name already on the commit is kept; one on another commit
 stops the job. `COMMIT` is refused for an `owner-tag` repository, whose tags are yours to make.
 

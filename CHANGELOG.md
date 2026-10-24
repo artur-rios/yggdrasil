@@ -98,7 +98,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (finishes a release from its tag: after a failure past the merge, to make the GitHub copy, for a tag never built)
   and **`actions-release`** (attaches Windows files later) are started by hand with `REPOSITORY` and `TAG`;
   `release-resume` also takes `COMMIT`, for a release merged but never tagged: it tags the merge commit (only when
-  it is that release's merge on `main`), since only Jenkins may create an application's `v*` tags.
+  it is that release's merge on `main`'s first-parent line), since only Jenkins may create an application's `v*`
+  tags.
 - **Owner-tagged releases and NuGet**: a `repositories` entry with `release: owner-tag` is released by the owner's
   tag on `main` (tag with `git tag -a`: Jenkins builds only tags at most a day old and dates a lightweight tag by its
   commit). `publish.nuget` packs a library's packages with no credential, then `scripts/nuget-push.sh` pushes them

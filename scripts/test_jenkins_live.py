@@ -1728,11 +1728,12 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIsNone(self.tag_commit(UNTAGGED, "v1.0.0"))
 
         # Refused: a COMMIT that is not hex; an owner-tagged repository (its tags are the owner's to make);
-        # develop's head, on main but not the release's merge; and no COMMIT at all, since there is no tag.
+        # develop's head, an ancestor of main but merged into it from the release branch, so off main's
+        # first-parent line; and no COMMIT at all, since there is no tag.
         for repository, commit, message in (
                 (UNTAGGED, "main", "'main' is not a commit"),
                 (OWNED, merge, f"COMMIT is only for an application's release"),
-                (UNTAGGED, develop, f"{develop[:7]} is not the merge of the release v1.0.0"),
+                (UNTAGGED, develop, f"{develop[:7]} is not one of main's own merges (on main's first-parent line)."),
                 (UNTAGGED, "", f"{UNTAGGED} has no tag v1.0.0.")):
             refused = self.release_resume(repository, "v1.0.0", commit)
             self.assertEqual(refused.result, "FAILURE", (repository, commit, refused.console[-3000:]))
