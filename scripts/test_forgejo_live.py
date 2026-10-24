@@ -1057,14 +1057,14 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         # refs of the target -- standing in for GitHub's copy, see GitHubOnForgejo -- are the source's.
         self.eventually(lambda: self.tags(target) == self.tags(source), "the tags on the target")
         default = owner.request("GET", f"/repos/{OWNER}/{source}")["default_branch"]
-        github = GitHubOnForgejo([github_repository(source, default_branch=default)], owner, {source: target},
+        github = GitHubOnForgejo([github_repository(source, default_branch=default, private=True)], owner, {source: target},
                                  login=OWNER, settings={source: {"has_issues": False}})
         code, out, err = self.migrate_run(["verify", "--only", source], catalog, env=env,
                                           mirror_to=lambda name: address, github=github)
         self.assertEqual((code, err), (0, ""), out)
         self.assertEqual([line.split("\t")[1:3] for line in out.splitlines()[:-1]],
-                         [["on Forgejo", "ok"], ["default branch", "ok"], ["push mirror", "ok"], ["refs", "ok"],
-                          ["rulesets", "ok"], ["issues", "ok"]])
+                         [["on Forgejo", "ok"], ["default branch", "ok"], ["visibility", "ok"], ["push mirror", "ok"],
+                          ["refs", "ok"], ["rulesets", "ok"], ["issues", "ok"]])
         self.assertEqual(out.splitlines()[-1], "1 repositories, 0 checks failed")
         # develop, main and the tag were compared, not nothing; and Forgejo's refs/pull/* did not count.
         self.assertIn("\t3 refs the same", out)
@@ -1192,7 +1192,7 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
                       rules.forgejo_webhook({"url": f"{jenkins}/gitea-webhook/post", "secret": "a-throwaway-secret"}))
         code, out, rows = verified()
         self.assertEqual({check: row[0] for check, row in rows.items()},
-                         {"on Forgejo": "ok", "default branch": "ok", "push mirror": "FAIL", "refs": "ok",
+                         {"on Forgejo": "ok", "default branch": "ok", "visibility": "ok", "push mirror": "FAIL", "refs": "ok",
                           "rulesets": "ok", "issues": "ok", "webhook": "ok", "collaborators": "ok"}, out)
         self.assertEqual((code, rows["push mirror"][1]), (1, "no push mirror"))
 
@@ -1203,8 +1203,9 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
 
     def github_of(self, repo):
         """A GitHub for verify whose copy of `repo` is the repository itself, prepared as verify wants it."""
-        default = self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}")["default_branch"]
-        return GitHubOnForgejo([github_repository(repo, default_branch=default)], self.api[OWNER], login=OWNER,
+        found = self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}")
+        return GitHubOnForgejo([github_repository(repo, default_branch=found["default_branch"], private=found["private"])],
+                               self.api[OWNER], login=OWNER,
                                settings={repo: {"has_issues": False}},
                                rulesets={repo: [{"id": 1, "name": "mirror tags", "enforcement": "active"}]})
 

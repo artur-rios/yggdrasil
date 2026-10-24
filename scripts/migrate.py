@@ -65,7 +65,7 @@ and goes on to the next, so a re-run picks up where it stopped):
               One row per check (tab-separated: repo, check, ok|FAIL, detail), then `<N> repositories, <K> checks
               failed`; exit 1 on any FAIL. Per repository of the GitHub owner: it is on Forgejo (else the
               rest is skipped); its default branch is `develop` for a catalog repository (rules.py sets it),
-              GitHub's for any other; its push mirror points at the GitHub copy,
+              GitHub's for any other; it is private exactly when GitHub's is; its push mirror points at the GitHub copy,
               has synced (a `last_update` after 1970: Forgejo may answer the zero time for none) and has no
               `last_error` (the error is printed, scrubbed: Forgejo pushes with --mirror, so GitHub refusing
               its own refs/pull/* shows up here), and no other push mirror is beside it; every branch and every
@@ -944,6 +944,18 @@ def _check_default_branch(repo, found, in_catalog):
     return False, f"{have or 'none'} on Forgejo, {wanted} on GitHub"
 
 
+def _check_visibility(repo, found):
+    # The import asks Forgejo for GitHub's visibility; a copy that is public where GitHub's is private
+    # publishes it, and one made private where GitHub's is public hides it from its readers.
+    have = found.get("private")
+    if not isinstance(have, bool):
+        return False, "Forgejo's answer does not say whether the copy is private"
+    shown = {True: "private", False: "public"}
+    if have == repo["private"]:
+        return True, shown[have]
+    return False, f"{shown[have]} on Forgejo, {shown[repo['private']]} on GitHub"
+
+
 def _check_mirror(ctx, name):
     mirrors = ctx.forgejo.request("GET", f"/repos/{ctx.forgejo_owner}/{name}/push_mirrors") or []
     if not mirrors:
@@ -1081,6 +1093,7 @@ def _verify_one(ctx, repo, catalog_names, models, jenkins_url):
     _row(ctx, name, "on Forgejo", True, "present")
 
     check("default branch", lambda: _check_default_branch(repo, found, name in catalog_names))
+    check("visibility", lambda: _check_visibility(repo, found))
     if repo["archived"]:
         # Frozen on GitHub: no mirror pushes to it, nothing there changes, and it takes no setting.
         _row(ctx, name, "github", True, "archived on GitHub: Forgejo only")
@@ -1097,8 +1110,9 @@ def _verify_one(ctx, repo, catalog_names, models, jenkins_url):
 
 
 def cmd_verify(ctx, args):
-    """The gate before pushes go to Forgejo: per repository, on Forgejo, default branch, push mirror, refs,
-    GitHub's rulesets and issues, and for catalog repositories the webhook and the bots. Read only."""
+    """The gate before pushes go to Forgejo: per repository, on Forgejo, default branch, visibility, push
+    mirror, refs, GitHub's rulesets and issues, and for catalog repositories the webhook and the bots. Read
+    only."""
     ctx.forgejo  # a missing token is a usage error before any output
     repos = github_repositories(ctx.gh, ctx.github_owner, ctx.only)
     catalog_names = ctx.catalog_repositories()

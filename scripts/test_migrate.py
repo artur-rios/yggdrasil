@@ -318,7 +318,7 @@ class FakeForgejo:
 def forgejo_repository(name, **fields):
     """A repository as Forgejo answers `GET /repos/<owner>/<name>` (more fields than migrate reads)."""
     return {"id": 7, "name": name, "full_name": f"{OWNER}/{name}", "empty": False, "mirror": False,
-            "default_branch": "develop", **fields}
+            "private": False, "default_branch": "develop", **fields}
 
 
 def sixty(**by_name):
@@ -1486,12 +1486,12 @@ class VerifyTests(unittest.TestCase):
         run = self.run_verify(world)
         self.assertEqual(run.code, 0, run.out + run.err)
         self.assertEqual({row[2] for row in self.rows(run)}, {"ok"})
-        # A catalog repository gets all eight checks; one that is not in the catalog has no webhook, no bots.
+        # A catalog repository gets all nine checks; one that is not in the catalog has no webhook, no bots.
         self.assertEqual([row[1] for row in self.rows(run, "toolkit")],
-                         ["on Forgejo", "default branch", "push mirror", "refs", "rulesets", "issues", "webhook",
-                          "collaborators"])
+                         ["on Forgejo", "default branch", "visibility", "push mirror", "refs", "rulesets", "issues",
+                          "webhook", "collaborators"])
         self.assertEqual([row[1] for row in self.rows(run, "old-fork")],
-                         ["on Forgejo", "default branch", "push mirror", "refs", "rulesets", "issues"])
+                         ["on Forgejo", "default branch", "visibility", "push mirror", "refs", "rulesets", "issues"])
         self.assertEqual(run.lines[-1], "2 repositories, 0 checks failed")
         self.assertEqual({len(line.split("\t")) for line in run.lines if not line.startswith("note: ")} - {1}, {4})
         # Read only, however it goes: no write to either server.
@@ -1721,6 +1721,26 @@ class VerifyTests(unittest.TestCase):
         self.assert_only_failing(run, "toolkit", "default branch")
         self.assertIn("main on Forgejo, wants develop", self.row(run, "toolkit", "default branch")[3])
 
+    def test_given_a_visibility_that_is_not_githubs_when_verified_then_it_fails(self):
+        # The import asks for GitHub's visibility; a copy made public by hand, or a migration that ignored the
+        # flag, would publish a private repository: verify compares the two.
+        for github_private, forgejo_private, detail in ((True, False, "public on Forgejo, private on GitHub"),
+                                                        (False, True, "private on Forgejo, public on GitHub")):
+            with self.subTest(github_private=github_private):
+                gh, forgejo = verified_world()
+                gh.repos[0] = repository("toolkit", private=github_private)
+                forgejo.existing["toolkit"] = forgejo_repository("toolkit", private=forgejo_private)
+                run = self.run_verify((gh, forgejo))
+                self.assert_only_failing(run, "toolkit", "visibility")
+                self.assertEqual(self.row(run, "toolkit", "visibility")[3], detail)
+        gh, forgejo = verified_world()
+        gh.repos[0] = repository("toolkit", private=True)
+        forgejo.existing["toolkit"] = forgejo_repository("toolkit", private=True)
+        self.assertEqual(self.row(self.run_verify((gh, forgejo)), "toolkit", "visibility")[2:], ["ok", "private"])
+        # A Forgejo answer without the field says nothing: no `ok` on a guess.
+        forgejo.existing["toolkit"] = {k: v for k, v in forgejo_repository("toolkit").items() if k != "private"}
+        self.assertEqual(self.row(self.run_verify((gh, forgejo)), "toolkit", "visibility")[2], "FAIL")
+
     def test_given_an_archived_repository_when_verified_then_only_forgejo_is_checked(self):
         gh, forgejo = verified_world(("toolkit", "old-fork"))
         gh.repos[1] = repository("old-fork", archived=True)
@@ -1732,6 +1752,7 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(self.rows(run, "old-fork"),
                          [["old-fork", "on Forgejo", "ok", "present"],
                           ["old-fork", "default branch", "ok", "develop"],
+                          ["old-fork", "visibility", "ok", "public"],
                           ["old-fork", "github", "ok", "archived on GitHub: Forgejo only"]])
         self.assertFalse([c for c in gh.calls if c[1].startswith(f"/repos/{MIRROR}/old-fork")])
         # Its presence on Forgejo still counts.
