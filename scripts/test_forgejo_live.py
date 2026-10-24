@@ -1136,6 +1136,10 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         pushed = self.git(OWNER, "push", f"{self.url}/{OWNER}/{target}.git", "refs/remotes/origin/main:refs/heads/main",
                           "refs/remotes/origin/develop:refs/heads/develop", cwd=clone)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        # Forgejo takes the first push into an empty repository in the background: until then its API still
+        # calls it empty and refuses a branch made from develop.
+        self.eventually(lambda: not owner.request("GET", f"/repos/{OWNER}/{target}")["empty"]
+                        and self.branch_exists(target, "develop"), "the pushed develop on the target", seconds=60)
         self.change_file(OWNER, source, "ahead.txt", "the source moved on\n", "develop")
         owner.request("POST", f"/repos/{OWNER}/{target}/branches",
                       {"new_branch_name": "github-only", "old_branch_name": "develop"})
