@@ -1121,7 +1121,10 @@ scripts/migrate.py mirrors --only <repo> --allow-prune` makes the mirror anyway,
 moves each ref named (the line says which). `could not make the push mirror: ...`: Forgejo's message; a
 `401`/`403` from GitHub later shows in `verify` as the mirror's last error, and is the mirror token (4.1). Run
 again: a mirror that exists and has pushed is `already there`; one that never synced is compared again, then
-gets its sync asked for.
+gets its sync asked for. A refused repository whose mirror exists but never synced (a run stopped between the two)
+also prints `deleted its unsynced push mirror so Forgejo can't push it on its own`: left there, Forgejo would
+make that first push itself, on a commit or within 8 hours. Having never pushed, it loses nothing; the run that
+passes the guard makes it again. A mirror that has synced is never deleted.
 **Back out:** [Rollback](#6-rollback), step 1: delete every push mirror first. Stopping Forgejo only pauses them:
 the next start pushes Forgejo's state over GitHub again.
 

@@ -268,14 +268,24 @@ class FakeForgejo:
         return items[(page - 1) * size:page * size]
 
     def _mirror_request(self, method, path, body):
-        """`GET|POST /repos/<owner>/<name>/push_mirrors` and `POST .../push_mirrors-sync`, as Forgejo answers
-        them: the list leaves the credentials out of `remote_address`; the sync answers 200 and runs later."""
+        """`GET|POST /repos/<owner>/<name>/push_mirrors`, `POST .../push_mirrors-sync` and `DELETE
+        .../push_mirrors/<remote_name>`, as Forgejo answers them: the list leaves the credentials out of
+        `remote_address`; the sync answers 200 and runs later; a delete of a mirror it has not is 404. (A
+        delete's mirror_fail key names the segment `push_mirrors`.)"""
         name, _, last = path[len(f"/repos/{OWNER}/"):].partition("/")
+        last, _, remote = last.partition("/")
         if not path.startswith(f"/repos/{OWNER}/") or last not in ("push_mirrors", "push_mirrors-sync"):
             return NotImplemented
         for key in ((method, last), (name, method, last)):
             if key in self.mirror_fail:
                 raise migrate.rules.ApiError(method, path, self.mirror_fail[key], "mirror refused")
+        if remote:
+            assert (method, last) == ("DELETE", "push_mirrors"), path
+            kept = [m for m in self.mirrors.get(name, []) if m["remote_name"] != remote]
+            if len(kept) == len(self.mirrors.get(name, [])):
+                raise migrate.rules.ApiError(method, path, 404, "The target couldn't be found.")
+            self.mirrors[name] = kept
+            return None
         if (method, last) == ("GET", "push_mirrors"):
             return list(self.mirrors.get(name, []))
         if (method, last) == ("POST", "push_mirrors"):
@@ -1289,15 +1299,80 @@ class MirrorsTests(unittest.TestCase):
         self.assertIn("refs/heads/hotfix only on GitHub", note)
         self.assertIn("GitHub's develop at", note)
 
-    def test_given_a_mirror_never_synced_and_what_only_github_has_when_mirrored_then_no_sync_is_asked(self):
+    def test_given_a_mirror_never_synced_and_what_only_github_has_when_mirrored_then_no_sync_is_asked_and_it_is_deleted(self):
         # A mirror made by a run that stopped before its sync has pushed nothing yet: the sync asked for would
-        # be the first --mirror push, so the guard stands before it too.
+        # be the first --mirror push, so the guard stands before it too. And left there, Forgejo would make
+        # that push on its own (on the next commit, or within 8 hours), so the refused mirror is deleted:
+        # having never pushed, it loses nothing, and the run that passes the guard makes it again.
         run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER},
                            {"refs/heads/develop": SHA_DEVELOP},
                            mirrors={"toolkit": [push_mirror("toolkit", last_update=None)]})
         self.assertEqual(run.code, 1)
         self.assertIn("refs/heads/hotfix only on GitHub", run.err)
         self.assertEqual(run.forgejo.synced, ["other-lib"])
+        self.assertIn(("DELETE", f"/repos/{OWNER}/toolkit/push_mirrors/remote_mirror_x", None), run.forgejo.writes())
+        self.assertEqual(run.forgejo.mirrors["toolkit"], [])
+        # The refusal comes first, then what was done about the mirror.
+        toolkit = [line for line in run.lines if line.startswith("toolkit: ")]
+        self.assertTrue(toolkit[0].startswith("toolkit: the first mirror push would delete or move"), toolkit)
+        self.assertEqual(toolkit[1:], ["toolkit: deleted its unsynced push mirror so Forgejo can't push it on its own"])
+
+    def test_given_a_mirror_never_synced_and_a_refusal_in_a_dry_run_when_mirrored_then_it_says_it_would_delete_it(self):
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER},
+                           {"refs/heads/develop": SHA_DEVELOP}, args=["--dry-run", "mirrors"],
+                           mirrors={"toolkit": [push_mirror("toolkit", last_update="")]})
+        self.assertEqual(run.code, 1)
+        self.assertIn("toolkit: would delete its unsynced push mirror so Forgejo can't push it on its own", run.lines)
+        self.assertEqual(run.forgejo.writes(), [])
+        self.assertEqual(len(run.forgejo.mirrors["toolkit"]), 1)
+
+    def test_given_a_synced_mirror_beside_an_unsynced_one_and_a_refusal_when_mirrored_then_only_the_unsynced_one_goes(self):
+        # One that has pushed is never deleted, whatever the guard says: it is the mirror at work.
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER},
+                           {"refs/heads/develop": SHA_DEVELOP},
+                           mirrors={"toolkit": [push_mirror("toolkit", remote_name="unsynced", last_update=None),
+                                                push_mirror("toolkit", remote_name="synced")]})
+        self.assertEqual(run.code, 1)
+        self.assertEqual([path for method, path, _ in run.forgejo.writes() if method == "DELETE"],
+                         [f"/repos/{OWNER}/toolkit/push_mirrors/unsynced"])
+        self.assertEqual([m["remote_name"] for m in run.forgejo.mirrors["toolkit"]], ["synced"])
+
+    def test_given_an_unsynced_mirror_and_a_guard_that_cannot_compare_when_mirrored_then_it_is_deleted_too(self):
+        # Unsure is not a yes either: the guard could not look, and Forgejo would still push on its own.
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
+                              refs={"toolkit": {"refs/heads/develop": SHA_DEVELOP}},
+                              mirrors={"toolkit": [push_mirror("toolkit", last_update=None)]},
+                              verify_fail={("toolkit", "git/refs"): 502})
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo,
+                               refs={"toolkit": {"refs/heads/develop": SHA_DEVELOP}})
+        self.assertEqual(run.code, 1)
+        self.assertIn("toolkit: could not compare its branches and tags with GitHub's", run.err)
+        self.assertIn("toolkit: deleted its unsynced push mirror so Forgejo can't push it on its own", run.lines)
+        self.assertEqual(forgejo.mirrors["toolkit"], [])
+
+    def test_given_an_unsynced_mirror_whose_delete_fails_when_refused_then_both_are_failures_and_the_rest_go_on(self):
+        forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("toolkit", "other-lib")},
+                              refs={"toolkit": {"refs/heads/develop": SHA_DEVELOP}},
+                              mirrors={"toolkit": [push_mirror("toolkit", last_update=None)]},
+                              mirror_fail={("toolkit", "DELETE", "push_mirrors"): 500})
+        run = self.run_mirrors([repository("toolkit"), repository("other-lib")], forgejo=forgejo,
+                               refs={"toolkit": {"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER}})
+        self.assertEqual(run.code, 1)
+        failures = [line for line in run.err.splitlines() if line.startswith("  toolkit: ")]
+        self.assertEqual(len(failures), 2, run.err)
+        self.assertIn("refs/heads/hotfix only on GitHub", failures[0])
+        self.assertTrue(failures[1].startswith("  toolkit: could not delete its unsynced push mirror (remote_mirror_x), "
+                                               "so Forgejo may push it on its own: delete it on Forgejo: DELETE"),
+                        failures[1])
+        self.assertEqual(forgejo.synced, ["other-lib"])
+
+    def test_given_an_unsynced_mirror_and_allow_prune_when_mirrored_then_it_is_kept_and_synced(self):
+        run = self.guarded({"refs/heads/develop": SHA_DEVELOP, "refs/heads/hotfix": SHA_OTHER},
+                           {"refs/heads/develop": SHA_DEVELOP}, args=["mirrors", "--allow-prune"],
+                           mirrors={"toolkit": [push_mirror("toolkit", last_update=None)]})
+        self.assertEqual(run.code, 0, run.err)
+        self.assertFalse([call for call in run.forgejo.writes() if call[0] == "DELETE"])
+        self.assertEqual(run.forgejo.synced, ["toolkit", "other-lib"])
 
     def test_given_the_mirror_already_synced_when_mirrored_then_the_refs_are_not_compared(self):
         # It has pushed: GitHub holds Forgejo's state already, and what differs now is verify's to say.

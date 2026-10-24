@@ -49,7 +49,11 @@ and goes on to the next, so a re-run picks up where it stopped):
               Forgejo's head of that branch or older in its history (GET .../compare/<Forgejo's head>...
               <GitHub's sha> counts a commit, or answers 404: having the commit on another branch is not
               enough) or a tag at another commit is a failure naming each ref, and gets no mirror;
-              --allow-prune names them and makes the mirror anyway.
+              --allow-prune names them and makes the mirror anyway. A refused repository whose mirror
+              exists but never synced (a run that stopped between the two) has that mirror deleted,
+              since Forgejo would make the first push on its own (on a commit, or within 8 hours);
+              one that never pushed loses nothing, and one that has synced is never deleted. The same
+              when the comparison itself fails. A --dry-run says it would.
               A push to GitHub after the import, or a stale copy that reads "already imported", is what
               this catches. A repository with a push mirror to another address is a failure,
               not replaced: remove that mirror on Forgejo yourself. A repository archived on GitHub gets
@@ -672,13 +676,13 @@ def _synced(mirror):
 
 def _request_sync(ctx, name, done):
     """Asks Forgejo to push every push mirror of the repository now (it answers at once and pushes in the
-    background). Returns the failure to report, or None."""
+    background). Returns the failures to report: none, or the one."""
     try:
         _write(ctx, name, "request the sync", done,
                lambda: ctx.forgejo.request("POST", f"/repos/{ctx.forgejo_owner}/{name}/push_mirrors-sync"))
     except rules.ApiError as error:
-        return _report(ctx, f"{name}: could not sync it: {error}")
-    return None
+        return [_report(ctx, f"{name}: could not sync it: {error}")]
+    return []
 
 
 def _in_forgejo_history(ctx, name, forgejo_sha, github_sha):
@@ -744,39 +748,70 @@ def _prune_guard(ctx, name, allow_prune):
                         "or run again with --allow-prune to let it go")
 
 
+# What deleting a refused mirror that never pushed says, after `would delete` in a dry run, `deleted` otherwise.
+UNSYNCED_MIRROR = "its unsynced push mirror so Forgejo can't push it on its own"
+
+
+def _disarm(ctx, name, mirrors):
+    """Deletes the repository's push mirrors to its GitHub copy that never pushed, once the guard has said no
+    (or could not tell): Forgejo would otherwise make that first --mirror push on its own, on the next commit
+    (sync_on_commit) or within the 8-hour interval, which is what the guard stands in the way of. Deleting
+    one that never pushed loses nothing: the run that passes the guard makes it again. One that has pushed is
+    never deleted. `DELETE .../push_mirrors/<remote_name>`. Returns the failures to report."""
+    failures = []
+    for mirror in mirrors:
+        if _synced(mirror):
+            continue
+        remote = mirror.get("remote_name") or ""
+        if not remote:
+            failures.append(_report(ctx, f"{name}: its unsynced push mirror has no remote_name to delete it by, so "
+                                         "Forgejo may push it on its own: delete it on Forgejo"))
+            continue
+        path = f"/repos/{ctx.forgejo_owner}/{name}/push_mirrors/{urllib.parse.quote(remote, safe='')}"
+        try:
+            _write(ctx, name, f"delete {UNSYNCED_MIRROR}", f"deleted {UNSYNCED_MIRROR}",
+                   lambda path=path: ctx.forgejo.request("DELETE", path))
+        except rules.ApiError as error:
+            failures.append(_report(ctx, f"{name}: could not delete its unsynced push mirror ({remote}), so Forgejo "
+                                         f"may push it on its own: delete it on Forgejo: {error}"))
+    return failures
+
+
 def _mirror_one(ctx, repo, allow_prune=False):
-    """Gives one repository its push mirror; returns the failure to report, or None. Prints its lines."""
+    """Gives one repository its push mirror; returns the failures to report (none: []). Prints its lines.
+    A list, because a refusal can bring a second one: the unsynced mirror it could not delete."""
     name = repo["name"]
     try:
         found = _on_forgejo(ctx, name)
     except rules.ApiError as error:
-        return _report(ctx, f"{name}: could not look for it on Forgejo: {error}")
+        return [_report(ctx, f"{name}: could not look for it on Forgejo: {error}")]
     if found is None:
-        return _report(ctx, f"{name}: not on Forgejo: run import first")
+        return [_report(ctx, f"{name}: not on Forgejo: run import first")]
     if repo["archived"]:
         # GitHub refuses pushes to an archived repository: the mirror would only ever fail.
         print(f"{name}: archived on GitHub: no mirror", flush=True)
-        return None
+        return []
 
     base = f"/repos/{ctx.forgejo_owner}/{name}/push_mirrors"
     wanted = mirror_address(ctx, name)
     try:
         existing = ctx.forgejo.request("GET", base) or []
     except rules.ApiError as error:
-        return _report(ctx, f"{name}: could not list its push mirrors: {error}")
+        return [_report(ctx, f"{name}: could not list its push mirrors: {error}")]
     right = [m for m in existing if _same_address(m.get("remote_address") or "", wanted)]
     if right and _synced(right[0]):
         print(f"{name}: push mirror already there", flush=True)
-        return None
+        return []
     if existing and not right:
         others = ", ".join(_without_credentials(m.get("remote_address") or "?") for m in existing)
-        return _report(ctx, f"{name}: has a push mirror to {others}, not to {wanted}: "
-                            "not replaced; remove it on Forgejo if it is wrong")
+        return [_report(ctx, f"{name}: has a push mirror to {others}, not to {wanted}: "
+                             "not replaced; remove it on Forgejo if it is wrong")]
     # The first push is still to come (the mirror's own sync, or the one asked for next): it pushes with
     # --mirror, which deletes on GitHub what Forgejo lacks.
     failure = _prune_guard(ctx, name, allow_prune)
     if failure:
-        return failure
+        # A mirror made by a run that stopped before its sync would still make that push on its own.
+        return [failure] + _disarm(ctx, name, right)
     if right:
         # Made but never pushed: the run that made it stopped before the sync (or the sync failed).
         return _request_sync(ctx, name, "push mirror already there, never synced: sync requested")
@@ -786,7 +821,7 @@ def _mirror_one(ctx, repo, allow_prune=False):
         _write(ctx, name, f"create a push mirror {json.dumps(_mirror_shown(payload))}", "push mirror created",
                lambda: ctx.forgejo.request("POST", base, payload))
     except rules.ApiError as error:
-        return _report(ctx, f"{name}: could not make the push mirror: {error}")
+        return [_report(ctx, f"{name}: could not make the push mirror: {error}")]
     return _request_sync(ctx, name, "sync requested")
 
 
@@ -796,9 +831,7 @@ def cmd_mirrors(ctx, args):
     ctx.forgejo, ctx.mirror_user, ctx.mirror_token  # a missing token or user is a usage error before any output
     failures = []
     for repo in github_repositories(ctx.gh, ctx.github_owner, ctx.only):
-        failure = _mirror_one(ctx, repo, args.allow_prune)
-        if failure:
-            failures.append(failure)
+        failures += _mirror_one(ctx, repo, args.allow_prune)
     return failures
 
 

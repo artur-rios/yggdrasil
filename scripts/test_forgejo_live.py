@@ -9,8 +9,8 @@ Jenkinsfile change, push a release branch or create, move or delete a version ta
 repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
 failing checks. Seven tests check migrate.py against this server (below): import (two), prepare-github's
 Forgejo side (Dependabot's file deleted), push mirrors, the guard before a mirror's first push (two: what
-only GitHub has, and a GitHub branch whose commit is not in Forgejo's branch of that name), and
-collaborators. One test pins a known gap instead: jenkins, which creates the version tags, can also move
+only GitHub has, and a GitHub branch whose commit is not in Forgejo's branch of that name, whose
+unsynced mirror is then deleted), and collaborators. One test pins a known gap instead: jenkins, which creates the version tags, can also move
 and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
@@ -1173,7 +1173,7 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
         self.eventually(lambda: self.head(target, "develop") == self.head(source, "develop"), "develop on the target")
 
-    def test_given_a_github_branch_fast_forwarded_to_another_branchs_commit_when_migrate_mirrors_then_it_is_refused(self):
+    def test_given_a_github_branch_fast_forwarded_to_another_branchs_commit_when_migrate_mirrors_then_it_is_refused_and_its_unsynced_mirror_deleted(self):
         # The guard's ancestry, as Forgejo 16's compare decides it (`compare/<Forgejo's head>...<GitHub's sha>`):
         # the target (GitHub's stand-in) has main fast-forwarded to the head of the source's develop -- a
         # commit the source has, on develop only, so its main would be set back -- develop equal to the
@@ -1209,6 +1209,21 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         env = {"MIRROR_GITHUB_USER": OWNER, "MIRROR_GITHUB_TOKEN": self.tokens[OWNER]}
         github = GitHubOnForgejo([github_repository(source, default_branch="main", private=True)], owner,
                                  {source: target}, login=OWNER)
+        # The mirror a run that stopped before its sync leaves: made, never pushed. (Its own push is set off
+        # by a commit or the interval, neither of which comes during this test.)
+        owner.request("POST", f"/repos/{OWNER}/{source}/push_mirrors",
+                      {"remote_address": address, "remote_username": OWNER, "remote_password": self.tokens[OWNER],
+                       "interval": "8h0m0s", "sync_on_commit": False})
+        (left,) = owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors")
+        self.assertFalse(migrate._synced(left), left)
+
+        code, out, err = self.migrate_run(["--dry-run", "mirrors", "--only", source], catalog, env=env,
+                                          mirror_to=lambda name: address, github=github)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{source}: would delete its unsynced push mirror so Forgejo can't push it on its own",
+                      out.splitlines())
+        self.assertEqual(len(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors")), 1)
+
         code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, env=env,
                                           mirror_to=lambda name: address, github=github)
         self.assertEqual(code, 1, out)
@@ -1217,8 +1232,12 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
                       "the first push would rewind it", failure)
         self.assertNotIn("develop", failure)
         self.assertNotIn("feature", failure)
+        # The refused mirror is gone (Forgejo 16 takes `DELETE .../push_mirrors/<remote_name>`), and nothing
+        # was pushed: no sync was asked for.
+        self.assertEqual(out.splitlines()[-1],
+                         f"{source}: deleted its unsynced push mirror so Forgejo can't push it on its own")
         self.assertEqual(owner.request("GET", f"/repos/{OWNER}/{source}/push_mirrors"), [])
-        self.assertEqual(self.head(target, "main"), develop)  # nothing was pushed
+        self.assertEqual(self.head(target, "main"), develop)
 
     def test_given_a_catalog_repository_when_migrate_sets_the_collaborators_then_each_bot_reads_back_with_its_permission(self):
         repo = "bots-lib"
