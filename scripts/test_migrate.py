@@ -721,6 +721,46 @@ class PrepareGitHubTests(unittest.TestCase):
         self.assertFalse(run.gh.state["a"]["has_issues"])
         self.assertFalse(run.gh.state["c"]["has_issues"])
 
+    def test_given_an_archived_github_repository_when_prepared_then_github_is_left_alone_but_dependabot_is_still_deleted(self):
+        # Archived copies are read-only on GitHub: no ruleset, settings or fixes request at all (not even a
+        # read), and it is a note, not a failure. Forgejo's side is still done: the file goes there.
+        forgejo = FakeForgejo(existing={"old": forgejo_repository("old")}, files={("old", DEPENDABOT): "sha-o"})
+        run = self.run_prepare([repository("old", archived=True)], forgejo=forgejo)
+        self.assertEqual((run.code, run.err), (0, ""), run.out)
+        self.assertIn("old: archived on GitHub: left as it is", run.lines)
+        self.assertIn("old: deleted .github/dependabot.yml on develop", run.lines)
+        self.assertEqual(forgejo.files, {})
+        self.assertFalse([c for c in run.gh.calls if c[1].startswith(f"/repos/{OWNER}/old")])
+
+    def test_given_an_archived_repository_and_a_dry_run_when_prepared_then_it_is_the_same_note_and_no_write(self):
+        forgejo = FakeForgejo(existing={"old": forgejo_repository("old")}, files={("old", DEPENDABOT): "sha-o"})
+        run = self.run_prepare([repository("old", archived=True)], ["--dry-run"] + self.ARGS, forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertIn("old: archived on GitHub: left as it is", run.lines)
+        self.assertIn("old: would delete .github/dependabot.yml on develop", run.lines)
+        self.assertEqual(forgejo.writes(), [])
+
+    def test_given_an_archived_repository_not_on_forgejo_when_prepared_then_it_is_still_a_failure(self):
+        run = self.run_prepare([repository("old", archived=True)], forgejo=FakeForgejo())
+        self.assertEqual(run.code, 1)
+        self.assertIn("old: not on Forgejo: run import first", run.err)
+
+    def test_given_a_private_repository_whose_ruleset_list_answers_403_when_prepared_then_it_is_a_note_and_the_rest_goes_on(self):
+        # Rulesets on a private repository need a paid plan: nothing there to delete.
+        run = self.run_prepare([repository("secret", private=True), repository("next")],
+                               fail={"secret": {("GET", "/rulesets"): 403}})
+        self.assertEqual((run.code, run.err), (0, ""), run.out)
+        self.assertIn("secret: rulesets not available here: nothing to delete", run.lines)
+        self.assertFalse(run.gh.state["secret"]["has_issues"])  # issues, description and fixes were still done
+        self.assertEqual(run.gh.state["secret"]["description"], description("secret"))
+        self.assertFalse(run.gh.state["secret"]["fixes"])
+        self.assertFalse(run.gh.state["next"]["has_issues"])
+
+    def test_given_a_private_repository_whose_ruleset_list_answers_another_error_when_prepared_then_it_fails(self):
+        run = self.run_prepare([repository("secret", private=True)], fail={"secret": {("GET", "/rulesets"): 500}})
+        self.assertEqual(run.code, 1)
+        self.assertIn("secret: could not prepare it", run.err)
+
     def test_given_an_error_that_echoes_the_github_token_when_prepared_then_it_is_hidden(self):
         class Echoing(FakeGitHub):
             def request(self, method, path, body=None):

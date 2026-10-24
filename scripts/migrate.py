@@ -32,7 +32,9 @@ and goes on to the next, so a re-run picks up where it stopped):
               turned off, the description is set to `Mirror of <forgejo url>/<owner>/<repo> -- contribute
               there` (with an em dash), and automated security fixes are switched off. It only sends what
               is not so yet, so a second run writes nothing. A repository whose Forgejo step fails is not
-              touched on GitHub. With --dry-run it prints what it would do and sends no write.
+              touched on GitHub. A repository archived on GitHub is left as it is there (a note, not a
+              failure; its Dependabot file is still deleted on Forgejo). A private repository whose
+              rulesets GitHub will not list (403: a plan without them) has none to delete: a note. With --dry-run it prints what it would do and sends no write.
               Runbook order: import, prepare-github, mirrors, collaborators, rules.py, verify.
 
 The move covers every repository of the GitHub owner, forks included. Only the catalog's repositories
@@ -441,12 +443,25 @@ def _delete_security_fixes(ctx, base):
             raise
 
 
-def _prepare_github_side(ctx, name):
+def _github_rulesets(ctx, name, private):
+    """The repository's rulesets on GitHub. A private repository on a plan without rulesets answers 403 to
+    the list: there is nothing to delete, which is a note and not a failure. (A public repository's 403
+    is a real refusal and stays one.)"""
+    try:
+        return ctx.gh.request("GET", f"/repos/{ctx.github_owner}/{name}/rulesets?per_page=100") or []
+    except rules.ApiError as error:
+        if private and error.status == 403:
+            print(f"{name}: rulesets not available here: nothing to delete", flush=True)
+            return []
+        raise
+
+
+def _prepare_github_side(ctx, name, private):
     """Old rulesets deleted (but `mirror tags`), issues off, description set, automated security fixes
     off: each only when it is not so yet. Raises ApiError."""
     base = f"/repos/{ctx.github_owner}/{name}"
     changed = False
-    for ruleset in ctx.gh.request("GET", f"{base}/rulesets?per_page=100") or []:
+    for ruleset in _github_rulesets(ctx, name, private):
         if ruleset["name"] == rules.MIRROR_TAGS:
             print(f"{name}: kept ruleset '{ruleset['name']}'", flush=True)
         else:
@@ -489,7 +504,11 @@ def _prepare_one(ctx, repo):
         return _report(ctx, f"{name}: not on Forgejo: run import first")
     try:
         _delete_dependabot_files(ctx, name, found, repo)
-        _prepare_github_side(ctx, name)
+        if repo["archived"]:
+            # Read-only on GitHub: it takes no setting and no ruleset change, so it is not even read.
+            print(f"{name}: archived on GitHub: left as it is", flush=True)
+        else:
+            _prepare_github_side(ctx, name, repo["private"])
     except rules.ApiError as error:
         return _report(ctx, f"{name}: could not prepare it: {error}")
     return None
