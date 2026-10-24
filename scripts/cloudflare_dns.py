@@ -170,12 +170,16 @@ class Cloudflare:
         return self._zones[zone]
 
     def records(self, zone, name, type_):
-        """Every record of that name and type (all pages)."""
+        """Every record of that name and type (all pages). Cloudflare is asked for that name and type, and
+        its answer is filtered again by both: how its filter reads the wildcard's `*` was never checked
+        against the real API, and a record of another name taken for the wildcard's would block it (made
+        by hand) or be updated in its place (one of ours)."""
         found, page = [], 1
         while True:
             query = urllib.parse.urlencode({"name": name, "type": type_, "page": page, "per_page": PER_PAGE})
             answer = self._call("GET", f"{self.ZONES_PATH}/{self.zone_id(zone)}/dns_records?{query}")
-            found += answer.get("result") or []
+            found += [r for r in answer.get("result") or []
+                      if isinstance(r, dict) and r.get("name") == name and r.get("type") == type_]
             pages = (answer.get("result_info") or {}).get("total_pages") or 1
             if page >= pages:
                 return found
@@ -196,10 +200,15 @@ def _apply_one(cloudflare, want, dry_run, report):
     zone, name, type_ = want["zone"], want["name"], want["type"]
     label = f"{type_} {name}"
 
+    # Every line about a record Cloudflare has names that record by its own name (records() keeps only the
+    # wanted one's, so it is the same; a line never says one name while it is about another).
+    def own(record):
+        return f"{type_} {record.get('name')}"
+
     # Cloudflare allows no other record beside a CNAME, whatever made it: we never make one.
     cnames = cloudflare.records(zone, name, "CNAME")
     if cnames:
-        report(f"{label}: a CNAME to {cnames[0].get('content')} is at this name and Cloudflare allows "
+        report(f"{own(cnames[0])}: a CNAME to {cnames[0].get('content')} is at this name and Cloudflare allows "
                "none beside it; made by hand, left as it is: change it or delete it yourself")
         return "reported"
 
@@ -209,7 +218,7 @@ def _apply_one(cloudflare, want, dry_run, report):
     status = "ok"
     for record in by_hand:
         shown = record.get("content") if type_ != "CAA" else "CAA data"
-        report(f"{label} ({shown}): made by hand; change it or delete it yourself")
+        report(f"{own(record)} ({shown}): made by hand; change it or delete it yourself")
         status = "reported"
     if by_hand and not ours:
         return status  # a second record beside it would only split the traffic
@@ -227,12 +236,12 @@ def _apply_one(cloudflare, want, dry_run, report):
     keep = right[0] if right else ours[0]
     for extra in ours:
         if extra is not keep:
-            report(f"{label} ({extra.get('content')}): a second record made by yggdrasil answers beside "
+            report(f"{own(extra)} ({extra.get('content')}): a second record made by yggdrasil answers beside "
                    "the right one; delete it by hand")
             status = "reported"
     differences = _differences(keep, want)
     if differences:
-        print(f"{verb}update {label}: {', '.join(differences)}")
+        print(f"{verb}update {own(keep)}: {', '.join(differences)}")
         if not dry_run:
             cloudflare.update(zone, keep["id"], want)
         return status if status == "reported" else "changed"
@@ -248,7 +257,7 @@ def _stale_ipv6(cloudflare, wanted, report):
         for record in cloudflare.records(want["zone"], want["name"], "AAAA"):
             if record.get("comment") == COMMENT:
                 flag = "--apps6" if want["proxied"] else "--dev6"
-                report(f"AAAA {want['name']} ({record.get('content')}): stale (no address given): "
+                report(f"AAAA {record.get('name')} ({record.get('content')}): stale (no address given): "
                        f"delete it by hand or pass {flag}")
 
 

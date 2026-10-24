@@ -28,8 +28,12 @@ class FakeCloudflare:
     answer that says `success: false`. Keeps the records, so applying twice shows what the second run
     does."""
 
-    def __init__(self, page_size=100, fail=None):
+    def __init__(self, page_size=100, fail=None, loose_names=False):
         self.calls = []
+        # `loose_names`: the name filter of a wildcard query (`*.<zone>`) matches every name under the zone,
+        # as a filter that reads `*` as a pattern would. Cloudflare's own filter was never checked against
+        # the real API, so the script must not trust it.
+        self.loose_names = loose_names
         self.zones = {z: f"zone-{i}" for i, z in enumerate(cloudflare_dns.ZONES)}
         self.records = {zone_id: [] for zone_id in self.zones.values()}
         self.page_size = page_size
@@ -70,7 +74,7 @@ class FakeCloudflare:
         zone_id = parts[4]
         if method == "GET":
             matching = [r for r in self.records[zone_id]
-                        if r["name"] == query["name"] and r["type"] == query["type"]]
+                        if self._name_matches(r["name"], query["name"]) and r["type"] == query["type"]]
             page, size = int(query["page"]), min(int(query["per_page"]), self.page_size)
             total = max(1, -(-len(matching) // size))
             return {"success": True, "errors": [], "result": matching[(page - 1) * size:page * size],
@@ -88,6 +92,11 @@ class FakeCloudflare:
                     record.update({"proxied": False, **body, **keep})
                     return {"success": True, "errors": [], "result": record}
         raise AssertionError(f"unexpected call {method} {path}")
+
+    def _name_matches(self, have, asked):
+        if self.loose_names and asked.startswith("*."):
+            return have == asked or have.endswith(asked[1:])
+        return have == asked
 
     def writes(self):
         return [c for c in self.calls if c[0] != "GET"]
@@ -309,6 +318,43 @@ class ApplyTests(unittest.TestCase):
         self.assertIn("second record", err)
         self.assertEqual(len(fake.find("techcraftsmen.net", "git.techcraftsmen.net", "A")), 2)
         self.assertEqual(fake.writes(), [])
+
+
+class NameFilterTests(unittest.TestCase):
+    """Cloudflare is asked for the records of one name and type, and its answer is filtered again: a filter
+    that reads the wildcard's `*` as a pattern answers every name under the zone, and a record of another
+    name must neither block nor be updated in the wildcard's place."""
+
+    def loose(self):
+        fake = FakeCloudflare(loose_names=True)
+        # Vercel's www and a hand-made A of another name, and one of ours at a third name (a stray: say, an
+        # older name of the dev machine). None of them is at `*`.
+        fake.add("artur-rios.tech", "www.artur-rios.tech", "CNAME", "cname.vercel-dns.com", comment="")
+        fake.add("techcraftsmen.net", "old.techcraftsmen.net", "A", "198.51.100.9", comment="")
+        stray = fake.add("techcraftsmen.net", "stray.techcraftsmen.net", "A", "198.51.100.5", comment="yggdrasil")
+        return fake, stray
+
+    def test_given_a_wildcard_query_that_answers_other_names_when_applied_then_only_the_wildcard_counts(self):
+        fake, stray = self.loose()
+        status, out, err = run(fake)
+        self.assertEqual((status, err), (0, ""), out)
+        # The wildcards are made, beside the other names, which nothing touched.
+        for zone in ("techcraftsmen.net", "artur-rios.tech"):
+            self.assertEqual(fake.find(zone, f"*.{zone}", "A")[0]["content"], APPS)
+        self.assertEqual(fake.find("artur-rios.tech", "www.artur-rios.tech", "CNAME")[0]["content"],
+                         "cname.vercel-dns.com")
+        self.assertEqual(fake.find("techcraftsmen.net", "old.techcraftsmen.net", "A")[0]["content"], "198.51.100.9")
+        self.assertEqual((stray["name"], stray["content"]), ("stray.techcraftsmen.net", "198.51.100.5"))
+        self.assertFalse([w for w in fake.writes() if w[0] == "PUT"])
+        self.assertNotIn("stray", out)
+
+    def test_given_a_dry_run_with_a_loose_filter_when_applied_then_no_line_names_another_record(self):
+        fake, _ = self.loose()
+        status, out, err = run(fake, ["--dry-run"] + ARGS)
+        self.assertEqual((status, err), (0, ""), out)
+        self.assertIn("would create A *.artur-rios.tech", out)
+        for other in ("www.", "old.", "stray."):
+            self.assertNotIn(other, out + err)
 
 
 class DryRunTests(unittest.TestCase):
