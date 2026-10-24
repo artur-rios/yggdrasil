@@ -44,6 +44,9 @@
 //                               every GitHub Actions check waited for, releaseArtifacts: true's artifact
 //                               workflow)
 //   the actions-release job  -> the Windows files of a release published without them (actionsRelease)
+//   the tag-check job        -> daily: every published release's tag still on the commit it was
+//                               released from, else the build fails naming it MOVED or DELETED
+//                               (tagCheck: the read credential on the ci agent, nothing checked out)
 //   a version tag pushed by the owner (a repositories entry with release: owner-tag, the tag matching
 //                               its `tags`; the Job DSL discovers only tags at most a day old, and dates
 //                               a lightweight tag by its commit, so the owner tags with `git tag -a`)
@@ -1899,6 +1902,165 @@ void actionsRelease() {
       }
     }
   }
+}
+
+// ---- The tag-check job ----
+
+// The tag-check job (platform/jenkins/controller/casc.yaml, its script jenkins/tag-check.groovy kept in
+// Jenkins), every day and by hand: whether each published release's tag still names the commit it was
+// released from. On Forgejo whoever may create a repository's version tags may also move and delete them
+// (the tag protection is one list of who may change a tag: the accepted gap, docs/setup.md step 12); this
+// is how a moved or deleted one is noticed. For every catalog entry that releases (releasingRepositories),
+// forge.sh release-tags lists its published releases with the commit each was released from (its target,
+// which create-release sets to the release's commit), and forge.sh tag-sha says where each tag is now:
+//   ok              the tag is on the release's commit
+//   MOVED           the tag is on another commit
+//   DELETED         there is no such tag any more (tag-sha exit 4)
+//   unknown target  the release names no commit (a branch: a release made by hand, or an old one), so
+//                   whether its tag moved is not known: logged, not a failure (a deleted tag is DELETED)
+// Any MOVED or DELETED fails the build, with a line each at the end of the log and the count in the build's
+// description; so does a repository or a tag that could not be read. The GitHub copies, which nobody can
+// move or delete a tag on (rules.py's mirror tags), are what to repair from (docs/setup.md).
+//
+// On the ci agent with the read credential only: no write token, no GitHub App, and nothing of any
+// repository is checked out or run -- the releases and the tags are read through the server's API. Tag
+// names and targets come from the server: they reach forge.sh as arguments (toolStatus: environment
+// variables, never part of a script) and the log through printable().
+void tagCheck() {
+  Map catalog = loadCatalog()
+  List entries = releasingRepositories(catalog)
+  Map ctx = [forge: forgeOf(catalog), owner: catalog.owner.toString(),
+             repository: (catalog.repository ?: 'yggdrasil').toString()]
+  Map report = null
+  timeout(time: 1, unit: 'HOURS') {
+    withForgeEnvironment(ctx) {
+      stage('Check the release tags') {
+        node('ci') {
+          try {
+            checkoutTools()
+            report = checkReleaseTags(entries)
+          } finally {
+            cleanScratch()
+            cleanWs()
+          }
+        }
+      }
+    }
+  }
+  int checked = report.checked as int
+  List problems = report.problems as List
+  List unreadable = report.unreadable as List
+  if (!problems && !unreadable) {
+    currentBuild.description = "${checked} release ${checked == 1 ? 'tag' : 'tags'} checked".toString()
+    echo "Every release tag is on the commit it was released from (${currentBuild.description}, in ${entries.size()} ${entries.size() == 1 ? 'repository' : 'repositories'})."
+    return
+  }
+  List parts = []
+  if (problems) {
+    parts << "${problems.size()} release ${problems.size() == 1 ? 'tag' : 'tags'} moved or deleted"
+  }
+  if (unreadable) {
+    parts << "${unreadable.size()} not checked"
+  }
+  currentBuild.description = parts.join('; ')
+  // A line per problem, together at the end of the log, where the owner looks first.
+  for (Object line : problems + unreadable) {
+    echo line.toString()
+  }
+  error "${currentBuild.description}. Repair a moved or deleted tag from its GitHub copy: docs/setup.md, step 12."
+}
+
+// Stage Check the release tags, on the ci agent (tagCheck): every published release of every entry, with
+// the read token. Returns [checked: how many tags were compared, problems: a MOVED or DELETED line each,
+// unreadable: a line for each repository or tag that could not be read].
+Map checkReleaseTags(List entries) {
+  String tmp = scratch()
+  int checked = 0
+  List problems = []
+  List unreadable = []
+  for (Map entry : entries) {
+    String repo = entry.repo
+    int code = withForgeToken('read') {
+      return toolStatus('forge.sh', ['release-tags', repo], "${tmp}/release-tags")
+    }
+    if (code != 0) {
+      unreadable << "NOT CHECKED: ${repo}: forge.sh release-tags exited ${code} (its message is above)".toString()
+      continue
+    }
+    List releases = releaseTagLines(readScratch(tmp, 'release-tags'))
+    if (!releases) {
+      echo "${repo}: no published release."
+    }
+    for (Map release : releases) {
+      String tag = release.tag
+      String target = release.target
+      if (!(tag ==~ TAG)) {
+        echo "${repo}: skipped the release of '${printable(tag)}', which is not a tag name the pipeline makes."
+        continue
+      }
+      checked++
+      int found = withForgeToken('read') {
+        return toolStatus('forge.sh', ['tag-sha', repo, tag], "${tmp}/tag-sha")
+      }
+      String known = target ==~ COMMIT ? target : null
+      String from = known ?: "'${printable(target)}'"
+      if (found == 4) {
+        problems << "DELETED: ${repo} ${tag} (released from ${from}): the tag is gone".toString()
+        continue
+      }
+      if (found != 0) {
+        unreadable << "NOT CHECKED: ${repo} ${tag}: forge.sh tag-sha exited ${found} (its message is above)".toString()
+        continue
+      }
+      String sha = readScratch(tmp, 'tag-sha').trim()
+      if (!(sha ==~ COMMIT)) {
+        unreadable << "NOT CHECKED: ${repo} ${tag}: forge.sh tag-sha answered '${printable(sha)}', not a commit".toString()
+        continue
+      }
+      if (known == null) {
+        echo "${repo} ${tag}: unknown target: released from '${printable(target)}', not a commit, so whether the tag moved is not known (it is on ${sha.take(7)})."
+      } else if (sha != known) {
+        problems << "MOVED: ${repo} ${tag} (tag on ${sha}, released from ${known})".toString()
+      } else {
+        echo "${repo} ${tag}: ok (${sha.take(7)})"
+      }
+    }
+  }
+  return [checked: checked, problems: problems, unreadable: unreadable]
+}
+
+// release-tags lines ("<tag>\t<target>") as [tag, target]; a line without a tab has an empty target.
+@NonCPS
+List releaseTagLines(String text) {
+  List releases = []
+  for (String line : (text ?: '').readLines()) {
+    if (!line.trim()) {
+      continue
+    }
+    List columns = line.split('\t', 2) as List
+    releases << [tag: columns[0], target: columns.size() > 1 ? columns[1].trim() : '']
+  }
+  return releases
+}
+
+// The repositories whose releases tag-check checks, once each, in catalog order: every deployable
+// application with a trigger: release environment (its `repository`, else its id: applications sharing a
+// repository are one) and every repositories entry with release: owner-tag -- the entries catalogContext
+// calls 'deploy' and 'owner-tag' (pipeline_config.py entry_for's release). [repo] each.
+@NonCPS
+List releasingRepositories(Map catalog) {
+  List repos = []
+  for (Map app : (catalog.systems ?: []).collectMany { it.applications ?: [] }.findAll { it.kind != 'platform' }) {
+    if (resolve(catalog, app.id as String).any { it.trigger == 'release' }) {
+      repos << (app.repository ?: app.id).toString()
+    }
+  }
+  for (Map entry : (catalog.repositories ?: [])) {
+    if ((entry.release ?: 'none') == 'owner-tag') {
+      repos << entry.id.toString()
+    }
+  }
+  return repos.unique().collect { [repo: it] }
 }
 
 // ---- Releases (GitHub, a repository without yggdrasil.yml: the path it always had) ----

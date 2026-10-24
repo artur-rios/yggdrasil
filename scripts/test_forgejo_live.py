@@ -386,8 +386,15 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, f"{artifact.name}\t{artifact.stat().st_size}\n"),
                          result.stderr)
 
+        # A draft is not among the release tags (what tag-check checks); published, it is, with its commit.
+        result = self.forge(JENKINS, "release-tags", APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("v1.0.0", [line.split("\t")[0] for line in result.stdout.splitlines()])
         result = self.forge(JENKINS, "publish-release", APP, release_id)
         self.assertEqual((result.returncode, result.stdout.strip()), (0, html_url), result.stderr)
+        result = self.forge(JENKINS, "release-tags", APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"v1.0.0\t{sha}", result.stdout.splitlines())
         self.assertFalse(self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/{release_id}")["draft"])
         result = self.forge(JENKINS, "find-release", APP, "v1.0.0")
         self.assertEqual((result.returncode, result.stdout), (0, f"{release_id}\t{html_url}\tfalse\n"), result.stderr)
@@ -764,6 +771,14 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         # The release of the deleted tag stays, published, naming a tag that is no longer there.
         release = self.api[OWNER].request("GET", f"/repos/{OWNER}/{APP}/releases/tags/{tags[1]}")
         self.assertEqual((release["tag_name"], release["draft"]), (tags[1], False))
+        # What the tag-check job reads: every release still lists the commit it was released from, so the
+        # moved tag (now on `other`) and the deleted one (tag-sha exits 4) are told from the untouched one.
+        result = self.forge(JENKINS, "release-tags", APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for tag in tags:
+            self.assertIn(f"{tag}\t{main}", result.stdout.splitlines(), tag)
+        found = [self.forge(JENKINS, "tag-sha", APP, tag) for tag in tags]
+        self.assertEqual([(r.returncode, r.stdout.strip()) for r in found], [(0, other), (4, ""), (0, main)])
 
     def test_given_a_basic_repository_when_anyone_force_pushes_or_deletes_develop_or_main_then_it_is_refused(self):
         # rules: basic sends develop and main protections with pushing allowed and nothing else: Forgejo

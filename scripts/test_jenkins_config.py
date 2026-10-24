@@ -196,6 +196,35 @@ class ReleaseResumeJobTests(unittest.TestCase):
 
 
 @unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
+class TagCheckJobTests(unittest.TestCase):
+    def script(self):
+        scripts = [entry["script"] for entry in casc()["jobs"] if "pipelineJob('tag-check')" in entry["script"]]
+        self.assertEqual(len(scripts), 1)
+        return scripts[0]
+
+    def test_given_the_job_dsl_when_read_then_tag_check_runs_the_script_kept_in_jenkins_daily(self):
+        script = self.script()
+        self.assertIn("script(new File('/etc/jenkins/tag-check.groovy').getText('UTF-8'))", script)
+        self.assertIn("sandbox(true)", script)
+        self.assertNotIn("scm", script)
+        # Every day, at a time Jenkins spreads within the hour, and by hand; one run at a time.
+        self.assertRegex(script, r"pipelineTriggers \{\s*triggers \{\s*cron \{\s*spec\('H 4 \* \* \*'\)")
+        self.assertIn("disableConcurrentBuilds()", script)
+        # No parameters: it checks every entry that releases.
+        self.assertNotIn("stringParam", script)
+        self.assertNotIn("${", script)
+
+    def test_given_the_tag_check_script_when_read_then_it_only_calls_the_library(self):
+        lines = [line for line in read(ROOT / "jenkins" / "tag-check.groovy").splitlines()
+                 if line.strip() and not line.lstrip().startswith("//")]
+        self.assertEqual(lines, ["@Library('yggdrasil') _", "yggdrasilTagCheck()"])
+
+    def test_given_the_compose_service_when_read_then_the_tag_check_script_is_mounted(self):
+        volumes = " ".join(jenkins_service()["volumes"])
+        self.assertIn("../jenkins/tag-check.groovy:/etc/jenkins/tag-check.groovy:ro", volumes)
+
+
+@unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
 class NugetCredentialTests(unittest.TestCase):
     def test_given_the_nuget_configuration_when_read_then_it_has_the_nuget_key_only(self):
         # Optional, so a file of its own: platform.sh adds it only when NUGET_API_KEY_FILE is set.

@@ -283,3 +283,35 @@ jobs:
           }
         }
       }
+  - script: |
+      // tag-check: whether every published release's tag is still on the commit it was released from. On
+      // Forgejo whoever may create a repository's version tags may also move and delete them (the accepted
+      // gap of docs/setup.md, step 12); this job notices. It runs every day (H 4: at a time Jenkins picks
+      // within the 4 o'clock hour, the same every day) and whenever the owner presses "Build Now". It takes
+      // no parameters: it checks every catalog entry that releases. A red build names each tag MOVED or
+      // DELETED, at the end of its log; docs/setup.md says how to repair one from its GitHub copy. Its
+      // script is kept in Jenkins like the default Jenkinsfile (jenkins/tag-check.groovy, mounted by
+      // platform/compose.yml) and only calls the pinned library (yggdrasilPipeline.tagCheck), which reads
+      // the releases and the tags on the ci agent with the read credential only.
+      //
+      // The trigger is set here, not by the pipeline (a properties step would replace it).
+      pipelineJob('tag-check') {
+        description('Check that every published release tag is still on the commit it was released from (daily).')
+        properties {
+          disableConcurrentBuilds()
+          pipelineTriggers {
+            triggers {
+              cron {
+                spec('H 4 * * *')
+              }
+            }
+          }
+        }
+        definition {
+          cps {
+            // In the sandbox, like the default Jenkinsfile: it only loads the library, which runs trusted.
+            script(new File('/etc/jenkins/tag-check.groovy').getText('UTF-8'))
+            sandbox(true)
+          }
+        }
+      }

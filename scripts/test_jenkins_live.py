@@ -43,7 +43,8 @@ the tests write, logging every call with the agent that made it and whether a Gi
 github-app credential (a GitHubAppCredentials, which would ask GitHub for a token) is replaced, after the
 boots were inspected, by a plain username/password one under the same id. The skip is answered through
 Jenkins' REST API (the input's proceedEmpty), and the actions-release and release-resume jobs (casc.yaml,
-their scripts mounted as compose.yml mounts them) are started with buildWithParameters.
+their scripts mounted as compose.yml mounts them) are started with buildWithParameters; the tag-check job
+(its daily trigger read back from the boot) with a plain build.
 
 Owner tags: the owner pushes annotated tags (git tag -a: a lightweight tag on a commit older than a day is
 never built, see the tag-age test) to ygg-tool (release files) and dotnet-lib (a NuGet package, packed with
@@ -674,6 +675,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             (ROOT / "jenkins" / "Jenkinsfile.default", "/etc/jenkins/Jenkinsfile.default"),
             (ROOT / "jenkins" / "actions-release.groovy", "/etc/jenkins/actions-release.groovy"),
             (ROOT / "jenkins" / "release-resume.groovy", "/etc/jenkins/release-resume.groovy"),
+            (ROOT / "jenkins" / "tag-check.groovy", "/etc/jenkins/tag-check.groovy"),
             (cls.controller_files / "nuget-api-key", "/run/secrets/nuget-api-key"),
             (cls.controller_files / "catalog.yaml", "/etc/jenkins/catalog.yaml"),
             (CONTROLLER_DIR / "init.groovy.d" / "agents.groovy", "/var/jenkins_home/init.groovy.d/agents.groovy"),
@@ -745,6 +747,10 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
                 ".findAll { it.parent == jenkins.model.Jenkins.get() && !it.name.startsWith('probe-') }.collectEntries { [(it.name): [sandbox: it.definition.sandbox, "
                 "script: it.definition.script, parameters: it.getProperty(hudson.model.ParametersDefinitionProperty)"
                 "?.parameterDefinitions?.collect { d -> d.name }]] }"),
+            "triggers": api.script_json(
+                "jenkins.model.Jenkins.get().getAllItems(org.jenkinsci.plugins.workflow.job.WorkflowJob)"
+                ".findAll { it.parent == jenkins.model.Jenkins.get() && !it.name.startsWith('probe-') }.collectEntries { "
+                "[(it.name): it.triggers.values().collect { t -> [type: t.getClass().simpleName, spec: t.spec] }] }"),
             "credentials": api.script_json(
                 "com.cloudbees.plugins.credentials.CredentialsProvider.lookupCredentials("
                 "com.cloudbees.plugins.credentials.common.StandardCredentials, jenkins.model.Jenkins.get(), "
@@ -1004,12 +1010,16 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # Job DSL's giteaSCMSource and pipelineBranchDefaultsProjectFactory: one job per catalog entry,
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
         self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED})
-        # The actions-release and release-resume jobs: pipeline jobs running the scripts kept in Jenkins, in
-        # the sandbox.
+        # The actions-release, release-resume and tag-check jobs: pipeline jobs running the scripts kept in
+        # Jenkins, in the sandbox; tag-check takes no parameters and runs every day.
+        parameters = {"actions-release": ["REPOSITORY", "TAG"], "release-resume": ["REPOSITORY", "TAG", "COMMIT"],
+                      "tag-check": None}
         self.assertEqual(boot["pipeline_jobs"], {name: {
-            "sandbox": True, "parameters": ["REPOSITORY", "TAG"] + (["COMMIT"] if name == "release-resume" else []),
+            "sandbox": True, "parameters": wanted,
             "script": (ROOT / "jenkins" / f"{name}.groovy").read_text(encoding="utf-8")}
-            for name in ("actions-release", "release-resume")})
+            for name, wanted in parameters.items()})
+        self.assertEqual(boot["triggers"], {"actions-release": [], "release-resume": [],
+                                            "tag-check": [{"type": "TimerTrigger", "spec": "H 4 * * *"}]})
         for job, made in boot["jobs"].items():
             self.assertEqual(made, {"sources": ["org.jenkinsci.plugin.gitea.GiteaSCMSource"],
                                     "factory": "org.jenkinsci.plugins.pipeline.multibranch.defaults."
@@ -1751,6 +1761,72 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(release["author"]["login"], JENKINS)
         self.assertEqual(self.description("release-resume", None, resumed.number), f"{UNTAGGED} v1.0.0: released")
         self.assert_no_secret(resumed.console, "the release-resume log")
+
+    # --- tag-check ---------------------------------------------------------------------------------
+
+    def tag_check(self):
+        before = self.last_number("tag-check", None)
+        self.jenkins.post(job_path("tag-check") + "/build", {"delay": "0"})
+        return self.wait_for_build("tag-check", None, after=before, timeout=900)
+
+    def jenkins_moves_tags(self, repo, moves):
+        """jenkins (the only user Forgejo lets change an application's v* tags) pushes each tag of `moves`
+        ({tag: commit, or None to delete it}) with git, as anyone on the tag protection's list could. Each
+        commit must be on a branch of the repository (the clone has every branch)."""
+        clone = self.clone(JENKINS, repo)
+        for tag, commit in moves.items():
+            if commit is None:
+                done = self.git(JENKINS, "push", "origin", f":refs/tags/{tag}", cwd=clone)
+            else:
+                tagged = self.git(JENKINS, "tag", "--force", tag, commit, cwd=clone)
+                self.assertEqual(tagged.returncode, 0, tagged.stderr)
+                done = self.git(JENKINS, "push", "--force", "origin", f"refs/tags/{tag}", cwd=clone)
+            self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_given_released_tags_when_jenkins_moves_one_and_deletes_another_then_tag_check_names_both(self):
+        # Releases of shop-api made the way publish-release.sh makes them: jenkins tags main's head and
+        # publishes a release whose target is that commit. v0.3.0's release names a branch instead (one
+        # made by hand), so whether its tag moved is not known. The other tests' releases are checked too.
+        main = self.head(APP, "main")
+        for tag, target in (("v0.1.0", main), ("v0.2.0", main), ("v0.3.0", "main")):
+            self.api[JENKINS].request("POST", f"/repos/{OWNER}/{APP}/tags", {"tag_name": tag, "target": main})
+            self.api[JENKINS].request("POST", f"/repos/{OWNER}/{APP}/releases", {
+                "tag_name": tag, "target_commitish": target, "name": tag, "body": "", "draft": False,
+                "prerelease": False})
+
+        untouched = self.tag_check()
+        self.assertEqual(untouched.result, "SUCCESS", untouched.console[-6000:])
+        self.assertIn(f"Loading library yggdrasil@{LIBRARY_VERSION}", untouched.console)
+        self.assertIn("Running on ci", untouched.console)
+        for tag in ("v0.1.0", "v0.2.0"):
+            self.assertIn(f"{APP} {tag}: ok ({main[:7]})", untouched.console)
+        self.assertIn(f"{APP} v0.3.0: unknown target: released from 'main', not a commit", untouched.console)
+        self.assertRegex(self.description("tag-check", None, untouched.number), r"^[0-9]+ release tags checked$")
+
+        # jenkins moves v0.1.0 onto another commit and deletes v0.2.0 (Forgejo allows it: the accepted gap).
+        other = self.change_file(OWNER, APP, "tag-check.txt", "another commit\n", "develop", "test/tag-check")
+        self.assertNotEqual(other, main)
+        self.jenkins_moves_tags(APP, {"v0.1.0": other, "v0.2.0": None})
+        self.assertEqual((self.tag_commit(APP, "v0.1.0"), self.tag_commit(APP, "v0.2.0")), (other, None))
+        broken = self.tag_check()
+        self.assertEqual(broken.result, "FAILURE", broken.console[-6000:])
+        self.assertIn(f"MOVED: {APP} v0.1.0 (tag on {other}, released from {main})", broken.console)
+        self.assertIn(f"DELETED: {APP} v0.2.0 (released from {main}): the tag is gone", broken.console)
+        self.assertEqual(self.description("tag-check", None, broken.number), "2 release tags moved or deleted")
+        # The problems are the last lines before the error, one each (in the order the releases were listed).
+        first = min(broken.console.index(f"MOVED: {APP} v0.1.0"), broken.console.index(f"DELETED: {APP} v0.2.0"))
+        tail = broken.console[first:]
+        for line in (f"MOVED: {APP} v0.1.0", f"DELETED: {APP} v0.2.0"):
+            self.assertEqual(tail.count(line), 1, tail)
+        self.assertIn("ERROR: 2 release tags moved or deleted. Repair a moved or deleted tag", tail)
+        self.assertNotIn(": ok (", tail)
+        self.assert_no_secret(broken.console, "the tag-check log")
+
+        # Put back where they were released from, the check passes again (and the later tests see no problem).
+        self.jenkins_moves_tags(APP, {"v0.1.0": main, "v0.2.0": main})
+        repaired = self.tag_check()
+        self.assertEqual(repaired.result, "SUCCESS", repaired.console[-6000:])
+        self.assertIn(f"{APP} v0.1.0: ok ({main[:7]})", repaired.console)
 
     # --- The library's own pieces -----------------------------------------------------------------
 

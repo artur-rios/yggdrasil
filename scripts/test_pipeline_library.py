@@ -508,6 +508,10 @@ class PipelineLibraryTests(unittest.TestCase):
             where = f"line {lib.line(start)}: node({label})"
             self.assertNotIn("scm", lib.words_reached(start, end), f"{where} reaches the job's scm")
             self.assertNotIn("checkoutBuild", lib.reachable(start, end), where)
+            # tag-check's block reads releases and tags through the API: it checks out no repository at all.
+            if lib.function_at(start) == "tagCheck":
+                self.assertNotIn("checkoutCommit", lib.reachable(start, end), where)
+                continue
             self.assertIn("checkoutCommit", lib.reachable(start, end), f"{where} checks out nothing")
         # The commit is known on the controller, from the build's revision, before any ci checkout.
         start, end = lib.functions["prepare"]
@@ -1093,6 +1097,108 @@ class TagReleaseLibraryTests(unittest.TestCase):
         self.assertNotIn("create-tag", body)
         calls = {lib.function_at(m.start()) for m in re.finditer(r"\btagReleaseMerge\(", lib.masked)} - {None}
         self.assertEqual(calls, {"releaseResume"})
+
+
+class TagCheckLibraryTests(unittest.TestCase):
+    """The tag-check job: it reads, on the ci agent with the read credential, and never writes, runs a
+    repository's code or reaches GitHub; a moved or deleted release tag fails the build by name."""
+
+    def setUp(self):
+        self.lib = library()
+
+    def body(self, name):
+        start, end = self.lib.functions[name]
+        return self.lib.code[start:end]
+
+    def blocks(self):
+        """Every node block tagCheck reaches (its own and those of the functions it calls)."""
+        lib = self.lib
+        start, end = lib.functions["tagCheck"]
+        reached = {name for name in lib.reachable(start, end) if name in lib.functions} | {"tagCheck"}
+        return [(label, s, e) for label, s, e in lib.node_blocks() if lib.function_at(s) in reached]
+
+    def test_given_tag_check_when_read_then_it_runs_on_the_ci_agent_only(self):
+        lib = self.lib
+        blocks = self.blocks()
+        self.assertEqual([label for label, _, _ in blocks], ["'ci'"])
+        start, end = lib.functions["tagCheck"]
+        reached = lib.reachable(start, end)
+        # No other agent: not the publish agent (write, the GitHub App), not the release agent.
+        self.assertNotIn("onPublishAgent", reached)
+        self.assertEqual(lib.calls["tagCheck"] & {"lock", "input", "sleep"}, set())
+        (_, node_start, node_end), = blocks
+        self.assertIn("checkReleaseTags", lib.reachable(node_start, node_end))
+
+    def test_given_tag_check_when_read_then_it_binds_the_read_credential_only_and_writes_nothing(self):
+        lib = self.lib
+        start, end = lib.functions["tagCheck"]
+        code = lib.code_reached(start, end, leaving_out=("forgeCredential", "withForgeToken"))
+        self.assertEqual(set(re.findall(r"withForgeToken\(\s*'(\w+)'", code)), {"read"})
+        self.assertNotRegex(code, r"forgeCredential\(\s*'(?:write|github)'")
+        reached = lib.reachable(start, end)
+        for forbidden in ("reportStatus", "httpRequest", "github", "githubLook", "withCheckCredentials", "withNugetKey",
+                          "ensureTag", "mergeAndTag", "publishRelease"):
+            self.assertNotIn(forbidden, reached, forbidden)
+        # forge.sh's reading commands only: the releases and each tag's commit.
+        tools = set(re.findall(r"toolStatus\('forge\.sh', \['([a-z-]+)'", code))
+        self.assertEqual(tools, {"release-tags", "tag-sha"})
+        for literal in ("'create-tag'", "'merge-pr'", "'delete-branch'", "'publish-release.sh'", "'github.sh'"):
+            self.assertNotIn(literal, code)
+
+    def test_given_tag_check_when_read_then_no_repository_is_checked_out_or_run(self):
+        lib = self.lib
+        start, end = lib.functions["tagCheck"]
+        reached = lib.reachable(start, end)
+        # This repository's tools at the library's version (forge.sh), nothing of the repositories it checks.
+        self.assertIn("checkoutTools", reached)
+        for forbidden in ("checkoutCommit", "checkoutTag", "checkoutBuild", "describeCheckout", "runCheck",
+                          "runChecks", "buildReleaseFiles", "packPackages"):
+            self.assertNotIn(forbidden, reached, forbidden)
+        self.assertNotIn("run-check.sh", lib.code_reached(start, end))
+
+    def test_given_tag_check_when_read_then_every_value_from_the_server_reaches_forge_sh_as_an_argument(self):
+        # Tag names and targets are the server's answer: as toolStatus arguments (environment variables),
+        # never in a script, and through printable() in the log when they are not what the pipeline makes.
+        body = self.body("checkReleaseTags")
+        self.assertIn("toolStatus('forge.sh', ['release-tags', repo]", body)
+        self.assertIn("toolStatus('forge.sh', ['tag-sha', repo, tag]", body)
+        start, end = self.lib.functions["checkReleaseTags"]
+        self.assertNotRegex(self.lib.masked[start:end], r"\bsh\b")
+        # A tag name the pipeline would not make is skipped before it is used, a target that is not a
+        # commit is printed through printable(), and so is an answer of tag-sha that is not a commit.
+        self.assertLess(body.index("if (!(tag ==~ TAG))"), body.index("['tag-sha', repo, tag]"))
+        self.assertIn("printable(tag)", body)
+        self.assertIn("printable(target)", body)
+        self.assertIn("printable(sha)", body)
+        self.assertIn("target ==~ COMMIT ? target : null", body)
+        self.assertIn("sha ==~ COMMIT", body)
+
+    def test_given_moved_deleted_or_unknown_tags_when_read_then_the_first_two_fail_the_build_by_name(self):
+        body = self.body("checkReleaseTags")
+        # exit 4: no such tag; a known target that differs: moved; an unknown one is only logged.
+        self.assertRegex(body, r"if \(found == 4\) \{\s*problems << \"DELETED: \$\{repo\} \$\{tag\} \(released from \$\{from\}\)")
+        self.assertRegex(body, r"\} else if \(sha != known\) \{\s*problems << \"MOVED: \$\{repo\} \$\{tag\} "
+                               r"\(tag on \$\{sha\}, released from \$\{known\}\)\"")
+        self.assertIn("unknown target", body)
+        self.assertRegex(body, r"if \(known == null\) \{\s*echo ")
+        main = self.body("tagCheck")
+        self.assertIn("release ${problems.size() == 1 ? 'tag' : 'tags'} moved or deleted", main)
+        self.assertIn("release ${checked == 1 ? 'tag' : 'tags'} checked", main)
+        # A problem fails the build (error, after a line per problem); none is a success with the count.
+        self.assertRegex(main, r"for \(Object line : problems \+ unreadable\) \{\s*echo line\.toString\(\)\s*\}\s*error ")
+        self.assertRegex(main, r"if \(!problems && !unreadable\) \{\s*currentBuild\.description = ")
+
+    def test_given_the_catalog_when_read_then_tag_check_visits_every_entry_that_releases_once(self):
+        body = self.body("releasingRepositories")
+        self.assertIn("it.kind != 'platform'", body)
+        self.assertIn("resolve(catalog, app.id as String).any { it.trigger == 'release' }", body)
+        self.assertIn("(app.repository ?: app.id)", body)
+        self.assertIn("(entry.release ?: 'none') == 'owner-tag'", body)
+        self.assertIn("unique()", body)
+
+    def test_given_the_entry_point_when_read_then_it_calls_tag_check(self):
+        entry = (ROOT / "jenkins" / "library" / "vars" / "yggdrasilTagCheck.groovy").read_text(encoding="utf-8")
+        self.assertRegex(entry, r"def call\(\) \{\s*yggdrasilPipeline\.tagCheck\(\)\s*\}")
 
 
 if __name__ == "__main__":

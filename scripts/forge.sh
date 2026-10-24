@@ -12,6 +12,7 @@
 #     scripts/forge.sh upload-release-file <repo> <release-id> <file> -> the file's download URL
 #     scripts/forge.sh publish-release <repo> <release-id>          -> the release's html_url
 #     scripts/forge.sh find-release   <repo> <tag>                  -> "<id>\t<html_url>\t<draft: true|false>"
+#     scripts/forge.sh release-tags   <repo>                        -> "<tag>\t<target_commitish>" per published release
 #     scripts/forge.sh release-files  <repo> <release-id>           -> "<name>\t<size>" per line
 #     scripts/forge.sh tag-sha        <repo> <tag>                  -> the commit the tag points to
 #     scripts/forge.sh delete-branch  <repo> <branch>
@@ -24,7 +25,10 @@
 # is already gone. find-release finds a release, a draft too, by its tag (GitHub's own lookup by tag
 # does not return drafts, so the list of releases is searched); tag-sha peels an annotated tag to the
 # commit it points to. release-files lists the files attached to a release, which is how an upload is
-# checked.
+# checked. release-tags lists the published releases (drafts left out), each with the target it was
+# released from: create-release sends the release's commit as target_commitish, so for a release the
+# pipeline made it is the commit the tag must still point to (what the tag-check job compares with
+# tag-sha); a release made by hand may name a branch there instead.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
@@ -335,6 +339,19 @@ github_find_release() {
   return 4
 }
 
+github_release_tags() {
+  local repo=$1 out page=1 count
+  # The newest first, 100 to a page at most; a token that can push sees the drafts too, left out here.
+  # 100 pages is far more releases than any repository has.
+  while ((page <= 100)); do
+    out=$(request "release-tags of $repo" GET "$(repo_url "$repo")/releases?per_page=100&page=$page") || return 1
+    jq -r '.[] | select((.draft // false) == false) | [.tag_name, (.target_commitish // "")] | @tsv' <<<"$out" || return 1
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || return 0
+    page=$((page + 1))
+  done
+}
+
 github_release_files() {
   local repo=$1 id=$2 out page=1 count
   while ((page <= 100)); do
@@ -477,6 +494,18 @@ forgejo_find_release() {
   return 4
 }
 
+forgejo_release_tags() {
+  local repo=$1 out page=1 count
+  # Pages of at most 50 (Forgejo's largest); a token that can write sees the drafts too, left out here.
+  while ((page <= 100)); do
+    out=$(request "release-tags of $repo" GET "$(repo_url "$repo")/releases?limit=50&page=$page") || return 1
+    jq -r '.[] | select((.draft // false) == false) | [.tag_name, (.target_commitish // "")] | @tsv' <<<"$out" || return 1
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 50)) || return 0
+    page=$((page + 1))
+  done
+}
+
 forgejo_release_files() {
   local repo=$1 id=$2 out
   # Forgejo lists a release's files in one answer.
@@ -529,6 +558,7 @@ usage: forge.sh <command> <arguments>
   upload-release-file <repo> <release-id> <file>
   publish-release     <repo> <release-id>
   find-release        <repo> <tag>
+  release-tags        <repo>
   release-files       <repo> <release-id>
   tag-sha             <repo> <tag>
   delete-branch       <repo> <branch>
@@ -548,6 +578,7 @@ case "$command" in
   upload-release-file) usage="<repo> <release-id> <file>" min=3 max=3 ;;
   publish-release) usage="<repo> <release-id>" min=2 max=2 ;;
   find-release) usage="<repo> <tag>" min=2 max=2 ;;
+  release-tags) usage="<repo>" min=1 max=1 ;;
   release-files) usage="<repo> <release-id>" min=2 max=2 ;;
   tag-sha) usage="<repo> <tag>" min=2 max=2 ;;
   delete-branch) usage="<repo> <branch>" min=2 max=2 ;;

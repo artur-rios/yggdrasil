@@ -392,6 +392,8 @@ services:
       - ../jenkins/actions-release.groovy:/etc/jenkins/actions-release.groovy:ro
       # The release-resume job's script, the same way.
       - ../jenkins/release-resume.groovy:/etc/jenkins/release-resume.groovy:ro
+      # The tag-check job's script, the same way.
+      - ../jenkins/tag-check.groovy:/etc/jenkins/tag-check.groovy:ro
       # The Job DSL in casc.yaml creates one deploy job per catalog application, agents.groovy one
       # agent per host (environments sharing a host share its `agent`), and the pipeline reads each
       # application's environments from it.

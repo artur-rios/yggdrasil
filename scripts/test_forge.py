@@ -358,6 +358,36 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("forge: find-release v1.2.3 failed: Bad credentials", result.stderr)
 
+    def test_given_github_when_listing_release_tags_then_each_published_release_gives_its_tag_and_target(self):
+        # A draft is not a release anyone relies on yet: only published ones (what tag-check checks).
+        self.respond("releases", (0, [{"id": 6, "tag_name": "v1.2.3", "draft": False, "target_commitish": "a" * 40},
+                                      {"id": 5, "tag_name": "v1.2.4", "draft": True, "target_commitish": "b" * 40},
+                                      {"id": 4, "tag_name": "v1.0.0", "draft": False, "target_commitish": "main"}]))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (0, f"v1.2.3\t{'a' * 40}\nv1.0.0\tmain\n"), result.stderr)
+        self.assertIn("--request GET", self.request("releases"))
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?per_page=100&page=1"))
+
+    def test_given_github_and_more_releases_than_a_page_when_listing_release_tags_then_every_page_is_read(self):
+        first = [{"tag_name": f"v0.0.{n}", "draft": False, "target_commitish": "c" * 40} for n in range(100)]
+        self.respond("releases", (0, first), (0, [{"tag_name": "v1.0.0", "draft": False, "target_commitish": "d" * 40}]))
+        result = self.forge("release-tags", "app")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 101)
+        self.assertEqual(result.stdout.splitlines()[-1], f"v1.0.0\t{'d' * 40}")
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?per_page=100&page=2"))
+
+    def test_given_github_and_no_releases_when_listing_release_tags_then_nothing_is_printed(self):
+        self.respond("releases", (0, []))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
+    def test_given_github_refuses_when_listing_release_tags_then_it_fails_with_1(self):
+        self.respond("releases", (22, {"message": "Bad credentials"}, 401))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("forge: release-tags of app failed: Bad credentials", result.stderr)
+
     def test_given_github_when_listing_release_files_then_name_and_size_are_printed_per_line(self):
         self.respond("assets", (0, [{"name": "app.zip", "size": 10}, {"name": "my app.exe", "size": 2048}]))
         result = self.forge("release-files", "app", "17")
@@ -513,13 +543,16 @@ class ForgeGitHubTests(ForgeTestCase):
         result = self.forge("merge-pr", "app", "7")
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage: forge.sh merge-pr <repo> <number> <sha> <title>", result.stderr)
+        result = self.forge("release-tags", "app", "v1.0.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("usage: forge.sh release-tags <repo>", result.stderr)
 
     def test_given_no_command_when_run_then_every_command_is_listed_and_it_exits_2(self):
         result = self.forge()
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         for command in ("set-status", "get-statuses", "merge-pr", "create-tag", "create-release",
-                        "upload-release-file", "publish-release", "find-release", "release-files", "tag-sha",
-                        "delete-branch"):
+                        "upload-release-file", "publish-release", "find-release", "release-tags", "release-files",
+                        "tag-sha", "delete-branch"):
             self.assertRegex(result.stderr, rf"(?m)^  {command} +<repo>", command)
         self.assertEqual(list(self.state.iterdir()), [])
 
@@ -787,6 +820,20 @@ class ForgeForgejoTests(ForgeTestCase):
         result = self.forge("find-release", "app", "v1.2.3")
         self.assertEqual((result.returncode, result.stdout), (4, ""))
         self.assertIn("no release for v1.2.3", result.stderr)
+
+    def test_given_forgejo_when_listing_release_tags_then_each_published_release_gives_its_tag_and_target(self):
+        self.respond("releases", (0, [{"id": 6, "tag_name": "v1.2.3", "draft": False, "target_commitish": "a" * 40},
+                                      {"id": 5, "tag_name": "v1.2.4", "draft": True, "target_commitish": "b" * 40}]))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (0, f"v1.2.3\t{'a' * 40}\n"), result.stderr)
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?limit=50&page=1"))
+
+    def test_given_forgejo_and_more_releases_than_a_page_when_listing_release_tags_then_every_page_is_read(self):
+        first = [{"tag_name": f"v0.0.{n}", "draft": False, "target_commitish": "c" * 40} for n in range(50)]
+        self.respond("releases", (0, first), (0, []))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, len(result.stdout.splitlines())), (0, 50), result.stderr)
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?limit=50&page=2"))
 
     def test_given_forgejo_when_listing_release_files_then_name_and_size_are_printed_per_line(self):
         self.respond("assets", (0, [{"name": "app.zip", "size": 10}, {"name": "my app.exe", "size": 2048}]))
