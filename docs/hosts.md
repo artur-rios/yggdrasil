@@ -839,7 +839,8 @@ and the data directory. Put the steps in this order: Forgejo must be stopped whi
      find /var/lib/gitea -mindepth 1 -delete
      mkdir /tmp/dump && cd /tmp/dump && unzip -q /backup/forgejo.zip
      cp -a data/. /var/lib/gitea/
-     mkdir -p /var/lib/gitea/git/repositories
+     mkdir -p /var/lib/gitea/data /var/lib/gitea/git/repositories
+     if [ -d /var/lib/gitea/attachments ]; then mv /var/lib/gitea/attachments /var/lib/gitea/data/; fi
      if [ -d repos ]; then cp -a repos/. /var/lib/gitea/git/repositories/; fi
      chown -R 1000:1000 /var/lib/gitea'
    ```
@@ -849,6 +850,10 @@ and the data directory. Put the steps in this order: Forgejo must be stopped whi
      mixed in.
    - `unzip`, then `cp -a data/.`: the dump's `data/` is Forgejo's whole data directory (database, keys,
      settings, indexes). `repos/` holds the git repositories and goes to `git/repositories`.
+   - `mv … attachments`: the dump stores the attachments (release files, issue attachments) as
+     `data/attachments`, which the copy above puts in `/var/lib/gitea/attachments`; Forgejo reads them from
+     `/var/lib/gitea/data/attachments`. Without this step everything looks restored, and every release file
+     answers `500`.
    - `chown -R 1000:1000`: Forgejo runs as uid 1000 inside the container.
 3. Start it and look:
    ```bash
