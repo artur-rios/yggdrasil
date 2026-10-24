@@ -147,13 +147,74 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertIn("unknown state", result.stderr)
         self.assertEqual(list(self.state.iterdir()), [])
 
+    # GitHub's list endpoint (GET .../commits/<sha>/statuses) answers an array of statuses, the newest
+    # first, each with its creator. The combined status (.../status) has no creator in its items, which
+    # is why it is not used.
+    @staticmethod
+    def listed(context, state, login="jenkins"):
+        return {"id": 1, "context": context, "state": state, "description": "x",
+                "creator": None if login is None else {"login": login, "id": 5, "type": "Bot"}}
+
     def test_given_github_when_reading_statuses_then_the_latest_per_context_is_printed(self):
-        self.respond("status", (0, {"state": "failure", "statuses": [
-            {"context": "branch-policy", "state": "success"}, {"context": "test", "state": "failure"}]}))
+        # Newest first: the failure of "test" is the latest, the success under it is history.
+        self.respond("statuses", (0, [self.listed("test", "failure"), self.listed("branch-policy", "success"),
+                                      self.listed("test", "success")]))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "branch-policy\tsuccess\ntest\tfailure\n")
-        self.assertIn("https://api.example/repos/someone/app/commits/abc123/status", self.request("status"))
+        self.assertEqual(result.stdout, "test\tfailure\tjenkins\nbranch-policy\tsuccess\tjenkins\n")
+        self.assertTrue(self.request("statuses").strip().endswith(
+            "https://api.example/repos/someone/app/commits/abc123/statuses?per_page=100&page=1"),
+            self.request("statuses"))
+        self.assertFalse((self.state / "statuses.request.2").exists(), "a page that is not full is the last")
+
+    def test_given_github_statuses_when_read_then_the_creator_is_the_third_column(self):
+        # On GitHub an App's statuses are created by its bot login: reuse compares this column with
+        # forge.jenkinsUser, so it must be printed as the server gives it.
+        self.respond("statuses", (0, [self.listed("test", "success", "my-app[bot]"),
+                                      self.listed("lint", "success", "someone")]))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([line.split("\t") for line in result.stdout.splitlines()],
+                         [["test", "success", "my-app[bot]"], ["lint", "success", "someone"]])
+
+    def test_given_github_a_context_set_by_two_users_when_read_then_the_latest_ones_creator_is_printed(self):
+        # Somebody else posted "test" after Jenkins did: the creator column must be theirs, not Jenkins'.
+        self.respond("statuses", (0, [self.listed("test", "success", "mallory"),
+                                      self.listed("test", "success", "jenkins")]))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.stdout, "test\tsuccess\tmallory\n")
+
+    def test_given_github_a_status_without_a_creator_when_read_then_the_third_column_is_empty(self):
+        # A deleted user's statuses have "creator": null; the line must keep its three columns.
+        self.respond("statuses", (0, [self.listed("test", "success", None)]))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual((result.returncode, result.stdout), (0, "test\tsuccess\t\n"), result.stderr)
+
+    def test_given_a_commit_without_statuses_when_reading_them_on_github_then_nothing_is_printed(self):
+        self.respond("statuses", (0, []))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_given_more_statuses_than_a_page_when_reading_them_on_github_then_every_page_is_read(self):
+        # 100 is the most a page takes. The second page holds older statuses: a context already seen
+        # keeps its newer state, and a new one is added.
+        first = [self.listed(f"deploy/env-{n:02}", "success") for n in range(99)] + [self.listed("test", "failure")]
+        second = [self.listed("test", "success"), self.listed("lint", "success", "someone")]
+        self.respond("statuses", (0, first), (0, second))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 101)
+        self.assertEqual(lines[99:], ["test\tfailure\tjenkins", "lint\tsuccess\tsomeone"])
+        self.assertTrue(self.request("statuses", 2).strip().endswith("/commits/abc123/statuses?per_page=100&page=2"))
+        self.assertFalse((self.state / "statuses.request.3").exists(), "a page that is not full is the last")
+
+    def test_given_exactly_a_page_of_statuses_when_reading_them_on_github_then_the_next_page_is_asked_for(self):
+        self.respond("statuses", (0, [self.listed(f"c{n:03}", "success") for n in range(100)]), (0, []))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 100)
+        self.assertTrue(self.request("statuses", 2).strip().endswith("/commits/abc123/statuses?per_page=100&page=2"))
 
     def test_given_github_when_merging_then_it_prints_the_merge_commit(self):
         self.respond("merge", (0, {"sha": "def456", "merged": True}))
@@ -218,6 +279,41 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertIn("Content-Type: application/octet-stream", request)
         self.assertIn(f"--data-binary @{artifact}", request)
 
+    def test_given_an_api_call_when_made_then_curl_gives_up_on_a_server_that_hangs(self):
+        # A hung server must not hold the agent, and the lock, forever: 10 s to connect, 60 s in all.
+        self.respond("abc123", (0, {"id": 1}))
+        self.assertEqual(self.forge("set-status", "app", "abc123", "success", "ctx", "d").returncode, 0)
+        request = self.request("abc123")
+        self.assertIn("--connect-timeout 10 ", request)
+        self.assertIn("--max-time 60 ", request)
+        self.assertNotIn("--speed-limit", request)
+
+    def test_given_an_upload_when_made_then_curl_gives_up_only_on_a_stalled_transfer(self):
+        # A large file may take long: only a transfer under 1 KiB/s for a minute (or an hour in all) stops.
+        artifact = self.temp / "big.zip"
+        artifact.write_bytes(b"zip bytes")
+        self.respond("assets", (0, {"browser_download_url": "https://example/download/big.zip"}))
+        self.assertEqual(self.forge("upload-release-file", "app", "17", str(artifact)).returncode, 0)
+        request = self.request("assets")
+        self.assertIn("--connect-timeout 10 ", request)
+        self.assertIn("--speed-limit 1024 --speed-time 60 ", request)
+        self.assertIn("--max-time 3600 ", request)
+        self.assertNotIn("--max-time 60 ", request)
+
+    def test_given_other_timeouts_in_the_environment_when_calling_then_curl_gets_them(self):
+        self.respond("abc123", (0, {"id": 1}))
+        env = dict(self.env, YGG_CURL_CONNECT_TIMEOUT="3", YGG_CURL_MAX_TIME="7")
+        self.assertEqual(self.forge("set-status", "app", "abc123", "success", "ctx", "d", env=env).returncode, 0)
+        request = self.request("abc123")
+        self.assertIn("--connect-timeout 3 ", request)
+        self.assertIn("--max-time 7 ", request)
+        for bad in ("", "ten", "-1", "1 --insecure"):
+            with self.subTest(bad=bad):
+                result = self.forge("set-status", "app", "abc123", "success", "ctx", "d",
+                                    env=dict(self.env, YGG_CURL_MAX_TIME=bad))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("YGG_CURL_MAX_TIME", result.stderr)
+
     def test_given_a_missing_file_when_uploading_then_it_fails_before_any_request(self):
         result = self.forge("upload-release-file", "app", "17", str(self.temp / "nothing.zip"))
         self.assertEqual(result.returncode, 1)
@@ -233,6 +329,107 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertIn("--request PATCH", request)
         self.assertIn("/repos/someone/app/releases/17", request)
         self.assertEqual(self.body("17"), {"draft": False})
+
+    def test_given_github_when_finding_a_release_then_its_id_url_and_draft_flag_are_printed(self):
+        self.respond("releases", (0, [{"id": 5, "tag_name": "v1.1.0", "draft": False, "html_url": "https://example/r/5"},
+                                      {"id": 6, "tag_name": "v1.2.3", "draft": True, "html_url": "https://example/r/6"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "6\thttps://example/r/6\ttrue\n"), result.stderr)
+        self.assertIn("--request GET", self.request("releases"))
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?per_page=100&page=1"))
+
+    def test_given_github_and_a_release_on_the_second_page_when_finding_it_then_the_next_page_is_read(self):
+        first = [{"id": n, "tag_name": f"v0.0.{n}", "draft": False, "html_url": "https://example/r"} for n in range(100)]
+        self.respond("releases", (0, first), (0, [{"id": 200, "tag_name": "v1.2.3", "draft": False,
+                                                   "html_url": "https://example/r/200"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "200\thttps://example/r/200\tfalse\n"), result.stderr)
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?per_page=100&page=2"))
+
+    def test_given_github_and_no_release_for_the_tag_when_finding_it_then_it_exits_4(self):
+        self.respond("releases", (0, [{"id": 5, "tag_name": "v1.1.0", "draft": False, "html_url": "https://example/r/5"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("no release for v1.2.3", result.stderr)
+
+    def test_given_github_refuses_when_finding_a_release_then_it_fails_with_1(self):
+        self.respond("releases", (22, {"message": "Bad credentials"}, 401))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("forge: find-release v1.2.3 failed: Bad credentials", result.stderr)
+
+    def test_given_github_when_listing_release_tags_then_each_published_release_gives_its_tag_and_target(self):
+        # A draft is not a release anyone relies on yet: only published ones (what tag-check checks).
+        self.respond("releases", (0, [{"id": 6, "tag_name": "v1.2.3", "draft": False, "target_commitish": "a" * 40},
+                                      {"id": 5, "tag_name": "v1.2.4", "draft": True, "target_commitish": "b" * 40},
+                                      {"id": 4, "tag_name": "v1.0.0", "draft": False, "target_commitish": "main"}]))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (0, f"v1.2.3\t{'a' * 40}\nv1.0.0\tmain\n"), result.stderr)
+        self.assertIn("--request GET", self.request("releases"))
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?per_page=100&page=1"))
+
+    def test_given_github_and_more_releases_than_a_page_when_listing_release_tags_then_every_page_is_read(self):
+        first = [{"tag_name": f"v0.0.{n}", "draft": False, "target_commitish": "c" * 40} for n in range(100)]
+        self.respond("releases", (0, first), (0, [{"tag_name": "v1.0.0", "draft": False, "target_commitish": "d" * 40}]))
+        result = self.forge("release-tags", "app")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 101)
+        self.assertEqual(result.stdout.splitlines()[-1], f"v1.0.0\t{'d' * 40}")
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?per_page=100&page=2"))
+
+    def test_given_github_and_no_releases_when_listing_release_tags_then_nothing_is_printed(self):
+        self.respond("releases", (0, []))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
+    def test_given_github_refuses_when_listing_release_tags_then_it_fails_with_1(self):
+        self.respond("releases", (22, {"message": "Bad credentials"}, 401))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("forge: release-tags of app failed: Bad credentials", result.stderr)
+
+    def test_given_github_when_listing_release_files_then_name_and_size_are_printed_per_line(self):
+        self.respond("assets", (0, [{"name": "app.zip", "size": 10}, {"name": "my app.exe", "size": 2048}]))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual((result.returncode, result.stdout), (0, "app.zip\t10\nmy app.exe\t2048\n"), result.stderr)
+        self.assertTrue(self.request("assets").strip().endswith("/repos/someone/app/releases/17/assets?per_page=100&page=1"))
+
+    def test_given_github_and_no_files_when_listing_release_files_then_nothing_is_printed(self):
+        self.respond("assets", (0, []))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+
+    def test_given_more_files_than_a_page_when_listing_release_files_on_github_then_every_page_is_read(self):
+        self.respond("assets", (0, [{"name": f"f{n}", "size": n} for n in range(100)]), (0, [{"name": "last", "size": 1}]))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 101)
+        self.assertEqual(result.stdout.splitlines()[-1], "last\t1")
+
+    def test_given_github_and_a_lightweight_tag_when_asking_its_commit_then_the_commit_is_printed(self):
+        self.respond("v1.2.3", (0, {"ref": "refs/tags/v1.2.3", "object": {"type": "commit", "sha": "abc123"}}))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "abc123\n"), result.stderr)
+        self.assertTrue(self.request("v1.2.3").strip().endswith("/repos/someone/app/git/ref/tags/v1.2.3"))
+
+    def test_given_github_and_an_annotated_tag_when_asking_its_commit_then_the_tag_object_is_peeled(self):
+        self.respond("v1.2.3", (0, {"object": {"type": "tag", "sha": "tagobject"}}))
+        self.respond("tagobject", (0, {"object": {"type": "commit", "sha": "abc123"}}))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "abc123\n"), result.stderr)
+        self.assertTrue(self.request("tagobject").strip().endswith("/repos/someone/app/git/tags/tagobject"))
+
+    def test_given_github_and_no_such_tag_when_asking_its_commit_then_it_exits_4(self):
+        self.respond("v1.2.3", (22, {"message": "Not Found"}, 404))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("not found", result.stderr)
+
+    def test_given_github_fails_when_asking_a_tags_commit_then_it_exits_1(self):
+        self.respond("v1.2.3", (22, {"message": "Server Error"}, 500))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("tag-sha v1.2.3 failed: Server Error", result.stderr)
 
     def test_given_a_branch_with_a_slash_when_deleting_on_github_then_the_ref_path_keeps_it(self):
         self.respond("1.0.0", (0, None))
@@ -271,6 +468,7 @@ class ForgeGitHubTests(ForgeTestCase):
     def test_given_any_command_when_run_then_the_token_is_not_in_curls_arguments(self):
         self.respond("abc123", (0, {}))
         self.respond("status", (0, {"statuses": []}))
+        self.respond("statuses", (0, []))
         self.respond("merge", (0, {"sha": "def456"}))
         self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "u"}))
         self.respond("17", (0, {"draft": False, "html_url": "u"}))
@@ -345,12 +543,16 @@ class ForgeGitHubTests(ForgeTestCase):
         result = self.forge("merge-pr", "app", "7")
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage: forge.sh merge-pr <repo> <number> <sha> <title>", result.stderr)
+        result = self.forge("release-tags", "app", "v1.0.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("usage: forge.sh release-tags <repo>", result.stderr)
 
     def test_given_no_command_when_run_then_every_command_is_listed_and_it_exits_2(self):
         result = self.forge()
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         for command in ("set-status", "get-statuses", "merge-pr", "create-tag", "create-release",
-                        "upload-release-file", "publish-release", "delete-branch"):
+                        "upload-release-file", "publish-release", "find-release", "release-tags", "release-files",
+                        "tag-sha", "delete-branch"):
             self.assertRegex(result.stderr, rf"(?m)^  {command} +<repo>", command)
         self.assertEqual(list(self.state.iterdir()), [])
 
@@ -430,14 +632,29 @@ class ForgeForgejoTests(ForgeTestCase):
 
     def test_given_forgejo_when_reading_statuses_then_the_status_field_is_printed_per_context(self):
         self.respond("status", (0, {"state": "failure", "statuses": [
-            {"context": "branch-policy", "status": "success"}, {"context": "test", "status": "failure"}]}))
+            {"context": "branch-policy", "status": "success", "creator": {"login": "jenkins"}},
+            {"context": "test", "status": "failure", "creator": {"login": "jenkins"}}]}))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "branch-policy\tsuccess\ntest\tfailure\n")
+        self.assertEqual(result.stdout, "branch-policy\tsuccess\tjenkins\ntest\tfailure\tjenkins\n")
         request = self.request("status")
         self.assertTrue(request.strip().endswith(
             "https://api.example/repos/someone/app/commits/abc123/status?limit=50&page=1"), request)
         self.assertFalse((self.state / "status.request.2").exists(), "a page that is not full is the last")
+
+    def test_given_forgejo_statuses_when_read_then_the_creator_is_the_third_column(self):
+        self.respond("status", (0, {"statuses": [
+            {"context": "test", "status": "success", "creator": {"id": 2, "login": "jenkins"}},
+            {"context": "lint", "status": "failure", "creator": {"id": 3, "login": "someone"}}]}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([line.split("\t") for line in result.stdout.splitlines()],
+                         [["test", "success", "jenkins"], ["lint", "failure", "someone"]])
+
+    def test_given_forgejo_a_status_without_a_creator_when_read_then_the_third_column_is_empty(self):
+        self.respond("status", (0, {"statuses": [{"context": "test", "status": "success"}]}))
+        result = self.forge("get-statuses", "app", "abc123")
+        self.assertEqual((result.returncode, result.stdout), (0, "test\tsuccess\t\n"), result.stderr)
 
     def test_given_a_commit_without_statuses_when_reading_them_on_forgejo_then_nothing_is_printed(self):
         # What Forgejo 16 answers for a commit nobody posted a status on.
@@ -446,13 +663,15 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def test_given_more_contexts_than_a_page_when_reading_statuses_on_forgejo_then_every_page_is_read(self):
-        page = [{"context": f"deploy/env-{n:02}", "status": "success"} for n in range(50)]
-        self.respond("status", (0, {"statuses": page}), (0, {"statuses": [{"context": "test", "status": "failure"}]}))
+        page = [{"context": f"deploy/env-{n:02}", "status": "success", "creator": {"login": "jenkins"}}
+                for n in range(50)]
+        self.respond("status", (0, {"statuses": page}),
+                     (0, {"statuses": [{"context": "test", "status": "failure", "creator": {"login": "jenkins"}}]}))
         result = self.forge("get-statuses", "app", "abc123")
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 51)
-        self.assertEqual(lines[-1], "test\tfailure")
+        self.assertEqual(lines[-1], "test\tfailure\tjenkins")
         self.assertTrue(self.request("status", 2).strip().endswith("/commits/abc123/status?limit=50&page=2"))
         self.assertFalse((self.state / "status.request.3").exists())
 
@@ -556,6 +775,8 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertIn("--request POST", request)
         self.assertIn(f"--form attachment=@{artifact}", request)
         self.assertNotIn("Content-Type", request, "curl must make the multipart Content-Type with its boundary")
+        # An upload: given up on only when it stalls (or after an hour).
+        self.assertIn("--connect-timeout 10 --speed-limit 1024 --speed-time 60 --max-time 3600 ", request)
 
     def test_given_a_missing_file_when_uploading_to_forgejo_then_it_fails_before_any_request(self):
         result = self.forge("upload-release-file", "app", "17", str(self.temp / "nothing.zip"))
@@ -578,6 +799,59 @@ class ForgeForgejoTests(ForgeTestCase):
         result = self.forge("publish-release", "app", "17")
         self.assertEqual(result.returncode, 1)
         self.assertIn("still a draft", result.stderr)
+
+    def test_given_forgejo_when_finding_a_release_then_its_id_url_and_draft_flag_are_printed(self):
+        self.respond("releases", (0, [{"id": 5, "tag_name": "v1.1.0", "draft": False, "html_url": "https://example/r/5"},
+                                      {"id": 6, "tag_name": "v1.2.3", "draft": True, "html_url": "https://example/r/6"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "6\thttps://example/r/6\ttrue\n"), result.stderr)
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?limit=50&page=1"))
+
+    def test_given_forgejo_and_a_release_on_the_second_page_when_finding_it_then_the_next_page_is_read(self):
+        first = [{"id": n, "tag_name": f"v0.0.{n}", "draft": False, "html_url": "https://example/r"} for n in range(50)]
+        self.respond("releases", (0, first), (0, [{"id": 200, "tag_name": "v1.2.3", "draft": False,
+                                                   "html_url": "https://example/r/200"}]))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "200\thttps://example/r/200\tfalse\n"), result.stderr)
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?limit=50&page=2"))
+
+    def test_given_forgejo_and_no_release_for_the_tag_when_finding_it_then_it_exits_4(self):
+        self.respond("releases", (0, []))
+        result = self.forge("find-release", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("no release for v1.2.3", result.stderr)
+
+    def test_given_forgejo_when_listing_release_tags_then_each_published_release_gives_its_tag_and_target(self):
+        self.respond("releases", (0, [{"id": 6, "tag_name": "v1.2.3", "draft": False, "target_commitish": "a" * 40},
+                                      {"id": 5, "tag_name": "v1.2.4", "draft": True, "target_commitish": "b" * 40}]))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, result.stdout), (0, f"v1.2.3\t{'a' * 40}\n"), result.stderr)
+        self.assertTrue(self.request("releases").strip().endswith("/repos/someone/app/releases?limit=50&page=1"))
+
+    def test_given_forgejo_and_more_releases_than_a_page_when_listing_release_tags_then_every_page_is_read(self):
+        first = [{"tag_name": f"v0.0.{n}", "draft": False, "target_commitish": "c" * 40} for n in range(50)]
+        self.respond("releases", (0, first), (0, []))
+        result = self.forge("release-tags", "app")
+        self.assertEqual((result.returncode, len(result.stdout.splitlines())), (0, 50), result.stderr)
+        self.assertTrue(self.request("releases", 2).strip().endswith("/releases?limit=50&page=2"))
+
+    def test_given_forgejo_when_listing_release_files_then_name_and_size_are_printed_per_line(self):
+        self.respond("assets", (0, [{"name": "app.zip", "size": 10}, {"name": "my app.exe", "size": 2048}]))
+        result = self.forge("release-files", "app", "17")
+        self.assertEqual((result.returncode, result.stdout), (0, "app.zip\t10\nmy app.exe\t2048\n"), result.stderr)
+        self.assertTrue(self.request("assets").strip().endswith("/repos/someone/app/releases/17/assets"))
+
+    def test_given_forgejo_when_asking_a_tags_commit_then_the_tags_commit_is_printed(self):
+        self.respond("v1.2.3", (0, {"name": "v1.2.3", "id": "tagobject", "commit": {"sha": "abc123"}}))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (0, "abc123\n"), result.stderr)
+        self.assertTrue(self.request("v1.2.3").strip().endswith("/repos/someone/app/tags/v1.2.3"))
+
+    def test_given_forgejo_and_no_such_tag_when_asking_its_commit_then_it_exits_4(self):
+        self.respond("v1.2.3", (22, {"message": "The target couldn't be found."}, 404))
+        result = self.forge("tag-sha", "app", "v1.2.3")
+        self.assertEqual((result.returncode, result.stdout), (4, ""))
+        self.assertIn("not found", result.stderr)
 
     def test_given_a_branch_with_a_slash_when_deleting_on_forgejo_then_the_path_keeps_it(self):
         self.respond("1.0.0", (0, None, 204))

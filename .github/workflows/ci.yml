@@ -8,6 +8,8 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  # By hand only: the pipeline-live job below (it builds the Jenkins images and takes many minutes).
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -169,3 +171,19 @@ jobs:
               echo "stacks/$stack.$mode.yml ok"
             done
           done
+
+  pipeline-live:
+    name: Pipeline (live Jenkins)
+    # The pipeline end to end: the Jenkins controller and build agent images built from platform/jenkins,
+    # Forgejo, pull requests and pushes through the library (scripts/test_jenkins_live.py). It builds
+    # images (the plugins come from the internet) and runs builds, so it runs only when started by hand.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - run: pip install --quiet pyyaml
+      - name: Run the pipeline against Jenkins and Forgejo
+        env:
+          YGG_JENKINS_TESTS: "1"
+        run: python3 -m unittest discover -s scripts -p test_jenkins_live.py -v

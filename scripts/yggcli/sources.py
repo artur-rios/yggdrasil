@@ -11,7 +11,7 @@ from . import context
 Choice = collections.namedtuple("Choice", "value detail note", defaults=("", ""))
 
 # Typed, not picked: the menu offers a default, the completion leaves them to the shell.
-TYPED = {"directory", "file", "version", "number"}
+TYPED = {"directory", "file", "version", "number", "domain"}
 # Picked, but text that matches nothing is taken as typed (a new variable, a scope, a change id).
 OPEN = {"scope", "key", "assignment", "change"}
 KNOWN = TYPED | OPEN | {"application", "host-application", "app-of-environment", "environment",

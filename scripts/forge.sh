@@ -4,21 +4,36 @@
 # Needs curl, jq and (only when the environment below does not say) python3 with PyYAML.
 #
 #     scripts/forge.sh set-status     <repo> <sha> <state> <context> <description> [target-url]
-#     scripts/forge.sh get-statuses   <repo> <sha>                  -> "<context>\t<state>" per line
+#     scripts/forge.sh get-statuses   <repo> <sha>                  -> "<context>\t<state>\t<creator>" per line
 #     scripts/forge.sh merge-pr       <repo> <number> <sha> <title> -> the merge commit
 #     scripts/forge.sh create-tag     <repo> <tag> <sha>
 #     scripts/forge.sh create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]
 #                                                                   -> "<id>\t<html_url>"
 #     scripts/forge.sh upload-release-file <repo> <release-id> <file> -> the file's download URL
 #     scripts/forge.sh publish-release <repo> <release-id>          -> the release's html_url
+#     scripts/forge.sh find-release   <repo> <tag>                  -> "<id>\t<html_url>\t<draft: true|false>"
+#     scripts/forge.sh release-tags   <repo>                        -> "<tag>\t<target_commitish>" per published release
+#     scripts/forge.sh release-files  <repo> <release-id>           -> "<name>\t<size>" per line
+#     scripts/forge.sh tag-sha        <repo> <tag>                  -> the commit the tag points to
 #     scripts/forge.sh delete-branch  <repo> <branch>
 #
 # state is pending, success, failure or error. get-statuses prints the latest state of each context
-# (the server's combined status). merge-pr makes a merge commit and fails if the pull request's head is
-# no longer <sha>. delete-branch succeeds, with a note on stderr, when the branch is already gone.
+# (GitHub: the newest status in the commit's list of statuses; Forgejo: its combined status) and the
+# login that created it (empty when the server has none: a deleted user), which is how the pipeline
+# tells its own results from anyone else's. merge-pr makes a merge commit and fails if the pull
+# request's head is no longer <sha>. delete-branch succeeds, with a note on stderr, when the branch
+# is already gone. find-release finds a release, a draft too, by its tag (GitHub's own lookup by tag
+# does not return drafts, so the list of releases is searched); tag-sha peels an annotated tag to the
+# commit it points to. release-files lists the files attached to a release, which is how an upload is
+# checked. release-tags lists the published releases (drafts left out), each with the target it was
+# released from: create-release sends the release's commit as target_commitish, so for a release the
+# pipeline made it is the commit the tag must still point to (what the tag-check job compares with
+# tag-sha); a release made by hand may name a branch there instead.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
+# 4 (find-release and tag-sha only) that there is no such release or tag, which is an answer, not an
+# error: the caller creates it, or waits for it;
 # 2 that there was no command at all (it prints the list of commands).
 # On Forgejo merge-pr waits (every 3 s, up to 20 times) while the server answers "try again later": it
 # checks a pull request again in the background after a new commit status. The token reaches curl on
@@ -31,11 +46,29 @@
 #   FORGE_OWNER        the owner of the repositories      (else, for GitHub, GITHUB_OWNER, else catalog.py owner)
 #   FORGE_TOKEN        the access token, required         (else, for GitHub, GH_TOKEN)
 #   GITHUB_UPLOADS_URL where GitHub takes release files   (default https://uploads.github.com)
+# and curl's limits, in seconds: YGG_CURL_CONNECT_TIMEOUT (10), YGG_CURL_MAX_TIME (60, an API call),
+# YGG_CURL_TRANSFER_MAX_TIME (3600, an upload, which also stops when stalled under 1 KiB/s for 60 s).
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 die() { echo "forge: $*" >&2; exit 1; }
+
+# How long curl waits, so a server that hangs cannot hold an agent (and the release lock) forever.
+# An API call: 10 s to connect, 60 s in all. An upload, which may be large: given up on only when
+# it stalls under 1 KiB/s for a minute, or after an hour. YGG_CURL_CONNECT_TIMEOUT, YGG_CURL_MAX_TIME
+# and YGG_CURL_TRANSFER_MAX_TIME (seconds) change them.
+seconds() {
+  local name=$1 value
+  value=${!name-$2}
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a whole number of seconds, not '$value'"
+  printf '%s' "$value"
+}
+connect_timeout=$(seconds YGG_CURL_CONNECT_TIMEOUT 10) || exit 1
+max_time=$(seconds YGG_CURL_MAX_TIME 60) || exit 1
+transfer_max_time=$(seconds YGG_CURL_TRANSFER_MAX_TIME 3600) || exit 1
+api_timeouts=(--connect-timeout "$connect_timeout" --max-time "$max_time")
+transfer_timeouts=(--connect-timeout "$connect_timeout" --speed-limit 1024 --speed-time 60 --max-time "$transfer_max_time")
 
 catalog() { python3 "$root/scripts/catalog.py" "$@"; }
 
@@ -109,6 +142,11 @@ send() {
     --file) args+=(--header "Content-Type: application/octet-stream" --data-binary "@$2") ;;
     --form) args+=(--form "$2") ;; # curl makes the multipart Content-Type, boundary included
   esac
+  # A file going up (--file, --form) is a transfer; everything else an API call.
+  case "${1:-}" in
+    --file | --form) args+=("${transfer_timeouts[@]}") ;;
+    *) args+=("${api_timeouts[@]}") ;;
+  esac
   errors=$(mktemp)
   out=$(curl "${args[@]}" "$url" <<<"$(headers)" 2>"$errors") || status=$?
   if [[ "$out" == *$'\n'* ]]; then
@@ -148,6 +186,18 @@ request() {
     return 1
   fi
   [[ -z "$answer" ]] || printf '%s\n' "$answer"
+}
+
+# missing_or_failed <what>: after a send that failed, for the commands where "not found" is an answer:
+# prints the exit status to return, 4 for a 404, else 1 (explained on stderr like request does).
+missing_or_failed() {
+  if [[ "$http_status" == 404 ]]; then
+    echo "forge: $1: not found" >&2
+    echo 4
+  else
+    echo "forge: $1 failed${failure:+: $failure}" >&2
+    echo 1
+  fi
 }
 
 # The curl config with the request's headers.
@@ -198,10 +248,21 @@ release_options() {
 github_set_status() { set_status "$@"; }
 
 github_get_statuses() {
-  local repo=$1 sha=$2 out
-  # The combined status already holds one state per context, the latest. 100 is the most a page takes.
-  out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status?per_page=100") || return 1
-  jq -r '.statuses[] | [.context, .state] | @tsv' <<<"$out"
+  local repo=$1 sha=$2 out page=1 count pages=()
+  # The list of statuses, not the combined status: only the list's items carry the creator (the
+  # combined status' items are "simple" statuses without one). The list is the commit's whole history,
+  # the newest first, 100 to a page at most, so the first one seen of a context is its latest. 100
+  # pages is far more than the 1000 statuses GitHub keeps per commit and context.
+  while ((page <= 100)); do
+    out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/statuses?per_page=100&page=$page") || return 1
+    pages+=("$out")
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || break
+    page=$((page + 1))
+  done
+  printf '%s\n' "${pages[@]}" | jq -rs 'add // [] | reduce .[] as $s ({seen: {}, lines: []};
+      if .seen[$s.context] then . else .seen[$s.context] = true | .lines += [$s] end)
+    | .lines[] | [.context, .state, (.creator.login // "")] | @tsv'
 }
 
 github_merge_pr() {
@@ -257,6 +318,67 @@ github_publish_release() {
   jq -er 'select(.draft == false) | .html_url' <<<"$out" || die "publish-release failed: the release is still a draft"
 }
 
+github_find_release() {
+  local repo=$1 tag=$2 out page=1 count found
+  # GET /releases/tags/<tag> leaves drafts out, and a draft is what an interrupted release leaves: the
+  # list (the newest first, 100 to a page at most, drafts included for a token that can push) is searched.
+  # 100 pages is far more releases than any repository has.
+  while ((page <= 100)); do
+    out=$(request "find-release $tag" GET "$(repo_url "$repo")/releases?per_page=100&page=$page") || return 1
+    found=$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag)][0] // empty
+      | [.id, .html_url, (.draft // false)] | @tsv' <<<"$out") || return 1
+    if [[ -n "$found" ]]; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || break
+    page=$((page + 1))
+  done
+  echo "forge: no release for $tag" >&2
+  return 4
+}
+
+github_release_tags() {
+  local repo=$1 out page=1 count
+  # The newest first, 100 to a page at most; a token that can push sees the drafts too, left out here.
+  # 100 pages is far more releases than any repository has.
+  while ((page <= 100)); do
+    out=$(request "release-tags of $repo" GET "$(repo_url "$repo")/releases?per_page=100&page=$page") || return 1
+    jq -r '.[] | select((.draft // false) == false) | [.tag_name, (.target_commitish // "")] | @tsv' <<<"$out" || return 1
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || return 0
+    page=$((page + 1))
+  done
+}
+
+github_release_files() {
+  local repo=$1 id=$2 out page=1 count
+  while ((page <= 100)); do
+    out=$(request "release-files of $id" GET "$(repo_url "$repo")/releases/$(encode "$id")/assets?per_page=100&page=$page") || return 1
+    jq -r '.[] | [.name, .size] | @tsv' <<<"$out" || return 1
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || return 0
+    page=$((page + 1))
+  done
+}
+
+github_tag_sha() {
+  local repo=$1 tag=$2 object type sha
+  # git/ref (singular) is the exact tag, not every ref that starts with its name. A lightweight tag
+  # points at the commit; an annotated one at a tag object, which points at the commit (or at another
+  # tag object): followed until a commit.
+  send GET "$(repo_url "$repo")/git/ref/tags/$(encode_path "$tag")" || return "$(missing_or_failed "tag-sha $tag")"
+  object=$(jq -er '.object | select(.type != null and .sha != null) | .type + " " + .sha' <<<"$answer") || die "tag-sha failed: the answer has no object"
+  read -r type sha <<<"$object"
+  while [[ "$type" == tag ]]; do
+    send GET "$(repo_url "$repo")/git/tags/$(encode "$sha")" || return "$(missing_or_failed "tag-sha $tag")"
+    object=$(jq -er '.object | select(.type != null and .sha != null) | .type + " " + .sha' <<<"$answer") || die "tag-sha failed: the answer has no object"
+    read -r type sha <<<"$object"
+  done
+  printf '%s\n' "$sha"
+}
+
 github_delete_branch() {
   local repo=$1 branch=$2 out
   # "delete head branches on merge" (github/rulesets.py turns it on) means GitHub has usually deleted
@@ -282,7 +404,7 @@ forgejo_get_statuses() {
   # The state is in the field "status" (GitHub's "state"). 100 pages is far more than any commit has.
   while ((page <= 100)); do
     out=$(request "get-statuses of $sha" GET "$(repo_url "$repo")/commits/$(encode "$sha")/status?limit=50&page=$page") || return 1
-    jq -r '(.statuses // [])[] | [.context, .status] | @tsv' <<<"$out"
+    jq -r '(.statuses // [])[] | [.context, .status, (.creator.login // "")] | @tsv' <<<"$out"
     count=$(jq '.statuses // [] | length' <<<"$out")
     ((count == 50)) || return 0
     page=$((page + 1))
@@ -352,6 +474,52 @@ forgejo_publish_release() {
   jq -er 'select(.draft == false) | .html_url' <<<"$out" || die "publish-release failed: the release is still a draft"
 }
 
+forgejo_find_release() {
+  local repo=$1 tag=$2 out page=1 count found
+  # The list, not /releases/tags/<tag>: it answers 404 for a draft. Pages of at most 50 (Forgejo's
+  # largest), drafts included for a token that can write.
+  while ((page <= 100)); do
+    out=$(request "find-release $tag" GET "$(repo_url "$repo")/releases?limit=50&page=$page") || return 1
+    found=$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag)][0] // empty
+      | [.id, .html_url, (.draft // false)] | @tsv' <<<"$out") || return 1
+    if [[ -n "$found" ]]; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 50)) || break
+    page=$((page + 1))
+  done
+  echo "forge: no release for $tag" >&2
+  return 4
+}
+
+forgejo_release_tags() {
+  local repo=$1 out page=1 count
+  # Pages of at most 50 (Forgejo's largest); a token that can write sees the drafts too, left out here.
+  while ((page <= 100)); do
+    out=$(request "release-tags of $repo" GET "$(repo_url "$repo")/releases?limit=50&page=$page") || return 1
+    jq -r '.[] | select((.draft // false) == false) | [.tag_name, (.target_commitish // "")] | @tsv' <<<"$out" || return 1
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 50)) || return 0
+    page=$((page + 1))
+  done
+}
+
+forgejo_release_files() {
+  local repo=$1 id=$2 out
+  # Forgejo lists a release's files in one answer.
+  out=$(request "release-files of $id" GET "$(repo_url "$repo")/releases/$(encode "$id")/assets") || return 1
+  jq -r '.[] | [.name, .size] | @tsv' <<<"$out"
+}
+
+forgejo_tag_sha() {
+  local repo=$1 tag=$2
+  # .commit is the commit the tag points to, also for an annotated tag (.id is the tag object).
+  send GET "$(repo_url "$repo")/tags/$(encode_path "$tag")" || return "$(missing_or_failed "tag-sha $tag")"
+  jq -er '.commit.sha | select(. != null and . != "")' <<<"$answer" || die "tag-sha failed: the answer has no commit"
+}
+
 forgejo_delete_branch() {
   local repo=$1 branch=$2 url refused
   url="$(repo_url "$repo")/branches/$(encode_path "$branch")"
@@ -389,6 +557,10 @@ usage: forge.sh <command> <arguments>
   create-release      <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]
   upload-release-file <repo> <release-id> <file>
   publish-release     <repo> <release-id>
+  find-release        <repo> <tag>
+  release-tags        <repo>
+  release-files       <repo> <release-id>
+  tag-sha             <repo> <tag>
   delete-branch       <repo> <branch>
 Reference: docs/setup.md, "The git server commands".
 EOF
@@ -405,6 +577,10 @@ case "$command" in
   create-release) usage="<repo> <tag> <sha> <title> [--draft] [--notes-file <file>]" min=4 max=7 ;;
   upload-release-file) usage="<repo> <release-id> <file>" min=3 max=3 ;;
   publish-release) usage="<repo> <release-id>" min=2 max=2 ;;
+  find-release) usage="<repo> <tag>" min=2 max=2 ;;
+  release-tags) usage="<repo>" min=1 max=1 ;;
+  release-files) usage="<repo> <release-id>" min=2 max=2 ;;
+  tag-sha) usage="<repo> <tag>" min=2 max=2 ;;
   delete-branch) usage="<repo> <branch>" min=2 max=2 ;;
   *) die "unknown command '$command'" ;;
 esac

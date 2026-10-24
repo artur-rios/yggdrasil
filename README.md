@@ -5,8 +5,9 @@ made of one or more applications, such as an API and its web front end) and your
 (development, homologation, production, or as many as you need, several of them on one host if you
 like) in one catalog file. yggdrasil then:
 
-- **Enforces a release flow on GitHub**: `feature/`/`fix/` → `develop` → `release/x.y.z` → `main`, tagged `vx.y.z`.
-- **Deploys with a self-hosted Jenkins**, according to each environment's options:
+- **Enforces a release flow on Forgejo or GitHub**: `feature/`/`fix/` → `develop` → `release/x.y.z` → `main`, tagged `vx.y.z`.
+- **Checks and releases with a self-hosted Jenkins**: each repository's `yggdrasil.yml` lists its checks, which run in containers on a CI agent and are reported as commit statuses, and the files of a release, which are built, signed and validated on a release agent of their own. Libraries get their NuGet packages pushed from an owner's tag. Renovate keeps dependencies current.
+- **Deploys with the same Jenkins**, according to each environment's options:
   - on branch pushes, on a green release pull request, or by hand
   - with or without a manual approval
   - on the host that runs the environment, which may run others too
@@ -21,8 +22,8 @@ Adding an application, an environment or a whole system is a catalog entry, not 
 ```mermaid
 flowchart LR
     dev([Developer]) -- push / pull request --> gh
-    subgraph gh [GitHub]
-        repos[Application repositories<br/>Actions: build + test<br/>Rulesets: release flow]
+    subgraph gh [Git server: Forgejo or GitHub]
+        repos[Application repositories<br/>Protected branches and tags: release flow]
     end
     subgraph vps [VPS: the controller host]
         jc[Jenkins controller] -. WebSocket .- a1[Agent vps]
@@ -30,7 +31,7 @@ flowchart LR
         p1[Traefik · status API · console · monitoring<br/>one platform for the three environments] --> envs
     end
     gh -- webhooks --> jc
-    jc -- status, merge, tag --> gh
+    jc -- status, merge, tag, release --> gh
     subgraph ws [Workstation]
         local[local: Docker Desktop<br/>deployed by hand]
     end
@@ -77,11 +78,15 @@ gitGraph
     merge release/1.4.0 id: "deploy: release environments" tag: "v1.4.0"
 ```
 
-- `develop` and `main` only change through pull requests. Required checks: `branch-policy` (the Branch Policy workflow), the application's CI (the catalog's `checks`), and on `main` one `deploy/<environment>` status per release environment.
-- Into `develop` go only `feature/*` and `fix/*` branches cut from `develop`.
+- `develop` and `main` only change through pull requests. Required checks: `branch-policy`, the application's checks (the catalog's `checks`, reported by Jenkins; `actionsChecks` are GitHub Actions jobs, required on `develop`), and on `main` one `deploy/<environment>` status per release environment.
+- Into `develop` go only `feature/*`, `fix/*` and `renovate/*` branches cut from `develop`.
 - Into `main` go only `release/x.y.z` branches that are snapshots of `develop`, for a version not yet tagged.
-- `v*` tags can't be moved or deleted.
-- Repository admins can bypass all of it, for emergencies.
+- Version tags (`v*`, or an owner-tagged repository's own pattern) are created only by Jenkins (applications) or the
+  owner. On GitHub, and on a Forgejo installation's GitHub copies, nobody can move or delete them, admins
+  included. On Forgejo whoever creates them can also move or delete them (an accepted gap): the daily
+  `tag-check` job fails naming any that moved or were deleted, and they are repaired from the GitHub copy
+  ([setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
+- Repository admins (on Forgejo, the owner) can bypass the branch rules, for emergencies; not the tag rules.
 
 ### What a release does
 
@@ -89,35 +94,35 @@ gitGraph
 sequenceDiagram
     autonumber
     actor Dev as Developer
-    participant GH as GitHub
+    participant G as Forgejo / GitHub
     participant J as Jenkins
+    participant CI as CI agent
     participant B as Branch environments<br/>(e.g. homologation)
     participant R as Release environments<br/>(e.g. production)
-    Dev->>GH: push release/1.4.0
-    GH->>J: webhook
+    participant RA as Release agent
+    Dev->>G: push release/1.4.0
+    G->>J: webhook
+    J->>CI: checks
     J->>B: deploy.sh (build, wait healthy, roll back on failure)
-    Dev->>GH: pull request release/1.4.0 → main
-    GH->>J: webhook
-    J->>GH: wait for every GitHub Actions check
+    Dev->>G: pull request release/1.4.0 → main
+    G->>J: webhook
+    J->>CI: branch policy and checks
+    J->>G: statuses
+    J->>G: wait for the GitHub Actions checks (Windows, macOS)
     loop each release environment, in catalog order
         opt approval: true
             Dev->>J: Deploy
         end
         J->>R: deploy.sh
-        J->>GH: status deploy/<environment> = success
+        J->>G: status deploy/<environment> = success
     end
-    J->>GH: merge
-    alt releaseArtifacts: true
-        J->>GH: create immutable tag + private draft
-        J->>GH: dispatch the application's artifact workflow
-        GH-->>J: verified artifacts uploaded; draft published
-    else direct release
-        J->>GH: create tag + public release
-    end
-    J->>GH: delete release/1.4.0
+    J->>G: merge, tag v1.4.0
+    J->>RA: build, sign and validate the release files
+    J->>G: draft release, upload the files, publish
+    J->>G: delete release/1.4.0
 ```
 
-If a deploy fails, it rolls back to the image that was running, `deploy/<environment>` is set to failure, and the pull request stays open, blocked by the ruleset. For an application with `releaseArtifacts: true`, a packaging or upload failure after the merge leaves the GitHub release as a private draft and Jenkins reports failure instead of announcing an incomplete release. **Rollback does not undo database migrations**, so keep each migration compatible with the previous release.
+If a deploy fails, it rolls back to the image that was running, `deploy/<environment>` is set to failure, and the pull request stays open, blocked by the protected branch. The release files come from the repository's `yggdrasil.yml` and are validated before anything is published; the release is published on Forgejo first and its GitHub copy last. If the GitHub Actions checks don't finish, Jenkins asks whether to **Deploy without GitHub Actions checks**; after that the release goes out on Forgejo only. A failure after the merge says so, and the `release-resume` job finishes the release from its tag. A GitHub repository without a `yggdrasil.yml` releases as it always did (every GitHub Actions check waited for, `releaseArtifacts: true`'s workflow). The details: [The pipeline](docs/setup.md#the-pipeline). **Rollback does not undo database migrations**, so keep each migration compatible with the previous release.
 
 ### Inside a host
 
@@ -208,10 +213,13 @@ default setup worked through on real hardware:
 | `scripts/catalog.py` | Validates the catalog and resolves each application's environment options |
 | `scripts/platform.sh` | Brings a host's platform up or down: one per host, for all its environments |
 | `scripts/forge.sh` | The git server's side of a release, the same commands on Forgejo and GitHub: set and read statuses, merge, tag, create, upload and publish releases, delete the branch ([docs/setup.md](docs/setup.md#the-git-server-commands)) |
-| `scripts/github.sh` | The GitHub Actions side of a release: wait for checks, dispatch packaging, wait for publication. The rest it hands to `forge.sh` |
+| `scripts/github.sh` | The GitHub Actions side of a release: read the checks of a commit, wait for a tag, run a workflow, download its files (and the old GitHub-only release path). The rest it hands to `forge.sh` |
+| `scripts/pipeline_config.py`, `scripts/branch-policy.sh`, `scripts/run-check.sh` | A repository's `yggdrasil.yml` read and validated against the catalog; the branching model checked on a pull request; one check run in its container on a build agent ([docs/catalog.md](docs/catalog.md#repository-pipeline-file)) |
+| `scripts/publish-release.sh`, `scripts/release_notes.py`, `scripts/nuget-push.sh` | A release made on the git server (and its GitHub copy) with its files checked and its notes written; a library's NuGet packages pushed |
+| `scripts/renovate.sh` | One Renovate run against the catalog's repositories, by the `renovate` user on the dev machine |
 | `scripts/rules.py` | Applies the branching model (protected branches, tags, required checks, webhooks) to every catalog repository, on Forgejo or GitHub |
-| `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, and the Jenkins controller and agent |
-| `jenkins/library/` | The shared pipeline every application's `Jenkinsfile` calls |
+| `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, the Jenkins controller and the deploy agent (`platform/build-agent.yml` is the CI and release agents') |
+| `jenkins/Jenkinsfile.default`, `jenkins/library/` | The one Jenkinsfile every job runs (a repository's own is never read) and the pinned library it calls: checks, deploys, releases |
 | `github/rulesets.py` | Moved: runs `scripts/rules.py` with the same arguments |
 | `status/` | The status API (.NET 10) |
 | `console/` | The console (Flutter): web, Android, Windows |
@@ -224,6 +232,9 @@ default setup worked through on real hardware:
 | Task | How |
 |---|---|
 | Release an application | `git switch -c release/1.4.0 develop && git push -u origin release/1.4.0`, then open the PR into `main` |
+| Release a library, or yggdrasil itself (`release: owner-tag`) | An annotated tag on `main`: `git tag -a 1.4.0 -m 1.4.0 && git push origin 1.4.0` ([setup.md](docs/setup.md#owner-tags-and-nuget)) |
+| Finish a release that stopped, or make its GitHub copy | Jenkins › `release-resume` › Build with Parameters: `REPOSITORY`, `TAG` ([setup.md](docs/setup.md#finishing-a-release-that-stopped)) |
+| Upgrade the pipeline | Release yggdrasil, set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's `platform.env`, `scripts/platform.sh up` ([setup.md](docs/setup.md#how-a-build-runs)) |
 | Deploy by hand | `scripts/deploy.sh <environment> <application> <checkout> <version>` on the environment's host, or "Build with Parameters" → `DEPLOY_TO` in Jenkins for `branch` environments and `manual` ones that set an `agent` (an on-demand environment is left running) |
 | Use an on-demand environment | `ygg env start development` on its host, then `env stop development` when done. Jenkins keeps deploying to it while it is stopped, and leaves it stopped ([setup.md](docs/setup.md#on-demand-environments)) |
 | See which environments are on | `ygg env status`, or the console |
@@ -234,7 +245,7 @@ default setup worked through on real hardware:
 | Read a secret | `ygg vars get heimdall-api@production KEY --reveal`, or `ygg` › Applications › heimdall-api › production › the variable › Show value |
 | See who changed a variable, or undo it | `ygg vars history`, then `vars rollback <id>` |
 | Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
-| Change the branch rules | `python3 scripts/rules.py --dry-run`, then without ([setup.md, step 12](docs/setup.md#12-apply-the-branch-rules)); on an existing GitHub installation, wait for plan 3 ([why](docs/setup.md#an-existing-github-installation)) |
+| Change the branch rules | `python3 scripts/rules.py --dry-run`, then without ([setup.md, step 12](docs/setup.md#12-apply-the-branch-rules)); on an existing GitHub installation, first [adopt `yggdrasil.yml`](docs/setup.md#an-existing-github-installation) |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |
 
 ## Upgrading

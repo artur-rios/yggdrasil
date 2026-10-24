@@ -276,12 +276,10 @@ class ChimeraCatalogTests(unittest.TestCase):
         pipeline = (root / "jenkins/library/vars/yggdrasilPipeline.groovy").read_text(encoding="utf-8")
         plugins = (root / "platform/jenkins/controller/plugins.txt").read_text(encoding="utf-8")
 
-        self.assertIn('lock(resource: "release-${app}")', pipeline)
-        self.assertIn("release(app, plan.findAll", pipeline)
-        self.assertLess(
-            pipeline.index('lock(resource: "release-${app}")'),
-            pipeline.index("release(app, plan.findAll"),
-        )
+        lock = pipeline.index('lock(resource: "release-${app}")')
+        # Both release paths (GitHub without yggdrasil.yml, and the rest) run under the lock.
+        self.assertLess(lock, pipeline.index("release(app, environments, releaseArtifacts, ctx.repo)"))
+        self.assertLess(lock, pipeline.index("releasePullRequest(ctx, state, environments)"))
         self.assertIn("lockable-resources", plugins.splitlines())
 
     def test_given_chimera_stacks_when_loaded_then_runtime_is_hardened_and_routable(self):
@@ -326,7 +324,7 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(c.forge(catalog())["api"], "https://api.github.com")
         self.assertEqual(c.forge(catalog()), {"type": "github", "url": "https://github.com",
                                              "api": "https://api.github.com", "jenkinsUser": "jenkins",
-                                             "developers": []})
+                                             "developers": [], "publishAgent": "vps"})
 
     def test_given_the_repository_catalog_when_read_then_it_is_github_without_a_mirror(self):
         self.assertEqual(c.forge(c.load())["type"], "github")
@@ -341,7 +339,8 @@ class ForgeTests(unittest.TestCase):
         v = catalog(forge={"type": "github", "jenkinsUser": "ci", "developers": ["ann"]})
         self.assertEqual(c.validate(v), [])
         self.assertEqual(c.forge(v), {"type": "github", "url": "https://github.com",
-                                      "api": "https://api.github.com", "jenkinsUser": "ci", "developers": ["ann"]})
+                                      "api": "https://api.github.com", "jenkinsUser": "ci", "developers": ["ann"],
+                                      "publishAgent": "vps"})
 
     def test_given_forgejo_without_a_url_when_validated_then_it_is_an_error(self):
         self.assertTrue(any("forge.url: required" in e for e in self.errors(forge={"type": "forgejo"})))
@@ -386,6 +385,28 @@ class ForgeTests(unittest.TestCase):
         self.assertTrue(any("forge.jenkinsUser" in e for e in errors))
         self.assertTrue(any("forge.developers" in e for e in errors))
         self.assertTrue(any("forge.developers" in e for e in self.errors(forge=dict(self.FORGEJO, developers="claude"))))
+
+    def test_given_github_when_the_jenkins_user_is_an_apps_bot_login_then_it_is_valid(self):
+        for user in ("my-app[bot]", "My.App_1[bot]", "jenkins", "ci"):
+            with self.subTest(user=user):
+                v = catalog(forge={"type": "github", "jenkinsUser": user})
+                self.assertEqual(c.validate(v), [])
+                self.assertEqual(c.forge(v)["jenkinsUser"], user)
+
+    def test_given_github_when_the_jenkins_user_is_a_malformed_bot_login_then_it_is_an_error(self):
+        for user in ("[bot]", "app[bot]x", "app[bot][bot]", "app[Bot]", "app[bot]\n", "app[bots]", "-app[bot]",
+                     "app [bot]", "app[bot"):
+            with self.subTest(user=user):
+                errors = self.errors(forge={"type": "github", "jenkinsUser": user})
+                self.assertTrue(any("forge.jenkinsUser" in e for e in errors), errors)
+
+    def test_given_forgejo_when_the_jenkins_user_has_a_bot_suffix_then_it_is_an_error(self):
+        errors = self.errors(forge=dict(self.FORGEJO, jenkinsUser="my-app[bot]"))
+        self.assertTrue(any("forge.jenkinsUser" in e for e in errors), errors)
+
+    def test_given_github_when_a_developer_has_a_bot_suffix_then_it_is_still_an_error(self):
+        errors = self.errors(forge={"type": "github", "developers": ["my-app[bot]"]})
+        self.assertTrue(any("forge.developers" in e for e in errors), errors)
 
     def test_given_a_mirror_on_github_when_validated_then_it_is_an_error(self):
         self.assertTrue(any("mirror" in e and "forgejo" in e for e in self.errors(mirror={"github": "acme"})))
@@ -435,6 +456,77 @@ class ForgeTests(unittest.TestCase):
     def test_given_the_cli_when_asked_for_an_unknown_forge_field_then_it_fails(self):
         self.assertEqual(self.run_cli(catalog(), "forge", "token")[0], 2)
 
+    def test_given_a_publish_agent_when_read_then_it_wins_over_the_release_environment(self):
+        # staging (trigger branch) has an agent of its own, named by its id.
+        v = catalog(forge=dict(self.FORGEJO, publishAgent="staging"))
+        self.assertEqual(c.validate(v), [])
+        self.assertEqual(c.forge(v)["publishAgent"], "staging")
+
+    def test_given_a_publish_agent_on_the_ci_or_release_agent_when_validated_then_it_is_an_error(self):
+        # ci runs the repositories' checks and release builds their files: neither may hold the write
+        # token, and agents.groovy makes both whatever the catalog says.
+        for name in ("ci", "release"):
+            with self.subTest(name=name):
+                errors = self.errors(forge=dict(self.FORGEJO, publishAgent=name))
+                self.assertTrue(any("forge.publishAgent" in e and "ci and release" in e for e in errors), errors)
+
+    def test_given_a_publish_agent_no_environment_has_when_validated_then_it_is_an_error(self):
+        # agents.groovy makes an agent only for an environment's `agent` (or the id of one that deploys
+        # by branch or release): a name it never makes would leave every release waiting for a node.
+        # dev deploys by hand with no agent set, so it has none either.
+        for name in ("publisher", "dev"):
+            with self.subTest(name=name):
+                errors = self.errors(forge=dict(self.FORGEJO, publishAgent=name))
+                self.assertTrue(any("forge.publishAgent" in e and "not an environment's agent" in e
+                                    for e in errors), errors)
+
+    def test_given_an_application_override_naming_an_agent_when_validated_then_it_may_publish(self):
+        v = catalog(forge=dict(self.FORGEJO, publishAgent="late"))
+        v["systems"][0]["applications"][1]["environments"]["prod"]["agent"] = "late"
+        self.assertEqual(c.validate(v), [])
+
+    def test_given_a_malformed_catalog_and_a_publish_agent_when_validated_then_it_only_reports_errors(self):
+        for broken in ({"environments": "x"}, {"environments": [3, {"id": 4}]}, {"systems": [{"applications": [3]}, 5]},
+                       {"systems": [{"applications": [{"id": "a", "environments": "x"}]}]}):
+            with self.subTest(broken=broken):
+                self.assertTrue(self.errors(forge=dict(self.FORGEJO, publishAgent="vps"), **broken))
+
+    def test_given_no_publish_agent_when_read_then_it_is_the_last_release_environments_agent(self):
+        # prod (trigger release) is the only release environment; its agent is vps.
+        self.assertEqual(c.forge(catalog())["publishAgent"], "vps")
+
+    def test_given_several_applications_when_read_then_the_last_release_environment_in_catalog_order_wins(self):
+        v = catalog()
+        # shop-web is the last deployable application with a release environment: its override counts.
+        v["systems"][0]["applications"][1]["environments"]["prod"]["agent"] = "late"
+        self.assertEqual(c.forge(v)["publishAgent"], "late")
+
+    def test_given_no_release_environment_when_read_then_there_is_no_publish_agent(self):
+        v = catalog()
+        v["environments"][2]["trigger"] = "manual"
+        self.assertIsNone(c.forge(v)["publishAgent"])
+
+    def test_given_a_release_environment_without_an_agent_when_read_then_its_id_is_the_agent(self):
+        v = catalog()
+        del v["environments"][2]["agent"]
+        self.assertEqual(c.forge(v)["publishAgent"], "prod")
+
+    def test_given_a_bad_publish_agent_when_validated_then_it_is_an_error(self):
+        for bad in ("", "Bad Agent", 3, ["vps"]):
+            with self.subTest(bad=bad):
+                errors = self.errors(forge=dict(self.FORGEJO, publishAgent=bad))
+                self.assertTrue(any("forge.publishAgent" in e for e in errors), errors)
+
+    def test_given_the_cli_when_asked_for_the_publish_agent_then_it_prints_it(self):
+        self.assertEqual(self.run_cli(catalog(), "forge", "publish-agent"), (0, "vps\n", ""))
+
+    def test_given_the_cli_and_no_publish_agent_when_asked_then_it_exits_with_one(self):
+        v = catalog()
+        v["environments"][2]["trigger"] = "manual"
+        status, out, err = self.run_cli(v, "forge", "publish-agent")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("no publish agent", err)
+
     def test_given_the_cli_when_asked_for_the_mirror_then_it_prints_it(self):
         v = catalog(forge=self.FORGEJO, mirror={"github": "acme", "releases": False})
         self.assertEqual(self.run_cli(v, "mirror", "github"), (0, "acme\n", ""))
@@ -462,7 +554,8 @@ class RepositoryTests(unittest.TestCase):
     def test_given_a_repository_entry_when_read_then_its_defaults_are_filled(self):
         v = catalog(repositories=[{"id": "dotnet-util"}])
         self.assertEqual(c.repositories(v), [{"id": "dotnet-util", "checks": [], "actionsChecks": [],
-                                              "credentials": [], "release": "none", "tags": "v*", "rules": "release"}])
+                                              "credentials": [], "releaseCredentials": [], "release": "none", "tags": "v*",
+                                              "rules": "release"}])
 
     def test_given_a_library_entry_when_read_then_its_tag_pattern_is_kept(self):
         v = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "tags": "[0-9]*"}])
@@ -471,7 +564,7 @@ class RepositoryTests(unittest.TestCase):
 
     def test_given_an_entry_with_every_field_when_read_then_they_are_kept(self):
         entry = {"id": "ci-only", "checks": ["build"], "actionsChecks": ["test"], "credentials": ["nuget-key"],
-                 "release": "owner-tag", "tags": "v*", "rules": "basic"}
+                 "releaseCredentials": ["sign-key"], "release": "owner-tag", "tags": "v*", "rules": "basic"}
         v = catalog(repositories=[entry])
         self.assertEqual(c.validate(v), [])
         self.assertEqual(c.repositories(v), [entry])
@@ -481,6 +574,20 @@ class RepositoryTests(unittest.TestCase):
 
     def test_given_the_repository_catalog_when_read_then_it_has_no_repositories_yet(self):
         self.assertEqual(c.repositories(c.load()), [])
+
+    def test_given_applications_and_repositories_when_names_are_asked_then_every_git_repository_is_listed_once(self):
+        # What a tool that visits every repository (Renovate) needs: an application's `repository`, else its
+        # id, once even when two applications share one; no platform component (it lives in this
+        # repository's own entry); then the `repositories` entries.
+        value = catalog(repositories=[{"id": "dotnet-util"}])
+        value["systems"][0]["applications"][0]["repository"] = "shop"
+        value["systems"][0]["applications"][1]["repository"] = "shop"
+        self.assertEqual(c.repository_names(value), ["shop", "dotnet-util"])
+        status, out, _ = run_cli(catalog(repositories=[{"id": "dotnet-util"}]), "repository-names")
+        self.assertEqual((status, out), (0, "shop-api\nshop-web\ndotnet-util\n"))
+
+    def test_given_no_repositories_when_names_are_asked_then_only_the_applications_are_listed(self):
+        self.assertEqual(c.repository_names(catalog()), ["shop-api", "shop-web"])
 
     def test_given_repositories_that_is_not_a_list_when_validated_then_it_is_an_error(self):
         self.assertTrue(any(e.startswith("repositories:") for e in self.errors(repositories={"id": "x"})))
@@ -528,8 +635,8 @@ class RepositoryTests(unittest.TestCase):
 
     def test_given_bad_check_lists_when_validated_then_each_is_an_error(self):
         errors = self.errors(repositories=[{"id": "lib", "checks": ["ok", " "], "actionsChecks": "test",
-                                            "credentials": ["a b"]}])
-        for field in ("checks", "actionsChecks", "credentials"):
+                                            "credentials": ["a b"], "releaseCredentials": "sign-key"}])
+        for field in ("checks", "actionsChecks", "credentials", "releaseCredentials"):
             self.assertTrue(any(f"repositories[0].{field}" in e for e in errors), (field, errors))
 
     def test_given_an_unknown_repository_key_when_validated_then_it_is_an_error(self):
@@ -573,6 +680,21 @@ class RepositoryTests(unittest.TestCase):
                 self.assertTrue(any(".credentials" in e for e in self.app_errors(credentials=[bad])))
         self.assertTrue(any(".credentials" in e for e in self.app_errors(credentials="nuget-key")))
 
+    def test_given_release_credentials_when_validated_then_they_are_credential_ids(self):
+        self.assertEqual(self.app_errors(releaseCredentials=["sign-key"]), [])
+        for bad in (["sign key"], "sign-key", [3]):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(".releaseCredentials" in e for e in self.app_errors(releaseCredentials=bad)))
+
+    def test_given_an_id_in_both_credential_lists_when_validated_then_it_is_an_error(self):
+        # One id in both would let any branch's check bind what only the release build may.
+        errors = self.app_errors(credentials=["nuget-key", "sign-key"], releaseCredentials=["sign-key"])
+        self.assertTrue(any(".releaseCredentials" in e and "'sign-key'" in e and "also in credentials" in e
+                            for e in errors), errors)
+        errors = self.errors(repositories=[{"id": "lib", "credentials": ["k"], "releaseCredentials": ["k"]}])
+        self.assertTrue(any("repositories[0].releaseCredentials" in e and "also in credentials" in e
+                            for e in errors), errors)
+
     def test_given_bad_actions_checks_when_validated_then_it_is_an_error(self):
         self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks=["test", ""])))
         self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks="test")))
@@ -598,6 +720,69 @@ class RepositoryTests(unittest.TestCase):
 
     def test_given_the_cli_when_asked_for_a_repository_entry_without_an_id_then_it_is_a_usage_error(self):
         self.assertEqual(run_cli(catalog(), "repository-entry")[0], 2)
+
+
+class PublicHostTests(unittest.TestCase):
+    """public-host and public-path: the full host name and URL path a site's stack file needs."""
+
+    def site(self, **fields):
+        """BASE with one more application, `site`, and a -dev suffix on the dev environment."""
+        value = catalog()
+        value["environments"][0]["hostSuffix"] = "-dev"
+        value["systems"][0]["applications"].append(
+            {"id": "site", "name": "Site", "kind": "web", "health": "http://site:8080/healthz", **fields})
+        return value
+
+    def ask(self, value, *argv):
+        return run_cli(value, *argv)
+
+    def test_given_a_host_and_a_suffix_when_asked_then_the_host_is_under_the_default_domain(self):
+        value = self.site(host="docs")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"), (0, "docs-dev.example.com\n", ""))
+        self.assertEqual(self.ask(value, "public-host", "site", "prod", "example.com"), (0, "docs.example.com\n", ""))
+
+    def test_given_a_domain_when_asked_then_the_host_is_under_it(self):
+        value = self.site(host="docs", domain="sites.example.org")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"),
+                         (0, "docs-dev.sites.example.org\n", ""))
+
+    def test_given_an_environment_override_of_the_suffix_when_asked_then_the_override_wins(self):
+        value = self.site(host="docs", environments={"dev": {"hostSuffix": "-x"}})
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com")[1], "docs-x.example.com\n")
+
+    def test_given_apex_without_host_when_asked_then_it_is_the_bare_domain(self):
+        value = self.site(apex=True)
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"), (0, "example.com\n", ""))
+        value = self.site(apex=True, domain="docs.example.org")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", "example.com"), (0, "docs.example.org\n", ""))
+
+    def test_given_apex_with_a_host_when_asked_then_the_host_wins(self):
+        value = self.site(apex=True, host="docs")
+        self.assertEqual(self.ask(value, "public-host", "site", "prod", "example.com")[1], "docs.example.com\n")
+
+    def test_given_neither_host_nor_apex_when_asked_then_nothing_is_printed(self):
+        self.assertEqual(self.ask(self.site(), "public-host", "site", "dev", "example.com"), (0, "", ""))
+
+    def test_given_no_domain_at_all_when_asked_then_nothing_is_printed(self):
+        value = self.site(host="docs")
+        self.assertEqual(self.ask(value, "public-host", "site", "dev", ""), (0, "", ""))
+
+    def test_given_an_unknown_application_or_environment_when_asked_then_it_is_an_error(self):
+        value = self.site(host="docs")
+        self.assertEqual(self.ask(value, "public-host", "nope", "dev", "example.com")[0], 1)
+        status, out, err = self.ask(value, "public-host", "site", "nope", "example.com")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("does not deploy to 'nope'", err)
+
+    def test_given_the_wrong_number_of_arguments_when_asked_then_it_is_a_usage_error(self):
+        self.assertEqual(self.ask(self.site(), "public-host", "site", "dev")[0], 2)
+        self.assertEqual(self.ask(self.site(), "public-path")[0], 2)
+
+    def test_given_a_path_when_asked_then_it_is_printed(self):
+        self.assertEqual(self.ask(self.site(path="/docs"), "public-path", "site"), (0, "/docs\n", ""))
+
+    def test_given_no_path_when_asked_then_nothing_is_printed(self):
+        self.assertEqual(self.ask(self.site(), "public-path", "site"), (0, "", ""))
 
 
 class DeployableTests(unittest.TestCase):

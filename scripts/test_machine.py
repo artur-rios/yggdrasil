@@ -1086,7 +1086,7 @@ class MachineRoleTests(unittest.TestCase):
             "ygg": {"platform.env": "platform.env.example", "acme.env": "acme.env.example"},
             "ci": {"agent.env": "agent.env.example"},
             "release": {"agent.env": "agent.env.example"},
-            "renovate": {},
+            "renovate": {"renovate.env": "renovate.env.example"},
             "dev": {},
         }
         for user, files in expected.items():
@@ -1152,6 +1152,8 @@ class MachineRoleTests(unittest.TestCase):
                 (self.state / "ufw-on").unlink(missing_ok=True)
                 self.install(role)
                 self.backups_working()
+                if role == "dev":
+                    self.renovate_working()
                 stdout, rows = self.rows(role)
                 bad = [line for line in rows if not line.startswith("  ok ")]
                 self.assertEqual(bad, [], stdout)
@@ -1583,6 +1585,7 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(
             self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text().splitlines()[-1], "AllowUsers dev ygg")
         self.backups_working()
+        self.renovate_working()
         stdout, rows = self.rows("dev", FAKE_ADMIN="dev")
         self.assertIn("admin", self.row(rows, "user dev"))
         self.assertEqual([line for line in rows if not line.startswith("  ok ")], [], stdout)
@@ -2063,6 +2066,128 @@ class MachineRoleTests(unittest.TestCase):
         for name in ("backup.conf", "last backup", "newest backup"):
             self.assertIn("not checked", self.row(rows, name), stdout)
         self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
+
+    # ---- The renovate timer ----------------------------------------------------------------------
+
+    RENOVATE_UNITS = ("yggdrasil-renovate.service", "yggdrasil-renovate.timer")
+
+    def renovate_row(self, rows):
+        return self.row(rows, "renovate timer")
+
+    def renovate_working(self):
+        """What the owner adds after install on the dev machine: the token in renovate.env, a run that succeeded."""
+        env = self.etc("yggdrasil-renovate/renovate.env")
+        env.write_text(env.read_text().replace("RENOVATE_TOKEN=\n", "RENOVATE_TOKEN=t0ken\n"))
+        (self.state / "user-show-renovate").write_text(f"Result=success\nExecMainStartTimestamp={self.LAST_RUN}\n")
+
+    def renovate_changes(self):
+        return [c for c in self.calls() if "yggdrasil-renovate" in c and c.startswith("sudo -u")]
+
+    def test_given_role_dev_when_installed_then_renovate_has_its_timer_enabled(self):
+        self.install("dev")
+        for name in self.RENOVATE_UNITS:
+            self.assertEqual((self.unit_dir("renovate") / name).read_text(), self.repo_unit(name))
+        calls = self.calls()
+        # Written by renovate itself (its home is closed to the admin), as a user unit of its own manager.
+        written = self.as_user("renovate", "tee", str(self.unit_dir("renovate") / "yggdrasil-renovate.timer"))
+        self.assertIn(written, calls)
+        reload_call = calls.index(self.as_user("renovate", "systemctl --user daemon-reload"), calls.index(written))
+        enable = self.as_user("renovate", "systemctl --user enable --now yggdrasil-renovate.timer")
+        self.assertIn(enable, calls)
+        self.assertLess(reload_call, calls.index(enable))
+        # After the engine it runs Renovate in, and for renovate only: the other users get no such unit.
+        self.assertLess(calls.index(self.as_user("renovate", "systemctl --user enable --now docker")), calls.index(enable))
+        for user in ("ygg", "ci", "release", "dev"):
+            for name in self.RENOVATE_UNITS:
+                self.assertFalse((self.unit_dir(user) / name).exists(), (user, name))
+        self.assertEqual([c for c in calls if c.startswith("sudo") and c.endswith("yggdrasil-renovate.timer") and " enable " in c], [enable])
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.renovate_row(rows).startswith("  ok "), stdout)
+        self.assertIn("05:00", self.renovate_row(rows))
+
+    def test_given_role_apps_when_installed_then_there_is_no_renovate_timer(self):
+        self.install("apps")
+        for user in ("ygg",):
+            for name in self.RENOVATE_UNITS:
+                self.assertFalse((self.unit_dir(user) / name).exists(), (user, name))
+        self.assertEqual([c for c in self.calls() if "renovate" in c], [])
+        stdout, rows = self.rows("apps")
+        self.assertIsNone(self.renovate_row(rows), stdout)
+
+    def test_given_the_renovate_timer_installed_when_installed_again_then_nothing_is_written_or_enabled(self):
+        self.install("dev")
+        before = self.renovate_changes()
+        self.assertTrue(before)
+        self.install("dev")
+        self.assertEqual(self.renovate_changes(), before)
+
+    def test_given_a_changed_renovate_unit_when_checked_then_it_is_not_ok_and_install_writes_the_checkouts_copy(self):
+        self.install("dev")
+        service = self.unit_dir("renovate") / "yggdrasil-renovate.service"
+        service.write_text("[Service]\nExecStart=/bin/true\n")
+        stdout, rows = self.rows("dev")
+        self.assertFalse(self.renovate_row(rows).startswith("  ok "), stdout)
+        self.assertIn("yggdrasil-renovate.service", self.renovate_row(rows))
+        self.install("dev")
+        self.assertEqual(service.read_text(), self.repo_unit("yggdrasil-renovate.service"))
+
+    def test_given_a_renovate_timer_that_is_not_enabled_when_checked_then_it_is_missing_and_install_enables_it(self):
+        self.install("dev")
+        (self.state / "user-enabled-renovate").write_text("")
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.renovate_row(rows).startswith("  -- "), stdout)
+        self.install("dev")
+        self.assertTrue(self.renovate_row(self.rows("dev")[1]).startswith("  ok "))
+
+    def test_given_no_renovate_user_yet_when_checked_then_the_timer_is_missing_and_nothing_runs_as_it(self):
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.renovate_row(rows).startswith("  -- "), stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith(("sudo -u renovate", "sudo -n -u renovate"))], [])
+
+    def test_given_sudo_asking_for_a_password_when_checked_then_the_renovate_timer_is_not_checked(self):
+        self.install("dev")
+        (self.state / "sudo-denied").write_text("")
+        calls_before = len(self.calls())
+        stdout, rows = self.rows("dev")
+        line = self.renovate_row(rows)
+        self.assertTrue(line.startswith("  !! "), stdout)
+        self.assertIn("not checked", line)
+        for name in ("renovate.env", "last renovate run"):
+            self.assertIn("not checked", self.row(rows, name), stdout)
+        self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
+
+    def test_given_the_template_copy_when_checked_then_the_empty_token_is_reported_until_it_is_filled(self):
+        self.install("dev")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "renovate.env")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("RENOVATE_TOKEN is empty", line)
+        self.assertNotIn("t0ken", stdout)
+        env = self.etc("yggdrasil-renovate/renovate.env")
+        env.write_text(env.read_text().replace("RENOVATE_TOKEN=\n", "RENOVATE_TOKEN=t0ken\n"))
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.row(rows, "renovate.env").startswith("  ok "), stdout)
+        # The token itself is never printed by the check.
+        self.assertNotIn("t0ken", stdout)
+        env.unlink()
+        stdout, rows = self.rows("dev")
+        self.assertIn("env/renovate.env.example", self.row(rows, "renovate.env"))
+
+    def test_given_renovate_runs_when_checked_then_the_last_run_is_reported(self):
+        self.install("dev")
+        stdout, rows = self.rows("dev")
+        self.assertIn("never run", self.row(rows, "last renovate run"))
+        (self.state / "user-show-renovate").write_text(f"Result=success\nExecMainStartTimestamp={self.LAST_RUN}\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "last renovate run")
+        self.assertTrue(line.startswith("  ok "), line)
+        self.assertIn(self.LAST_RUN, line)
+        (self.state / "user-show-renovate").write_text(f"Result=exit-code\nExecMainStartTimestamp={self.LAST_RUN}\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "last renovate run")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertIn("exit-code", line)
+        self.assertIn("journalctl --user -u yggdrasil-renovate", line)
 
 
 if __name__ == "__main__":

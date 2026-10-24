@@ -65,6 +65,25 @@ class DispatchTests(unittest.TestCase):
         result = self.run_ygg("catalog", "get", "heimdall-api", "development", "onDemand")
         self.assertEqual((result.returncode, result.stdout), (0, "true\n"), result.stderr)
 
+    def test_given_catalog_public_host_then_the_three_words_reach_catalog_py_in_order(self):
+        expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "public-host", "heimdall-api",
+                                   "development", "example.com"], capture_output=True, text=True)
+        result = self.run_ygg("catalog", "public-host", "heimdall-api", "development", "example.com")
+        self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
+
+    def test_given_catalog_repository_names_then_it_is_catalog_py_output(self):
+        expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "repository-names"],
+                                  capture_output=True, text=True)
+        result = self.run_ygg("catalog", "repository-names")
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
+
+    def test_given_catalog_public_path_then_it_is_catalog_py_output(self):
+        expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "public-path", "heimdall-api"],
+                                  capture_output=True, text=True)
+        result = self.run_ygg("catalog", "public-path", "heimdall-api")
+        self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
+
     def test_given_an_unknown_command_then_it_is_a_usage_error(self):
         result = self.run_ygg("nonsense")
         self.assertEqual(result.returncode, 2)

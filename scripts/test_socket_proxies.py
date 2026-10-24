@@ -260,6 +260,10 @@ class AllowlistTests(unittest.TestCase):
         self.assertNotIn("group_add", agent)
         self.assertIn("${DOCKER_SOCKET:?run through scripts/platform.sh}:/var/run/docker.sock", agent["volumes"])
 
+    def test_given_the_agent_when_read_then_deploy_sh_gets_the_platforms_domain(self):
+        # deploy.sh runs in the agent and puts YGG_DOMAIN under a site's host; DOMAIN is only known here.
+        self.assertEqual(self.services["agent"]["environment"]["YGG_DOMAIN"], "${DOMAIN}")
+
     def test_given_the_apps_services_then_they_are_in_the_apps_profile(self):
         for name in ("status", "docker-proxy", "console"):
             with self.subTest(service=name):

@@ -165,11 +165,55 @@ GITHUB_OWNER=$(python3 "$root/scripts/catalog.py" owner) || exit 1
 YGGDRASIL_REPOSITORY=$(python3 "$root/scripts/catalog.py" repository) || exit 1
 export GITHUB_OWNER YGGDRASIL_REPOSITORY
 
+# setting <name>: a value of the settings file ("" when unset), read the way Compose reads it.
+setting() {
+  # shellcheck source=/dev/null
+  (set -a; . "$env_file"; eval "echo \"\${$1:-}\"")
+}
+
+# The git server decides which Configuration as Code files the Jenkins controller reads (the catalog's
+# forge block; none means GitHub, as before the git server was configurable): casc.yaml, the forge's own
+# file, and the GitHub App's credential when it is used -- always on GitHub, and on Forgejo only with a
+# mirror (the GitHub Actions checks and the release copies there).
+forge_type=$(python3 "$root/scripts/catalog.py" forge type) || exit 1
+FORGE_URL=$(python3 "$root/scripts/catalog.py" forge url) || exit 1
+FORGE_JENKINS_USER=$(python3 "$root/scripts/catalog.py" forge jenkins-user) || exit 1
+uses_github_app=""
+if [[ "$forge_type" == github ]] || python3 "$root/scripts/catalog.py" mirror github >/dev/null 2>&1; then
+  uses_github_app=1
+fi
+# On GitHub, a second, read-only App can be the ci agent's identity (as forge-read is on Forgejo): its
+# credential, github-read, is configured when both of its settings are there.
+# Read here, before the /dev/null export below would show through an unset key.
+github_read_id=$(setting GITHUB_READ_APP_ID)
+github_read_key=$(setting GITHUB_READ_APP_KEY_FILE)
+uses_github_read=""
+if [[ "$forge_type" == github && -n "$github_read_id" && -n "$github_read_key" ]]; then
+  uses_github_read=1
+fi
+# The NuGet API key (the owner-tagged libraries' packages), on either git server, when its file is set.
+nuget_key_file=$(setting NUGET_API_KEY_FILE)
+YGG_CASC_CONFIG="/etc/jenkins/casc.yaml,/etc/jenkins/casc.$forge_type.yaml"
+[[ -z "$uses_github_app" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.github-app.yaml"
+[[ -z "$uses_github_read" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.github-read.yaml"
+[[ -z "$nuget_key_file" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.nuget.yaml"
+export FORGE_URL FORGE_JENKINS_USER YGG_CASC_CONFIG
+# Without an App there is no key to mount: /dev/null, not a path Docker would create as a directory.
+[[ -n "$uses_github_app" ]] || export GITHUB_APP_KEY_FILE=/dev/null
+[[ -n "$uses_github_read" ]] || export GITHUB_READ_APP_KEY_FILE=/dev/null
+[[ -n "$nuget_key_file" ]] || export NUGET_API_KEY_FILE=/dev/null
+
 # The profile-only variables compose.yml cannot mark as required (see the note at its top). The forge
-# profile has none: Forgejo needs only DOMAIN, and FORGEJO_SSH_PORT defaults to 2222.
+# profile has none: Forgejo needs only DOMAIN, and FORGEJO_SSH_PORT defaults to 2222. The jenkins profile
+# needs the library version, the secrets of the git server it is configured for, and the work
+# directories of the ci and release agents (agents.groovy makes them the nodes' remote roots).
 check_profile_variables() {
   local required=()
-  [[ "$profiles" == *,jenkins,* ]] && required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD GITHUB_APP_ID GITHUB_APP_KEY_FILE)
+  if [[ "$profiles" == *,jenkins,* ]]; then
+    required+=(JENKINS_URL JENKINS_ADMIN_PASSWORD YGGDRASIL_LIBRARY_VERSION CI_AGENT_WORKDIR RELEASE_AGENT_WORKDIR)
+    [[ -z "$uses_github_app" ]] || required+=(GITHUB_APP_ID GITHUB_APP_KEY_FILE)
+    [[ "$forge_type" != forgejo ]] || required+=(FORGE_WRITE_TOKEN_FILE FORGE_READ_TOKEN_FILE FORGE_WEBHOOK_SECRET_FILE)
+  fi
   [[ "$profiles" == *,agent,* ]] && required+=(JENKINS_URL JENKINS_AGENT_NAME JENKINS_AGENT_SECRET)
   local name value
   for name in "${required[@]}"; do
@@ -177,6 +221,18 @@ check_profile_variables() {
     value=$(set -a; . "$env_file"; eval "echo \"\${$name:-}\"")
     [[ -n "$value" ]] || die "$name must be set in $env_file for profiles '${profiles//,/ }'"
   done
+  if [[ "$profiles" == *,jenkins,* ]]; then
+    # The same path in the agent's container and on the host (platform/build-agent.yml), so absolute.
+    for name in CI_AGENT_WORKDIR RELEASE_AGENT_WORKDIR; do
+      value=$(setting "$name")
+      [[ "$value" == /* ]] \
+        || die "$name in $env_file must be an absolute path (the YGG_AGENT_WORKDIR of that user's agent.env), not '$value'"
+    done
+    # Half a read-only App is a typo, not a choice: say so rather than silently using the main App.
+    if [[ "$forge_type" == github && -n "$github_read_id$github_read_key" && ( -z "$github_read_id" || -z "$github_read_key" ) ]]; then
+      die "set both GITHUB_READ_APP_ID and GITHUB_READ_APP_KEY_FILE in $env_file (the read-only GitHub App), or neither"
+    fi
+  fi
 }
 
 # ENVIRONMENTS names the environments this host runs, comma-separated: each must be one in

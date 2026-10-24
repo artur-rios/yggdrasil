@@ -1,0 +1,16 @@
+# Configuration as Code for the GitHub App credential (see casc.yaml): read on GitHub, and on Forgejo
+# only when catalog.yaml has a `mirror` (the GitHub Actions checks and the release copies there).
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # One GitHub App gives Jenkins everything: repository scans, webhooks, checkout, and the
+          # installation token the pipeline uses to read checks, set the deploy status, merge, tag
+          # and delete branches. The key must be PKCS#8 (docs/setup.md, 9.1).
+          - gitHubApp:
+              id: "github-app"
+              description: "yggdrasil GitHub App"
+              appID: "${GITHUB_APP_ID}"
+              owner: "${GITHUB_OWNER}"
+              privateKey: "${readFile:/run/secrets/github-app.pem}"

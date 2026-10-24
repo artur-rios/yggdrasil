@@ -1,0 +1,8 @@
+// The one Jenkinsfile of the installation. Jenkins loads it into Config File Provider as
+// yggdrasil-default (platform/jenkins/controller/casc.yaml) and every multibranch job runs it instead
+// of the repository's own Jenkinsfile, which is never read: a branch pushed by someone who is not the
+// owner would otherwise run arbitrary pipeline code with every credential in reach. What a build does
+// is decided by the pinned library (YGGDRASIL_LIBRARY_VERSION) and the repository's yggdrasil.yml
+// (data, not code). No dollar-brace here: Configuration as Code would resolve it as a variable.
+@Library('yggdrasil') _
+yggdrasilPipeline()

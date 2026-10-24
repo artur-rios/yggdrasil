@@ -1,0 +1,18 @@
+# Renovate's daily run (scripts/renovate.sh), a user unit of `renovate` on the dev machine: it is installed
+# into ~renovate/.config/systemd/user/ by `ygg install` (step renovate-timer) and started by the timer next
+# to it. Its token and endpoint are in $YGG_SECRETS_DIR/renovate.env (env/renovate.env.example).
+[Unit]
+Description=Run Renovate against the repositories of the catalog
+# Renovate runs in renovate's own rootless engine, which is the user unit docker.service: a catch-up run at
+# boot (the timer is Persistent) must wait for it.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# A user unit doesn't read renovate's .profile, which is where its shells get DOCKER_HOST: %t is the user's
+# runtime directory, where its rootless engine keeps the socket.
+Environment=DOCKER_HOST=unix://%t/docker.sock
+ExecStart=/opt/yggdrasil/scripts/renovate.sh run
+# A run that hangs (a registry that never answers) must not hold the next day's run off for ever.
+TimeoutStartSec=3h

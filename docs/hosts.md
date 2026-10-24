@@ -38,17 +38,18 @@ flowchart LR
     agent -- merge, tag, release --> forgejo
 ```
 
-The diagram shows the finished design. What `ygg install` and the platform Compose file build today
-is the machines themselves: Traefik, Forgejo, the Jenkins controller, the monitoring, the deploy agent
-and the build agents. The checks, the release builds, Renovate and the git mirror come with later
-plans.
+The diagram shows the finished design. What `ygg install` and the platform Compose file build is the machines
+themselves: Traefik, Forgejo, the Jenkins controller, the monitoring, the deploy agent and the build agents.
+The pipeline that runs on them (the checks on the CI agent, the release builds on the release agent, Renovate)
+is [setup.md, The pipeline](setup.md#the-pipeline). Setting up the git mirror, and moving existing repositories
+to Forgejo, come with later parts.
 
 | | Dev machine (`--role dev`) | Apps machine (`--role apps`) |
 |---|---|---|
 | Purpose | Git server, CI/CD, AI development | Every environment of every application |
 | Runs | Traefik, Forgejo, the Jenkins controller, monitoring, the CI agent and its checks, Renovate, AI sessions | Traefik, status API, console, monitoring, the applications, the deploy agent |
 | Compose profiles in `platform.env` | `forge,jenkins`, run by `ygg` | `apps,agent`, run by `ygg` |
-| Build agents | `ci` and `release`, each started by `ygg agent up --user …` ([agent.env](#6-credentials)) | none: its deploy agent is the `agent` profile |
+| Build agents | `ci` (4 executors) and `release` (1), each started by `ygg agent up --user …` ([agent.env](#6-credentials), [setup.md 9.8](setup.md#98-the-ci-and-release-agents)) | none: its deploy agent is the `agent` profile |
 | Public names | `git.techcraftsmen.net`, `jenkins.techcraftsmen.net`, and its own dashboards: `traefik-dev.techcraftsmen.net`, `grafana-dev.techcraftsmen.net` | **`techcraftsmen.net`**: the applications and APIs, `yggdrasil.`, `traefik.`, `grafana.`. **`artur-rios.tech`**: the static and docs sites |
 | Cloudflare | DNS only (grey cloud) | Proxied (orange cloud) |
 | Inbound ports | 22 (SSH), 80, 443, 2222 (Forgejo's git over SSH) | 22; 80 and 443 only from Cloudflare's address ranges |
@@ -219,14 +220,14 @@ over that engine's `edge` network, and the deploy agent drives the engine they r
 | `root` | No | n/a | the operating system | |
 | `artur` (the admin) | SSH key | Yes, with a password | nothing | |
 | `ygg` | SSH key | No | Traefik, Forgejo, the Jenkins controller, Prometheus, Loki, Alloy, Grafana, the socket proxies | Forgejo's data and its GitHub mirror token; Jenkins' home with every Jenkins credential; `/opt/yggdrasil`, `/etc/yggdrasil` |
-| `ci` | None (`nologin`) | No | the CI agent and every check container | the CI agent's secret, a read-only Forgejo token, the GitHub read token |
+| `ci` | None (`nologin`) | No | the CI agent and every check container | the CI agent's secret (`agent.env`); Jenkins binds the read-only token for a build's checkout and the check's allowed credentials for that check only |
 | `renovate` | None (`nologin`) | No | Renovate, on a systemd user timer | the `renovate` Forgejo token |
-| `release` | None (`nologin`) | No | the release agent and its build containers: release files, signing, package publishing | the signing keys and the nuget.org key, a read-only Forgejo token |
+| `release` | None (`nologin`) | No | the release agent and its build containers: release files, signing, package publishing | the release agent's secret (`agent.env`); Jenkins binds the read-only token, the signing keys and the nuget.org key for the steps that need them only |
 | `dev` | SSH key | No | AI development sessions and the containers they run | its own Forgejo account's token |
 
 `ygg install --role dev` creates all five and gives each its own engine, its own `/etc/yggdrasil-<user>`
-directory and its own linger. What `renovate` and `dev` run, and what is in their directories,
-comes with later plans.
+directory and its own linger. What `dev` runs, and what is in its directory, comes with a later plan;
+`renovate`'s daily run is [below](#renovate-the-daily-run).
 
 **Why a separate `release` user.** Release files ship through the apps' built-in updaters and to
 nuget.org. If they were built in the `ci` engine, a check from a pull request by `claude` or Renovate
@@ -451,13 +452,42 @@ RandomizedDelaySec=15m
 WantedBy=timers.target
 ```
 
+### Renovate: the daily run
+
+Dev machine only. `ygg install` (step `renovate-timer`) copies [platform/systemd](../platform/systemd)'s
+`yggdrasil-renovate.service` and `yggdrasil-renovate.timer` into `~renovate/.config/systemd/user/`, as
+`renovate`, and enables the timer, the same way as the backup's. The timer fires every day at 05:00 (plus a
+random delay of up to 30 minutes; `Persistent=true`, so a machine that was off at 05:00 runs it when it is next
+on). The service runs `/opt/yggdrasil/scripts/renovate.sh run` after `renovate`'s own `docker.service`.
+
+`renovate.sh` runs the pinned `renovate/renovate` image (an exact version and its digest, both written in the
+script) in `renovate`'s own engine: **never the `ci` engine and never Jenkins**, because Renovate runs
+package-manager code while holding a token that can push. It visits only the repositories of
+[`catalog.yaml`](catalog.md) (`python3 scripts/catalog.py repository-names`, as `<owner>/<repository>`),
+opens pull requests from `renovate/*` branches into `develop`, and skips a repository that has no Renovate
+configuration of its own (no onboarding pull requests).
+
+Its settings are `/etc/yggdrasil-renovate/renovate.env` (`ygg install` copies
+[env/renovate.env.example](../env/renovate.env.example) there: `renovate:renovate`, mode `600`). Fill in as `renovate`
+(`RENOVATE_TOKEN`, the `renovate` Forgejo user's token with `write:repository` and `write:issue`;
+`RENOVATE_ENDPOINT` can stay empty, it is then `<forge url>/api/v1` from the catalog). The container gets the file
+as `--env-file`, a copy made for the run in `renovate`'s runtime directory (mode `600`, removed afterwards), so
+the token is never an argument of any command. `ygg check` shows whether the token is set and how the last
+run went; `journalctl --user -u yggdrasil-renovate` (as `renovate`) has its log, and
+`scripts/renovate.sh run` starts one by hand, which is how to try it once before relying on the timer
+([setup.md 9.9](setup.md#99-renovate)).
+
+To update Renovate, change `RENOVATE_IMAGE` in `scripts/renovate.sh` to a newer version and its digest
+(`docker buildx imagetools inspect renovate/renovate:<version>`) in a pull request, after reading the release
+notes.
+
 ### Other files and rules
 
 | What | Content |
 |---|---|
 | `/etc/yggdrasil-role` | The role: `dev` or `apps`. `ygg check` and `ygg install` without `--role` use it. Written before the first step that changes anything, so an install that stops halfway keeps its role. |
 | `/opt/yggdrasil` | Owned by `ygg`, mode `755`: `ygg` deploys from this checkout, and the backup unit runs its `scripts/backup.sh`. `ygg install` refuses to run from a checkout anywhere else. |
-| `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`. Files `600`. A file that is already there is never touched. |
+| `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`; `renovate` gets `renovate.env`. Files `600`. A file that is already there is never touched. |
 | `/etc/yggdrasil/cloudflare-ips` (apps machine) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
 | `/etc/yggdrasil/traefik.yml` | Not written by `ygg install`: `platform.sh up` renders Traefik's static configuration there (as `ygg`, mode `600`) once the engine is checked, and Traefik's container mounts it. The other commands (`down`, `ps`, `logs`, `config`) render a throwaway copy and leave this one alone. It stays there so that Traefik starts again after a crash or a reboot; deleting it takes ingress down at the next restart of the container, until the next `platform.sh up`. `platform.sh` refuses to run as root, since a root-owned file here is one the rootless Traefik can't read. |
 | `ufw` rules | Dev: `OpenSSH`, `80,443/tcp`, `2222/tcp`. Apps: `OpenSSH`, and for each Cloudflare range `allow proto tcp from <range> to any port 80,443 comment yggdrasil-cloudflare`. The defaults: `deny incoming`, `allow outgoing`. Then `ufw` is turned on, with SSH allowed first so the session that runs the install is not cut. `ygg check` reports any other rule that lets everyone in. |
@@ -524,28 +554,31 @@ the path exists) so a green row means something.
 ## 6. Credentials
 
 Where every secret lives. A line marked **later** is created by a later part of the move to Forgejo and
-Jenkins: nothing creates it yet, and the table says where it will live.
+Jenkins: nothing creates it yet, and the table says where it will live. The Jenkins credentials are defined by
+Configuration as Code from files the controller mounts (`platform/jenkins/controller/casc*.yaml`); a build agent
+holds one only while the build step it is bound to runs.
 
 | Credential | Lives with | Can | Created |
 |---|---|---|---|
-| Forgejo `jenkins` bot token | Jenkins controller (`ygg`, dev); deploy agent (`ygg`, apps) | Write every repository; the only account allowed to merge into an application's `main` and create its `v*` tags; post statuses | later |
-| Forgejo `jenkins-ci` bot token | CI agent (`ci`) and release agent (`release`) | Read every repository | later |
-| Forgejo `renovate` bot token | The `renovate` user (dev) | Push branches that are not protected (in practice `renovate/*`) and open pull requests | later |
+| `forge-write`: the Forgejo token of `forge.jenkinsUser` (`jenkins`), `FORGE_WRITE_TOKEN_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`, `ygg`, dev); bound by Jenkins on the controller, to post statuses, and on the **publish agent** (`forge.publishAgent`, the deploy agent of the last release environment), for the steps that merge, tag, release and upload. Never on the `ci` or `release` agent | Write every repository; the only account allowed to merge into an application's `main` and create its `v*` tags; post statuses | now: [setup.md 9.7](setup.md#97-the-forgejo-accounts-and-tokens) |
+| `forge-read`: the Forgejo token of `jenkins-ci` (read-only), `FORGE_READ_TOKEN_FILE` | The Jenkins controller; bound for repository scans (controller) and for checkouts on every agent: CI, release and deploy | Read every repository, including yggdrasil's own (the library and the scripts) | now: setup.md 9.7 |
+| `forge-webhook`: the webhook secret, `FORGE_WEBHOOK_SECRET_FILE` | The Jenkins controller; the same value is `FORGE_WEBHOOK_SECRET` in the operator's shell for `rules.py` | Signs the webhooks `rules.py` creates. The Gitea plugin verifies no signature, so Jenkins checks nothing with it (a forged webhook only triggers a scan); it stays here as the one place the secret lives. Forgejo never shows it again: to change it, delete the hooks and run `rules.py` again | now: setup.md 9.7 |
+| Forgejo `renovate` bot token (`write:repository`, `write:issue`), `RENOVATE_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Push `renovate/*` branches (and any unprotected branch) and open pull requests | now: [Renovate](#renovate-the-daily-run) |
 | Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
 | Forgejo owner token (`write:repository`), `FORGE_TOKEN` | The operator's shell, for the one run of `python3 scripts/rules.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules) |
-| Forgejo webhook secret, `FORGE_WEBHOOK_SECRET` | The operator's shell when `rules.py` runs (it puts it on every repository's webhook); the Jenkins controller (`ygg`, dev), as a Jenkins credential, once Jenkins takes the webhooks | Prove to Jenkins that a push, tag or pull request notice came from Forgejo. Forgejo never shows it again: to change it, delete the hooks and run `rules.py` again | now for `rules.py`; Jenkins' side: later |
-| GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev) | Push to the GitHub copies | later |
-| GitHub App `yggdrasil`, reduced to Actions read and write, Checks read, Contents read and write, Metadata read | Jenkins controller, and the deploy agent for the release step | Read Actions results, download Actions artifacts, dispatch workflows, create releases and upload their files. Contents write is needed for releases; it could also push to the GitHub copy, which the next mirror push would overwrite. It can no longer write statuses or pull requests. | today's App ([setup.md step 7](setup.md#7-create-the-github-app)); reduced later |
-| GitHub read token (the same App, or a fine-grained read-only token) | CI agent, when a wait runs there | Read Actions results | later |
-| Jenkins agent secrets | Each agent's env file: `/etc/yggdrasil-ci/agent.env`, `/etc/yggdrasil-release/agent.env`, and the deploy agent's `JENKINS_AGENT_SECRET` in `platform.env` | Connect as that agent | now |
+| GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev) | Push to the GitHub copies. It cannot move or delete a version tag there: nobody bypasses the copies' `mirror tags` ruleset, so such a push fails and Forgejo shows the mirror's sync failing ([setup.md](setup.md#version-tags-tag-check-and-repairs)) | later |
+| GitHub token for the copies' rulesets (`gh auth login`, or `GH_TOKEN`; Administration read and write on the mirrored repositories) | The operator's shell, for `python3 scripts/rules.py` on a Forgejo installation with a `mirror` (not kept in a file) | Set the `mirror tags` ruleset on each GitHub copy | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules) |
+| `github-app`: the GitHub App `yggdrasil` (App ID, PKCS#8 key `GITHUB_APP_KEY_FILE`). On a GitHub installation it is the git server's write identity and everything below; on Forgejo it exists only with a `mirror`, reduced to Actions read and write, Checks read, Contents read and write, Metadata read | The Jenkins controller; bound by Jenkins on the **publish agent** only (Forgejo with a mirror), never on the `ci` or `release` agent | On Forgejo: read Actions results, download Actions artifacts, dispatch workflows, create releases on GitHub and upload their files. Contents write is needed for releases; it could also push to the GitHub copy, which the next mirror push would overwrite. It no longer writes statuses or pull requests | [setup.md step 7](setup.md#7-create-the-github-app); reduced later |
+| `github-read`: a second, read-only GitHub App (contents, metadata, pull requests, commit statuses), `GITHUB_READ_APP_ID`, `GITHUB_READ_APP_KEY_FILE` | The Jenkins controller; optional, GitHub installations only; bound for the CI agent's checkout and status reads | Read the repositories. Without it the CI agent uses `github-app`, whose token can write: an accepted risk, and every build log says so | now: [setup.md 9.2](setup.md#92-the-env-files-first-pass) |
+| Jenkins agent secrets | Each agent's env file: `/etc/yggdrasil-ci/agent.env`, `/etc/yggdrasil-release/agent.env`, and the deploy agent's `JENKINS_AGENT_SECRET` in `platform.env` | Connect as that agent | now: [setup.md 9.8](setup.md#98-the-ci-and-release-agents) |
 | Application secrets, platform passwords | `/etc/yggdrasil` of the machine that uses them (`platform.env`, `<environment>/<application>.env`, or the [variables store](variables.md)) | As today | now |
 | Cloudflare API token (DNS edit on the `techcraftsmen.net` and `artur-rios.tech` zones only) | `acme.env` on each machine | Prove domain control for certificates; edit those two zones' DNS records | now |
 | ReportGenerator license | Jenkins credential, bound into the `test` checks that use it | Never bound on `renovate/*` builds | later |
-| nuget.org API key | Jenkins credential, allowed only for the library repositories, bound only on the publish step, on the release agent | Publish the owner's packages | later |
-| Maestro's update-manifest signing key (Ed25519, `MAESTRO_RELEASE_SECRET_KEY_BASE64`) | Jenkins credential, allowed only for maestro, bound only on its release build, on the release agent | Sign what installed copies of Maestro trust | later |
-| Orpheus' Android keystore and passwords (`ANDROID_KEYSTORE_*`) | Jenkins credential, allowed only for orpheus, bound only on its release build, on the release agent | Sign Orpheus' Android builds | later |
-| Any other secret a release workflow uses today | Same rule: a Jenkins credential, allowed per repository in the catalog, bound only on the release agent | The builder lists them from every `release*.yml` | later |
+| `nuget-api-key`: the nuget.org API key, `NUGET_API_KEY_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`); optional. The id is fixed and bound only on the release agent, in the step that pushes a library's packages (`scripts/nuget-push.sh`), where no repository code runs. No check or release build can bind it | Publish the owner's packages. It is on `dotnet`'s command line inside the push container | now: [setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget) |
+| Maestro's update-manifest signing key (Ed25519, `MAESTRO_RELEASE_SECRET_KEY_BASE64`) | Jenkins credential, allowed only for maestro's release build (the catalog's `releaseCredentials`, never its checks' `credentials`), named in `release.build.credentials` of its `yggdrasil.yml`, bound only on its release build, on the release agent | Sign what installed copies of Maestro trust | later: the credential is created when the repository moves |
+| Orpheus' Android keystore and passwords (`ANDROID_KEYSTORE_*`) | Jenkins credential, allowed only for orpheus' release build (`releaseCredentials`), bound only on its release build, on the release agent | Sign Orpheus' Android builds | later |
+| Any other secret a release workflow uses today | Same rule: a Jenkins credential, allowed per repository in the catalog's `releaseCredentials`, bound only on the release agent | The builder lists them from every `release*.yml` | later |
 | GitHub read-only token for github-readme-stats | `/etc/yggdrasil` on the apps machine, as an application secret | Read public GitHub data | later |
 | Backup SSH key (`~/.ssh/yggdrasil-backup`) | `ygg`, on each machine; its public half on the other | Send backups to the other machine, and nothing else (it can only run `rrsync` in one directory) | now: [Backups](#7-backups-and-restore) |
 

@@ -20,14 +20,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (exit 3: every `release/x.y.z` is kept, the owner deletes them by hand). See
   [docs/setup.md](docs/setup.md#the-git-server-commands).
 - **`scripts/rules.py`** applies the branching model to every repository of the catalog, on GitHub (rulesets) or
-  Forgejo (settings, branch and tag protections, the `Jenkinsfile` as a protected file on `develop`, and Jenkins'
+  Forgejo (settings, branch and tag protections, `yggdrasil.yml` and the `Jenkinsfile` as protected files on
+  `develop`, so only the owner merges a change to what Jenkins runs (Renovate's image bumps there too), and Jenkins'
   webhook), with `--dry-run`. `github/rulesets.py` is now a shim that says it moved and runs it. Forgejo needs
   `FORGE_TOKEN`, and `FORGE_JENKINS_URL` with `FORGE_WEBHOOK_SECRET` for webhooks; the users it names must have
   write access to the repository, or Forgejo drops them (the script warns). On Forgejo it deletes nothing, and on
   GitHub only a ruleset named `default`, as `github/rulesets.py` did; a protection the model no longer has is
   noted. [docs/setup.md](docs/setup.md#12-apply-the-branch-rules) step 12 lists what each
-  server gets. On Forgejo, the user who creates the version tags can also move and delete them (a known gap,
-  documented there).
+  server gets. On Forgejo, the user who creates the version tags can also move and delete them: an accepted gap,
+  which the `tag-check` job detects (below). With a `mirror`, every repository's GitHub copy gets the ruleset
+  **`mirror tags`** (update and deletion, no bypass, administrators included; nothing on the copy's branches or
+  settings), so the copies keep the tags as released and are what a moved or deleted Forgejo tag is repaired
+  from; that needs a GitHub token with administration of the copies, and without one the Forgejo rules are still
+  applied and the run exits 1. A copy GitHub refuses (one the push mirror has not made yet, a private copy on a
+  free plan) is reported and skipped: the other repositories are still applied and the run exits 1 at the end. A
+  mirror push that would move or delete a version tag is refused, and Forgejo shows the mirror sync failing:
+  intended.
 - **Catalog fields for the git server:** `forge` (`type` `forgejo` or `github`, `url`, `jenkinsUser`, `developers`;
   a catalog without it is GitHub), `mirror` (Forgejo to GitHub), `repositories` (libraries, CI-only repositories and
   yggdrasil itself, with `release`, `tags`, `rules`, `checks`, `actionsChecks`, `credentials`) and, on applications,
@@ -77,6 +85,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   under the same domain; they need DNS-only records to the dev machine. Unset, nothing changes.
 - A machine without the `apps` profile (the dev machine) has Prometheus read a written-out list of the platform's own
   targets (`platform/prometheus/prometheus-static.yml`).
+- **The pipeline in Jenkins.** A repository describes its checks and releases in a `yggdrasil.yml` (data: images,
+  commands, globs and the names of credentials; reference in [docs/catalog.md](docs/catalog.md#repository-pipeline-file)),
+  and Jenkins runs them on two build agents of their own: `ci` (4 executors) for the branch policy and the checks,
+  each reported as a commit status (`pending`, then `success` or `failure`) and reused for a commit only when
+  `forge.jenkinsUser` already set it, and `release` (1 executor) for release files. `deploy.inputs` hands a check's
+  archive to an image build. A push deploys only if its checks passed, and the commit they saw. A repository without
+  the file deploys and releases as before. How it all fits, what happens on each push, pull request and tag, and the
+  accepted risks: [docs/setup.md, The pipeline](docs/setup.md#the-pipeline).
+- **Releases from Jenkins**: after the merge and the tag, `release.build` builds the files on the release agent
+  (with only the credentials the catalog entry's new `releaseCredentials` allows: never its checks' `credentials`,
+  since a check runs any branch's code),
+  `release.windows` has GitHub Actions build the Windows ones, `release.validate` checks them (pass or fail; it cannot
+  change them), and `scripts/publish-release.sh` uploads and checks them on a draft release on Forgejo and, with
+  a `mirror`, on GitHub, then publishes Forgejo's and GitHub's last. The notes are the version's `CHANGELOG.md`
+  section, else the titles of the merged pull requests (`scripts/release_notes.py`). If the GitHub Actions
+  checks (`actionsChecks`: Windows, macOS) don't finish, Jenkins asks **Deploy without GitHub Actions checks**; after
+  it the release goes out on Forgejo only (`GitHub copy pending`, the build unstable). The jobs **`release-resume`**
+  (finishes a release from its tag: after a failure past the merge, to make the GitHub copy, for a tag never built)
+  and **`actions-release`** (attaches Windows files later) are started by hand with `REPOSITORY` and `TAG`;
+  `release-resume` also takes `COMMIT`, for a release merged but never tagged: it tags the merge commit (only when
+  it is that release's merge on `main`'s first-parent line), since only Jenkins may create an application's `v*`
+  tags.
+- **The `tag-check` job**: every day (cron `H 4 * * *`) and by hand, on the `ci` agent with the read credential
+  only, it checks that every published release of every catalog entry that releases still has its tag on the
+  commit it was released from (`forge.sh release-tags`, new: each published release's tag and target, and
+  `tag-sha`). A tag that moved or was deleted fails the build, named `MOVED` or `DELETED` at the end of the log,
+  the count in the build's description; a release that names a branch, not a commit, is logged as an unknown
+  target. A deleted tag's release becomes a draft (Forgejo, GitHub), which the read credential cannot see, so
+  each run archives the releases it knows of (`release-tags.tsv`) and the next checks those too. Its optional
+  `FORGET` parameter (`<repository> <tag>` a line, checked before anything runs) drops releases deleted on
+  purpose from that record. [docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs) says how to read it and how to repair a
+  tag from its GitHub copy. Its script, `jenkins/tag-check.groovy`, is mounted by `platform/compose.yml` like the
+  other jobs'.
+- **Owner-tagged releases and NuGet**: a `repositories` entry with `release: owner-tag` is released by the owner's
+  tag on `main` (tag with `git tag -a`: Jenkins builds only tags at most a day old and dates a lightweight tag by its
+  commit). `publish.nuget` packs a library's packages with no credential, then `scripts/nuget-push.sh` pushes them
+  (`--skip-duplicate`) with the Jenkins credential `nuget-api-key`, bound only there (`NUGET_API_KEY_FILE`).
+- **Renovate**: `scripts/renovate.sh run`, a daily systemd user timer of the `renovate` user (05:00), in its own
+  rootless engine, against the catalog's repositories only, on Forgejo. Its branches are `renovate/*`; a repository with
+  no Renovate configuration of its own is skipped. Settings in `/etc/yggdrasil-renovate/renovate.env`
+  (`env/renovate.env.example`). Run it once by hand first ([docs/setup.md, 9.9](docs/setup.md#99-renovate)).
+- **Settings for the pipeline** in `platform.env`: `YGGDRASIL_LIBRARY_VERSION` (required with the `jenkins` profile: a
+  yggdrasil release tag of your fork, the version of `jenkins/library/` every pipeline loads), `CI_AGENT_WORKDIR` and
+  `RELEASE_AGENT_WORKDIR` (required with it: each the `YGG_AGENT_WORKDIR` of that agent's `agent.env`),
+  `FORGE_WRITE_TOKEN_FILE`, `FORGE_READ_TOKEN_FILE` and `FORGE_WEBHOOK_SECRET_FILE` (required on Forgejo),
+  `GITHUB_READ_APP_ID` and `GITHUB_READ_APP_KEY_FILE` (optional, GitHub: a read-only App for the CI agent) and
+  `NUGET_API_KEY_FILE` (optional). `scripts/platform.sh` chooses the Configuration as Code files the controller
+  reads (`casc.yaml`, `casc.forgejo.yaml` or `casc.github.yaml`, and `casc.github-app.yaml`, `casc.github-read.yaml`,
+  `casc.nuget.yaml` where they apply) from the catalog's `forge` and `mirror` and these settings.
+  [docs/setup.md, 9.2 to 9.9](docs/setup.md#92-the-env-files-first-pass).
+- **Sites**: `deploy.sh` exports `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH` from the catalog's `host`, `domain`, `path`
+  and `apex` (`catalog.py public-host` and `public-path`); the deploy agent gets the platform's `DOMAIN` as `YGG_DOMAIN`.
+  An `apex` site without a `host` is on the bare domain in every environment, so deploy it to one environment.
+- `scripts/test_jenkins_live.py` runs the pipeline against a real Jenkins controller, its agents and Forgejo
+  (`YGG_JENKINS_TESTS=1`; CI job `pipeline-live`, by hand only). The GitHub paths and rootless Docker are not proven by it.
 
 ### Changed
 
@@ -85,10 +148,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `branch-policy` and the `checks` stay required but are bound to no app (any status of that name satisfies
   them; until now only GitHub Actions' could), because Jenkins is to report them (plan 3); the new
   `actionsChecks` (applications and repositories) are required, bound to GitHub Actions, on `develop` only, so a
-  job moved there from `checks` is no longer required on `main`. **An existing GitHub installation should not
-  re-run the rules until plan 3**: its rulesets stay as they are until then. GitHub cannot restrict who may merge
-  one file, so the `Jenkinsfile` protection is Forgejo's only.
+  job moved there from `checks` is no longer required on `main`. **An existing GitHub installation should run the
+  rules for a repository only once it has adopted `yggdrasil.yml`**, so that Jenkins reports those contexts: until
+  then its rulesets stay as they are. GitHub cannot restrict who may merge one file, so the `Jenkinsfile`
+  protection is Forgejo's only.
   [docs/setup.md](docs/setup.md#an-existing-github-installation).
+- **Breaking, GitHub: nobody can move or delete a version tag any more, the owner included.** The `release tags`
+  ruleset loses its administrator bypass. An owner-tagged repository's creation rule moves out of it into a new
+  ruleset, `release tag creation`, which administrators bypass, so the owner still creates those tags. To fix a
+  wrong tag, disable the ruleset first, then run `rules.py` again
+  ([docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
 - **Breaking: the platform runs on rootless Docker only.** `platform.sh`, `agent.sh` and `backup.sh` use the Docker
   engine of the user who runs them (the socket from `DOCKER_HOST`, else `/run/user/<uid>/docker.sock`) and refuse a
   rootful one. Run them as `ygg`. Root inside a container is that user on the host, so the socket proxies and the
@@ -119,6 +188,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `scripts/sql/new-deployment.sql`: an owner role that migrates and a runtime login that owns nothing, with a
   `pg_hba.conf` line for each, and `HEIMDALL_MIGRATIONS_CONNECTIONSTRING` in the store. A database the API's own
   login owns is moved with heimdall-api's `separate-owner.sql` runbook.
+- **Breaking: Jenkins never reads a repository's `Jenkinsfile`.** Every job runs `jenkins/Jenkinsfile.default`, kept in
+  Jenkins, which calls the pinned library; a branch pushed by someone who is not the owner would otherwise run its own
+  pipeline code with every credential in reach. The library is loaded at the tag `YGGDRASIL_LIBRARY_VERSION`, and
+  the `scripts/` it calls are cloned at that same tag; only the owner's data, `catalog.yaml` and `stacks/`, still
+  comes from `main`. A `Jenkinsfile` in a repository is ignored (and the Forgejo
+  protection of it on `develop` protects nothing about the pipeline now); `templates/application/` has a
+  `yggdrasil.yml` to start from in place of its `Jenkinsfile`. Every build now starts with a step on the
+  `ci` agent that reads the commit, even for a repository without a `yggdrasil.yml`: an installation needs the CI
+  agent, `CI_AGENT_WORKDIR`/`RELEASE_AGENT_WORKDIR` and `YGGDRASIL_LIBRARY_VERSION` before its next build.
+- The branch policy accepts `renovate/...` into `develop` in place of `dependabot/...` (`scripts/branch-policy.sh`, run
+  by Jenkins; this repository's own workflow still accepts `dependabot/...`).
+- `scripts/github.sh` gains `actions-status`, `wait-ref`, `dispatch`, `run-status` and `download-artifacts`, the
+  GitHub Actions commands the pipeline uses, and `scripts/forge.sh` gains `find-release`, `release-files` and
+  `tag-sha`. `catalog.py` gains `public-host` and `public-path`.
+- `platform/build-agent.yml` passes `YGG_DOCKER_SOCKET` (the host path of the user's socket) to the agent, and
+  `platform/compose.yml` passes `YGG_DOMAIN` to the deploy agent: agents started by an earlier release need
+  `ygg agent up --user ci` (and `release`), and `scripts/platform.sh up` on each apps machine, again.
+- [docs/setup.md](docs/setup.md) adds 9.7 (the Forgejo accounts and tokens), 9.8 (the CI and release agents), 9.9
+  (Renovate) and a reference section, [The pipeline](docs/setup.md#the-pipeline); the credentials table of
+  [docs/hosts.md](docs/hosts.md#6-credentials) lists `forge-read`, `forge-write`, `forge-webhook`, `github-app`,
+  `github-read` and `nuget-api-key` and where each lives.
 
 ### Removed
 
@@ -126,6 +216,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `platform.env`.
 - The machine's own Docker engine on a `dev` or `apps` machine: its units are disabled and masked, and the `docker`
   group is emptied.
+
+### Upgrading an existing GitHub installation to the pipeline
+
+**First, before this reaches your fork's `main`:** pin the running controller's library to your current release
+tag (**Manage Jenkins → System → Global Trusted Pipeline Libraries → `yggdrasil` → Default version**, e.g.
+`v0.7.4`), and keep the controller host's checkout at that release until you upgrade. A controller from before
+this release loads the library at `main`, so it would run the new library at once, before `scripts/platform.sh up`
+(builds would wait for a `ci` agent that does not exist; the HTTP Request plugin is missing). The old library
+keeps working pinned: it still clones `scripts/` from `main`, and the `github.sh` commands it calls (`wait-checks`,
+`set-status`, `merge-pr`, `release`, `publish-release`, `delete-branch`) and `deploy.sh <environment> <application>
+<checkout> <version>` take the same arguments as before. **Then, before relying on it on GitHub:** run a scratch
+GitHub repository with `forge.type: github` through a pull request, its checks and a release, end to end; the
+GitHub paths have been tested against fakes only ([docs/setup.md](docs/setup.md#an-existing-github-installation)).
+
+Nothing in a repository has to change for it to keep deploying and releasing. On the dev (controller) host: set
+`YGGDRASIL_LIBRARY_VERSION` (a release tag of your fork that has this pipeline), `CI_AGENT_WORKDIR` and
+`RELEASE_AGENT_WORKDIR` in `platform.env`, fill in the `ci` and `release` agents' `agent.env` and start them
+(`ygg agent up --user ci`, `--user release`), `scripts/platform.sh up`. Then adopt `yggdrasil.yml` one repository at
+a time: move each Actions job's steps into `ci/` scripts, list them as `checks` in `yggdrasil.yml`, name them in the
+catalog's `checks` and keep the Windows and macOS jobs in `actionsChecks`, and, now that Jenkins reports them,
+run `scripts/rules.py` for that repository. Step by step: [docs/setup.md](docs/setup.md#an-existing-github-installation).
+
+**Version tags.** The first `rules.py` run for a repository removes the administrator bypass from its `release
+tags` ruleset (updated in place, by name): from then on you can no longer move or delete a version tag on GitHub
+without disabling the ruleset first. For an owner-tagged repository it also creates the ruleset `release tag
+creation` (only administrators create its tags), and `release tags` loses the creation rule it had.
+
+### Upgrading: start tag-check's record
+
+Right after `scripts/platform.sh up` has created the `tag-check` job, run it once by hand (**Build with
+Parameters**, `FORGET` empty). It remembers only the releases it has seen published, and a deleted tag's release
+turns into a draft it cannot see, so the sooner its first run, the fewer deletions can slip by
+([docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
 
 ### Upgrading a host from rootful Docker
 
