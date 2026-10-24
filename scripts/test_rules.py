@@ -258,6 +258,18 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual([m for m, _, _ in api.writes()], ["PATCH", "PUT", "PUT", "PUT", "PUT"])
         self.assertEqual(len(api.rulesets), 4)
 
+    def test_given_an_existing_release_tags_ruleset_when_applied_then_its_put_drops_the_admin_bypass(self):
+        # The update in place is what removes the bypass from an installation's existing ruleset: PUT replaces
+        # the whole ruleset, so the body must carry the empty list (an absent field would keep the old one).
+        for repo in ("shop-api", "toolkit"):
+            api = FakeGitHub(existing=["develop", "main", "release tags"])
+            rules.apply_github(api, "artur-rios", by_repo()[repo], dry_run=False)
+            (body,) = [b for m, p, b in api.writes() if m == "PUT" and p.endswith("/rulesets/3")]
+            self.assertEqual(body["name"], "release tags", repo)
+            self.assertIn("bypass_actors", body, repo)
+            self.assertEqual(body["bypass_actors"], [], repo)
+            self.assertEqual([r["type"] for r in body["rules"]], ["update", "deletion"], repo)
+
     def test_given_an_application_with_a_creation_ruleset_when_applied_then_it_is_noted_not_removed(self):
         # A repository that was owner-tagged before it became an application: Jenkins creates its tags now,
         # which the old creation ruleset blocks; deleting it is still the owner's call.

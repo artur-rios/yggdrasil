@@ -1197,7 +1197,9 @@ class TagCheckLibraryTests(unittest.TestCase):
         node = main.index("node('ci')")
         self.assertLess(main.index("tagRecordLines(previousTagRecord(currentBuild.rawBuild))"), node)
         self.assertLess(node, main.index("report = checkReleaseTags(entries, previous)"))
-        # Archived from the ci workspace before it is cleaned, whatever the result.
+        # Archived from the ci workspace before it is cleaned, problems found or not: tagCheck fails the build
+        # only after the node. A step that throws there archives nothing, and the next run falls back on the
+        # record of the run before.
         written = main.index("writeFile file: TAG_RECORD, text: tagRecordText(report.record as List)")
         self.assertLess(main.index("report = checkReleaseTags(entries, previous)"), written)
         self.assertLess(written, main.index("archiveArtifacts artifacts: TAG_RECORD"))
