@@ -816,12 +816,20 @@ sync overwrites it. List both kinds, from 5.2's inventory, on your machine (`gh`
 
 ```bash
 for repo in $(awk -F'\t' 'NF == 5 { print $1 }' ~/cutover-log/inventory.txt); do
-  for file in $(gh api "repos/artur-rios/$repo/contents/.github/workflows" --jq '.[].path' 2>/dev/null); do
+  if ! files=$(gh api "repos/artur-rios/$repo/contents/.github/workflows" --jq '.[].path' 2>~/cutover-log/gh-error.txt); then
+    grep -q '(HTTP 404)' ~/cutover-log/gh-error.txt || echo "$repo skipped: $(cat ~/cutover-log/gh-error.txt)" >&2
+    continue
+  fi
+  for file in $files; do
     body=$(gh api -H 'Accept: application/vnd.github.raw' "repos/artur-rios/$repo/contents/$file")
     grep -qE '^on:.*\bpush\b|^[[:space:]]+push:|cron:' <<<"$body" && echo "$repo $file"
   done
 done | tee ~/cutover-log/workflows.txt
 ```
+
+A repository without `.github/workflows` is skipped: GitHub answers `404`, and `gh api` then exits `1` with
+GitHub's error JSON on its standard output, which the loop would otherwise split into names to fetch. Any other
+failure skips the repository too, with a line `<repo> skipped: <gh's error>` on the terminal (not in the file).
 
 Each line is a repository's workflow on its default branch that runs on a push (`on: push`, `on: [push, ...]`,
 or `push:` under `on:`) or on a schedule (`cron:`). Open each one: disable every one that publishes, deploys or
@@ -839,7 +847,8 @@ They stay disabled after the window: what they did moves to Jenkins with each re
 `workflows.txt` lists the workflows, and `gh workflow list -R artur-rios/<repo> --all` shows each one you disabled
 as `disabled_manually`.
 **If it fails:** `sudo docker stop <name>` for what is left. A `gh` error naming `HTTP 403`: `GH_TOKEN` lacks the
-`repo` scope (4.1).
+`repo` scope (4.1). A `<repo> skipped: ...` line: that repository's workflows were not looked at; fix what it
+names, and run the loop again.
 **Back out:** `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start production` (and the on-demand
 environments that were on); the workflows: `while read -r repo file; do gh workflow enable "$(basename "$file")"
 -R "artur-rios/$repo"; done < ~/cutover-log/workflows-disabled.txt`.
@@ -1600,8 +1609,10 @@ your private repositories (4.1's classic kind, or `gh auth login`):
    `export`, and `export MIRROR_GITHUB_USER=artur-rios FORGE_JENKINS_URL=https://jenkins.techcraftsmen.net`, as
    5.2 does. Then `python3 scripts/migrate.py inventory > ~/cutover-log/inventory.txt` (its exit does not matter
    here: the delete loop reads the names).
-3. [Rollback](#6-rollback) step 1's first block, the loop alone (not what follows it): it deletes every push
-   mirror. Pushes to Forgejo are not mirrored from now until step 4; its first sync carries them.
+3. The first code block of [Rollback](#6-rollback) step 1, in this shell: its `forgejo=` and `api()` lines,
+   then its `for repo` loop. Its first line, `read -rs FORGE_TOKEN`, may be left out (step 2 exported the token);
+   what follows the block there (`platform.sh down`, stopping production) is not for this. The loop deletes every
+   push mirror. Pushes to Forgejo are not mirrored from now until step 4; its first sync carries them.
 4. `python3 scripts/migrate.py mirrors`: each repository gets its mirror again, with the new token. Its check
    before the first push passes, since GitHub holds Forgejo's state.
 5. A minute later, `python3 scripts/migrate.py verify`: `0 checks failed`. Then delete the old token on GitHub.
