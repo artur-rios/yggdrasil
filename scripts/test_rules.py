@@ -1117,6 +1117,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.status, 502)
         self.assertIn("bad gateway", raised.exception.message)
 
+    def test_given_a_timeout_when_requested_then_the_server_is_waited_for_that_long_and_a_minute_by_default(self):
+        # A repository migration answers when the copy is done, minutes later: migrate.py asks for more.
+        api = rules.Api(self.base, "tok-abc", "Bearer")
+        with mock.patch.object(rules.urllib.request, "urlopen", wraps=rules.urllib.request.urlopen) as opened:
+            api.request("GET", "/x")
+            api.request("GET", "/x", timeout=1800)
+        self.assertEqual([call.kwargs["timeout"] for call in opened.call_args_list], [60, 1800])
+
     def test_given_no_server_when_requested_then_it_is_an_api_error_without_a_status(self):
         self.server.shutdown()
         self.server.server_close()

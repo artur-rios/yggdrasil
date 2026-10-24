@@ -7,7 +7,10 @@ right: that Forgejo 16.0.6 (the image platform/compose.yml pins) takes those req
 the scripts read it, and that the protections rules.py applies really hold -- `claude` cannot merge a
 Jenkinsfile change, push a release branch or create, move or delete a version tag, a `rules: basic`
 repository refuses force pushes and deletions, and the owner, an administrator, can still merge past
-failing checks. One test pins a known gap instead: jenkins, which creates the version tags, can also
+failing checks. Two tests check migrate.py's import: it asks Forgejo for a migration the way Forgejo takes
+it (from the suite's own server with `service: git`, since GitHub is out of reach), leaves what is imported
+alone on a second run, and reports an empty repository as unfinished. One test pins a known gap instead:
+jenkins, which creates the version tags, can also
 move and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
@@ -21,7 +24,9 @@ that container. CI runs it (job platform).
 """
 
 import base64
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import pathlib
@@ -36,9 +41,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from unittest import mock
 
 import catalog as catalog_module
+import migrate
 import rules
+from test_migrate import FakeGitHub, repository as github_repository
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FORGE_SH = ROOT / "scripts" / "forge.sh"
@@ -246,6 +254,10 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
                # As in compose.yml: nothing is visible signed out, so a wrong token or repository is a 404.
                "--env=FORGEJO__service__DISABLE_REGISTRATION=true",
                "--env=FORGEJO__service__REQUIRE_SIGNIN_VIEW=true",
+               # Only so that the migrate.py tests can migrate from this very server (GitHub itself is out
+               # of reach here): Forgejo refuses a clone from a local address by default, and production
+               # keeps that default. No other test migrates, so it changes nothing for them.
+               "--env=FORGEJO__migrations__ALLOW_LOCALNETWORKS=true",
                pinned_image())
         cls.wait_for_health()
 
@@ -855,6 +867,84 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         pushed = self.git(CLAUDE, "push", "origin", "HEAD:refs/heads/feature/claude-push", cwd=clone)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.assertTrue(self.branch_exists(APP, "feature/claude-push"))
+
+    # --- migrate.py --------------------------------------------------------------------------------
+
+    def migrate_import(self, github_names, *arguments, private=True):
+        """`migrate.py import` run for real against this Forgejo, with the GitHub side a fake that lists
+        `github_names` (GitHub itself is not reachable from here). The one thing replaced on the way to
+        Forgejo is the migration's source: the request keeps the shape import sends, but `service` is `git`
+        and the clone address this very server, as the container itself reaches it (127.0.0.1:3000 inside,
+        not the published port), with the owner's token as the git password -- Forgejo's `auth_token` is
+        for the hosting services. Returns (exit code, stdout, stderr)."""
+        real_payload, real_api = migrate.migration_payload, rules.Api
+        catalog = {**test_catalog(), "forge": {**test_catalog()["forge"], "url": self.url},
+                   "mirror": {"github": OWNER}}
+        github = FakeGitHub([github_repository(name, private=private, default_branch="main")
+                             for name in github_names])
+
+        def from_this_forgejo(ctx, repo):
+            payload = real_payload(ctx, repo)
+            del payload["auth_token"]
+            payload.update(service="git", clone_addr=f"http://127.0.0.1:3000/{OWNER}/{APP}.git",
+                           auth_username=OWNER, auth_password=self.tokens[OWNER])
+            return payload
+
+        def api(base, token, scheme, headers=None):
+            return github if scheme == "Bearer" else real_api(base, token, scheme, headers)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(migrate.catalog_module, "load", return_value=catalog), \
+                mock.patch.dict(os.environ, {"FORGE_TOKEN": self.tokens[OWNER]}), \
+                mock.patch.object(migrate.rules, "Api", api), \
+                mock.patch.object(migrate.rules, "find_github_token", return_value="not-a-real-github-token"), \
+                mock.patch.object(migrate, "migration_payload", from_this_forgejo), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = migrate.main(list(arguments) or ["import"])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_given_a_repository_when_migrate_imports_it_then_forgejo_copies_it_and_a_second_run_says_already_imported(self):
+        copy = "shop-api-imported"
+        code, out, err = self.migrate_import([copy])
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{copy}: imported"])
+
+        # Forgejo took the request import sends (every option of it) and made a finished copy of the
+        # source: its branches, its Jenkinsfile, private as the (fake) GitHub says.
+        owner = self.api[OWNER]
+        found = owner.request("GET", f"/repos/{OWNER}/{copy}")
+        self.assertEqual((found["private"], found["empty"], found["mirror"]), (True, False, False))
+        # (The default branch is not asserted: a plain git migration picks its own; GitHub's carries over.)
+        self.assertTrue(self.branch_exists(copy, "develop"))
+        contents = owner.request("GET", f"/repos/{OWNER}/{copy}/contents/Jenkinsfile?ref=main")
+        self.assertEqual(base64.b64decode(contents["content"]).decode(), JENKINSFILE)
+        self.assertEqual(self.head(copy, "main"), self.head(APP, "main"))
+
+        # Run again: the repository is there, finished, and import leaves it alone -- no write at all.
+        api = RecordingApi(self.url + "/api/v1", self.tokens[OWNER], "token")
+        with mock.patch.object(rules, "Api", lambda *a, **k: api):
+            code, out, err = self.migrate_import([copy])
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines(), [f"{copy}: already imported"])
+        self.assertEqual(api.calls, [("GET", f"/repos/{OWNER}/{copy}")])
+
+    def test_given_an_empty_repository_when_migrate_imports_then_it_is_unfinished_and_never_deleted(self):
+        # What an interrupted migration leaves: a repository with nothing in it. Forgejo 16 says so in
+        # the repository's JSON (`empty`), which is what import reads.
+        half = "half-migrated"
+        self.api[OWNER].request("POST", "/user/repos", {"name": half, "private": True})
+        self.assertTrue(self.api[OWNER].request("GET", f"/repos/{OWNER}/{half}")["empty"])
+        code, out, err = self.migrate_import([half])
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"  {half}: exists but looks unfinished (empty): delete it on Forgejo and run import again",
+                      err.splitlines())
+        self.assertTrue(self.api[OWNER].request("GET", f"/repos/{OWNER}/{half}")["empty"])  # still there, untouched
+
+        # Deleted by hand, import goes through (the source is shop-api, as for every migration here).
+        self.api[OWNER].request("DELETE", f"/repos/{OWNER}/{half}")
+        code, out, err = self.migrate_import([half])
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertFalse(self.api[OWNER].request("GET", f"/repos/{OWNER}/{half}")["empty"])
 
 
 class CatalogTests(unittest.TestCase):
