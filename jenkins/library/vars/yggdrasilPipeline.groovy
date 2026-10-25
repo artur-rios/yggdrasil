@@ -1792,7 +1792,7 @@ void tagBuild(Map ctx) {
     echo "Nothing to do for the tag ${printable(tag)}: ${ctx.app} is not released by its owner's tags (catalog.yaml: release ${ctx.release})."
     return
   }
-  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+  if (!isVersionTag(ctx.tags, tag)) {
     echo "Nothing to do for the tag ${printable(tag)}: not a version tag of ${ctx.app} (${ctx.tags})."
     return
   }
@@ -1829,7 +1829,7 @@ void releaseResume() {
   if (!(ctx.release in ['deploy', 'owner-tag'])) {
     error "${app} does not release (catalog.yaml: an application with no trigger: release environment, or a repositories entry without release: owner-tag)."
   }
-  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+  if (!isVersionTag(ctx.tags, tag)) {
     error "'${printable(tag)}' is not a version tag of ${app} (${ctx.tags})"
   }
   if (commit && !(commit ==~ COMMIT)) {
@@ -2101,7 +2101,7 @@ void actionsRelease() {
   String app = (params.REPOSITORY ?: '').toString().trim()
   String tag = (params.TAG ?: '').toString().trim()
   Map ctx = catalogContext(app)
-  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+  if (!isVersionTag(ctx.tags, tag)) {
     error "'${printable(tag)}' is not a version tag of ${app} (${ctx.tags})"
   }
   if (!githubActions(ctx)) {
@@ -3169,6 +3169,14 @@ String tagVersion(String tag) {
 String previousTagPattern(String tag, String tags) {
   int at = tag.lastIndexOf('@')
   return at >= 0 ? tag.substring(0, at) + '@*' : tags
+}
+
+// Whether `tag` is a version tag of an entry whose pattern is `tags`: a tag the pipeline takes (TAG), matching the
+// pattern, and naming a version (tagVersion not empty). A pattern such as *@* also matches ArturRios.Data.Sqlite@,
+// whose RELEASE_VERSION would be empty, and v* matches v: neither is a version, whatever the catalog says.
+@NonCPS
+boolean isVersionTag(String tags, String tag) {
+  return tag ==~ TAG && globMatches(tags, tag) && !tagVersion(tag).isEmpty()
 }
 
 // Whether `text` matches a catalog tag pattern (a glob with * and [classes], as catalog.py's TAG_PATTERN

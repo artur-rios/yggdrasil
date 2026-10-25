@@ -1381,8 +1381,8 @@ class ReleaseLibraryTests(unittest.TestCase):
         start, end = lib.functions["actionsRelease"]
         body = lib.code[start:end]
         context = body.index("catalogContext(app)")
-        self.assertLess(context, body.index("globMatches(ctx.tags, tag)"))
-        self.assertLess(body.index("globMatches(ctx.tags, tag)"), body.index("readReleaseTag(ctx, tag)"))
+        self.assertLess(context, body.index("isVersionTag(ctx.tags, tag)"))
+        self.assertLess(body.index("isVersionTag(ctx.tags, tag)"), body.index("readReleaseTag(ctx, tag)"))
         # The tag read (it exists, it is on main) like every other release from a tag.
         self.assertLess(body.index("readReleaseTag(ctx, tag)"), body.index("windowsFiles("))
         self.assertIn("declares no release.windows", body)
@@ -1435,6 +1435,16 @@ class TagReleaseLibraryTests(unittest.TestCase):
         # The release build, the validation, the finalize step and the NuGet packing.
         self.assertEqual(self.lib.code.count('"YGG_VERSION=${tagVersion(tag)}"'), 4)
 
+    def test_given_an_at_tag_with_no_version_when_checked_then_it_is_not_a_version_tag(self):
+        # ArturRios.Data.Sqlite@ matches a pattern like *@*, and v matches v*, but neither names a version: an
+        # empty RELEASE_VERSION must never reach a release build or a pack. Every release path from a tag (a tag
+        # build, release-resume, actions-release) asks isVersionTag, and nothing else decides.
+        body = self.body("isVersionTag")
+        self.assertIn("return tag ==~ TAG && globMatches(tags, tag) && !tagVersion(tag).isEmpty()", body)
+        for name in ("tagBuild", "releaseResume", "actionsRelease"):
+            self.assertIn("if (!isVersionTag(ctx.tags, tag))", self.body(name), name)
+        self.assertNotIn("|| !globMatches(ctx.tags, tag)", self.lib.code)
+
     def test_given_an_at_tag_when_the_notes_look_for_the_previous_tag_then_only_its_package_is_matched(self):
         # git describe --match takes the previous release of the same package, so a package's notes never
         # start from another package's tag; any other tag keeps the entry's pattern.
@@ -1449,7 +1459,7 @@ class TagReleaseLibraryTests(unittest.TestCase):
         self.assertRegex(call, r"if \(env\.TAG_NAME\) \{\s*tagBuild\(ctx\)\s*return")
         body = self.body("tagBuild")
         owner = body.index("ctx.release != 'owner-tag'")
-        pattern = body.index("globMatches(ctx.tags, tag)")
+        pattern = body.index("isVersionTag(ctx.tags, tag)")
         lock = body.index('lock(resource: "release-${ctx.app}")')
         self.assertLess(owner, lock)
         self.assertLess(pattern, lock)
@@ -1561,9 +1571,9 @@ class TagReleaseLibraryTests(unittest.TestCase):
         body = self.body("releaseResume")
         context = body.index("catalogContext(app)")
         self.assertLess(context, body.index("ctx.release in ['deploy', 'owner-tag']"))
-        self.assertLess(body.index("ctx.release in ['deploy', 'owner-tag']"), body.index("globMatches(ctx.tags, tag)"))
+        self.assertLess(body.index("ctx.release in ['deploy', 'owner-tag']"), body.index("isVersionTag(ctx.tags, tag)"))
         lock = body.index('lock(resource: "release-${app}")')
-        self.assertLess(body.index("globMatches(ctx.tags, tag)"), lock)
+        self.assertLess(body.index("isVersionTag(ctx.tags, tag)"), lock)
         self.assertLess(lock, body.index("readReleaseTag(ctx, tag)"))
         self.assertLess(body.index("readReleaseTag(ctx, tag)"), body.index("releaseTag(ctx, tag, described)"))
         self.assertNotIn("node(", body)

@@ -2,6 +2,7 @@
 
 import contextlib
 import copy
+import fnmatch
 import io
 import os
 import pathlib
@@ -1062,8 +1063,9 @@ class RealCatalogTests(unittest.TestCase):
                     self.assertIn(name, applications)
                 if "library" in kinds:
                     # The owner's bare version tags (1.2.3), but dotnet-data's, which version each package
-                    # apart: <package>@<version>, as its publish workflow on GitHub took them.
-                    tags = "*@*" if name == "dotnet-data" else "[0-9]*"
+                    # apart: <package>@<version>, as its publish workflow on GitHub took them, a digit after
+                    # the @ (ArturRios.Data.Sqlite@ names no version).
+                    tags = "*@[0-9]*" if name == "dotnet-data" else "[0-9]*"
                     self.assertEqual((repositories[name]["release"], repositories[name]["tags"]), ("owner-tag", tags))
                     self.assertEqual(applications[f"{name}-docs"].get("repository"), name)
                 if "ci" in kinds:
@@ -1078,6 +1080,15 @@ class RealCatalogTests(unittest.TestCase):
                 if deciding["kind"] == "repository":
                     had = any(job.startswith("branch-policy.yml/") for job, _ in self.rows[name]["jobs"])
                     self.assertEqual(deciding["entry"]["rules"], "release" if had else "basic")
+
+    def test_given_dotnet_datas_tag_pattern_when_matched_then_a_package_tag_needs_a_version(self):
+        # The Job DSL discovers, and the pipeline builds, only the tags the pattern matches: a bare
+        # ArturRios.Data.Sqlite@ names no version (an empty RELEASE_VERSION), and the pipeline refuses it too.
+        tags = next(e for e in c.repositories(self.catalog) if e["id"] == "dotnet-data")["tags"]
+        for tag in ("ArturRios.Data.Sqlite@3.1.0", "ArturRios.Data@1.0.0"):
+            self.assertTrue(fnmatch.fnmatchcase(tag, tags), tag)
+        for tag in ("ArturRios.Data.Sqlite@", "ArturRios.Data.Sqlite@v3.1.0", "3.1.0"):
+            self.assertFalse(fnmatch.fnmatchcase(tag, tags), tag)
 
     def test_given_the_checklist_when_every_ci_job_is_followed_then_it_is_a_catalog_check_or_says_why_not(self):
         # Each job runs only its catalog entry's checks, and those are what Forgejo requires: a `→ check` job

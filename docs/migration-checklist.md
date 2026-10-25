@@ -319,7 +319,7 @@ secret goes away with what used it. docs/hosts.md lists the credentials to creat
 Written by hand, and kept when the table is regenerated: what a repository's branch must do because of a catalog
 decision above.
 
-- **dotnet-data** (Task 9): its tags stay `<package>@<version>` (`tags: "*@*"` in the catalog). The pipeline sets
+- **dotnet-data** (Task 9): its tags stay `<package>@<version>` (`tags: "*@[0-9]*"` in the catalog). The pipeline sets
   `RELEASE_TAG` to the whole tag and `RELEASE_VERSION` to what follows its last `@`, so its `ci/pack.sh` must read
   `RELEASE_TAG` and pack only that package, not every package of the solution at that version.
 - **yggdrasil** (Task 8): `ci.yml/pipeline-live` stays a GitHub Actions workflow (manual, on the GitHub copy).

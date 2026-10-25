@@ -63,7 +63,7 @@ mounts as `static/coverage-report`). The docs application's stack files are `tem
   `v`; `N.N.N` or `N.N.N-pre`, anything else stops the script), each package must be named
   `<PackageId>.<RELEASE_VERSION>.nupkg` for a packable project of the solution, as the old workflow's
   tag-against-`<Version>` check did. A library that
-  versions each package apart tags `<package>@<version>` (catalog `tags: "*@*"`): `RELEASE_VERSION` is what follows
+  versions each package apart tags `<package>@<version>` (catalog `tags: "*@[0-9]*"`): `RELEASE_VERSION` is what follows
   the `@`, and its `ci/pack.sh` must pack only the package `RELEASE_TAG` names, since the others keep their own
   versions.
 
