@@ -203,6 +203,14 @@ find . -mindepth 1 -printf '%y %p\n' | sort
 find . -type f -print0 | sort -z | xargs -0 -r sha256sum --
 '''
 
+// Run from a directory: the file names (base names, not paths) that more than one file under it has, one per
+// line, at most 20; nothing when every name is unique. A release shows one file per name (publish-release.sh
+// uploads each by its name), so the upload set must have no two (refuseDuplicateNames).
+@Field static final String DUPLICATE_NAMES = '''
+export LC_ALL=C
+find . -type f -printf '%f\n' | sort | uniq -d | head -n 20
+'''
+
 // Runs one of this repository's scripts, yggdrasil/scripts/<YGG_TOOL>, from the workspace's root with
 // the arguments YGG_ARG_1 .. YGG_ARG_<YGG_ARGC> (see tool()): the values are environment variables,
 // never part of the script, so no argument can change what the shell runs. With YGG_OUT set, stdout
@@ -1399,6 +1407,7 @@ String gatherReleaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, Str
       }
       dir('release-files') {
         refuseLinks(true, 'the release files')
+        refuseDuplicateNames('the release files')
         // The upload set, before anything else runs here.
         stash name: 'release-files', includes: '**', allowEmpty: true
       }
@@ -1502,6 +1511,7 @@ String finalizeReleaseFiles(Map entry, Map finalize, String tag) {
   }
   dir('release-upload') {
     refuseLinks(true, 'the release files')
+    refuseDuplicateNames("the release files and release.finalize's")
     stash name: 'release-upload', includes: '**', allowEmpty: true
   }
   return 'release-upload'
@@ -1620,6 +1630,24 @@ void refuseLinks(boolean any, String what) {
       error "${what}: refused, a symbolic link is among them (exit ${code}); nothing of them is used."
     }
   }
+}
+
+// In the current directory, the upload set (release-files/, or release-upload/ with release.finalize's
+// files): DUPLICATE_NAMES must find nothing. On the release agent, before anything irreversible -- a library's
+// NuGet push, a draft -- so two files of one name fail the release here, naming them, instead of in
+// publish-release.sh after the push.
+void refuseDuplicateNames(String what) {
+  String names = sh(script: DUPLICATE_NAMES, returnStdout: true)
+  if (names.trim()) {
+    error "${what}: ${duplicateText(names)}; a release has one file per name (each is uploaded by its name). Nothing is published, and no draft release was made."
+  }
+}
+
+// DUPLICATE_NAMES' answer as the failure says it.
+@NonCPS
+String duplicateText(String names) {
+  List named = names.readLines().findAll { it.trim() }.collect { printable(it) }
+  return "more than one file is named ${named.join(', ')}"
 }
 
 // One glob's files from the current directory, as the stash `name`: none fails the release (a declared

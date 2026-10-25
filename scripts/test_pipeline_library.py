@@ -40,7 +40,7 @@ LIBRARY = ROOT / "jenkins" / "library" / "vars" / "yggdrasilPipeline.groovy"
 FORGE_CREDENTIAL_IDS = ("forge-read", "forge-write", "forge-webhook", "github-app", "github-read")
 # Constants whose value is a shell script, accepted as `sh(script: <NAME>, ...)` when the constant itself
 # is a single-quoted literal (checked below).
-SCRIPT_CONSTANTS = ("TOOL", "LINK_GUARD", "RELEASE_SUMS")
+SCRIPT_CONSTANTS = ("TOOL", "LINK_GUARD", "RELEASE_SUMS", "DUPLICATE_NAMES")
 # A top-level function definition: a return type (or def) at the start of a line, then name(.
 FUNCTION = re.compile(r"^(?:def|void|String|Map|List|boolean|int|long|Object)\s+([A-Za-z_]\w*)\s*\(", re.M)
 CALL = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
@@ -268,6 +268,13 @@ def link_guard(lib):
 def release_sums(lib):
     """RELEASE_SUMS' script."""
     quote, body = field_literal(lib, "RELEASE_SUMS")
+    assert quote == "'''"
+    return body
+
+
+def duplicate_names(lib):
+    """DUPLICATE_NAMES' script."""
+    quote, body = field_literal(lib, "DUPLICATE_NAMES")
     assert quote == "'''"
     return body
 
@@ -1061,6 +1068,50 @@ class ReleaseLibraryTests(unittest.TestCase):
         self.assertRegex(self.body("releasePullRequest"),
                          r"releaseFromTag\([^\n]*\n\s*\} catch \(FlowInterruptedException interruption\) \{\s*echo resumeNote\(ctx, tag\)"
                          r"[\s\S]*catch \(Exception problem\) \{\s*error \"\$\{failureText\(problem\)\}\\n\$\{resumeNote\(ctx, tag\)\}\"")
+
+    def test_given_the_upload_set_when_read_then_its_names_are_checked_unique_before_it_is_stashed(self):
+        # publish-release.sh uploads by name, and refused two files of one name only after a library's NuGet push:
+        # the check is on the release agent, on the whole set, before its stash (and so before any push or draft).
+        gather = self.body("gatherReleaseFiles")
+        self.assertLess(gather.index("refuseDuplicateNames('the release files')"), gather.index("stash name: 'release-files'"))
+        self.assertLess(gather.index("refuseLinks(true, 'the release files')"), gather.index("refuseDuplicateNames("))
+        final = self.body("finalizeReleaseFiles")
+        checked = final.index("refuseDuplicateNames(\"the release files and release.finalize's\")")
+        self.assertLess(final.index("dir('release-upload/finalize')"), checked)
+        self.assertLess(checked, final.index("stash name: 'release-upload'"))
+        body = self.body("refuseDuplicateNames")
+        self.assertIn("sh(script: DUPLICATE_NAMES, returnStdout: true)", body)
+        self.assertRegex(body, r"if \(names\.trim\(\)\) \{\s*error ")
+        self.assertIn("Nothing is published, and no draft release was made.", body)
+        self.assertEqual({name for name, calls in self.lib.calls.items() if "refuseDuplicateNames" in calls
+                          and name != "refuseDuplicateNames"}, {"gatherReleaseFiles", "finalizeReleaseFiles"})
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("uniq"), "runs the embedded script with sh")
+    def test_given_files_of_one_name_in_different_directories_when_checked_then_the_name_is_reported(self):
+        script = duplicate_names(self.lib)
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / "build" / "dist").mkdir(parents=True)
+            (root / "windows" / "app-windows").mkdir(parents=True)
+            (root / "finalize" / "signed").mkdir(parents=True)
+            (root / "build" / "dist" / "app.tar.gz").write_text("a")
+            (root / "windows" / "app-windows" / "setup.msi").write_text("b")
+            (root / "finalize" / "signed" / "SHA256SUMS").write_text("c")
+
+            def names():
+                done = subprocess.run(["sh", "-c", script], cwd=root, capture_output=True, text=True, timeout=30)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                return done.stdout.split()
+
+            self.assertEqual(names(), [], "unique names pass")
+            # A name in two places, from two steps: what the release would show twice.
+            (root / "build" / "dist" / "SHA256SUMS").write_text("d")
+            self.assertEqual(names(), ["SHA256SUMS"])
+            (root / "windows" / "app-windows" / "app.tar.gz").write_text("e")
+            self.assertEqual(names(), ["SHA256SUMS", "app.tar.gz"])
+            # A directory of that name is not a file: only files are uploaded.
+            (root / "windows" / "setup.msi").mkdir()
+            self.assertEqual(names(), ["SHA256SUMS", "app.tar.gz"])
 
     def test_given_a_failing_validation_when_read_then_publish_release_is_never_reached(self):
         # The drafts are made by publish-release.sh: a validation that fails before it is called leaves
