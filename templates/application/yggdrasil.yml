@@ -47,3 +47,9 @@ checks:
 #   validate:                            # pass or fail, over the whole set ($RELEASE_FILES)
 #     image: debian:12
 #     run: ci/validate.sh
+#   finalize:                            # after validate, over the same set: may only add files to it
+#     image: debian:12
+#     run: ci/sign.sh                    # a manifest of $RELEASE_FILES, its signature
+#     files: ["signed/*"]
+#     credentials:                       # one of the catalog's `releaseCredentials`, as for build
+#       SIGN_KEY: signing-key

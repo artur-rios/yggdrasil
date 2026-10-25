@@ -69,6 +69,12 @@ release:
   validate:
     image: debian:12
     run: ci/validate.sh
+  finalize:
+    image: debian:12
+    run: ci/sign.sh
+    files: ["signed/*"]
+    credentials:
+      SIGN_KEY: sign-key
 publish:
   nuget:
     image: mcr.microsoft.com/dotnet/sdk:10.0
@@ -112,6 +118,13 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(config["checks"]["unit"]["credentials"], {"NUGET_KEY": "nuget-key"})
         self.assertEqual(config["deploy"], {"inputs": ["unit"]})
         self.assertEqual(config["publish"]["nuget"]["packages"], "out/*.nupkg")
+        self.assertEqual(config["release"]["finalize"], {"image": "debian:12", "run": "ci/sign.sh",
+                                                         "files": ["signed/*"], "credentials": {"SIGN_KEY": "sign-key"}})
+
+    def test_given_a_finalize_step_with_only_its_image_and_run_when_loaded_then_it_is_valid(self):
+        # files and credentials are optional, as for release.build: a step that adds nothing is allowed.
+        config = parsed("release:\n  finalize: {image: debian:12, run: ci/sign.sh}\n")
+        self.assertEqual(config["release"]["finalize"], {"image": "debian:12", "run": "ci/sign.sh"})
 
     def test_given_an_empty_file_when_loaded_then_it_is_a_config_with_nothing_in_it(self):
         self.assertEqual(parsed(""), {})
@@ -136,6 +149,9 @@ class LoadTests(unittest.TestCase):
             ("release:\n  build:\n    image: x\n    run: y\n    file: [a]\n", "release.build.file"),
             ("release:\n  windows:\n    workflow: w\n    flow: z\n", "release.windows.flow"),
             ("release:\n  validate:\n    image: x\n    run: y\n    files: [a]\n", "release.validate.files"),
+            # finalize's shape is build's: no `paths`, no `docker`, nothing a check has besides.
+            ("release:\n  finalize:\n    image: x\n    run: y\n    file: [a]\n", "release.finalize.file"),
+            ("release:\n  finalize:\n    image: x\n    run: y\n    docker: true\n", "release.finalize.docker"),
             ("publish:\n  npm: {}\n", "publish.npm"),
             ("publish:\n  nuget:\n    image: x\n    run: y\n    package: a\n", "publish.nuget.package"),
         ):
@@ -164,6 +180,13 @@ class LoadTests(unittest.TestCase):
             ("deploy: [unit]\n", "deploy"),
             ("release:\n  build:\n    image: x\n    run: y\n    files: dist\n", "release.build.files"),
             ("release:\n  windows:\n    workflow: [w]\n", "release.windows.workflow"),
+            # finalize's files are validated as build's: a list of non-empty strings.
+            ("release:\n  finalize:\n    image: x\n    run: y\n    files: signed\n", "release.finalize.files"),
+            ("release:\n  finalize:\n    image: x\n    run: y\n    files: [\"\"]\n", "release.finalize.files"),
+            ("release:\n  finalize:\n    image: x\n    run: y\n    credentials: [a]\n", "release.finalize.credentials"),
+            ("release:\n  finalize:\n    image: x\n    run: y\n    credentials: {KEY: a b}\n",
+             "release.finalize.credentials.KEY"),
+            ("release:\n  finalize: ci/sign.sh\n", "release.finalize"),
             ("publish:\n  nuget:\n    image: x\n    run: y\n    packages: [a]\n", "publish.nuget.packages"),
             ("- checks\n", "yggdrasil.yml"),
         ):
@@ -179,6 +202,8 @@ class LoadTests(unittest.TestCase):
             ("release:\n  build:\n    run: y\n", "release.build.image"),
             ("release:\n  windows:\n    files: [a]\n", "release.windows.workflow"),
             ("release:\n  validate:\n    image: x\n", "release.validate.run"),
+            ("release:\n  finalize:\n    run: y\n", "release.finalize.image"),
+            ("release:\n  finalize:\n    image: x\n    files: [a]\n", "release.finalize.run"),
             ("publish:\n  nuget:\n    image: x\n", "publish.nuget.run"),
         ):
             with self.subTest(field=field), self.assertRaises(pc.ConfigError) as caught:
@@ -221,6 +246,7 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(set(config), {"checks", "deploy", "release"})
         self.assertEqual(config["checks"]["test"]["credentials"], {"NUGET_TOKEN": "nuget-feed-token"})
         self.assertEqual(config["release"]["build"]["credentials"], {"SIGN_KEY": "signing-key"})
+        self.assertEqual(config["release"]["finalize"]["credentials"], {"SIGN_KEY": "signing-key"})
 
     def test_given_the_application_template_when_listed_then_it_has_no_jenkinsfile(self):
         # Jenkins never reads a repository's Jenkinsfile: yggdrasil.yml replaced it.
@@ -269,6 +295,7 @@ class HardeningTests(unittest.TestCase):
                 (f"branchPolicy: {{image: {quoted}, run: y}}\n", "branchPolicy.image"),
                 (f"release:\n  build: {{image: {quoted}, run: y}}\n", "release.build.image"),
                 (f"release:\n  validate: {{image: {quoted}, run: y}}\n", "release.validate.image"),
+                (f"release:\n  finalize: {{image: {quoted}, run: y}}\n", "release.finalize.image"),
                 (f"publish:\n  nuget: {{image: {quoted}, run: y}}\n", "publish.nuget.image"),
             ):
                 with self.subTest(image=image, field=field), self.assertRaises(pc.ConfigError) as caught:
@@ -321,6 +348,25 @@ class ValidateAgainstTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("release.build.credentials.KEY", errors[0])
         self.assertIn("releaseCredentials: ['sign-key']", errors[0])
+
+    def test_given_a_finalize_credential_in_the_release_credentials_when_validated_then_it_is_allowed(self):
+        # finalize signs the whole set: it binds the release's signing key, as release.build may.
+        self.assertEqual(self.errors("checks:\n  unit: {image: x, run: y}\n  lint: {image: x, run: y}\n"
+                                     "release:\n  finalize:\n    image: x\n    run: y\n"
+                                     "    credentials: {SIGN_KEY: sign-key}\n"), [])
+
+    def test_given_a_finalize_credential_outside_the_release_credentials_when_validated_then_it_is_an_error(self):
+        # The same allow-list as release.build: a check's credential (nuget-key) is not the release's, and
+        # an unlisted one (forge-write) is nobody's.
+        for credential in ("nuget-key", "forge-write"):
+            with self.subTest(credential=credential):
+                errors = self.errors("checks:\n  unit: {image: x, run: y}\n  lint: {image: x, run: y}\n"
+                                     "release:\n  finalize:\n    image: x\n    run: y\n"
+                                     f"    credentials: {{KEY: {credential}}}\n")
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("release.finalize.credentials.KEY", errors[0])
+                self.assertIn(f"credential '{credential}' is not allowed", errors[0])
+                self.assertIn("releaseCredentials: ['sign-key']", errors[0])
 
     def test_given_an_entry_without_credentials_when_validated_then_any_credential_is_an_error(self):
         errors = self.errors("checks:\n  lint:\n    image: x\n    run: y\n    credentials: {KEY: nuget-key}\n",
@@ -428,6 +474,20 @@ class CliTests(unittest.TestCase):
         self.assertEqual(document["entry"]["release"], "owner-tag")
         self.assertEqual(document["config"]["checks"]["unit"]["run"], "y")
         self.assertEqual(document["errors"], [])
+
+    def test_given_a_finalize_step_when_described_then_the_config_shows_it_as_the_library_reads_it(self):
+        # The Jenkins library reads release.finalize from describe's config: it must be there as written.
+        text = ("checks:\n  unit: {image: x, run: y}\n  lint: {image: x, run: y}\n"
+                "release:\n  build: {image: debian:12, run: ci/release.sh, files: [\"dist/*\"]}\n"
+                "  finalize:\n    image: debian:12\n    run: ci/sign.sh\n    files: [\"signed/*\"]\n"
+                "    credentials: {SIGN_KEY: sign-key}\n")
+        status, out, err = run_cli("describe", "shop-api", str(repo(text)))
+        self.assertEqual((status, err), (0, ""))
+        document = json.loads(out)
+        self.assertEqual(document["errors"], [])
+        self.assertEqual(document["config"]["release"]["finalize"],
+                         {"image": "debian:12", "run": "ci/sign.sh", "files": ["signed/*"],
+                          "credentials": {"SIGN_KEY": "sign-key"}})
 
     def test_given_a_repository_without_a_file_when_described_then_the_config_is_null_and_it_is_not_an_error(self):
         status, out, _ = run_cli("describe", "shop-api", str(repo()))
@@ -793,6 +853,12 @@ class SharedFileJudgementTests(unittest.TestCase):
         status, document = self.describe("ygg-lib", text)
         self.assertEqual(status, 1)
         self.assertIn("release.build.credentials.SIGN", document["errors"][0])
+        self.assertEqual(self.describe("ygg-lib-docs", text)[1]["errors"], [])
+        # release.finalize's credentials are the releasing entry's to allow in the same way.
+        text = LIBRARY_FILE + "release:\n  finalize: {image: x, run: y, credentials: {SIGN: sign-key}}\n"
+        status, document = self.describe("ygg-lib", text)
+        self.assertEqual(status, 1)
+        self.assertIn("release.finalize.credentials.SIGN", document["errors"][0])
         self.assertEqual(self.describe("ygg-lib-docs", text)[1]["errors"], [])
         # A repository nobody releases: every entry is judged on publish, and refused.
         value = library_catalog()

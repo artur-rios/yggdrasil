@@ -44,7 +44,8 @@ fields, all optional, and unknown keys are errors at every level:
     deploy:            {inputs}       check names whose archives go into the image build
     release:           {build: {image, run, files, credentials},
                         windows: {workflow, files},
-                        validate: {image, run}}
+                        validate: {image, run},
+                        finalize: {image, run, files, credentials}}
     publish:           {nuget: {image, run, packages}}
 
 Reference: docs/catalog.md ("Repository pipeline file"). Needs PyYAML.
@@ -134,6 +135,8 @@ CHECK = {"image": (_image, True), "run": (_text, True), "docker": (_flag, False)
          "credentials": (_credentials, False), "paths": (_globs, False), "junit": (_text, False),
          "archive": (_text, False)}
 IMAGE_RUN = {"image": (_image, True), "run": (_text, True)}
+# The release steps that may bind credentials, each from the entry's releaseCredentials alone.
+RELEASE_STEPS_WITH_CREDENTIALS = ("build", "finalize")
 SECTIONS = {
     "branchPolicy": IMAGE_RUN,
     "deploy": {"inputs": (_texts, False)},
@@ -142,6 +145,10 @@ SECTIONS = {
                   "credentials": (_credentials, False)},
         "windows": {"workflow": (_text, True), "files": (_texts, False)},
         "validate": IMAGE_RUN,
+        # After validate, over the whole set: what it adds (files) joins the upload set; it may not change
+        # the set itself (the Jenkins library checksums it before and after).
+        "finalize": {"image": (_image, True), "run": (_text, True), "files": (_texts, False),
+                     "credentials": (_credentials, False)},
     },
     "publish": {"nuget": {"image": (_image, True), "run": (_text, True), "packages": (_text, False)}},
 }
@@ -219,7 +226,8 @@ def entry_for(catalog, job_id):
         kind            "application" | "repository"
         id, repository  the job id, and the git repository it builds (an application's `repository`, else its id)
         credentials     the Jenkins credential ids its checks may bind
-        releaseCredentials  the ones its release build (release.build) may bind, and nothing else
+        releaseCredentials  the ones its release build and finalize step (release.build, release.finalize)
+                        may bind, and nothing else
         checks          the checks Jenkins must report on pull requests
         actionsChecks   the GitHub Actions jobs required besides them
         release         "deploy" (an application with a release environment: Jenkins tags it),
@@ -246,30 +254,34 @@ def entry_for(catalog, job_id):
 
 def validate_against(config, entry, runs=None, releasing=None):
     """What the catalog does not allow this job to do, as sentences (empty when fine): a credential of a
-    check it runs outside the entry's `credentials`, a release build's outside its `releaseCredentials`
-    (each list only for its own context), a catalog check the file does not define, deploy inputs naming a
-    check that is not defined, `publish` on anything but an owner-tagged repository, `release` on something
-    that does not release. `config` is load_config()'s result.
+    check it runs outside the entry's `credentials`, a release build's or finalize step's outside its
+    `releaseCredentials` (each list only for its own context), a catalog check the file does not define,
+    deploy inputs naming a check that is not defined, `publish` on anything but an owner-tagged repository,
+    `release` on something that does not release. `config` is load_config()'s result.
 
     One yggdrasil.yml serves every entry of its repository (a library and its docs site), so each job is
     judged on its own part of it. `runs`: the checks this job can run (job_checks(); default every check of
     the file), whose credentials must be in its entry's list -- a check another entry runs is that entry's
     to allow. `releasing`: the id of the repository's entry that releases, when one does; the `release` and
-    `publish` sections, and release.build's credentials, are that entry's alone, and every other job skips
-    them (None: no entry releases, so the sections are judged against this one, and refused)."""
+    `publish` sections, and the credentials of release.build and release.finalize, are that entry's alone,
+    and every other job skips them (None: no entry releases, so the sections are judged against this one,
+    and refused)."""
     if config is None:
         return []
     errors = []
     checks = config.get("checks") or {}
     judges_release = releasing is None or releasing == entry["id"]
 
-    # A check runs any branch's code: it may bind only `credentials`. The release build runs the
-    # merged release's code on the release agent: only `releaseCredentials`. Neither list covers both.
+    # A check runs any branch's code: it may bind only `credentials`. The release build and the release's
+    # finalize step run the merged release's code on the release agent: only `releaseCredentials`. Neither
+    # list covers both.
     bindings = [(f"checks.{name}.credentials", check.get("credentials"), "credentials")
                 for name, check in checks.items() if runs is None or name in runs]
     if judges_release:
-        bindings.append(("release.build.credentials",
-                         ((config.get("release") or {}).get("build") or {}).get("credentials"), "releaseCredentials"))
+        release = config.get("release") or {}
+        for step in RELEASE_STEPS_WITH_CREDENTIALS:
+            bindings.append((f"release.{step}.credentials", (release.get(step) or {}).get("credentials"),
+                             "releaseCredentials"))
     for where, credentials, allowed in bindings:
         for variable, credential in (credentials or {}).items():
             if credential not in entry[allowed]:
