@@ -1,6 +1,15 @@
 # .NET libraries index, dotnet-libraries-docs in catalog.yaml: templates/stacks/site-path.proxy.yml
 # with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
-
+#
+# The one addition: the root of the docs host. docs.<domain>/ belongs to no site, and this one is the index of
+# the others, so a second router (-root) takes exactly the root path of the host and answers it with a permanent
+# redirect (301) to the index, YGG_PUBLIC_PATH followed by a slash, which is /dotnet-libraries/ (the same host,
+# in every environment: dev and homologation hosts redirect to themselves). Path(`/`) matches the root alone, so
+# no other site's request reaches it; the site's router keeps /dotnet-libraries and everything under it. The
+# regex takes any scheme (only https arrives on the secure entrypoint) and the whole address; the replacement is
+# fixed, so a query on the root is dropped. Like every router of a stack it goes through secure-headers@file
+# first, and it names the site's service because Traefik needs one for every router: the redirect answers before
+# any request reaches it.
 services:
   web:
     networks:
@@ -13,6 +22,13 @@ services:
       - traefik.http.routers.dotnet-libraries-docs-${YGG_ENVIRONMENT}.entrypoints=websecure
       - traefik.http.routers.dotnet-libraries-docs-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
       - traefik.http.services.dotnet-libraries-docs-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+      - traefik.http.routers.dotnet-libraries-docs-${YGG_ENVIRONMENT}-root.rule=Host(`${YGG_PUBLIC_HOST}`) && Path(`/`)
+      - traefik.http.routers.dotnet-libraries-docs-${YGG_ENVIRONMENT}-root.entrypoints=websecure
+      - traefik.http.routers.dotnet-libraries-docs-${YGG_ENVIRONMENT}-root.middlewares=secure-headers@file,dotnet-libraries-docs-${YGG_ENVIRONMENT}-root
+      - traefik.http.routers.dotnet-libraries-docs-${YGG_ENVIRONMENT}-root.service=dotnet-libraries-docs-${YGG_ENVIRONMENT}
+      - traefik.http.middlewares.dotnet-libraries-docs-${YGG_ENVIRONMENT}-root.redirectregex.regex=^https?://[^/]+/.*
+      - traefik.http.middlewares.dotnet-libraries-docs-${YGG_ENVIRONMENT}-root.redirectregex.replacement=https://${YGG_PUBLIC_HOST}${YGG_PUBLIC_PATH}/
+      - traefik.http.middlewares.dotnet-libraries-docs-${YGG_ENVIRONMENT}-root.redirectregex.permanent=true
 
 networks:
   edge:

@@ -458,8 +458,8 @@ systems:
 
   # The docs sites of the .NET libraries and their index. Each library is a repositories entry (its checks
   # and packages); its site is built from its coverage report (deploy.inputs in its yggdrasil.yml), so it
-  # needs no check of its own. Task 7 of plan 5 is to make docs.artur-rios.tech/ itself redirect to the index (a
-  # router in stacks/dotnet-libraries-docs.proxy.yml); until then the bare docs host answers nothing.
+  # needs no check of its own. The index's stack (stacks/dotnet-libraries-docs.proxy.yml) also has a router that
+  # answers docs.artur-rios.tech/ with a 301 to the index.
   - id: dotnet-libraries
     name: .NET libraries
     description: The ArturRios .NET library family

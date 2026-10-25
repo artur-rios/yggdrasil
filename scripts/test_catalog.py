@@ -1138,6 +1138,17 @@ class RealCatalogTests(unittest.TestCase):
                         self.assertEqual(app["id"], "heimdall-api-docs")
                     if web.pop("env_file", None) is not None:
                         self.assertEqual(app["id"], "github-readme-stats")
+                    # The docs index's proxy stack adds the router that redirects the docs host's root to it (decision 5
+                    # of plan 5), as labels of its own: exactly these keys, and no other change to the template.
+                    if app["id"] == "dotnet-libraries-docs" and name.endswith(".proxy.yml"):
+                        root = f"{app['id']}-${{YGG_ENVIRONMENT}}-root"
+                        added = {label.split("=", 1)[0] for label in web["labels"]
+                                 if f".{root}." in label.split("=", 1)[0]}
+                        self.assertEqual(added, {f"traefik.http.routers.{root}.{key}" for key in
+                                                 ("rule", "entrypoints", "middlewares", "service")} |
+                                         {f"traefik.http.middlewares.{root}.redirectregex.{key}" for key in
+                                          ("regex", "replacement", "permanent")})
+                        web["labels"] = [label for label in web["labels"] if label.split("=", 1)[0] not in added]
                     self.assertEqual(actual, expected)
 
     @unittest.skipUnless(shutil.which("docker"), "needs docker")
@@ -1171,6 +1182,40 @@ class RealCatalogTests(unittest.TestCase):
                         apex = labels[f"traefik.http.routers.{app['id']}-{env['id']}-apex.rule"]
                         self.assertEqual(apex, f"Host(`{values['YGG_APEX_HOST']}`)")
                         self.assertNotEqual(values["YGG_APEX_HOST"], host)
+
+    @unittest.skipUnless(shutil.which("docker"), "needs docker")
+    def test_given_the_docs_index_when_its_stack_is_rendered_then_the_docs_root_redirects_to_it(self):
+        # Decision 5: docs.<domain>/ is nobody's site, so the index's stack answers it with a 301 to the index's
+        # own path. Rendered as deploy.sh would, so the rule and the target are what Traefik reads.
+        app = next(app for _, app in c.applications(self.catalog, deployable=True)
+                   if app["id"] == "dotnet-libraries-docs")
+        for env in c.resolve(self.catalog, app["id"]):
+            with self.subTest(environment=env["id"]), tempfile.TemporaryDirectory() as app_dir:
+                host = c.public_host(self.catalog, app["id"], env["id"], "techcraftsmen.net")
+                values = dict(os.environ, APP_DIR=app_dir, YGG_ENVIRONMENT=env["id"], YGG_PUBLIC_HOST=host,
+                              YGG_PUBLIC_PATH=app["path"], GIT_COMMIT="0" * 40, IMAGE_TAG=f"{env['id']}-1.0.0-0000000")
+                result = subprocess.run(
+                    ["docker", "compose", "--project-name", f"{app['id']}-{env['id']}", "--env-file", os.devnull,
+                     "-f", str(ROOT / "stacks" / f"{app['id']}.yml"),
+                     "-f", str(ROOT / "stacks" / f"{app['id']}.{env['mode']}.yml"),
+                     "config", "--format", "json"], env=values, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                labels = c.json.loads(result.stdout)["services"]["web"]["labels"]
+                root = f"{app['id']}-{env['id']}-root"
+                self.assertEqual(labels[f"traefik.http.routers.{root}.rule"], f"Host(`{host}`) && Path(`/`)")
+                self.assertEqual(labels[f"traefik.http.routers.{root}.entrypoints"], "websecure")
+                # secure-headers first, like every router of a stack (test_edge), then the redirect.
+                self.assertEqual(labels[f"traefik.http.routers.{root}.middlewares"], f"secure-headers@file,{root}")
+                self.assertEqual(labels[f"traefik.http.routers.{root}.service"], f"{app['id']}-{env['id']}")
+                self.assertEqual(labels[f"traefik.http.middlewares.{root}.redirectregex.permanent"], "true")
+                # What Traefik will do with the root request: the regex matches it and the replacement is the
+                # index, on the same host. The path the site's own router takes is untouched.
+                regex = labels[f"traefik.http.middlewares.{root}.redirectregex.regex"]
+                self.assertRegex(f"https://{host}/", regex)
+                self.assertEqual(labels[f"traefik.http.middlewares.{root}.redirectregex.replacement"],
+                                 f"https://{host}/dotnet-libraries/")
+                self.assertIn("PathPrefix(`/dotnet-libraries/`)",
+                              labels[f"traefik.http.routers.{app['id']}-{env['id']}.rule"])
 
     def test_given_the_apex_sites_when_their_apex_host_is_asked_then_only_production_has_the_bare_domain(self):
         # Every environment of the host shares one bare domain: production (no hostSuffix) claims it, the others
