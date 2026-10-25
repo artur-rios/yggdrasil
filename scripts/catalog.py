@@ -709,20 +709,24 @@ def environment_options(catalog, env_id):
     raise CatalogError(f"'{env_id}' is not an environment in catalog.yaml")
 
 
+def _site_address(catalog, app_id, env_id, default_domain):
+    """(application, the environment's hostSuffix after the application's override, the domain its names go
+    under: its own `domain`, else `default_domain`), what public_host and apex_host build names from. Raises
+    CatalogError when the application does not deploy to the environment."""
+    app = application(catalog, app_id)
+    for env in resolve(catalog, app_id):
+        if env["id"] == env_id:
+            return app, env["hostSuffix"], app.get("domain") or default_domain
+    raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
+
+
 def public_host(catalog, app_id, env_id, default_domain):
     """The full public host name of an application in an environment: <host><hostSuffix>.<domain>,
     the domain being the application's own `domain`, else the default (the host's DOMAIN). With
     `apex: true` and no `host` it is the bare domain; `host` wins when both are set. "" when the
     application is not public, or when there is no domain to put it under (an installation whose
     stacks do not use it)."""
-    app = application(catalog, app_id)
-    suffix = None
-    for env in resolve(catalog, app_id):
-        if env["id"] == env_id:
-            suffix = env["hostSuffix"]
-    if suffix is None:
-        raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
-    domain = app.get("domain") or default_domain
+    app, suffix, domain = _site_address(catalog, app_id, env_id, default_domain)
     if not domain:
         return ""
     if app.get("host"):
@@ -738,14 +742,7 @@ def apex_host(catalog, app_id, env_id, default_domain):
     certificate and DNS record instead, which redirects like the bare domain does. deploy.sh exports it as
     YGG_APEX_HOST for site-apex-redirect.proxy.yml. "" for any other application (no apex, or apex without a
     host, which is the bare domain itself: public_host), and when there is no domain."""
-    app = application(catalog, app_id)
-    suffix = None
-    for env in resolve(catalog, app_id):
-        if env["id"] == env_id:
-            suffix = env["hostSuffix"]
-    if suffix is None:
-        raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
-    domain = app.get("domain") or default_domain
+    app, suffix, domain = _site_address(catalog, app_id, env_id, default_domain)
     if not (app.get("apex") and app.get("host") and domain):
         return ""
     return f"apex{suffix}.{domain}" if suffix else domain

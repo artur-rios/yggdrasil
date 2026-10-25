@@ -39,7 +39,9 @@ repository: yggdrasil
 #
 #   checks             What Jenkins runs and reports on every pull request (and push) of develop and
 #                      main, required there. A job runs only its own entry's checks: each one must be
-#                      here, and defined under `checks` in the repository's yggdrasil.yml.
+#                      here, and defined under `checks` in the repository's yggdrasil.yml. With rules:
+#                      basic they still run and report, but Forgejo requires none of them (no branch
+#                      policy there, as on GitHub): intended.
 #   actionsChecks      GitHub Actions job names (Windows, macOS), as GitHub reports them, required on
 #                      develop: only jobs that run on every pull request.
 #   credentials        The Jenkins credentials its checks may bind.
@@ -275,7 +277,9 @@ environments:
 #   checks          The checks Jenkins runs and reports, required on develop and main, besides
 #                   branch-policy (and, on main, deploy/<environment> for each release environment).
 #                   A job runs only its own entry's checks, each defined in the repository's
-#                   yggdrasil.yml. Only checks that run on every pull request.
+#                   yggdrasil.yml. Only checks that run on every pull request. In a repository with the
+#                   basic rules (a site deployed on main) they run and report but are not required:
+#                   intended.
 #   actionsChecks   GitHub Actions job names (Windows, macOS) required on develop, as GitHub
 #                   reports them.
 #   credentials     The Jenkins credentials its checks may bind; releaseCredentials, those its
@@ -454,7 +458,8 @@ systems:
 
   # The docs sites of the .NET libraries and their index. Each library is a repositories entry (its checks
   # and packages); its site is built from its coverage report (deploy.inputs in its yggdrasil.yml), so it
-  # needs no check of its own. docs.artur-rios.tech/ itself goes to the index (stacks/dotnet-libraries-docs).
+  # needs no check of its own. Task 7 of plan 5 is to make docs.artur-rios.tech/ itself redirect to the index (a
+  # router in stacks/dotnet-libraries-docs.proxy.yml); until then the bare docs host answers nothing.
   - id: dotnet-libraries
     name: .NET libraries
     description: The ArturRios .NET library family
