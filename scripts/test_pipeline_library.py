@@ -273,10 +273,10 @@ def release_sums(lib):
 
 
 def duplicate_names(lib):
-    """DUPLICATE_NAMES' script."""
+    """DUPLICATE_NAMES' script as the shell gets it (Groovy's \\\\ is one backslash)."""
     quote, body = field_literal(lib, "DUPLICATE_NAMES")
     assert quote == "'''"
-    return body
+    return body.replace("\\\\", "\\")
 
 
 def field_pattern(lib, name):
@@ -362,10 +362,10 @@ class PipelineLibraryTests(unittest.TestCase):
         lib = self.lib
         calls = [(lib.function_at(m.start()), lib.code[m.start():m.start() + 200])
                  for m in re.finditer(r"(?<!void )\bwithCheckCredentials\(", lib.masked)]
-        self.assertEqual(sorted(f for f, _ in calls), ["buildReleaseFiles", "finalizeReleaseFiles", "runCheck"])
+        self.assertEqual(sorted(f for f, _ in calls), ["buildReleaseFiles", "finalizeInWorkspace", "runCheck"])
         for function, call in calls:
             # release.finalize signs the whole set: the release's own list, as the release build.
-            wanted = "'releaseCredentials'" if function in ("buildReleaseFiles", "finalizeReleaseFiles") else "'credentials'"
+            wanted = "'releaseCredentials'" if function in ("buildReleaseFiles", "finalizeInWorkspace") else "'credentials'"
             self.assertRegex(call, r"^withCheckCredentials\([^{]*, " + re.escape(wanted) + r"\) \{", function)
         # The plan's second look (planProblem) is about checks: `credentials` only.
         body = lib.code[slice(*lib.functions["planProblem"])]
@@ -877,37 +877,68 @@ class ReleaseLibraryTests(unittest.TestCase):
         start, end = self.lib.functions[name]
         return self.lib.code[start:end]
 
-    def test_given_release_finalize_when_read_then_it_runs_after_the_validation_in_the_gathering_node(self):
+    def test_given_release_finalize_when_read_then_it_runs_after_the_validation_in_a_node_of_its_own(self):
         # The order the controller ruled: build's and the Windows files gathered, release.validate passed, then
-        # release.finalize, then the upload set stashed -- all on the release agent, in one node, so the
-        # validated set is the one finalize sees.
+        # release.finalize, then the upload set stashed. finalize is called once the gathering's node is
+        # over: the validation ran there as root with the whole workspace, yggdrasil/scripts/ included.
         lib = self.lib
+        start, end = lib.functions["gatherReleaseFiles"]
         body = self.body("gatherReleaseFiles")
         self.assertIn("Map finalize = releaseConfig.finalize as Map", body)
-        # finalize runs from the tag's checkout, as validate does: checked out for either.
-        self.assertIn("if (validate || finalize) {\n        checkoutTag(ctx, tag, sha)", body)
-        finalized = body.index("upload = finalizeReleaseFiles(entry, finalize, tag)")
+        # The gathering's checkout is the validation's alone now.
+        self.assertIn("if (validate) {\n        checkoutTag(ctx, tag, sha)", body)
+        self.assertNotIn("validate || finalize", body)
+        finalized = body.index("return finalize ? finalizeReleaseFiles(ctx, entry, finalize, tag, sha) : 'release-files'")
         self.assertLess(body.index("stash name: 'release-files'"), finalized)
         self.assertLess(body.index('error "release.validate failed'), finalized)
-        self.assertLess(body.index("run-check.sh release-validate"), finalized)
-        (label, node_start, node_end), = [b for b in lib.node_blocks()
-                                          if lib.functions["gatherReleaseFiles"][0] < b[1] < lib.functions["gatherReleaseFiles"][1]]
+        (label, node_start, node_end), = [b for b in lib.node_blocks() if start < b[1] < end]
         self.assertEqual(label, "'release'")
-        offset = lib.functions["gatherReleaseFiles"][0] + finalized
-        self.assertTrue(node_start < offset < node_end, "finalize runs inside the release agent's node")
-        self.assertIn("return upload", body)
+        self.assertGreater(start + finalized, node_end, "finalize is called after the gathering's node, not in it")
+        # Nothing of the gathering's node reaches finalize's steps or a script of its workspace after the
+        # validation: the validation's sh step is the last one there.
+        node_code = lib.code[node_start:node_end]
+        self.assertNotIn("finalizeReleaseFiles", lib.reachable(node_start, node_end))
+        after = node_code[node_code.index("run-check.sh release-validate"):node_code.index("} finally {")]
+        self.assertNotRegex(after, r"yggdrasil/scripts|\bsh\s*\(script")
+        self.assertNotIn("finalizeInWorkspace", lib.reachable(node_start, node_end))
         # Only the gathering calls it, and releaseFiles hands the entry down for its credentials.
         self.assertEqual({name for name, calls in lib.calls.items() if "finalizeReleaseFiles" in calls
                           and name != "finalizeReleaseFiles"}, {"gatherReleaseFiles"})
         self.assertIn("gatherReleaseFiles(ctx, entry, releaseConfig, tag, sha, built, windows)", self.body("releaseFiles"))
 
+    def test_given_release_finalize_when_read_then_its_node_starts_from_a_fresh_checkout_of_the_tag_and_tools(self):
+        # The ruling's fix: finalize binds credentials and runs yggdrasil/scripts/run-check.sh on the host, so its
+        # node must not inherit anything a container could have written. Its first step is checkoutTag, which
+        # deletes and fetches app/ and yggdrasil/ again (checkoutCommit, then checkoutTools), as release.build's
+        # node does; its steps (finalizeInWorkspace) run only after that, there, and are called from nowhere else.
+        lib = self.lib
+        start, end = lib.functions["finalizeReleaseFiles"]
+        (label, node_start, node_end), = [b for b in lib.node_blocks() if start < b[1] < end]
+        self.assertEqual(label, "'release'")
+        inside = lib.code[node_start:node_end]
+        self.assertRegex(inside, r"^\{\s*try \{\s*checkoutTag\(ctx, tag, sha\)\s*upload = finalizeInWorkspace\(entry, finalize, tag\)")
+        self.assertRegex(inside, r"\} finally \{\s*cleanScratch\(\)\s*cleanWs\(\)")
+        self.assertEqual({name for name, calls in lib.calls.items() if "finalizeInWorkspace" in calls
+                          and name != "finalizeInWorkspace"}, {"finalizeReleaseFiles"})
+        # What "fresh" means: the checkout is deleted and made again, and so are the tools, from the library's tag.
+        self.assertIn("checkoutCommit(ctx, sha)", self.body("checkoutTag"))
+        commit = self.body("checkoutCommit")
+        self.assertLess(commit.index("rm -rf app"), commit.index("git init --quiet app"))
+        self.assertIn("checkoutTools()", commit)
+        tools = self.body("checkoutTools")
+        self.assertLess(tools.index("rm -rf yggdrasil"), tools.index("git init --quiet yggdrasil"))
+        # The step's own directories are made again before anything is put there.
+        steps = self.body("finalizeInWorkspace")
+        self.assertIn("for (String directory : ['release-check', 'release-upload']) {\n    dir(directory) {\n      deleteDir()", steps)
+        self.assertLess(steps.index("deleteDir()"), steps.index("unstash 'release-files'"))
+
     def test_given_release_finalize_when_read_then_it_sees_the_set_as_validate_and_binds_only_release_credentials(self):
-        body = self.body("finalizeReleaseFiles")
-        # A fresh copy of the gathered set, from its stash: what the validation did to its own copy is gone.
+        body = self.body("finalizeInWorkspace")
+        # A fresh copy of the gathered set, from its stash, in the node's fresh workspace.
         cleared = body.index("deleteDir()")
         unstashed = body.index("unstash 'release-files'")
         self.assertLess(cleared, unstashed)
-        self.assertLess(body.index("dir('release-check')"), cleared)
+        self.assertLess(body.index("dir('release-check') {\n    unstash 'release-files'"), body.index("releaseSums()"))
         # The validation's layout: RELEASE_FILES is release-check/, the whole workspace mounted, run from app/.
         self.assertIn("printf 'RELEASE_FILES=%s\\\\n' \"$WORKSPACE/release-check\"", body)
         self.assertIn("printf 'RELEASE_TAG=%s\\\\n' \"$YGG_TAG\"", body)
@@ -923,7 +954,7 @@ class ReleaseLibraryTests(unittest.TestCase):
 
     def test_given_release_finalize_when_read_then_it_may_only_add_and_its_files_join_the_upload_set(self):
         lib = self.lib
-        body = self.body("finalizeReleaseFiles")
+        body = self.body("finalizeInWorkspace")
         before = body.index("String before = releaseSums()")
         ran = body.index("run-check.sh release-finalize")
         after = body.index("String after = releaseSums()")
@@ -946,7 +977,7 @@ class ReleaseLibraryTests(unittest.TestCase):
         # The upload set: the stash taken before validate and finalize ran, and finalize's files under
         # finalize/, no link among them -- stashed last, under its own name, which gatherReleaseFiles returns.
         upload = body[globbed:]
-        self.assertLess(upload.index("dir('release-upload') {\n    deleteDir()"), upload.index("unstash 'release-files'"))
+        self.assertLess(upload.index("mkdir -p release-upload/finalize"), upload.index("unstash 'release-files'"))
         self.assertLess(upload.index("unstash 'release-files'"), upload.index("dir('release-upload/finalize')"))
         self.assertLess(upload.index("unstash name"), upload.index("refuseLinks(true, 'the release files')"))
         self.assertLess(upload.index("refuseLinks(true, 'the release files')"),
@@ -970,7 +1001,9 @@ class ReleaseLibraryTests(unittest.TestCase):
         self.assertLess(body.index("releaseFiles("), body.index("publishRelease("))
         self.assertNotRegex(body[:body.index("publishRelease(")], r"\btry\b|\bcatch\b")
         self.assertNotRegex(self.body("releaseFiles"), r"\btry\b|\bcatch\b")
-        self.assertNotRegex(self.body("finalizeReleaseFiles"), r"\btry\b|\bcatch\b")
+        # finalizeReleaseFiles' try has a finally (the cleanup) and no catch: a failure goes through.
+        self.assertNotRegex(self.body("finalizeReleaseFiles"), r"\bcatch\b")
+        self.assertNotRegex(self.body("finalizeInWorkspace"), r"\btry\b|\bcatch\b")
         for entry_point in ("releasePullRequest", "tagBuild", "releaseResume"):
             start, end = lib.functions[entry_point]
             self.assertIn("finalizeReleaseFiles", lib.reachable(start, end), entry_point)
@@ -1075,18 +1108,28 @@ class ReleaseLibraryTests(unittest.TestCase):
         gather = self.body("gatherReleaseFiles")
         self.assertLess(gather.index("refuseDuplicateNames('the release files')"), gather.index("stash name: 'release-files'"))
         self.assertLess(gather.index("refuseLinks(true, 'the release files')"), gather.index("refuseDuplicateNames("))
-        final = self.body("finalizeReleaseFiles")
+        final = self.body("finalizeInWorkspace")
         checked = final.index("refuseDuplicateNames(\"the release files and release.finalize's\")")
         self.assertLess(final.index("dir('release-upload/finalize')"), checked)
         self.assertLess(checked, final.index("stash name: 'release-upload'"))
         body = self.body("refuseDuplicateNames")
         self.assertIn("sh(script: DUPLICATE_NAMES, returnStdout: true)", body)
-        self.assertRegex(body, r"if \(names\.trim\(\)\) \{\s*error ")
+        self.assertRegex(body, r"if \(names\) \{\s*error ")
         self.assertIn("Nothing is published, and no draft release was made.", body)
         self.assertEqual({name for name, calls in self.lib.calls.items() if "refuseDuplicateNames" in calls
-                          and name != "refuseDuplicateNames"}, {"gatherReleaseFiles", "finalizeReleaseFiles"})
+                          and name != "refuseDuplicateNames"}, {"gatherReleaseFiles", "finalizeInWorkspace"})
 
-    @unittest.skipUnless(os.name == "posix" and shutil.which("uniq"), "runs the embedded script with sh")
+    def test_given_the_duplicate_names_script_when_read_then_it_is_bash_with_pipefail_and_nul_separated(self):
+        # Jenkins' sh runs a script that starts with #! by that interpreter: pipefail needs bash. Names travel
+        # NUL-separated (a file name may hold a newline), and refuseDuplicateNames splits them on NUL.
+        script = duplicate_names(self.lib)
+        self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -euo pipefail\n"), script)
+        self.assertIn("find . -type f -printf '%f\\0' | sort -z | uniq -zd", script)
+        self.assertNotIn("head", script, "a head in the pipe would fail it by SIGPIPE under pipefail")
+        self.assertIn("names.split('\\u0000')", self.body("duplicateText"))
+        self.assertIn("if (names) {", self.body("refuseDuplicateNames"))
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("uniq") and shutil.which("bash"), "runs the embedded script with bash")
     def test_given_files_of_one_name_in_different_directories_when_checked_then_the_name_is_reported(self):
         script = duplicate_names(self.lib)
         with tempfile.TemporaryDirectory() as temp:
@@ -1099,9 +1142,10 @@ class ReleaseLibraryTests(unittest.TestCase):
             (root / "finalize" / "signed" / "SHA256SUMS").write_text("c")
 
             def names():
-                done = subprocess.run(["sh", "-c", script], cwd=root, capture_output=True, text=True, timeout=30)
+                done = subprocess.run(["bash", "-c", script], cwd=root, capture_output=True, text=True, timeout=30)
                 self.assertEqual(done.returncode, 0, done.stderr)
-                return done.stdout.split()
+                self.assertTrue(done.stdout == "" or done.stdout.endswith("\0"), repr(done.stdout))
+                return [name for name in done.stdout.split("\0") if name]
 
             self.assertEqual(names(), [], "unique names pass")
             # A name in two places, from two steps: what the release would show twice.

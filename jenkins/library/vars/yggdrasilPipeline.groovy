@@ -203,12 +203,15 @@ find . -mindepth 1 -printf '%y %p\n' | sort
 find . -type f -print0 | sort -z | xargs -0 -r sha256sum --
 '''
 
-// Run from a directory: the file names (base names, not paths) that more than one file under it has, one per
-// line, at most 20; nothing when every name is unique. A release shows one file per name (publish-release.sh
-// uploads each by its name), so the upload set must have no two (refuseDuplicateNames).
-@Field static final String DUPLICATE_NAMES = '''
+// Run from a directory: the file names (base names, not paths) that more than one file under it has, each
+// ended by a NUL (a name may hold any other character, a newline too), sorted; nothing when every name is
+// unique. A release shows one file per name (publish-release.sh uploads each by its name), so the upload set
+// must have no two (refuseDuplicateNames, which names at most 20). bash, for pipefail: a find that fails
+// fails the check instead of passing it with what it read so far.
+@Field static final String DUPLICATE_NAMES = '''#!/usr/bin/env bash
+set -euo pipefail
 export LC_ALL=C
-find . -type f -printf '%f\n' | sort | uniq -d | head -n 20
+find . -type f -printf '%f\\0' | sort -z | uniq -zd
 '''
 
 // Runs one of this repository's scripts, yggdrasil/scripts/<YGG_TOOL>, from the workspace's root with
@@ -1378,15 +1381,15 @@ List windowsNames(Map windows) {
 // whole workspace mounted, with RELEASE_TAG and RELEASE_VERSION; it runs as root and can write anywhere
 // there, but the stash is taken, so nothing it adds or changes reaches the release. A validation that fails
 // stops the release here: publish-release.sh, which is what creates the drafts, is never called, so there
-// is nothing to publish (and no draft at all). Then release.finalize, when declared (finalizeReleaseFiles),
-// and the upload set is release-files plus what it adds. Returns the upload set's stash.
+// is nothing to publish (and no draft at all). Then release.finalize, when declared, in a node of its own
+// (finalizeReleaseFiles), and the upload set is release-files plus what it adds. Returns the upload set's
+// stash.
 String gatherReleaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, List built, List windows) {
   Map validate = releaseConfig.validate as Map
   Map finalize = releaseConfig.finalize as Map
-  String upload = 'release-files'
   node('release') {
     try {
-      if (validate || finalize) {
+      if (validate) {
         checkoutTag(ctx, tag, sha)
       }
       for (String directory : ['release-files', 'release-check']) {
@@ -1432,22 +1435,25 @@ String gatherReleaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, Str
           }
         }
       }
-      if (finalize) {
-        upload = finalizeReleaseFiles(entry, finalize, tag)
-      }
+      // Nothing runs here after the validation: it had the whole workspace, yggdrasil/scripts/ included, as
+      // root. finalize, which runs a script of the workspace on the host with its credentials bound, gets a
+      // node and a checkout of its own.
     } finally {
       cleanScratch()
       cleanWs()
     }
   }
-  return upload
+  return finalize ? finalizeReleaseFiles(ctx, entry, finalize, tag, sha) : 'release-files'
 }
 
-// On the release agent, inside gatherReleaseFiles' node (the tag checked out in app/, release-files
-// stashed, and validated): release.finalize, the step that makes what must cover the whole set -- a
-// manifest of every file, its signature. It sees the set as release.validate does: RELEASE_FILES is
-// release-check/ (made again from the release-files stash, so nothing the validation did to its copy is
-// left), and it runs in its image, from the application's root, the whole workspace mounted, with
+// On the release agent, in a node of its own, after gatherReleaseFiles (release-files stashed, and
+// validated): release.finalize, the step that makes what must cover the whole set -- a manifest of every
+// file, its signature. Its workspace starts from a fresh checkout of the tag and of yggdrasil's tools
+// (checkoutTag, as release.build's does): release.validate ran as root with its whole workspace mounted,
+// yggdrasil/scripts/ included, so nothing of that workspace -- a rewritten run-check.sh, a file its globs
+// would match -- may reach this step, which runs run-check.sh on the host with its credentials bound. It
+// sees the set as release.validate does: RELEASE_FILES is release-check/ (unstashed from release-files),
+// and it runs in its image, from the application's root, the whole workspace mounted, with
 // RELEASE_TAG, RELEASE_VERSION and the credentials release.finalize.credentials names (allow-listed
 // against the entry's releaseCredentials, as release.build's are). It adds files and changes none: the set
 // is checksummed before and after (RELEASE_SUMS: every path with its type, every file's SHA-256), and a
@@ -1456,10 +1462,27 @@ String gatherReleaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, Str
 // checkout refuses them all), and go into the upload set under finalize/. Any failure stops the release
 // before anything is published, as a failed validation does. Returns the upload set's stash,
 // release-upload: release-files and finalize/.
-String finalizeReleaseFiles(Map entry, Map finalize, String tag) {
+String finalizeReleaseFiles(Map ctx, Map entry, Map finalize, String tag, String sha) {
+  String upload = null
+  node('release') {
+    try {
+      checkoutTag(ctx, tag, sha)
+      upload = finalizeInWorkspace(entry, finalize, tag)
+    } finally {
+      cleanScratch()
+      cleanWs()
+    }
+  }
+  return upload
+}
+
+// finalizeReleaseFiles' steps, in its node: the tag and the tools checked out there, nothing else yet.
+String finalizeInWorkspace(Map entry, Map finalize, String tag) {
   List globs = (finalize.files ?: []) as List
-  dir('release-check') {
-    deleteDir()
+  for (String directory : ['release-check', 'release-upload']) {
+    dir(directory) {
+      deleteDir()
+    }
   }
   dir('release-check') {
     unstash 'release-files'
@@ -1496,9 +1519,6 @@ String finalizeReleaseFiles(Map entry, Map finalize, String tag) {
       stashGlob(name, globs[i] as String, 'release.finalize.files')
       stashes << name
     }
-  }
-  dir('release-upload') {
-    deleteDir()
   }
   sh(script: 'mkdir -p release-upload/finalize')
   dir('release-upload') {
@@ -1638,7 +1658,7 @@ void refuseLinks(boolean any, String what) {
 // publish-release.sh after the push.
 void refuseDuplicateNames(String what) {
   String names = sh(script: DUPLICATE_NAMES, returnStdout: true)
-  if (names.trim()) {
+  if (names) {
     error "${what}: ${duplicateText(names)}; a release has one file per name (each is uploaded by its name). Nothing is published, and no draft release was made."
   }
 }
@@ -1646,8 +1666,9 @@ void refuseDuplicateNames(String what) {
 // DUPLICATE_NAMES' answer as the failure says it.
 @NonCPS
 String duplicateText(String names) {
-  List named = names.readLines().findAll { it.trim() }.collect { printable(it) }
-  return "more than one file is named ${named.join(', ')}"
+  List named = names.split('\u0000').findAll { it }.collect { printable(it) }
+  String more = named.size() > 20 ? " and ${named.size() - 20} more" : ''
+  return "more than one file is named ${named.take(20).join(', ')}${more}"
 }
 
 // One glob's files from the current directory, as the stash `name`: none fails the release (a declared
