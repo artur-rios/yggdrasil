@@ -1472,6 +1472,34 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual({creator for _, _, creator, _, _ in statuses}, {JENKINS})
         self.assertEqual({context for context, *_ in statuses}, {"unit", "coverage"})
 
+    def test_given_a_basic_repository_on_master_when_pushed_and_a_pull_request_targets_it_then_the_checks_run(self):
+        # A fork's default branch: under the basic rules master is treated like main -- its job discovers it
+        # (casc.yaml's heads), a push to it runs the checks, and a pull request into it gets the branch
+        # policy (passing: basic) and the checks.
+        sha = self.change_file(OWNER, DOCS_LIB, "docs/master.md", "on master
+", "main", new_branch="master")
+        pushed = self.wait_for_build(DOCS_LIB, "master", after=0)
+        # UNSTABLE, as on main: describe's warning (lint, no entry's check).
+        self.assertEqual(pushed.result, "UNSTABLE", pushed.console[-6000:])
+        self.assertIn(DOCS_LIB_UNIT_RAN, pushed.console)
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, pushed.console)
+        latest = self.latest_statuses(DOCS_LIB, sha)
+        for context in ("unit", "coverage"):
+            self.assertEqual(latest[context][1:3], ("success", JENKINS), latest)
+
+        branch = "topic/into-master"
+        head = self.branch_with(CLAUDE, DOCS_LIB, branch, {"docs/topic.md": "a topic
+"}, base="master")
+        number, build = self.pull_request_build(CLAUDE, DOCS_LIB, branch, "master")
+        self.assertEqual(build.result, "UNSTABLE", build.console[-6000:])
+        self.assertNotIn("Nothing to deploy for a pull request", build.console)
+        self.assertIn(DOCS_LIB_UNIT_RAN, build.console)
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, build.console)
+        latest = self.latest_statuses(DOCS_LIB, head)
+        self.assertEqual(latest["branch-policy"][1:4], ("success", JENKINS, "basic: nothing to check"))
+        for context in ("unit", "coverage"):
+            self.assertEqual(latest[context][1:3], ("success", JENKINS), latest)
+
     # --- Owner tags --------------------------------------------------------------------------------
 
     def test_given_owner_tags_on_an_old_commit_when_scanned_then_only_an_annotated_one_is_young_enough(self):

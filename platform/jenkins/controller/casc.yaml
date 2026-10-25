@@ -75,6 +75,8 @@ jobs:
       //
       // Each job only sees the heads that can build something:
       //   develop, main  the long-lived branches
+      //   master         too for a repository under the basic rules (a fork's default branch, which
+      //                  the pipeline checks and rules.py protects like main)
       //   PR-*           pull requests from branches of the repository itself (forks are never
       //                  discovered)
       //   release/*      release branches
@@ -113,23 +115,39 @@ jobs:
         regex.toString()
       }
 
-      def entries = []
-      catalog.systems
-        .collectMany { it.applications ?: [] }
-        .findAll { it.kind != 'platform' }
-        .each { app ->
-          def branchGlobs = catalog.environments.collectMany { environment ->
-            def override = app.environments == null ? [:] : app.environments[environment.id]
-            if (app.environments != null && !app.environments.containsKey(environment.id)) return []
-            def options = environment + (override ?: [:])
-            if (options.trigger != 'branch') return []
-            options.branches instanceof String ? [options.branches] : (options.branches ?: [])
-          }
-          entries << [name: app.id, repository: app.repository ?: app.id, globs: branchGlobs, ownerTag: false, tags: null]
+      // An application's environments with their options (the environment's, then its override).
+      def environmentsOf = { app ->
+        catalog.environments.findAll { environment ->
+          app.environments == null || app.environments.containsKey(environment.id)
+        }.collect { environment ->
+          environment + ((app.environments == null ? [:] : app.environments[environment.id]) ?: [:])
         }
+      }
+      def deployable = catalog.systems.collectMany { it.applications ?: [] }.findAll { it.kind != 'platform' }
+      // The repository's branching model, as catalog.py repository_model decides it: release when an
+      // application on it releases (a trigger: release environment), else its repositories entry's
+      // `rules` (default release), else basic (applications that only deploy on branches).
+      def basicRepository = { String repository ->
+        def applications = deployable.findAll { (it.repository ?: it.id) == repository }
+        if (applications.any { app -> environmentsOf(app).any { it.trigger == 'release' } }) return false
+        def repo = (catalog.repositories ?: []).find { it.id == repository }
+        repo != null ? (repo.rules ?: 'release') == 'basic' : !applications.isEmpty()
+      }
+
+      def entries = []
+      deployable.each { app ->
+        def branchGlobs = environmentsOf(app).collectMany { options ->
+          if (options.trigger != 'branch') return []
+          options.branches instanceof String ? [options.branches] : (options.branches ?: [])
+        }
+        def repository = app.repository ?: app.id
+        entries << [name: app.id, repository: repository, globs: branchGlobs, ownerTag: false, tags: null,
+                    basic: basicRepository(repository)]
+      }
       (catalog.repositories ?: []).each { repo ->
         def ownerTag = (repo.release ?: 'none') == 'owner-tag'
-        entries << [name: repo.id, repository: repo.id, globs: [], ownerTag: ownerTag, tags: ownerTag ? (repo.tags ?: 'v*') : null]
+        entries << [name: repo.id, repository: repo.id, globs: [], ownerTag: ownerTag, tags: ownerTag ? (repo.tags ?: 'v*') : null,
+                    basic: basicRepository(repo.id)]
       }
       def names = entries.collect { it.name }
       def duplicates = names.findAll { name -> names.count(name) > 1 }.unique()
@@ -139,7 +157,8 @@ jobs:
       }
 
       entries.each { entry ->
-        def heads = (['develop', 'main', 'PR-*', 'release/*'] + entry.globs + (entry.ownerTag ? [entry.tags] : []))
+        def heads = (['develop', 'main', 'PR-*', 'release/*'] + (entry.basic ? ['master'] : []) + entry.globs +
+                     (entry.ownerTag ? [entry.tags] : []))
           .unique().collect { globToRegex(it) }.join('|')
         multibranchPipelineJob(entry.name) {
           displayName(entry.repository)

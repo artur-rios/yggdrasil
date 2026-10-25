@@ -1258,9 +1258,10 @@ python3 scripts/rules.py --dry-run
 
 ### What each server gets
 
-Per repository, from the catalog (a `rules: basic` repository gets `develop` and `main` without force push or
-deletion and nothing else of the table, plus the settings in its first row but its default branch, which stays as
-it was, and, on Forgejo, the webhook). A repository whose deciding entry is an application with no `trigger:
+Per repository, from the catalog (a `rules: basic` repository gets `develop`, `main` and `master` without force
+push or deletion and nothing else of the table -- on Forgejo three branch protections, on GitHub three rulesets of
+those names; `master` is a fork's default branch, which the basic model treats like `main` -- plus the settings in
+its first row but its default branch, which stays as it was, and, on Forgejo, the webhook). A repository whose deciding entry is an application with no `trigger:
 release` environment, such as a site deployed on pushes to `main`, is basic too: under the release model only
 `forge.jenkinsUser` merges its `main`, and Jenkins merges only for a release ([One repository, several
 entries](catalog.md#one-repository-several-entries)).
@@ -1645,7 +1646,8 @@ A change to `scripts/` therefore reaches the pipeline only with a new tag. To up
 set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's `platform.env`, and run
 `scripts/platform.sh up` (Compose recreates the controller).
 
-A job sees `develop`, `main`, pull requests from branches of the repository itself (a fork's never run),
+A job sees `develop`, `main` (and `master` when its repository is under the `basic` rules: a fork's default
+branch, treated like `main`), pull requests from branches of the repository itself (a fork's never run),
 `release/*`, the `branches` of its branch environments and, for a `release: owner-tag` entry, tags that match its
 `tags`. A build lasts at most 4 hours and the last 50 are kept. A newer push to a pull request that is not into
 `main` replaces the build still running for the older commit; release builds of one repository wait for each
@@ -1655,10 +1657,10 @@ other instead (one lock per repository, so two releases never overlap).
 
 | Event | A repository **without** `yggdrasil.yml` | A repository **with** one |
 |---|---|---|
-| Pull request into `develop` | Nothing (on GitHub the Branch Policy workflow and Actions check it) | `branch-policy`, then the job's checks (its catalog entry's `checks`), as statuses on the head commit; the build fails once all have reported if any failed. On Forgejo with a `mirror`, the `actionsChecks` are copied from GitHub Actions too ([below](#github-actions-and-the-skip)) |
+| Pull request into `develop` (or, under the `basic` rules, into `main` or `master`) | Nothing (on GitHub the Branch Policy workflow and Actions check it) | `branch-policy`, then the job's checks (its catalog entry's `checks`), as statuses on the head commit; the build fails once all have reported if any failed. On Forgejo with a `mirror`, the `actionsChecks` are copied from GitHub Actions too ([below](#github-actions-and-the-skip)) |
 | Pull request into `main` from anything but `release/x.y.z` | Nothing | `branch-policy` fails it (a `basic` repository passes it) |
 | Release pull request `release/x.y.z` → `main` | GitHub: every GitHub Actions check waited for, each release environment deployed, then merged, tagged and released as before. Forgejo: the same steps without release files | The pipeline of [Releases](#releases) below: checks, GitHub Actions checks (or the skip), deploys, merge, tag, files, publication |
-| Push to `develop`, `main` or `release/*` | Deploys to the environments whose `trigger: branch` globs match | The job's checks first, and its `deploy.inputs` when it deploys (reused or skipped where the rules allow); the deploys only if every check passed, and of the commit the checks saw |
+| Push to `develop`, `main` or `release/*` (and `master` under the `basic` rules) | Deploys to the environments whose `trigger: branch` globs match | The job's checks first, and its `deploy.inputs` when it deploys (reused or skipped where the rules allow); the deploys only if every check passed, and of the commit the checks saw |
 | Push to another branch that a `branches` glob matches | Deploys | Deploys, with no checks |
 | Tag matching an owner-tagged entry's `tags`, at most a day old | The tag is read on the release agent and must be on `main`; nothing else happens | What the file declares: release files and/or NuGet packages ([Owner tags and NuGet](#owner-tags-and-nuget)) |
 | **Build with Parameters → `DEPLOY_TO`** | Deploys the branch to a `manual` or `branch` environment, no checks | The same |
@@ -1673,7 +1675,8 @@ The branch policy is `scripts/branch-policy.sh`, run on the `ci` agent, then the
 is never reused. A repository under the `basic` rules ([`rules`](catalog.md#repositories): a site deployed on pushes
 to `main`, a fork, a repository whose entry says `rules: basic`) has no branching model to follow, so it passes
 for any pull request, with `basic: nothing to check`, and neither the script nor the file's own `branchPolicy`
-runs. Under the release model:
+runs. Its `master`, a fork's default branch, is treated like `main`: a pull request into it gets the branch
+policy and the checks, and a push to it the checks. Under the release model:
 
 - into `develop`: only `feature/<name>`, `fix/<name>` or `renovate/...` (it replaces `dependabot/...`), cut
   from `develop` (a branch that contains a release merge commit from `main` was cut from `main`);

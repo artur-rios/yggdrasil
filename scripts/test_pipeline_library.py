@@ -333,6 +333,31 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("'success', 'branch-policy', 'basic: nothing to check'", body[guard:body.index("node('ci')")])
         self.assertIn("return true", body[guard:body.index("node('ci')")])
 
+    def test_given_a_basic_repository_when_read_then_master_is_checked_like_main(self):
+        # A fork's default branch: a pull request into master and a push to it get the branch policy (which
+        # passes, basic) and the checks, under the basic rules only; release/* and the release model are as
+        # they were.
+        lib = self.lib
+        body = lib.code[slice(*lib.functions["checkedBranches"])]
+        self.assertIn("rules == 'basic' ? ['develop', 'main', 'master'] : ['develop', 'main']", body)
+        body = lib.code[slice(*lib.functions["pullRequest"])]
+        self.assertIn("if (!(target in checkedBranches(ctx.rules)))", body)
+        self.assertIn("if (target == 'main' && (env.CHANGE_BRANCH ?: '') ==~ RELEASE_BRANCH)", body)
+        body = lib.code[slice(*lib.functions["branchBuild"])]
+        self.assertIn("branch in checkedBranches(ctx.rules) || branch.startsWith('release/')", body)
+        body = lib.code[slice(*lib.functions["catalogContext"])]
+        self.assertIn("rules: repositoryModel(catalog, repo)", body)
+
+    def test_given_the_repository_model_when_read_then_it_decides_as_the_catalog_does(self):
+        # catalog.py repository_model: a releasing application, else the repositories entry's rules
+        # (default release), else basic; release for a repository the catalog does not have.
+        body = self.lib.code[slice(*self.lib.functions["repositoryModel"])]
+        releasing = body.index("it.trigger == 'release'")
+        entry = body.index("(entry.rules ?: 'release')")
+        self.assertLess(releasing, entry)
+        self.assertLess(entry, body.index("applications ? 'basic' : 'release'"))
+        self.assertIn("it.kind != 'platform' && (it.repository ?: it.id) == repository", body)
+
     def test_given_the_library_when_read_then_credentials_are_bound_only_through_the_allow_list_helper(self):
         lib = self.lib
         self.assertIn("forgeCredential", lib.functions)

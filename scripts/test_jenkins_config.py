@@ -123,6 +123,17 @@ class JenkinsJobTests(unittest.TestCase):
         self.assertRegex(script, r"\['develop', 'main', 'PR-\*', 'release/\*'\]")
         self.assertIn("headRegexFilter", script)
 
+    def test_given_a_basic_repository_when_the_job_dsl_is_read_then_master_is_among_its_heads(self):
+        # A fork's default branch, which the pipeline checks like main under the basic rules: its job must
+        # discover it (reveal.js, a repositories entry, has no branch environment that would name it).
+        script = job_dsl()
+        self.assertIn("(entry.basic ? ['master'] : [])", script)
+        self.assertEqual(script.count("basic: basicRepository("), 2)
+        model = script[script.index("def basicRepository"):script.index("def entries = []")]
+        self.assertIn("it.trigger == 'release'", model)
+        self.assertIn("(repo.rules ?: 'release') == 'basic'", model)
+        self.assertIn("!applications.isEmpty()", model)
+
     def test_given_the_job_dsl_when_read_then_it_has_no_interpolation_casc_would_resolve(self):
         # Configuration as Code replaces a dollar-brace in any string of the file, scripts included.
         self.assertNotIn("${", job_dsl())

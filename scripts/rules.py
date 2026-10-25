@@ -33,9 +33,10 @@ Per repository the model is:
                  runs: images, commands, the credentials a check binds); the Jenkinsfile too, which
                  Jenkins no longer reads but a repository may still carry
 
-A repository with `rules: basic` gets develop and main without force push or deletion, and no other
-rule. So does a repository whose deciding entry is an application with no `trigger: release`
-environment (a site deployed on pushes to main): under the release model only the Jenkins user merges
+A repository with `rules: basic` gets develop, main and master without force push or deletion, and no
+other rule (master: a fork's default branch, which the basic model treats like main). So does a
+repository whose deciding entry is an application with no `trigger: release` environment (a site
+deployed on pushes to main): under the release model only the Jenkins user merges
 main, and Jenkins merges main only for a release, which such an application never has, so its main
 could never change. A basic repository still gets the repository settings (head branches deleted after
 merge; on Forgejo the merge styles too) but keeps its default branch as it is: it may have no develop
@@ -93,6 +94,9 @@ import catalog as catalog_module  # noqa: E402  (scripts/catalog.py)
 
 # The check that limits a pull request's source branch; every protected branch requires it first.
 BRANCH_POLICY = "branch-policy"
+# The branches the basic model protects: develop and main, and master, a fork's default branch, treated
+# like main (the pipeline checks pull requests into it and pushes to it the same way).
+BASIC_BRANCHES = ("develop", "main", "master")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -342,12 +346,12 @@ def _fixed_tags(name, r):
 def github_rulesets(r):
     """The ruleset payloads of one repository, in the order they are written: `develop`, `main`, for an
     owner-tagged repository `release tag creation`, and (release model) `release tags`. The first three names are the ones
-    github/rulesets.py always used, so existing rulesets are updated in place."""
+    github/rulesets.py always used, so existing rulesets are updated in place. A basic repository gets
+    `develop`, `main` and `master` (BASIC_BRANCHES)."""
     if r.model == "basic":
         # Protection from deletion and force push, nothing else: no pull request, checks or tags.
-        basic = [{"type": "deletion"}, {"type": "non_fast_forward"}]
-        return [_ruleset("develop", "branch", "refs/heads/develop", basic),
-                _ruleset("main", "branch", "refs/heads/main", list(basic))]
+        return [_ruleset(name, "branch", f"refs/heads/{name}", [{"type": "deletion"}, {"type": "non_fast_forward"}])
+                for name in BASIC_BRANCHES]
 
     # A repository the owner tags: only the owner creates its tags, through the bypass of a ruleset of its
     # own -- in the same ruleset as `update` and `deletion`, the bypass would let the owner move and delete
@@ -440,9 +444,10 @@ def _github_steps(api, owner, r, dry_run):
         yield from _github_write(api, dry_run, "DELETE", f"{base}/rulesets/{existing['default']}", None,
                                  "removed ruleset 'default'", "remove ruleset 'default'")
 
-    # A tag ruleset the repository's model no longer has -- a repository turned `rules: basic`, an
-    # owner-tagged one that became an application -- is kept: the run says so, the owner decides.
-    for name in sorted((set(TAG_RULESETS) & set(existing)) - {p["name"] for p in payloads}):
+    # A ruleset the repository's model no longer has -- a tag one of a repository turned `rules: basic`, of
+    # an owner-tagged one that became an application, the `master` one of a basic repository turned
+    # release -- is kept: the run says so, the owner decides.
+    for name in sorted(((set(TAG_RULESETS) | {"master"}) & set(existing)) - {p["name"] for p in payloads}):
         yield f"  {_stale('ruleset', name)}"
 
 
@@ -480,8 +485,8 @@ def apply_mirror(api, mirror_owner, r, dry_run):
 
 # --- Forgejo: settings, protections, tags, webhook ----------------------------------------------------
 
-# The branch protections the release model makes (forgejo_branch_protections).
-MODEL_BRANCHES = {"develop", "main", "release/*"}
+# The branch protections either model makes (forgejo_branch_protections).
+MODEL_BRANCHES = {"develop", "main", "release/*", *BASIC_BRANCHES}
 
 # What Jenkins is told about: branches and tags appearing and disappearing, pushes, pull requests.
 WEBHOOK_EVENTS = ["create", "delete", "push", "pull_request"]
@@ -508,7 +513,7 @@ def forgejo_branch_protections(r):
         # repository turned basic loses them (and they are compared on every run).
         return [{"rule_name": name, "enable_push": True, "enable_merge_whitelist": False, "enable_status_check": False,
                  "status_check_contexts": [], "protected_file_patterns": "", "apply_to_admins": False}
-                for name in ("develop", "main")]
+                for name in BASIC_BRANCHES]
 
     def guarded(name, mergers, checks, files):
         # Nobody pushes: a change gets in through a pull request that the checks passed, merged by

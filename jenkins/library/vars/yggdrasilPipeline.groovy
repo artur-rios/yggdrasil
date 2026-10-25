@@ -18,7 +18,7 @@
 // docs/catalog.md has the options. What a build checks comes from the repository's yggdrasil.yml
 // (data, never code: see scripts/pipeline_config.py), read on the ci agent before anything else.
 //
-//   pull request into develop or main (with yggdrasil.yml)
+//   pull request into develop or main (and master, under the basic rules), with yggdrasil.yml
 //                            -> Branch policy (scripts/branch-policy.sh, then the file's branchPolicy)
 //                               and Checks (each planned check in parallel on the ci agent), each
 //                               reported as a commit status; the build fails once all have reported if
@@ -59,7 +59,7 @@
 //   the release-resume job   -> the same for a tag that exists already: a release that failed after its
 //                               merge, the GitHub copy of a release published after the skip, a push of
 //                               packages that stopped half way (releaseResume)
-//   push to develop, main or release/* (with yggdrasil.yml)
+//   push to develop, main or release/* (and master, under the basic rules), with yggdrasil.yml
 //                            -> the checks, then the branch's deploys only if every check passed; a
 //                               check named in deploy.inputs hands its archive to the image build
 //   branch pushed            -> every environment with trigger: branch whose `branches` glob matches
@@ -276,8 +276,9 @@ def call(Map config = [:]) {
 // What the catalog says about a job: [app, repo (its git repository), forge, mirror, checksTimeout (of
 // its first environment), plan (its environments, resolved), releaseArtifacts, release (deploy: an
 // application with a trigger: release environment; owner-tag; none -- pipeline_config.py entry_for's
-// reading), tags (its version tag pattern), owner, repository (this repository's name)]. Fails unless
-// `app` is a catalog id of an application or a repositories entry.
+// reading), tags (its version tag pattern), rules (its git repository's model, release or basic:
+// repositoryModel), owner, repository (this repository's name)]. Fails unless `app` is a catalog id of an
+// application or a repositories entry.
 Map catalogContext(String app) {
   if (!(app ==~ CATALOG_ID)) {
     error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
@@ -290,7 +291,8 @@ Map catalogContext(String app) {
   }
   // A repositories entry (a library, yggdrasil itself) has no environments: it never deploys.
   List plan = application != null ? resolve(catalog, app) : []
-  return [app: app, repo: application != null ? (application.repository ?: app) : app, forge: forgeOf(catalog),
+  String repo = application != null ? (application.repository ?: app) : app
+  return [app: app, repo: repo, forge: forgeOf(catalog), rules: repositoryModel(catalog, repo),
           mirror: mirrorOf(catalog), checksTimeout: (plan ? plan[0].checksTimeout : 3600) as int, plan: plan,
           releaseArtifacts: application?.releaseArtifacts == true,
           release: application != null ? (plan.any { it.trigger == 'release' } ? 'deploy' : 'none')
@@ -341,7 +343,7 @@ void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
     }
     return
   }
-  if (!(target in ['develop', 'main'])) {
+  if (!(target in checkedBranches(ctx.rules))) {
     echo "Nothing to deploy for a pull request from ${printable(env.CHANGE_BRANCH)} into ${printable(target)}."
     return
   }
@@ -387,7 +389,7 @@ void branchBuild(Map ctx, List plan) {
   // nothing was prepared (other branches, DEPLOY_TO), which deploys the checkout as it always did.
   String checkedSha = null
   // "Build with Parameters" deploys without checks, as it always did.
-  if (!deployToParameter && (branch in ['develop', 'main'] || branch.startsWith('release/'))) {
+  if (!deployToParameter && (branch in checkedBranches(ctx.rules) || branch.startsWith('release/'))) {
     Map state = prepare(ctx, 'push', targets as boolean)
     checkedSha = state.sha
     if (state.config != null) {
@@ -414,7 +416,8 @@ void branchBuild(Map ctx, List plan) {
 // ---- yggdrasil.yml, the plan ----
 
 // On the ci agent: checks out the commit, describes the repository (pipeline_config.py describe) and,
-// for a pull request into develop or main or a push to develop, main or release/*, plans its checks.
+// for a pull request into develop or main or a push to develop, main or release/* (master too, under the
+// basic rules: checkedBranches), plans its checks.
 // Returns [sha, entry, config (null without yggdrasil.yml), plan (null when not planned)]. A file the
 // catalog does not allow (an unknown field, a credential not in the entry's `credentials`, ...) fails
 // the build here, before anything of it runs.
@@ -3055,6 +3058,32 @@ Map findApplication(Map catalog, String app) {
 @NonCPS
 Map findRepositoryEntry(Map catalog, String id) {
   return (catalog.repositories ?: []).find { it.id == id } as Map
+}
+
+// The branching model of a git repository, "release" or "basic" (catalog.py repository_model, which describe
+// reports as entry.rules): release when an application on it releases (a trigger: release environment), else
+// the `repositories` entry's `rules` (default release), else basic -- applications that only deploy on
+// branches. "release" for a repository the catalog does not have.
+@NonCPS
+String repositoryModel(Map catalog, String repository) {
+  List applications = catalog.systems.collectMany { it.applications ?: [] }
+    .findAll { it.kind != 'platform' && (it.repository ?: it.id) == repository }
+  if (applications.any { app -> resolve(catalog, app.id as String).any { it.trigger == 'release' } }) {
+    return 'release'
+  }
+  Map entry = findRepositoryEntry(catalog, repository)
+  if (entry != null) {
+    return (entry.rules ?: 'release').toString()
+  }
+  return applications ? 'basic' : 'release'
+}
+
+// The branches a pull request into, or a push to, gets the branch policy and the checks: develop and main,
+// and under the basic rules master too -- a fork's default branch, treated like main (rules.py protects it
+// the same way, and the Job DSL discovers it). release/* pushes are checked under either model.
+@NonCPS
+List checkedBranches(String rules) {
+  return rules == 'basic' ? ['develop', 'main', 'master'] : ['develop', 'main']
 }
 
 // The git server: Forgejo at forge.url, or GitHub without a forge block, and the publish agent

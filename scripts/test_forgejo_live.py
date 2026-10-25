@@ -557,7 +557,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual([(t["name_pattern"], t["whitelist_usernames"]) for t in tags], [("v*", [JENKINS])])
         basic = {p["rule_name"]: p for p in owner.request("GET", f"/repos/{OWNER}/{DOTTED}/branch_protections")}
         self.assertEqual({name: (p["enable_push"], p["enable_merge_whitelist"], p["enable_status_check"])
-                          for name, p in basic.items()}, {"develop": (True, False, False), "main": (True, False, False)})
+                          for name, p in basic.items()},
+                         {name: (True, False, False) for name in ("develop", "main", "master")})
         for repo in (APP, DOTTED):
             hooks = owner.request("GET", f"/repos/{OWNER}/{repo}/hooks")
             self.assertEqual([(h["type"], h["config"]["url"], h["config"]["content_type"], h["active"]) for h in hooks],

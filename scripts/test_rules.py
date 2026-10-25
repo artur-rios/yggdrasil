@@ -406,15 +406,18 @@ class GitHubRulesetsTests(unittest.TestCase):
                          rules.github_rulesets(by_repo()["shop-api"]))
 
     def test_given_a_basic_repository_when_built_then_only_deletion_and_force_push_are_blocked(self):
+        # master too: a fork's default branch, which the basic model treats like main.
         payloads = rules.github_rulesets(by_repo()["scratch"])
-        self.assertEqual([p["name"] for p in payloads], ["develop", "main"])
+        self.assertEqual([p["name"] for p in payloads], ["develop", "main", "master"])
+        self.assertEqual([p["conditions"]["ref_name"]["include"] for p in payloads],
+                         [["refs/heads/develop"], ["refs/heads/main"], ["refs/heads/master"]])
         for payload in payloads:
             self.assertEqual([r["type"] for r in payload["rules"]], ["deletion", "non_fast_forward"])
 
     def test_given_a_basic_repository_when_applied_then_no_tags_ruleset_is_sent(self):
         api = FakeGitHub()
         rules.apply_github(api, "artur-rios", by_repo()["scratch"], dry_run=False)
-        self.assertEqual([b["name"] for m, _, b in api.writes() if m == "POST"], ["develop", "main"])
+        self.assertEqual([b["name"] for m, _, b in api.writes() if m == "POST"], ["develop", "main", "master"])
 
     def test_given_a_basic_repository_with_a_release_tags_ruleset_when_applied_then_it_is_noted_not_removed(self):
         # A repository that was released before it was turned `rules: basic`: its tag ruleset is no
@@ -427,6 +430,14 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual(len(notes), 1, lines)
         self.assertIn("ruleset 'release tags'", notes[0])
         self.assertIn("left as it is", notes[0])
+
+    def test_given_a_basic_repository_turned_release_when_applied_then_its_master_ruleset_is_noted_not_removed(self):
+        api = FakeGitHub(existing=["develop", "main", "master"])
+        lines = rules.apply_github(api, "artur-rios", by_repo()["shop-api"], dry_run=False)
+        self.assertNotIn("DELETE", [m for m, _, _ in api.writes()])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("ruleset 'master'", notes[0])
 
     def test_given_a_basic_repository_with_both_tag_rulesets_when_applied_then_both_are_noted(self):
         api = FakeGitHub(existing=["develop", "main", "release tags", "release tag creation"])
@@ -495,7 +506,7 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual(sorted(built), sorted(fixture))
         # A third difference since: storefront releases nothing, so it is basic now (develop and main without
         # deletion or force push), no longer the release model with a main only Jenkins could merge.
-        self.assertEqual([p["name"] for p in built.pop("storefront")], ["develop", "main"])
+        self.assertEqual([p["name"] for p in built.pop("storefront")], ["develop", "main", "master"])
         del fixture["storefront"]
         for repo, old in fixture.items():
             for payload in old:
@@ -686,7 +697,7 @@ class ForgejoRulesTests(unittest.TestCase):
     def test_given_a_basic_repository_when_applied_then_no_checks_or_whitelists_are_set(self):
         api = FakeForgejo()
         lines = forgejo_apply(api, "scratch")
-        self.assertEqual(sorted(api.protections), ["develop", "main"])
+        self.assertEqual(sorted(api.protections), ["develop", "main", "master"])
         for entry in api.protections.values():
             self.assertEqual({k: v for k, v in entry.items() if k not in ("id", "rule_name")},
                              {"enable_push": True, "enable_merge_whitelist": False, "enable_status_check": False,
@@ -702,8 +713,9 @@ class ForgejoRulesTests(unittest.TestCase):
         lines = rules.apply_forgejo(api, OWNER, basic, None, False)
         self.assertEqual(sorted((m, p) for m, p, _ in api.writes()),
                          [("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/develop"),
-                          ("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/main")])
-        for name in ("develop", "main"):
+                          ("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/main"),
+                          ("POST", f"/repos/{OWNER}/shop-api/branch_protections")])
+        for name in ("develop", "main", "master"):
             entry = protection(api, name)
             self.assertEqual((entry["enable_push"], entry["enable_merge_whitelist"], entry["enable_status_check"],
                               entry["status_check_contexts"], entry["protected_file_patterns"]),
@@ -719,6 +731,18 @@ class ForgejoRulesTests(unittest.TestCase):
         self.assertEqual([line for line in rules.apply_forgejo(api, OWNER, basic, None, False) if "note" in line],
                          notes)
         self.assertEqual(api.writes(), [])
+
+    def test_given_a_basic_repository_turned_release_when_applied_then_master_is_noted_not_removed(self):
+        api = FakeForgejo()
+        basic = dataclasses.replace(by_repo()["scratch"], repo="shop-api")
+        rules.apply_forgejo(api, OWNER, basic, None, False)
+        api.calls.clear()
+        lines = forgejo_apply(api, "shop-api")
+        self.assertIn("master", api.protections)
+        self.assertNotIn("DELETE", [m for m, _, _ in api.writes()])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("branch protection 'master'", notes[0])
 
     def test_given_a_tag_pattern_that_changed_when_applied_then_the_new_one_is_protected_and_the_old_noted(self):
         api = FakeForgejo()
