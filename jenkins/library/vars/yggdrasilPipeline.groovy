@@ -292,15 +292,17 @@ void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
     // checks, every promotion, merge, packaging and publication, so two release branches cannot race
     // through production or publish out of deployment order.
     lock(resource: "release-${app}") {
-      // deploying: the release deploys, so deploy.inputs' checks run and their archives are stashed.
-      Map state = prepare(ctx, 'pull-request', true)
+      List environments = plan.findAll { it.trigger == 'release' }
+      // deploying: the release deploys, so deploy.inputs' checks run and their archives are stashed. Only
+      // when something deploys: the other jobs of the repository (a library, a docs site without a release
+      // environment) build the same pull request with their own checks alone.
+      Map state = prepare(ctx, 'pull-request', environments as boolean)
       if (state.config != null) {
         List failed = verify(ctx, state)
         if (failed) {
           error "Not releasing: ${failed.join(', ')} failed."
         }
       }
-      List environments = plan.findAll { it.trigger == 'release' }
       if (ctx.forge.type == 'github' && state.config == null) {
         // A GitHub installation's repository without yggdrasil.yml releases exactly as it always did.
         release(app, environments, releaseArtifacts, ctx.repo)
@@ -442,13 +444,20 @@ Map describeCheckout(Map ctx) {
     if (document.errors) {
       error "yggdrasil.yml cannot be used:\n${bulleted(document.errors as List)}"
     }
+    // Allowed but likely a mistake (a check no catalog entry of the repository runs): said, never fatal.
+    for (Object warning : (document.warnings ?: [])) {
+      echo "Warning: ${printable(warning)}"
+    }
     described = [entry: document.entry, config: document.config]
   }
   return described
 }
 
 // Inside prepare(): the commit's statuses (who already checked what) and the changed files, then
-// pipeline_config.py plan. Returns the plan, checked again here (planProblem).
+// pipeline_config.py plan (--deploying when the build deploys). Returns the plan, checked again here
+// (planProblem, planCoverage). The plan holds this job's checks only: its catalog entry's `checks`, and
+// deploy.inputs when it deploys. yggdrasil.yml serves every catalog entry of the repository (a library and
+// its docs site), so its other checks are another job's: they neither run nor report here.
 List planChecks(Map ctx, Map state, String mode, boolean deploying) {
   String diffMode = 'none'
   String diffBase = ''
@@ -467,7 +476,7 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
     }
   }
   withEnv(["YGG_REPO=${ctx.repo}", "YGG_SHA=${state.sha}", "YGG_DIFF_MODE=${diffMode}", "YGG_DIFF_BASE=${diffBase}",
-           "YGG_BRANCH=${branch}"]) {
+           "YGG_BRANCH=${branch}", "YGG_DEPLOYING=${deploying ? '1' : ''}"]) {
     withForgeToken('read') {
       // Without the statuses nothing is reused: every check runs, which is the safe way to be wrong.
       sh(script: '''
@@ -489,17 +498,23 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
       if [ "$changed" = - ]; then
         echo "The changed files are not known: every check runs." >&2
       fi
+      set --
+      if [ -n "$YGG_DEPLOYING" ]; then set -- --deploying; fi
       python3 yggdrasil/scripts/pipeline_config.py plan "$YGG_JOB" app --statuses "$YGG_TMP/statuses" \\
-        --changed "$changed" --branch "$YGG_BRANCH" >"$YGG_TMP/plan.json"
+        --changed "$changed" --branch "$YGG_BRANCH" "$@" >"$YGG_TMP/plan.json"
     ''', returnStatus: true)
     if (code != 0) {
       error "pipeline_config.py plan failed (exit ${code}); its message is above."
     }
   }
   List planned = parseJson(readScratch(scratch(), 'plan.json')) as List
-  String problem = planProblem(planned, state.entry) ?: planCoverage(planned, state.config)
+  String problem = planProblem(planned, state.entry) ?: planCoverage(planned, neededChecks(state.entry, state.config, deploying))
   if (problem) {
     error "The plan of the checks is not usable: ${problem}"
+  }
+  String others = notNeeded(state.config, planned)
+  if (others) {
+    echo "Not run by ${ctx.app} (not its catalog checks): ${others}"
   }
   if (deploying) {
     List inputs = deployInputs(state.config)
@@ -609,7 +624,7 @@ List runChecks(Map ctx, Map state) {
   List failed = []
   stage('Checks') {
     if (!state.plan) {
-      echo 'yggdrasil.yml has no checks.'
+      echo 'Nothing to check: the catalog entry of this job names no checks, and this build needs no deploy.inputs.'
       return
     }
     Map branches = [:]
@@ -2672,20 +2687,41 @@ String planProblem(List planned, Map entry) {
   return null
 }
 
-// Whether the plan covers the file's checks exactly: every check of yggdrasil.yml once, and nothing
-// else. A check the plan left out would never run and never report, and a required status that never
-// comes only blocks the merge -- on a push it would deploy unchecked. null when fine.
+// The checks this job needs (pipeline_config.py needed_checks): its catalog entry's `checks`, then, when the
+// build deploys, the deploy.inputs not among them. Each once, in that order.
 @NonCPS
-String planCoverage(List planned, Map config) {
+List neededChecks(Map entry, Map config, boolean deploying) {
+  List names = new ArrayList((entry.checks ?: []) as List)
+  if (deploying) {
+    names.addAll(((config.deploy ?: [:]).inputs ?: []) as List)
+  }
+  return names.unique()
+}
+
+// The checks of yggdrasil.yml the plan does not hold, sorted (the parsed document's maps keep no order),
+// printable and comma separated ('' for none): another catalog entry's of the repository (or no one's:
+// describe warned). For the log only.
+@NonCPS
+String notNeeded(Map config, List planned) {
   List names = planned.collect { it.name }
-  List wanted = new ArrayList(((config.checks ?: [:]) as Map).keySet())
+  List others = new ArrayList(((config.checks ?: [:]) as Map).keySet()).findAll { !(it in names) }
+  return others.collect { printable(it) }.sort().join(', ')
+}
+
+// Whether the plan covers the job's checks exactly (neededChecks): each once, and nothing else. A check the
+// plan left out would never run and never report, and a required status that never comes only blocks the
+// merge -- on a push it would deploy unchecked, and a deploy input's archive would be missing. A check it
+// adds would run, and post a status, for another job. null when fine.
+@NonCPS
+String planCoverage(List planned, List wanted) {
+  List names = planned.collect { it.name }
   List missing = wanted.findAll { !(it in names) }
   if (missing) {
     return "the plan leaves out ${missing.collect { printable(it) }.join(', ')}"
   }
   List extra = names.findAll { !(it in wanted) }
   if (extra) {
-    return "the plan has checks yggdrasil.yml does not: ${extra.collect { printable(it) }.join(', ')}"
+    return "the plan has checks this job does not need: ${extra.collect { printable(it) }.join(', ')}"
   }
   List twice = names.findAll { name -> names.count(name) > 1 }.unique()
   if (twice) {

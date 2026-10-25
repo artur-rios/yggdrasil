@@ -129,6 +129,11 @@ OWNED, LIBRARY = "ygg-tool", "dotnet-lib"
 # An owner-tagged repository declaring both release files and NuGet packages, whose validation fails: the
 # packages must never be packed or pushed.
 BOTH = "ygg-both"
+# One repository, two catalog entries (two Jenkins jobs, one yggdrasil.yml): a library-like `repositories`
+# entry (checks unit and coverage, rules basic so the owner pushes to main) and its docs site, an
+# application on that repository naming no check of its own that deploys from main with the coverage's
+# archive (deploy.inputs).
+DOCS_LIB, DOCS_SITE = "ygg-docs-lib", "ygg-docs-lib-docs"
 MIRROR_OWNER = "artur-rios-mirror"
 GITHUB_TOKEN = "a-throwaway-github-token"
 SKIP_QUESTION = "GitHub Actions checks didn't finish. Deploy without them?"
@@ -254,6 +259,19 @@ UNIT = {"image": "alpine:3", "run": 'echo "UNIT-$((40 + 2))-RAN"'}
 RELEASE_PIPELINE = {"checks": {"unit": {**UNIT, "run": UNIT["run"] + " && mkdir -p out && echo input >out/input.txt",
                                         "archive": "out/**"}},
                     "deploy": {"inputs": ["unit"]}}
+# ygg-docs-lib's file, for both its jobs. lint is no entry's check: it never runs (describe warns).
+DOCS_LIB_UNIT_RAN, DOCS_LIB_COVERAGE_RAN, DOCS_LIB_LINT_RAN = "DOCS-LIB-UNIT-42-RAN", "DOCS-LIB-COVERAGE-42-RAN", "DOCS-LIB-LINT-42-RAN"
+DOCS_LIB_PIPELINE = {
+    "checks": {
+        "unit": {"image": "alpine:3", "run": 'echo "DOCS-LIB-UNIT-$((40 + 2))-RAN"'},
+        "coverage": {"image": "alpine:3",
+                     "run": 'mkdir -p coverage && printf "COVERAGE-%s\\n" "$((6 * 7))" >coverage/index.html'
+                            ' && echo "DOCS-LIB-COVERAGE-$((40 + 2))-RAN"',
+                     "archive": "coverage/**"},
+        "lint": {"image": "alpine:3", "run": 'echo "DOCS-LIB-LINT-$((40 + 2))-RAN"'},
+    },
+    "deploy": {"inputs": ["coverage"]},
+}
 
 HOSTILE_JENKINSFILE = """\
 // A branch's own Jenkinsfile: Jenkins must never run it (casc.yaml, globalConfigFiles).
@@ -282,7 +300,9 @@ def test_catalog():
     development (it does not release); ygg-lib, ygg-tool and dotnet-lib are tagged by their owner; the
     release applications (shop-desktop may bind shop-db-password for its release build only, through
     releaseCredentials; shop-tools requires
-    a GitHub Actions check; shop-resume's release build binds a credential added only later)."""
+    a GitHub Actions check; shop-resume's release build binds a credential added only later); shop-worker
+    and shop-untagged require unit (a job runs only its entry's checks); ygg-docs-lib (unit, coverage) and
+    its docs site ygg-docs-lib-docs share one repository."""
     return {
         "owner": OWNER,
         "repository": "yggdrasil",
@@ -299,7 +319,7 @@ def test_catalog():
             # Development only: an application that does not release (release-resume refuses it).
             {"id": PLAIN, "name": "Site", "kind": "web", "health": "http://plain-site:8080/",
              "environments": {"development": {}}},
-            {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/"},
+            {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/", "checks": ["unit"]},
             {"id": RELEASE, "name": "Release", "kind": "web", "health": "http://shop-release:8080/", "checks": ["unit"]},
             {"id": DESKTOP, "name": "Desktop", "kind": "web", "health": "http://shop-desktop:8080/",
              "releaseCredentials": ["shop-db-password"]},
@@ -310,12 +330,16 @@ def test_catalog():
              "releaseCredentials": ["shop-resume-key"]},
             # Production asks before it deploys, which is when the test takes the release's tag.
             {"id": UNTAGGED, "name": "Untagged", "kind": "web", "health": "http://shop-untagged:8080/",
-             "environments": {"development": {}, "production": {"approval": True}}},
+             "checks": ["unit"], "environments": {"development": {}, "production": {"approval": True}}},
+            # ygg-docs-lib's docs site: development, on main instead of develop; no check of its own.
+            {"id": DOCS_SITE, "name": "Docs", "kind": "web", "health": f"http://{DOCS_SITE}:8080/",
+             "repository": DOCS_LIB, "checks": [], "environments": {"development": {"branches": "main"}}},
         ]}],
         "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"},
                          {"id": OWNED, "release": "owner-tag", "tags": "v*"},
                          {"id": LIBRARY, "release": "owner-tag", "tags": "[0-9]*"},
-                         {"id": BOTH, "release": "owner-tag", "tags": "v*"}],
+                         {"id": BOTH, "release": "owner-tag", "tags": "v*"},
+                         {"id": DOCS_LIB, "release": "none", "rules": "basic", "checks": ["unit", "coverage"]}],
     }
 
 
@@ -512,7 +536,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         cls.first_builds = {}
         cls.release_runs = {}
         cls.tag_runs = {}
-        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED)
+        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED, DOCS_LIB, DOCS_SITE)
         for job in jobs:
             cls.jenkins.post(job_path(job) + "/build", {"delay": "0"})
         for job in jobs:
@@ -913,6 +937,11 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
                 cls.change_file(OWNER, repo, path, text, "main")
             cls.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/branches",
                                    {"new_branch_name": "develop", "old_branch_name": "main"})
+        # Two jobs, one repository: the file on main (unprotected: rules basic), develop cut from it.
+        cls.new_repository(DOCS_LIB)
+        cls.change_file(OWNER, DOCS_LIB, "yggdrasil.yml", yaml.safe_dump(DOCS_LIB_PIPELINE, sort_keys=False), "main")
+        cls.api[OWNER].request("POST", f"/repos/{OWNER}/{DOCS_LIB}/branches",
+                               {"new_branch_name": "develop", "old_branch_name": "main"})
         # The release applications: yggdrasil.yml on develop, which a release branch is a snapshot of.
         for repo, pipeline in RELEASE_APPLICATIONS.items():
             cls.new_repository(repo)
@@ -1009,7 +1038,8 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         boot = self.first_boot
         # Job DSL's giteaSCMSource and pipelineBranchDefaultsProjectFactory: one job per catalog entry,
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
-        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED})
+        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED,
+                                             DOCS_LIB, DOCS_SITE})
         # The actions-release, release-resume and tag-check jobs: pipeline jobs running the scripts kept in
         # Jenkins, in the sandbox; tag-check takes only FORGET and runs every day.
         parameters = {"actions-release": ["REPOSITORY", "TAG"], "release-resume": ["REPOSITORY", "TAG", "COMMIT"],
@@ -1193,12 +1223,13 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             'echo "answer=$answer"',
             '[ "$answer" = HELLO-FROM-A-CONTAINER ]',
         ])
-        files = {"yggdrasil.yml": pipeline_file(unit=UNIT, containers={"image": "docker:cli", "run": run, "docker": True})}
+        # unit, shop-api's one catalog check: a check the entry does not name would never run.
+        files = {"yggdrasil.yml": pipeline_file(unit={"image": "docker:cli", "run": run, "docker": True})}
         sha = self.branch_with(CLAUDE, APP, "feature/containers", files)
         number, build = self.pull_request_build(CLAUDE, APP, "feature/containers")
         self.assertIn("answer=HELLO-FROM-A-CONTAINER", build.console)
         self.assertEqual(build.result, "SUCCESS", build.console[-6000:])
-        self.assertEqual(self.latest_statuses(APP, sha)["containers"][1], "success")
+        self.assertEqual(self.latest_statuses(APP, sha)["unit"][1], "success")
 
     def test_given_the_ci_agent_when_a_check_runs_then_no_write_token_is_in_its_environment(self):
         marker = f"check-started-{uuid.uuid4().hex[:8]}"
@@ -1314,6 +1345,46 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         newer = self.wait_for_build(WORKER, "develop", after=build.number)
         self.assertEqual(newer.result, "SUCCESS", newer.console[-4000:])
         self.assertIn(f"version=develop-{moved[:7]}", newer.console)
+
+    def test_given_a_library_and_its_docs_site_on_one_repository_when_main_is_pushed_then_each_job_runs_its_own_checks(self):
+        # One push, two jobs (the webhook reaches both): the library runs unit and coverage; the docs site
+        # runs only coverage, its deploy input, and deploys with its archive. lint, no entry's check, runs
+        # in neither.
+        before = {job: self.last_number(job, "main") for job in (DOCS_LIB, DOCS_SITE)}
+        sha = self.change_file(OWNER, DOCS_LIB, "docs/page.md", "a page\n", "main")
+        library = self.wait_for_build(DOCS_LIB, "main", after=before[DOCS_LIB])
+        docs = self.wait_for_build(DOCS_SITE, "main", after=before[DOCS_SITE])
+        self.assertEqual(library.result, "SUCCESS", library.console[-6000:])
+        self.assertEqual(docs.result, "SUCCESS", docs.console[-6000:])
+
+        self.assertIn(DOCS_LIB_UNIT_RAN, library.console)
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, library.console)
+        self.assertIn("Check unit: run", library.console)
+        self.assertIn("Check coverage: run", library.console)
+        self.assertIn(f"Not run by {DOCS_LIB} (not its catalog checks): lint", library.console)
+        # The docs job: coverage (forced to run, its archive is needed), never unit.
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, docs.console)
+        self.assertNotIn(DOCS_LIB_UNIT_RAN, docs.console)
+        self.assertNotIn("Check unit:", docs.console)
+        self.assertIn("Check coverage: run", docs.console)
+        self.assertIn(f"Not run by {DOCS_SITE} (not its catalog checks): lint, unit", docs.console)
+        for build in (library, docs):
+            self.assertNotIn(DOCS_LIB_LINT_RAN, build.console)
+            self.assertIn(f"Warning: checks.lint is not in any catalog entry of {DOCS_LIB}: it never runs",
+                          build.console)
+        # Deployed with the archive in its build context (DEPLOY_INPUTS_DIR); the library deploys nothing.
+        self.assertRegex(docs.console, rf"DEPLOY-STUB environment=development stack={DOCS_SITE} checkout=app "
+                                       rf"version=main-{sha[:7]} inputs=\S+/deploy-inputs")
+        self.assertIn("DEPLOY-INPUT COVERAGE-42", docs.console)
+        self.assertNotIn("DEPLOY-STUB", library.console)
+
+        # Each job posts statuses for its own checks only, all by Jenkins.
+        statuses = self.statuses(DOCS_LIB, sha)
+        by_job = {build.url: {context for context, _, _, _, target in statuses if target == build.url}
+                  for build in (library, docs)}
+        self.assertEqual(by_job, {library.url: {"unit", "coverage"}, docs.url: {"coverage"}}, statuses)
+        self.assertEqual({creator for _, _, creator, _, _ in statuses}, {JENKINS})
+        self.assertEqual({context for context, *_ in statuses}, {"unit", "coverage"})
 
     # --- Owner tags --------------------------------------------------------------------------------
 

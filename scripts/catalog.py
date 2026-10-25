@@ -204,6 +204,7 @@ def validate(catalog):
                                       "(neither the application nor the environment sets them)")
     errors += _project_errors(systems, env_ids)
     errors += _repository_errors(catalog, systems)
+    errors += _shared_repository_errors(catalog, systems)
     return errors
 
 
@@ -323,18 +324,53 @@ def _environment_agents(catalog):
     return agents
 
 
-def _repository_names(systems):
-    """The repository of every application that has one: its `repository`, else its id (the rule
-    github/rulesets.py applies). Platform components live in this repository and have none."""
-    names = set()
-    for system in systems:
-        for app in (system.get("applications") or []) if isinstance(system, dict) else []:
-            if not isinstance(app, dict) or app.get("kind") == "platform":
-                continue
-            name = _text(app.get("repository")) or app.get("id")
-            if isinstance(name, str):
-                names.add(name)
-    return names
+def _deployable_applications(systems):
+    """The applications that are mappings and not platform components (those live in this repository and
+    have no repository or job of their own), skipping anything malformed: its error is reported elsewhere."""
+    return [app for system in systems if isinstance(system, dict)
+            for app in (system.get("applications") if isinstance(system.get("applications"), list) else [])
+            if isinstance(app, dict) and app.get("kind") != "platform"]
+
+
+def _application_releases(app, environments):
+    """Whether the application deploys to an environment whose trigger, after its override, is release
+    (Jenkins then merges its repository's main and creates the v* tags). Malformed parts are skipped."""
+    overrides = app.get("environments")
+    for env in environments if isinstance(environments, list) else []:
+        if not isinstance(env, dict) or not isinstance(env.get("id"), str):
+            continue
+        if overrides is not None and not (isinstance(overrides, dict) and env["id"] in overrides):
+            continue
+        override = overrides.get(env["id"]) if isinstance(overrides, dict) else None
+        if {**env, **(override if isinstance(override, dict) else {})}.get("trigger") == "release":
+            return True
+    return False
+
+
+def _shared_repository_errors(catalog, systems):
+    """One repository may back several catalog entries (an application and its docs site, a library's
+    `repositories` entry and its docs application: one Jenkins job each, one yggdrasil.yml), but at most
+    one of them releases -- an application with a trigger: release environment, or a `repositories`
+    entry whose release is not none. Two releasing entries would give two answers to who merges main and
+    who creates the version tags (scripts/rules.py takes them from the releasing entry)."""
+    releasing = {}
+    for app in _deployable_applications(systems):
+        name = _text(app.get("repository")) or app.get("id")
+        if isinstance(name, str) and isinstance(app.get("id"), str) \
+                and _application_releases(app, catalog.get("environments")):
+            releasing.setdefault(name, []).append(f"application {app['id']}")
+    entries = catalog.get("repositories")
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry.get("release", "none") != "none":
+            releasing.setdefault(entry["id"], []).append(f"repositories entry {entry['id']}")
+    errors = []
+    for repository, names in releasing.items():
+        if len(names) > 1:
+            listed = ", ".join(names[:-1]) + " and " + names[-1]
+            errors.append(f"repository {repository}: {listed} {'both' if len(names) == 2 else 'all'} release; at most "
+                          "one catalog entry of a repository may (an application with a trigger: release environment, "
+                          "or a repositories entry with release other than none)")
+    return errors
 
 
 def _repository_errors(catalog, systems):
@@ -345,7 +381,9 @@ def _repository_errors(catalog, systems):
         return ["repositories: a list of {id, checks, actionsChecks, credentials, releaseCredentials, release, tags, "
                 "rules}"]
     errors = []
-    taken = _repository_names(systems)
+    # A repositories entry may share an application's repository (see _shared_repository_errors), never an
+    # application's id: both name a Jenkins job (the Job DSL), and two jobs of one name cannot exist.
+    taken = {app["id"] for app in _deployable_applications(systems) if isinstance(app.get("id"), str)}
     seen = []
     for i, entry in enumerate(entries):
         where = f"repositories[{i}]"
@@ -361,7 +399,8 @@ def _repository_errors(catalog, systems):
         elif rid in seen:
             errors.append(f"{where}.id: duplicate '{rid}'")
         elif rid in taken:
-            errors.append(f"{where}.id: {rid} is already an application's repository")
+            errors.append(f"{where}.id: {rid} is already an application's id (each names a Jenkins job): "
+                          "rename one of them")
         else:
             seen.append(rid)
         if "release" in entry and entry["release"] not in RELEASES:

@@ -97,7 +97,42 @@ error. Read them with `python3 scripts/catalog.py forge` / `mirror` (see
 `repositories` lists the git repositories under `owner` that are **not applications**: libraries that
 publish a package, repositories that only run CI, yggdrasil itself. They get the git server's branch and
 tag rules and a Jenkins job like an application's repository does, but nothing is deployed from them.
-An application's repository (its `repository`, else its `id`) is never listed here.
+An application's repository (its `repository`, else its `id`) is listed here only when it is also
+a library or a CI repository in its own right, as below.
+
+### One repository, several entries
+
+A repository can back more than one catalog entry, one Jenkins job each: a library (a `repositories`
+entry with its checks and NuGet packages) and its docs site (an application with `repository: <the
+library>`), or an application and its docs site (two applications with one `repository`).
+
+- **At most one of them releases.** A releasing entry is an application with a `trigger: release`
+  environment, or a `repositories` entry whose `release` is not `none`. Two on one repository are an error
+  naming both (`repository <repo>: application <a> and repositories entry <b> both release; ...`): who
+  merges `main` and who creates the version tags must have one answer.
+- **One set of branch rules** ([`scripts/rules.py`](setup.md#12-apply-the-branch-rules)). The deciding entry
+  is the releasing one, else the `repositories` entry, else the first application in catalog order. It
+  supplies the model (`rules`), who merges `main`, who pushes release branches and the tag pattern. Every
+  entry's `checks` and `actionsChecks` are required (the deciding entry's first), so each job's statuses
+  are required.
+- **One `yggdrasil.yml`**, read by every job of the repository; each job runs only its own entry's
+  `checks` ([below](#repository-pipeline-file)).
+
+```yaml
+repositories:
+  - id: dotnet-util               # the library: tests, coverage, NuGet on owner tags
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+systems:
+  - id: docs
+    name: Docs
+    applications:
+      - id: dotnet-util-docs      # its docs site, built from the coverage report
+        repository: dotnet-util
+        checks: []
+        # ...
+```
 
 ```yaml
 repositories:
@@ -117,7 +152,7 @@ repositories:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `id` | required | The repository name under `owner`: letters, digits, `.`, `_` and `-` (`reveal.js` is fine). Unique, and not the repository of any application (`<id> is already an application's repository`). |
+| `id` | required | The repository name under `owner`: letters, digits, `.`, `_` and `-` (`reveal.js` is fine). Unique, and not the id of any application (`<id> is already an application's id`: each names a Jenkins job). It may be an application's repository: see [One repository, several entries](#one-repository-several-entries). |
 | `checks` | `[]` | The checks Jenkins reports on pull requests to `develop` and `main`, as for an application's `checks`. No empty entries. |
 | `actionsChecks` | `[]` | GitHub Actions job names required besides them on `develop` (not on `main`), as for an application's `actionsChecks`. No empty entries. |
 | `credentials` | `[]` | The only Jenkins credentials the repository's checks may bind. Jenkins credential ids: letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
@@ -142,6 +177,21 @@ On Forgejo the file is a protected file on `develop`: only the owner merges a ch
 bumps there included), with **Merge anyway** ([step 12](setup.md#12-apply-the-branch-rules)).
 A repository **without** a `yggdrasil.yml` is not an error: it behaves as before, it deploys and nothing
 else (on GitHub, its release also waits for every GitHub Actions check, as it always did).
+
+**One file per repository, each job its own checks.** When a repository backs several catalog entries
+([One repository, several entries](#one-repository-several-entries)), they share its one `yggdrasil.yml`,
+and each entry's Jenkins job runs only:
+
+- the checks its catalog entry names in `checks`, in that order;
+- when the build deploys (a push that deploys, a release pull request of an application with a release
+  environment), the checks `deploy.inputs` names as well, after them ([below](#check-results-in-the-image-build-deployinputs)).
+
+The file's other checks belong to another entry: this job neither runs them nor posts their status. A
+library's job runs `test` and `coverage`; its docs site's job (`checks: []`, `deploy.inputs: [coverage]`)
+runs only `coverage`, and only when it deploys. A check that no job of the repository ever runs (named by
+no entry's `checks`, and not a deploy input of an application on it) is a **warning** in `describe`'s
+`warnings` and the build log, not an error: `checks.<name> is not in any catalog entry of <repo>: it never
+runs`.
 
 ```yaml
 checks:                         # name -> a command run in a container; the name is the status context
@@ -190,25 +240,32 @@ The file is also checked against the catalog entry of the repository (the applic
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
 (`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,
-`{"entry", "config", "errors"}`, where `config` is `null` when there is no file, and exits `1` when
-`errors` is not empty. The entry has `kind` (`application` or `repository`), `id`, `repository`,
-`credentials`, `releaseCredentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
+`{"entry", "config", "errors", "warnings"}`, where `config` is `null` when there is no file, and exits `1`
+when `errors` is not empty (`warnings` never changes the exit status). The entry has `kind` (`application`
+or `repository`), `id`, `repository`, `credentials`, `releaseCredentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
 environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
 
 ### Which checks run
 
 For a build of a branch the pipeline asks `python3 scripts/pipeline_config.py plan <job-id> <repo-dir>
---statuses <file> --changed <file|-> --branch <name>` what to do with each check, and gets a JSON list in the
-file's order: `{name, action, reason, image, run, docker, credentials, junit, archive}`.
+--statuses <file> --changed <file|-> --branch <name> [--deploying]` what to do with each check the job needs,
+and gets a JSON list: `{name, action, reason, image, run, docker, credentials, junit, archive}`. The checks
+are the entry's `checks` in catalog order, then, with `--deploying`, the `deploy.inputs` not among them;
+each once, and nothing else of the file.
 
 - `--statuses` is the output of `forge.sh get-statuses` for the commit (`<context>`, `<state>`, `<creator>`,
-  tab separated); `--changed` lists the changed files, one path per line, or is `-` when they are unknown.
+  tab separated); `--changed` lists the changed files, one path per line, or is `-` when they are unknown;
+  `--deploying` (last) says the build deploys afterwards.
 - **reuse**: the commit already has a `success` for the check created by `forge.jenkinsUser`. A success
   created by anyone else is not trusted, and neither is a failure or a pending: those checks `run`.
 - **skip**: the check has `paths`, the changed files are known and none matches. `*` stays in one directory,
   `**` crosses directories (`src/**` matches `src/a/b.cs`, `docs/*.md` does not match `docs/a/b.md`, `**/*.md`
   matches `README.md`). When the changes are unknown (`-`) the check runs.
 - **run**: everything else. On a `renovate/*` branch `credentials` is always `{}`.
+
+Reuse works across the jobs of one repository: a `coverage` success posted by the library's job is reused by
+its docs site's job on the same commit. A deploy input is the exception when the build deploys: it runs
+anyway, since its archive goes into the image.
 
 The branch policy is not a check of the file and is never reused. The command exits `1`, naming the
 problems, when the file is invalid or breaks the catalog rules above.

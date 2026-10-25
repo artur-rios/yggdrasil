@@ -423,7 +423,8 @@ class CliTests(unittest.TestCase):
         status, out, err = run_cli("describe", "dotnet-util", str(repo("checks:\n  unit: {image: x, run: y}\n")))
         self.assertEqual((status, err), (0, ""))
         document = json.loads(out)  # one document, nothing else on stdout
-        self.assertEqual(set(document), {"entry", "config", "errors"})
+        self.assertEqual(set(document), {"entry", "config", "errors", "warnings"})
+        self.assertEqual(document["warnings"], [])
         self.assertEqual(document["entry"]["release"], "owner-tag")
         self.assertEqual(document["config"]["checks"]["unit"]["run"], "y")
         self.assertEqual(document["errors"], [])
@@ -472,9 +473,10 @@ CHECKS = {
 
 
 def plan(checks=None, statuses=(), changed=None, branch="feature/x", user="jenkins"):
-    """plan_checks() over CHECKS (or `checks`), by name."""
+    """plan_checks() over CHECKS (or `checks`), by name, for a job whose catalog entry names every one."""
     config = {"checks": copy.deepcopy(CHECKS if checks is None else checks)}
-    return {entry["name"]: entry for entry in pc.plan_checks(config, list(statuses), changed, branch, user)}
+    entry = {"id": "shop-api", "checks": list(config["checks"])}
+    return {entry["name"]: entry for entry in pc.plan_checks(config, entry, list(statuses), changed, branch, user)}
 
 
 class PlanTests(unittest.TestCase):
@@ -554,18 +556,153 @@ class PlanTests(unittest.TestCase):
 
     def test_given_the_input_when_planned_then_it_is_not_changed(self):
         config = {"checks": copy.deepcopy(CHECKS)}
-        pc.plan_checks(config, [], None, "renovate/x", "jenkins")
-        self.assertEqual(config["checks"], CHECKS)
+        entry = {"id": "shop-api", "checks": ["unit", "lint"]}
+        pc.plan_checks(config, entry, [], None, "renovate/x", "jenkins")
+        self.assertEqual((config["checks"], entry["checks"]), (CHECKS, ["unit", "lint"]))
 
     def test_given_no_config_or_no_checks_when_planned_then_nothing_runs(self):
-        self.assertEqual(pc.plan_checks(None, [], None, "feature/x", "jenkins"), [])
-        self.assertEqual(pc.plan_checks({}, [], None, "feature/x", "jenkins"), [])
+        # No yggdrasil.yml: the repository behaves as before the file existed, whatever the catalog says.
+        self.assertEqual(pc.plan_checks(None, {"id": "x", "checks": ["unit"]}, [], None, "feature/x", "jenkins"), [])
+        self.assertEqual(pc.plan_checks({}, {"id": "x", "checks": []}, [], None, "feature/x", "jenkins"), [])
 
     def test_given_the_same_context_twice_when_planned_then_the_last_status_counts(self):
         planned = plan(statuses=[("lint", "failure", "jenkins"), ("lint", "success", "jenkins")])
         self.assertEqual(planned["lint"]["action"], "reuse")
         planned = plan(statuses=[("lint", "success", "jenkins"), ("lint", "failure", "jenkins")])
         self.assertEqual(planned["lint"]["action"], "run")
+
+
+# A library and its docs site on one repository, ygg-lib: the library's `repositories` entry runs the
+# tests and the coverage, the docs application runs nothing of its own and deploys with the coverage's
+# archive (deploy.inputs). One yggdrasil.yml serves both jobs.
+SHARED_FILE = """\
+checks:
+  unit: {image: dotnet:10, run: ci/test.sh}
+  coverage: {image: dotnet:10, run: ci/coverage.sh, archive: "coverage/**"}
+deploy:
+  inputs: [coverage]
+"""
+
+
+def shared_catalog():
+    value = catalog()
+    value["repositories"].append({"id": "ygg-lib", "release": "owner-tag", "tags": "[0-9]*",
+                                  "checks": ["unit", "coverage"]})
+    value["systems"][0]["applications"].append(
+        {"id": "ygg-lib-docs", "name": "Docs", "kind": "web", "health": "http://ygg-lib-docs:8080/",
+         "repository": "ygg-lib", "checks": [], "environments": {"dev": {}}})
+    return value
+
+
+def run_shared(*argv, value=None):
+    """run_cli() against shared_catalog() (or `value`)."""
+    out, err = io.StringIO(), io.StringIO()
+    out.reconfigure = lambda **_: None
+    with mock.patch.object(cat, "load", return_value=shared_catalog() if value is None else value), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        status = pc.main(list(argv))
+    return status, out.getvalue(), err.getvalue()
+
+
+class OwnChecksTests(unittest.TestCase):
+    """A job runs its own catalog entry's checks, and the deploy inputs when it deploys: never every
+    check of the file, which other entries of the same repository may name."""
+
+    def plan(self, job, text=SHARED_FILE, statuses="", deploying=False, value=None):
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-plan-"))
+        (directory / "statuses").write_text(statuses, encoding="utf-8", newline="")
+        argv = ["plan", job, str(repo(text)), "--statuses", str(directory / "statuses"), "--changed", "-",
+                "--branch", "main"] + (["--deploying"] if deploying else [])
+        status, out, err = run_shared(*argv, value=value)
+        self.assertEqual((status, err), (0, ""))
+        return [(entry["name"], entry["action"]) for entry in json.loads(out)]
+
+    def describe(self, job, text=SHARED_FILE, value=None):
+        status, out, _ = run_shared("describe", job, str(repo(text)), value=value)
+        return status, json.loads(out)
+
+    def test_given_two_entries_on_one_repository_when_planned_then_each_runs_only_its_own_checks(self):
+        self.assertEqual(self.plan("ygg-lib"), [("unit", "run"), ("coverage", "run")])
+        # The docs site names no check of its own: when it does not deploy, it runs nothing.
+        self.assertEqual(self.plan("ygg-lib-docs"), [])
+        # Deploying changes nothing for the library: its file's inputs are its docs site's, not its own
+        # catalog checks, and they are already among them.
+        self.assertEqual(self.plan("ygg-lib", deploying=True), [("unit", "run"), ("coverage", "run")])
+
+    def test_given_a_deploying_docs_job_when_planned_then_only_its_deploy_input_runs(self):
+        self.assertEqual(self.plan("ygg-lib-docs", deploying=True), [("coverage", "run")])
+        # The library job's success, by Jenkins, is on the commit: the plan reuses it (the pipeline library
+        # forces a deploy input to run anyway when it deploys, since its archive goes into the image).
+        statuses = "\t".join(["coverage", "success", "jenkins"]) + "\n" + "\t".join(["unit", "failure", "jenkins"])
+        self.assertEqual(self.plan("ygg-lib-docs", statuses=statuses, deploying=True), [("coverage", "reuse")])
+
+    def test_given_a_check_in_the_entry_and_in_the_deploy_inputs_when_planned_then_it_is_planned_once(self):
+        config = {"checks": {**copy.deepcopy(CHECKS), "docs": {"image": "x", "run": "y"}},
+                  "deploy": {"inputs": ["docs", "lint", "unit"]}}
+        entry = {"id": "shop-api", "checks": ["lint"]}
+        names = [e["name"] for e in pc.plan_checks(config, entry, [], None, "main", "jenkins", deploying=True)]
+        # The entry's catalog order, then the inputs in theirs: not the file's order.
+        self.assertEqual(names, ["lint", "docs", "unit"])
+        names = [e["name"] for e in pc.plan_checks(config, entry, [], None, "main", "jenkins")]
+        self.assertEqual(names, ["lint"])
+
+    def test_given_a_needed_check_the_file_does_not_define_when_planned_then_it_is_an_error(self):
+        config = {"checks": copy.deepcopy(CHECKS), "deploy": {"inputs": ["site"]}}
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.plan_checks(config, {"id": "shop-api", "checks": ["unit", "e2e"]}, [], None, "main", "jenkins")
+        self.assertIn("e2e", str(caught.exception))
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.plan_checks(config, {"id": "shop-api", "checks": []}, [], None, "main", "jenkins", deploying=True)
+        self.assertIn("site", str(caught.exception))
+
+    def test_given_a_config_check_no_entry_names_when_described_then_it_is_a_warning(self):
+        text = SHARED_FILE.replace("deploy:", "  lint: {image: node:22, run: npm run lint}\ndeploy:")
+        for job in ("ygg-lib", "ygg-lib-docs"):
+            with self.subTest(job=job):
+                status, document = self.describe(job, text)
+                # A warning, not an error: the build goes on, and describe exits 0.
+                self.assertEqual((status, document["errors"]), (0, []))
+                self.assertEqual(document["warnings"],
+                                 ["checks.lint is not in any catalog entry of ygg-lib: it never runs"])
+        status, document = self.describe("ygg-lib")
+        self.assertEqual((status, document["warnings"]), (0, []))
+
+    def test_given_a_check_another_entry_of_the_repository_names_when_described_then_it_is_not_a_warning(self):
+        value = shared_catalog()
+        value["systems"][0]["applications"][-1]["checks"] = ["links"]
+        text = SHARED_FILE.replace("deploy:", "  links: {image: x, run: y}\ndeploy:")
+        self.assertEqual(self.describe("ygg-lib", text, value)[1]["warnings"], [])
+        self.assertEqual(self.plan("ygg-lib", text, value=value), [("unit", "run"), ("coverage", "run")])
+        self.assertEqual(self.plan("ygg-lib-docs", text, value=value), [("links", "run")])
+        # The same name on another repository's entry claims nothing here.
+        value["systems"][0]["applications"][-1]["repository"] = "elsewhere"
+        self.assertEqual(self.describe("ygg-lib", text, value)[1]["warnings"],
+                         ["checks.links is not in any catalog entry of ygg-lib: it never runs"])
+
+    def test_given_a_check_an_application_runs_only_as_a_deploy_input_when_described_then_it_is_not_a_warning(self):
+        # shop-site (repository shop-frontend) names no check: its build check runs when it deploys.
+        text = "checks:\n  build: {image: x, run: y, archive: out/**}\ndeploy:\n  inputs: [build]\n"
+        status, out, _ = run_cli("describe", "shop-site", str(repo(text)))
+        self.assertEqual((status, json.loads(out)["warnings"]), (0, []))
+        # A repositories entry never deploys: its file's inputs run nowhere.
+        status, out, _ = run_cli("describe", "shop-specs", str(repo(text.replace("build", "lint"))))
+        self.assertEqual((status, json.loads(out)["warnings"]), (0, []))
+        text = "checks:\n  lint: {image: x, run: y}\n  build: {image: x, run: y}\ndeploy:\n  inputs: [build]\n"
+        status, out, _ = run_cli("describe", "shop-specs", str(repo(text)))
+        self.assertEqual((status, json.loads(out)["warnings"]),
+                         (0, ["checks.build is not in any catalog entry of shop-specs: it never runs"]))
+
+    def test_given_a_repository_without_a_file_or_with_an_invalid_one_when_described_then_there_is_no_warning(self):
+        self.assertEqual(self.describe("ygg-lib", None)[1]["warnings"], [])
+        status, document = self.describe("ygg-lib", "checks:\n  unit: {image: x}\n")
+        self.assertEqual((status, document["warnings"]), (1, []))
+
+    def test_given_deploying_twice_or_out_of_place_when_planning_then_it_is_a_usage_error(self):
+        self.assertEqual(run_shared("plan", "ygg-lib", "/tmp", "--statuses", "a", "--changed", "-", "--branch", "b",
+                                    "--deploying", "--deploying")[0], 2)
+        self.assertEqual(run_shared("plan", "ygg-lib", "/tmp", "--deploying", "--statuses", "a", "--changed", "-",
+                                    "--branch")[0], 2)
+        self.assertEqual(run_shared("describe", "ygg-lib", "/tmp", "--deploying")[0], 2)
 
 
 class GlobTests(unittest.TestCase):
@@ -610,6 +747,7 @@ TAB, NL = chr(9), chr(10)
 
 
 class PlanCliTests(unittest.TestCase):
+    # shop-api's catalog entry names both checks (unit, lint): the job plans each of them.
     CONFIG = ("checks:\n  unit:\n    image: x\n    run: y\n    paths: ['src/**']\n"
               "    credentials: {NUGET_KEY: nuget-key}\n  lint: {image: x, run: y}\n")
 
@@ -620,7 +758,7 @@ class PlanCliTests(unittest.TestCase):
             (directory / "changed").write_text(changed, encoding="utf-8", newline="")
         return directory
 
-    def plan(self, text=CONFIG, statuses="", changed="src/a.cs" + NL, branch="feature/x", job="dotnet-util", **override):
+    def plan(self, text=CONFIG, statuses="", changed="src/a.cs" + NL, branch="feature/x", job="shop-api", **override):
         directory = self.files(statuses, changed)
         arguments = {"--statuses": str(directory / "statuses"),
                      "--changed": "-" if changed is None else str(directory / "changed"), "--branch": branch}
@@ -647,7 +785,7 @@ class PlanCliTests(unittest.TestCase):
         out.reconfigure = lambda **_: None
         directory = self.files(yours, "x" + NL)
         with mock.patch.object(cat, "load", return_value=value), contextlib.redirect_stdout(out):
-            status = pc.main(["plan", "dotnet-util", str(repo(self.CONFIG)), "--statuses", str(directory / "statuses"),
+            status = pc.main(["plan", "shop-api", str(repo(self.CONFIG)), "--statuses", str(directory / "statuses"),
                               "--changed", str(directory / "changed"), "--branch", "feature/x"])
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(out.getvalue())[1]["action"], "reuse")
@@ -659,7 +797,7 @@ class PlanCliTests(unittest.TestCase):
         out.reconfigure = lambda **_: None
         directory = self.files(TAB.join(["lint", "success", "jenkins"]) + NL, "x" + NL)
         with mock.patch.object(cat, "load", return_value=value), contextlib.redirect_stdout(out):
-            status = pc.main(["plan", "dotnet-util", str(repo(self.CONFIG)), "--statuses", str(directory / "statuses"),
+            status = pc.main(["plan", "shop-api", str(repo(self.CONFIG)), "--statuses", str(directory / "statuses"),
                               "--changed", str(directory / "changed"), "--branch", "feature/x"])
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(out.getvalue())[1]["action"], "reuse")

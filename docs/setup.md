@@ -1645,10 +1645,10 @@ other instead (one lock per repository, so two releases never overlap).
 
 | Event | A repository **without** `yggdrasil.yml` | A repository **with** one |
 |---|---|---|
-| Pull request into `develop` | Nothing (on GitHub the Branch Policy workflow and Actions check it) | `branch-policy`, then every check, as statuses on the head commit; the build fails once all have reported if any failed. On Forgejo with a `mirror`, the `actionsChecks` are copied from GitHub Actions too ([below](#github-actions-and-the-skip)) |
+| Pull request into `develop` | Nothing (on GitHub the Branch Policy workflow and Actions check it) | `branch-policy`, then the job's checks (its catalog entry's `checks`), as statuses on the head commit; the build fails once all have reported if any failed. On Forgejo with a `mirror`, the `actionsChecks` are copied from GitHub Actions too ([below](#github-actions-and-the-skip)) |
 | Pull request into `main` from anything but `release/x.y.z` | Nothing | `branch-policy` fails it |
 | Release pull request `release/x.y.z` → `main` | GitHub: every GitHub Actions check waited for, each release environment deployed, then merged, tagged and released as before. Forgejo: the same steps without release files | The pipeline of [Releases](#releases) below: checks, GitHub Actions checks (or the skip), deploys, merge, tag, files, publication |
-| Push to `develop`, `main` or `release/*` | Deploys to the environments whose `trigger: branch` globs match | The checks first (reused or skipped where the rules allow); the deploys only if every check passed, and of the commit the checks saw |
+| Push to `develop`, `main` or `release/*` | Deploys to the environments whose `trigger: branch` globs match | The job's checks first, and its `deploy.inputs` when it deploys (reused or skipped where the rules allow); the deploys only if every check passed, and of the commit the checks saw |
 | Push to another branch that a `branches` glob matches | Deploys | Deploys, with no checks |
 | Tag matching an owner-tagged entry's `tags`, at most a day old | The tag is read on the release agent and must be on `main`; nothing else happens | What the file declares: release files and/or NuGet packages ([Owner tags and NuGet](#owner-tags-and-nuget)) |
 | **Build with Parameters → `DEPLOY_TO`** | Deploys the branch to a `manual` or `branch` environment, no checks | The same |
@@ -1667,13 +1667,16 @@ is never reused:
 - into `main`: only `release/x.y.z`, a snapshot of `develop` (every commit already on it), whose version has
   no `vx.y.z` tag.
 
-Each check of the file runs through `scripts/run-check.sh`, in its `image`, as root of the `ci` user's engine
-(the service user on the host), on the checkout, with its `run` line given to `sh -c`; `docker: true` also
-gives it that engine's socket (Testcontainers). Up to four run at once. Its `credentials` are written to a
-private file and handed to the container as environment variables: only ids the catalog allows the repository,
-never one of the pipeline's own (`forge-*`, `github-*`) or the NuGet key, and **never on a `renovate/*`
-build**. Its test results (`junit`) and `archive` are collected whatever the outcome, unless a symbolic link
-in the checkout leads out of it (the build is then unstable and collects nothing).
+A job runs its own catalog entry's `checks`, and the checks `deploy.inputs` names when it deploys; the
+file's other checks are another entry's of the same repository, and that job runs and reports them
+([Repository pipeline file](catalog.md#repository-pipeline-file)). Each check runs through
+`scripts/run-check.sh`, in its `image`, as root of the `ci` user's engine (the service user on the host), on
+the checkout, with its `run` line given to `sh -c`; `docker: true` also gives it that engine's socket
+(Testcontainers). Up to four run at once. Its `credentials` are written to a private file and handed to the
+container as environment variables: only ids the catalog allows the repository, never one of the pipeline's
+own (`forge-*`, `github-*`) or the NuGet key, and **never on a `renovate/*` build**. Its test results
+(`junit`) and `archive` are collected whatever the outcome, unless a symbolic link in the checkout leads out
+of it (the build is then unstable and collects nothing).
 
 Every check is posted from the controller as a commit status on the build's commit: `pending`, then `success`
 or `failure`, with the build's page as its address and the check's name as its context. A check skipped by

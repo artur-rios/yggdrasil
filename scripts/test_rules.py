@@ -128,6 +128,62 @@ class DesiredRulesTests(unittest.TestCase):
         self.assertEqual(len(modelled), 1)
         self.assertEqual(modelled[0].main_checks, ("branch-policy", "test", "docker", "e2e", "deploy/production"))
 
+    def test_given_a_library_and_its_docs_application_when_modelled_then_it_is_one_owner_tag_rule_set(self):
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "toolkit-docs", "name": "Docs", "kind": "web", "health": "http://toolkit-docs:8080/",
+             "repository": "toolkit", "checks": ["links"], "actionsChecks": ["pages"],
+             "environments": {"staging": {}}})
+        modelled = [r for r in rules.desired_rules(value) if r.repo == "toolkit"]
+        self.assertEqual(len(modelled), 1)
+        r = modelled[0]
+        # The library releases (owner-tag): the owner merges main and creates its numeric tags.
+        self.assertEqual((r.model, r.owner_tags, r.tag_pattern, r.tag_creators, r.main_mergers),
+                         ("release", True, "[0-9]*", ("artur-rios",), ("artur-rios",)))
+        # Both jobs' statuses are required: the deciding entry's checks first, then the others'.
+        self.assertEqual(r.develop_checks, ("branch-policy", "build", "links", "pages"))
+        self.assertEqual(r.main_checks, ("branch-policy", "build", "links"))
+        self.assertEqual(r.actions_checks, frozenset({"pages"}))
+        # The repository keeps its place among the repositories entries.
+        self.assertEqual([r.repo for r in rules.desired_rules(value)],
+                         ["shop-api", "storefront", "toolkit", "scratch", "notes"])
+
+    def test_given_an_application_and_its_docs_application_when_modelled_then_it_is_one_release_model_rule_set(self):
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://shop-api-docs:8080/",
+             "repository": "shop-api", "checks": ["links"], "environments": {"staging": {}}})
+        modelled = [r for r in rules.desired_rules(value) if r.repo == "shop-api"]
+        self.assertEqual(len(modelled), 1)
+        r = modelled[0]
+        self.assertEqual((r.model, r.owner_tags, r.tag_pattern, r.tag_creators, r.main_mergers),
+                         ("release", False, "v*", ("jenkins-bot",), ("jenkins-bot",)))
+        self.assertEqual(r.main_checks, ("branch-policy", "test", "docker", "links", "deploy/production"))
+        self.assertEqual(r.develop_checks, ("branch-policy", "test", "docker", "links", "lint"))
+
+    def test_given_a_docs_application_on_a_repository_entry_without_releases_when_modelled_then_the_entry_decides(self):
+        # Nothing releases: the repositories entry supplies the model (basic here), not the application.
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "scratch-docs", "name": "Docs", "kind": "web", "health": "http://scratch-docs:8080/",
+             "repository": "scratch", "checks": ["links"], "environments": {"staging": {}}})
+        (r,) = [r for r in rules.desired_rules(value) if r.repo == "scratch"]
+        self.assertEqual((r.model, r.owner_tags, r.main_mergers), ("basic", True, ()))
+        # With the release model the entry's owner merges main, and both entries' checks are required.
+        value["repositories"][1]["rules"] = "release"
+        (r,) = [r for r in rules.desired_rules(value) if r.repo == "scratch"]
+        self.assertEqual((r.model, r.main_mergers, r.main_checks), ("release", ("artur-rios",),
+                                                                    ("branch-policy", "ignored", "links")))
+
+    def test_given_two_applications_without_releases_when_modelled_then_the_first_one_decides(self):
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "storefront-docs", "name": "Docs", "kind": "web", "health": "http://storefront-docs:8080/",
+             "repository": "storefront", "checks": ["links"], "environments": {"dev": {}}})
+        (r,) = [r for r in rules.desired_rules(value) if r.repo == "storefront"]
+        self.assertEqual((r.model, r.main_mergers, r.main_checks), ("release", ("jenkins-bot",),
+                                                                    ("branch-policy", "links")))
+
     def test_given_the_repository_catalog_when_modelled_then_every_entry_is_valid(self):
         import catalog
         modelled = rules.desired_rules(catalog.load())

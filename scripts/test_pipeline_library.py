@@ -567,14 +567,39 @@ class PipelineLibraryTests(unittest.TestCase):
         body = self.lib.code[start:end]
         self.assertLess(body.index("describeCheckout(ctx)"), body.index("state.config = document.config"))
 
-    def test_given_a_plan_when_read_then_it_must_cover_every_check_of_the_file_once(self):
+    def test_given_a_plan_when_read_then_it_must_cover_exactly_the_checks_the_job_needs_once(self):
+        # A job runs its own catalog entry's checks (and deploy.inputs when it deploys), not every check of
+        # yggdrasil.yml: another entry of the same repository may name the rest.
         start, end = self.lib.functions["planChecks"]
-        self.assertRegex(self.lib.code[start:end], r"planProblem\(planned, state\.entry\) \?: planCoverage\(planned, state\.config\)")
+        self.assertRegex(self.lib.code[start:end],
+                         r"planProblem\(planned, state\.entry\) \?: "
+                         r"planCoverage\(planned, neededChecks\(state\.entry, state\.config, deploying\)\)")
         start, end = self.lib.functions["planCoverage"]
         body = self.lib.code[start:end]
-        self.assertIn("config.checks", body)
-        for wanted in ("leaves out", "does not", "more than once"):
+        self.assertNotIn("config.checks", body)
+        for wanted in ("leaves out", "does not need", "more than once"):
             self.assertIn(wanted, body)
+        start, end = self.lib.functions["neededChecks"]
+        body = self.lib.code[start:end]
+        self.assertIn("entry.checks", body)
+        self.assertRegex(body, r"if \(deploying\)")
+        self.assertIn(".inputs", body)
+        # The checks left out are named in the log, sorted: the parsed document's maps keep no order.
+        body = self.lib.code[slice(*self.lib.functions["notNeeded"])]
+        self.assertIn(".sort().join(', ')", body)
+
+    def test_given_a_build_that_deploys_when_planned_then_plan_is_told_with_deploying(self):
+        start, end = self.lib.functions["planChecks"]
+        body = self.lib.code[start:end]
+        self.assertIn("\"YGG_DEPLOYING=${deploying ? '1' : ''}\"", body)
+        self.assertRegex(body, r'if \[ -n "\$YGG_DEPLOYING" \]; then set -- --deploying; fi')
+        self.assertRegex(body, r'--branch "\$YGG_BRANCH" "\$@"')
+
+    def test_given_describe_warnings_when_read_then_each_is_shown_in_the_log(self):
+        start, end = self.lib.functions["describeCheckout"]
+        body = self.lib.code[start:end]
+        self.assertRegex(body, r"for \(Object warning : \(document\.warnings \?: \[\]\)\)")
+        self.assertIn('echo "Warning: ${printable(warning)}"', body)
 
     def test_given_collected_results_when_read_then_no_link_out_of_the_checkout_is_followed(self):
         lib = self.lib
@@ -639,8 +664,12 @@ class PipelineLibraryTests(unittest.TestCase):
         lib = self.lib
         code = lib.code
         lock = code.index('lock(resource: "release-${app}")')
-        self.assertTrue(code.startswith("Map state = prepare(ctx, 'pull-request', true)",
+        self.assertTrue(code.startswith("Map state = prepare(ctx, 'pull-request', environments as boolean)",
                                         code.index("Map state = prepare(", lock)))
+        # Deploying only when a release environment exists: a library or a docs site sharing the repository
+        # builds the same release pull request, and must run only its own checks.
+        self.assertLess(code.index("List environments = plan.findAll { it.trigger == 'release' }", lock),
+                        code.index("Map state = prepare(", lock))
         body = lib.code[slice(*lib.functions["releasePullRequest"])]
         self.assertIn("List inputs = state.config != null ? deployInputs(state.config) : []", body)
         self.assertRegex(body, r"deployTo\(app, environment, version, state\.sha, false, ctx\.repo, inputs, null, note\)")

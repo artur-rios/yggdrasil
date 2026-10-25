@@ -600,17 +600,59 @@ class RepositoryTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertTrue(any("repositories[0].id" in e for e in self.errors(repositories=[{"id": bad}])))
 
-    def test_given_a_repository_that_is_also_an_applications_when_validated_then_it_is_an_error(self):
-        errors = self.errors(repositories=[{"id": "shop-api"}])
-        self.assertTrue(any("shop-api is already an application's repository" in e for e in errors), errors)
-
-    def test_given_a_repository_that_is_an_applications_repository_field_when_validated_then_it_is_an_error(self):
+    def test_given_a_repository_named_like_an_application_when_validated_then_it_is_an_error(self):
+        # Each names a Jenkins job (the Job DSL): two jobs of one name cannot both exist.
         value = catalog(repositories=[{"id": "shop-frontend"}, {"id": "shop-web"}])
         value["systems"][0]["applications"][1]["repository"] = "shop-frontend"
         errors = c.validate(value)
-        # shop-web is no longer a repository name: shop-web's repository is shop-frontend.
-        self.assertEqual([e for e in errors if "already an application's repository" in e],
-                         ["repositories[0].id: shop-frontend is already an application's repository"])
+        # shop-frontend is shop-web's repository, which a repositories entry may share; shop-web is the
+        # application's id, which no repositories entry may take.
+        self.assertEqual([e for e in errors if "repositories[" in e],
+                         ["repositories[1].id: shop-web is already an application's id (each names a Jenkins "
+                          "job): rename one of them"])
+
+    def test_given_a_library_and_its_docs_application_on_one_repository_when_validated_then_it_is_valid(self):
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "tags": "[0-9]*",
+                                       "checks": ["unit", "coverage"]}])
+        value["systems"][0]["applications"].append(
+            {"id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://dotnet-util-docs:8080/",
+             "repository": "dotnet-util", "checks": [], "environments": {"staging": {}}})
+        self.assertEqual(c.validate(value), [])
+        self.assertEqual(c.repository_names(value), ["shop-api", "shop-web", "dotnet-util"])
+
+    def test_given_an_application_and_its_docs_application_on_one_repository_when_validated_then_it_is_valid(self):
+        # heimdall-api releases (prod: trigger release); its docs site deploys on a branch only.
+        value = catalog()
+        value["systems"][0]["applications"].append(
+            {"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://shop-api-docs:8080/",
+             "repository": "shop-api", "environments": {"staging": {}}})
+        self.assertEqual(c.validate(value), [])
+        self.assertEqual(c.repository_names(value), ["shop-api", "shop-web"])
+
+    def test_given_two_releasing_entries_on_one_repository_when_validated_then_it_is_an_error_naming_both(self):
+        # Who merges main and who creates the version tags would be two answers for one repository.
+        both_apps = catalog()
+        both_apps["systems"][0]["applications"][1]["repository"] = "shop-api"  # shop-web releases on prod
+        app_and_library = catalog(repositories=[{"id": "shop-web", "release": "owner-tag"}])
+        app_and_library["systems"][0]["applications"][1]["id"] = "shop-site"
+        app_and_library["systems"][0]["applications"][1]["repository"] = "shop-web"
+        for value, wanted in (
+                (both_apps, "repository shop-api: application shop-api and application shop-web both release"),
+                (app_and_library, "repository shop-web: application shop-site and repositories entry shop-web "
+                                  "both release")):
+            with self.subTest(wanted=wanted):
+                errors = [e for e in c.validate(value) if "both release" in e]
+                self.assertEqual(len(errors), 1, errors)
+                self.assertTrue(errors[0].startswith(wanted), errors)
+
+    def test_given_one_releasing_entry_and_a_repositories_entry_without_releases_when_validated_then_it_is_valid(self):
+        # release: none releases nothing: shop-web (prod, trigger release) is the one releasing entry.
+        value = catalog(repositories=[{"id": "shop-frontend", "checks": ["lint"]}])
+        value["systems"][0]["applications"][1]["repository"] = "shop-frontend"
+        self.assertEqual(c.validate(value), [])
+        value["repositories"][0]["release"] = "owner-tag"
+        self.assertTrue(any("repository shop-frontend: application shop-web and repositories entry shop-frontend "
+                            "both release" in e for e in c.validate(value)))
 
     def test_given_two_repositories_with_the_same_id_when_validated_then_it_is_an_error(self):
         errors = self.errors(repositories=[{"id": "dotnet-util"}, {"id": "dotnet-util"}])

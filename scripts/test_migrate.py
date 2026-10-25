@@ -19,6 +19,16 @@ CATALOG_MIRROR = {**CATALOG, "forge": {"type": "forgejo", "url": "https://git.ex
                   "mirror": {"github": MIRROR}}
 
 
+def with_docs_application(catalog):
+    """`catalog` with toolkit's docs site, an application on the toolkit repository: two catalog entries
+    (two Jenkins jobs) and one repository."""
+    value = {**catalog, "systems": [{"id": "shop", "name": "Shop", "applications": [
+        *catalog["systems"][0]["applications"],
+        {"id": "toolkit-docs", "name": "Docs", "kind": "web", "health": "http://toolkit-docs:8080/",
+         "repository": "toolkit"}]}]}
+    return value
+
+
 def repository(name, **fields):
     """A repository as GitHub's list answers it (more fields than migrate keeps, as the real one does)."""
     return {"id": 1, "name": name, "full_name": f"x/{name}", "private": False, "fork": False, "archived": False,
@@ -1522,6 +1532,13 @@ class CollaboratorsTests(unittest.TestCase):
         self.assertIn("toolkit: jenkins-ci: read granted", run.lines)
         self.assertEqual(run.gh.calls, [])
 
+    def test_given_two_catalog_entries_on_one_repository_when_collaborators_run_then_it_is_granted_once(self):
+        run = self.run_collaborators(catalog=with_docs_application(CATALOG_MIRROR))
+        self.assertEqual(run.code, 0, run.err)
+        grants = [c for c in run.forgejo.writes() if c[1].startswith(f"/repos/{OWNER}/toolkit/")]
+        self.assertEqual(len(grants), len(COLLABORATOR_USERS), grants)
+        self.assertFalse([c for c in run.forgejo.calls if "toolkit-docs" in c[1]])
+
     def test_given_only_the_catalog_when_collaborators_run_then_other_repositories_are_not_touched(self):
         forgejo = FakeForgejo(existing={n: forgejo_repository(n) for n in ("shop-api", "toolkit", "old-fork")})
         run = self.run_collaborators(forgejo=forgejo)
@@ -1698,6 +1715,16 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual({len(line.split("\t")) for line in run.lines if not line.startswith("note: ")} - {1}, {4})
         # Read only, however it goes: no write to either server.
         self.assertEqual((world[0].writes(), world[1].writes()), ([], []))
+
+    def test_given_two_catalog_entries_on_one_repository_when_verified_then_it_is_verified_once(self):
+        world = verified_world()
+        run = self.run_verify(world, catalog=with_docs_application(MIRROR_CATALOG))
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertEqual([row[1] for row in self.rows(run, "toolkit")],
+                         ["on Forgejo", "default branch", "visibility", "push mirror", "refs", "rulesets", "issues",
+                          "webhook", "collaborators"])
+        self.assertEqual({row[2] for row in self.rows(run)}, {"ok"})
+        self.assertFalse([line for line in run.lines if "toolkit-docs" in line])
 
     def test_given_a_tag_on_another_commit_on_github_when_verified_then_it_fails_naming_the_tag(self):
         gh, forgejo = verified_world()

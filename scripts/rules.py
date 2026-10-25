@@ -145,30 +145,47 @@ def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag
 
 
 def desired_rules(catalog):
-    """The rules of every repository of the catalog: applications first (catalog order), then the
-    `repositories` entries. Applications are deployable ones only (platform components live in this
-    repository and have none)."""
+    """The rules of every repository of the catalog, one set each, in catalog.repository_names() order:
+    the applications' repositories first (catalog order), then the `repositories` entries'. Applications
+    are deployable ones only (platform components live in this repository and have none).
+
+    A repository may back several catalog entries (an application's `repository`, else its id; a
+    `repositories` entry's id): an application and its docs site, a library and its docs application.
+    One entry decides the model, who merges main, who pushes release branches and the tags: the one that
+    releases (an application with a trigger: release environment, or a `repositories` entry whose release
+    is not none; catalog.py allows at most one), else the `repositories` entry, else the first
+    application. The required checks and actionsChecks are those of every entry, the deciding one's
+    first, so each job's statuses are required."""
     owner = catalog["owner"]
     forge = catalog_module.forge(catalog)
     jenkins, developers = forge["jenkinsUser"], forge["developers"]
 
-    # An application's repository is its `repository`, else its id. Applications that share one are
-    # a single repository: their checks and release environments are required together.
-    applications = {}
+    # Each entry as the rules see it, grouped by repository in repository_names() order.
+    grouped = {}
     for _, app in catalog_module.applications(catalog, deployable=True):
-        entry = applications.setdefault(app.get("repository") or app["id"], {"checks": [], "actions": [], "deploys": []})
-        entry["checks"] += app.get("checks") or []
-        entry["actions"] += app.get("actionsChecks") or []
-        entry["deploys"] += [e["id"] for e in catalog_module.resolve(catalog, app["id"]) if e["trigger"] == "release"]
-
-    modelled = [_rules(repo, "release", owner, _unique(e["checks"]), _unique(e["actions"]), _unique(e["deploys"]),
-                       jenkins, "v*", jenkins, developers, owner_tags=False)
-                for repo, e in applications.items()]
+        deploys = [e["id"] for e in catalog_module.resolve(catalog, app["id"]) if e["trigger"] == "release"]
+        # Jenkins merges an application's main and creates its v* tags.
+        grouped.setdefault(app.get("repository") or app["id"], []).append({
+            "releases": bool(deploys), "checks": app.get("checks") or [], "actions": app.get("actionsChecks") or [],
+            "deploys": deploys, "model": "release", "merger": jenkins, "tags": "v*", "owner_tags": False})
     for entry in catalog_module.repositories(catalog):
         # The owner releases these by hand: they merge main and create the tags themselves.
         owner_tag = entry["release"] == "owner-tag"
-        modelled.append(_rules(entry["id"], entry["rules"], owner, entry["checks"], entry["actionsChecks"], (),
-                               owner, entry["tags"] if owner_tag else "v*", owner, developers, owner_tags=True))
+        grouped.setdefault(entry["id"], []).append({
+            "releases": entry["release"] != "none", "checks": entry["checks"], "actions": entry["actionsChecks"],
+            "deploys": [], "model": entry["rules"], "merger": owner, "tags": entry["tags"] if owner_tag else "v*",
+            "owner_tags": True, "repository_entry": True})
+
+    modelled = []
+    for repo, entries in grouped.items():
+        deciding = (next((e for e in entries if e["releases"]), None)
+                    or next((e for e in entries if e.get("repository_entry")), None)
+                    or entries[0])
+        ordered = [deciding] + [e for e in entries if e is not deciding]
+        modelled.append(_rules(repo, deciding["model"], owner, _unique(*(e["checks"] for e in ordered)),
+                               _unique(*(e["actions"] for e in ordered)), _unique(*(e["deploys"] for e in ordered)),
+                               deciding["merger"], deciding["tags"], deciding["merger"], developers,
+                               owner_tags=deciding["owner_tags"]))
     return modelled
 
 

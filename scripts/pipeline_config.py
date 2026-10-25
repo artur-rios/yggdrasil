@@ -3,9 +3,10 @@
 
     python3 scripts/pipeline_config.py describe <job-id> <repo-dir>
     python3 scripts/pipeline_config.py plan <job-id> <repo-dir> --statuses <file> --changed <file|-> --branch <name>
+                                            [--deploying]
 
-describe prints one JSON document on stdout, {"entry", "config", "errors"}, and exits 1 when there
-are errors (or the job is unknown):
+describe prints one JSON document on stdout, {"entry", "config", "errors", "warnings"}, and exits 1 when
+there are errors (or the job is unknown):
 
     entry    the catalog's view of the job (an application's id or a repositories entry's id): kind,
              id, repository, credentials, checks, actionsChecks, release (deploy, owner-tag or none)
@@ -13,10 +14,19 @@ are errors (or the job is unknown):
     config   the validated yggdrasil.yml, or null when the repository has none (or it is invalid)
     errors   every problem found: a field of the file outside the schema, or something the catalog
              does not allow this repository (a credential, a missing check, a release...)
+    warnings what is allowed but likely a mistake, never a reason to fail: a check of the file that no
+             catalog entry of the repository runs (see unclaimed_checks)
 
-plan prints a JSON list, one entry per check of the file: name, action (run, reuse or skip), reason, image,
-run, docker, credentials, junit and archive. --statuses is `forge.sh get-statuses` output, --changed lists the
-changed files one per line ("-": unknown, every check runs). See plan_checks(); exit 1 when the file is invalid.
+One yggdrasil.yml serves every catalog entry of its repository (a library's `repositories` entry and its
+docs application, say: two Jenkins jobs). Each job runs only its own entry's `checks`, plus the checks
+deploy.inputs names when it deploys; the file's other checks are another entry's, and that job leaves
+them alone (no run, no status).
+
+plan prints a JSON list, one entry per check the job needs (needed_checks): name, action (run, reuse or
+skip), reason, image, run, docker, credentials, junit and archive. --statuses is `forge.sh get-statuses`
+output, --changed lists the changed files one per line ("-": unknown, every check runs), --deploying says
+the build deploys afterwards (deploy.inputs are needed too). See plan_checks(); exit 1 when the file is
+invalid.
 
 A repository without a yggdrasil.yml is not an error: it behaves as it did before the file existed
 (deploys only; the pipeline asks nothing else of it).
@@ -275,6 +285,31 @@ def _described(entry):
     return f"an {entry['kind']} with release: {entry['release']}"
 
 
+def entries_of(catalog, repository):
+    """entry_for() of every catalog entry built from the git repository `repository`, in catalog order:
+    the deployable applications whose `repository` (else id) it is, then the `repositories` entry of that
+    id. Each is a Jenkins job reading the same yggdrasil.yml."""
+    ids = [app["id"] for _, app in cat.applications(catalog, deployable=True)
+           if (app.get("repository") or app["id"]) == repository]
+    ids += [entry["id"] for entry in cat.repositories(catalog) if entry["id"] == repository]
+    return [entry_for(catalog, job_id) for job_id in ids]
+
+
+def unclaimed_checks(config, entries):
+    """The warnings for the checks of the file that no job of the repository ever runs: one sentence per
+    check that none of `entries` (entries_of()) names in its catalog `checks`. A check deploy.inputs names
+    is claimed too when an application is among them, since that job runs it whenever it deploys; a
+    `repositories` entry never deploys, so its file's inputs alone claim nothing."""
+    if not config:
+        return []
+    claimed = {name for entry in entries for name in entry["checks"]}
+    if any(entry["kind"] == "application" for entry in entries):
+        claimed.update((config.get("deploy") or {}).get("inputs") or [])
+    repository = entries[0]["repository"] if entries else "this repository"
+    return [f"checks.{name} is not in any catalog entry of {repository}: it never runs"
+            for name in (config.get("checks") or {}) if name not in claimed]
+
+
 # ---- Planning the checks ----
 
 
@@ -332,8 +367,27 @@ def glob_match(glob, path):
     return _glob_regex(glob).fullmatch(path) is not None
 
 
-def plan_checks(config, statuses, changed, branch, jenkins_user):
-    """What to do with each check of the file, in its order: a list of
+def needed_checks(config, entry, deploying=False):
+    """The checks this job runs, each once: its catalog entry's `checks` in their order, then, when the
+    build deploys, the deploy.inputs not among them, in theirs. Raises ConfigError for a name the file
+    does not define: a required status that never comes blocks the merge, and on a push the deploy
+    would go out without it (validate_against() says the same with the rest of the file's problems)."""
+    names = list(entry["checks"])
+    if deploying:
+        names += ((config or {}).get("deploy") or {}).get("inputs") or []
+    names = list(dict.fromkeys(names))
+    defined = (config or {}).get("checks") or {}
+    missing = [name for name in names if name not in defined]
+    if missing:
+        raise ConfigError([f"checks: '{name}' is a check {entry.get('id', 'this job')} needs but {CONFIG_FILE} "
+                           "does not define it" for name in missing])
+    return names
+
+
+def plan_checks(config, entry, statuses, changed, branch, jenkins_user, deploying=False):
+    """What to do with each check this job needs (needed_checks(): `entry`'s catalog checks, then the
+    deploy inputs when `deploying`), in that order. The file's other checks are not planned: another
+    catalog entry of the repository runs them, or nobody does (describe warns). A list of
 
         name, action, reason   action is run, reuse or skip; reason says why, for the build log
         image, run, docker, credentials, junit, archive   what to run it with (docker false, credentials {},
@@ -350,11 +404,15 @@ def plan_checks(config, statuses, changed, branch, jenkins_user):
     `statuses` are (context, state, creator) as `forge.sh get-statuses` prints them (the last of a
     context counts); `changed` the repository-relative paths changed by the build, or None when unknown.
     A renovate/* branch gets no credentials at all: dependency updates come from outside and their
-    checks must never see a secret. `config` is not changed; None or without checks gives []."""
+    checks must never see a secret. Neither `config` nor `entry` is changed; config None (no yggdrasil.yml:
+    the repository behaves as before the file existed) gives []."""
+    if config is None:
+        return []
     latest = {context: (state, creator) for context, state, creator in statuses}
     no_secrets = branch.startswith("renovate/")
     planned = []
-    for name, check in ((config or {}).get("checks") or {}).items():
+    for name in needed_checks(config, entry, deploying):
+        check = config["checks"][name]
         state, creator = latest.get(name, (None, None))
         paths = check.get("paths") or []
         if state == "success" and creator == jenkins_user:
@@ -409,14 +467,18 @@ def describe(catalog, job_id, repo_dir):
     try:
         config = load_config(repo_dir)
     except ConfigError as error:
-        return {"entry": entry, "config": None, "errors": error.errors}
-    return {"entry": entry, "config": config, "errors": validate_against(config, entry)}
+        return {"entry": entry, "config": None, "errors": error.errors, "warnings": []}
+    return {"entry": entry, "config": config, "errors": validate_against(config, entry),
+            # A platform component's (never a job) is in no deployable entry: its own entry stands alone.
+            "warnings": unclaimed_checks(config, entries_of(catalog, entry["repository"]) or [entry])}
 
 
 PLAN_OPTIONS = ("--statuses", "--changed", "--branch")
+# plan's one flag: the build deploys afterwards, so the checks deploy.inputs names are needed too.
+DEPLOYING = "--deploying"
 
 
-def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch):
+def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch, deploying=False):
     """The list `plan` prints: plan_checks() for the job's file, with the catalog's Jenkins user. A file
     that is invalid, or breaks the catalog's rules, is a ConfigError naming every problem. `changed_file`
     lists one path per line, or is "-" when the changes are unknown."""
@@ -428,17 +490,23 @@ def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch):
     if changed_file != "-":
         lines = (line.rstrip("\r") for line in _read(changed_file, "changed files").split("\n"))
         changed = [line for line in lines if line]
-    return plan_checks(document["config"], statuses, changed, branch, cat.forge(catalog)["jenkinsUser"])
+    return plan_checks(document["config"], document["entry"], statuses, changed, branch,
+                       cat.forge(catalog)["jenkinsUser"], deploying)
 
 
 def _command(argv):
     """The function (catalog -> JSON-able) the arguments ask for, or None when they are not a command."""
     if len(argv) == 3 and argv[0] == "describe":
         return lambda catalog: describe(catalog, argv[1], argv[2])
-    if len(argv) == 3 + 2 * len(PLAN_OPTIONS) and argv[0] == "plan" and sorted(argv[3::2]) == sorted(PLAN_OPTIONS):
-        options = dict(zip(argv[3::2], argv[4::2]))
-        return lambda catalog: plan(catalog, argv[1], argv[2], options["--statuses"], options["--changed"],
-                                    options["--branch"])
+    # --deploying, when given, comes last: the options before it stay pairs, so it can never be read as the
+    # value of one of them.
+    deploying = argv[-1:] == [DEPLOYING]
+    words = argv[:-1] if deploying else argv
+    if len(words) == 3 + 2 * len(PLAN_OPTIONS) and words[0] == "plan" \
+            and sorted(words[3::2]) == sorted(PLAN_OPTIONS):
+        options = dict(zip(words[3::2], words[4::2]))
+        return lambda catalog: plan(catalog, words[1], words[2], options["--statuses"], options["--changed"],
+                                    options["--branch"], deploying)
     return None
 
 
