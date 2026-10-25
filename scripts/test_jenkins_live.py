@@ -361,7 +361,10 @@ def test_catalog():
         "systems": [{"id": "shop", "name": "Shop", "applications": [
             {"id": APP, "name": "API", "kind": "api", "health": "http://shop-api:8080/healthz", "checks": ["unit"],
              "credentials": ["shop-db-password"]},
-            {"id": WEB, "name": "Web", "kind": "web", "health": "http://shop-web:8080/", "checks": ["unit"]},
+            # releaseCredentials without a release: the id a check may still not bind (a job is judged on the
+            # credentials of the checks it runs, and shop-desktop runs none).
+            {"id": WEB, "name": "Web", "kind": "web", "health": "http://shop-web:8080/", "checks": ["unit"],
+             "releaseCredentials": ["shop-db-password"]},
             # Development only: an application that does not release (release-resume refuses it).
             {"id": PLAIN, "name": "Site", "kind": "web", "health": "http://plain-site:8080/",
              "environments": {"development": {}}},
@@ -1187,6 +1190,18 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # The checks still run and report: the owner sees everything that is wrong at once.
         self.assertEqual(latest["unit"][1], "success")
 
+    def test_given_a_basic_repository_when_a_pull_request_breaks_the_branching_model_then_branch_policy_passes(self):
+        # plain-site only deploys on branches, so its rules are basic: nothing to check, for a branch that is
+        # no feature/ or fix/ one into develop, and for one that is no release branch into main.
+        for branch, base in (("topic/anything", "develop"), ("feature/straight-to-main", "main")):
+            with self.subTest(branch=branch, base=base):
+                sha = self.branch_with(CLAUDE, PLAIN, branch, {"yggdrasil.yml": pipeline_file()}, base=base)
+                number, build = self.pull_request_build(CLAUDE, PLAIN, branch, base)
+                self.assertEqual(build.result, "SUCCESS", build.console[-4000:])
+                latest = self.latest_statuses(PLAIN, sha)
+                self.assertEqual(latest["branch-policy"][1:4], ("success", JENKINS, "basic: nothing to check"))
+                self.assertNotIn("must come from", build.console)
+
     def test_given_claudes_branch_with_its_own_jenkinsfile_when_built_then_that_file_never_runs(self):
         sha = self.branch_with(CLAUDE, APP, "feature/own-jenkinsfile",
                                {"Jenkinsfile": HOSTILE_JENKINSFILE, "yggdrasil.yml": pipeline_file(unit=UNIT)})
@@ -1211,19 +1226,20 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(self.statuses(APP, sha), [])
 
     def test_given_a_check_asking_for_a_release_credential_when_built_then_the_build_fails_before_it_runs(self):
-        # shop-desktop's release build may bind shop-db-password (releaseCredentials); a check, which runs
-        # any branch's code, may not, although Jenkins has the credential.
+        # shop-web's release build may bind shop-db-password (releaseCredentials); a check, which runs any
+        # branch's code, may not, although Jenkins has the credential. (A job is judged on the checks it runs:
+        # shop-desktop, which runs none, would only warn about this file.)
         check = {**UNIT, "credentials": {"SIGNING_KEY": "shop-db-password"}}
         branch = "feature/release-credential"
-        sha = self.branch_with(CLAUDE, DESKTOP, branch, {"yggdrasil.yml": pipeline_file(unit=check)})
-        number, build = self.pull_request_build(CLAUDE, DESKTOP, branch)
+        sha = self.branch_with(CLAUDE, WEB, branch, {"yggdrasil.yml": pipeline_file(unit=check)})
+        number, build = self.pull_request_build(CLAUDE, WEB, branch)
         self.assertEqual(build.result, "FAILURE")
         self.assertIn("yggdrasil.yml cannot be used", build.console)
-        self.assertIn(f"credential 'shop-db-password' is not allowed for {DESKTOP} (its catalog credentials: [])",
+        self.assertIn(f"credential 'shop-db-password' is not allowed for {WEB} (its catalog credentials: [])",
                       build.console)
         self.assertNotIn(UNIT_RAN, build.console)
         self.assertNotIn("(Checks)", build.console)
-        self.assertEqual(self.statuses(DESKTOP, sha), [])
+        self.assertEqual(self.statuses(WEB, sha), [])
 
     def test_given_a_forged_success_by_claude_when_built_then_the_check_still_runs(self):
         sha = self.branch_with(CLAUDE, APP, "feature/forged", {"yggdrasil.yml": pipeline_file(unit=UNIT)})
@@ -1252,14 +1268,25 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(self.latest_statuses(APP, sha)["unit"][3], f"reused: success by {JENKINS} on this commit")
 
     def test_given_a_check_with_paths_and_no_change_under_them_when_built_then_it_is_skipped(self):
-        sha = self.branch_with(CLAUDE, APP, "feature/docs-only",
-                               {"yggdrasil.yml": pipeline_file(unit={**UNIT, "paths": ["src/**"]}),
-                                "docs/readme.md": "Only documentation.\n"})
-        number, build = self.pull_request_build(CLAUDE, APP, "feature/docs-only")
+        # shop-web's yggdrasil.yml (on develop since setUpClass) gives unit the paths src/**: a pull request
+        # that changes documentation alone skips it, and the skip is a success.
+        sha = self.branch_with(CLAUDE, WEB, "feature/docs-only", {"docs/readme.md": "Only documentation.\n"})
+        number, build = self.pull_request_build(CLAUDE, WEB, "feature/docs-only")
         self.assertEqual(build.result, "SUCCESS", build.console[-4000:])
         self.assertIn("Check unit: skip (skipped: no changes under src/**)", build.console)
-        self.assertNotIn(UNIT_RAN, build.console)
-        self.assertEqual(self.latest_statuses(APP, sha)["unit"][1:4], ("success", JENKINS, "skipped: no changes under src/**"))
+        self.assertNotIn("WEB-UNIT-42-RAN", build.console)
+        self.assertEqual(self.latest_statuses(WEB, sha)["unit"][1:4], ("success", JENKINS, "skipped: no changes under src/**"))
+
+    def test_given_a_check_with_paths_and_a_change_to_the_pipeline_file_when_built_then_it_runs(self):
+        # A change to yggdrasil.yml matches every check's paths (a Renovate image bump changes nothing else):
+        # this branch changes only that file, and the check still runs, on the new command.
+        bumped = {**UNIT, "run": 'echo "WEB-UNIT-BUMPED-$((40 + 2))-RAN"', "paths": ["src/**"]}
+        sha = self.branch_with(CLAUDE, WEB, "feature/pipeline-file-only", {"yggdrasil.yml": pipeline_file(unit=bumped)})
+        number, build = self.pull_request_build(CLAUDE, WEB, "feature/pipeline-file-only")
+        self.assertEqual(build.result, "SUCCESS", build.console[-4000:])
+        self.assertIn("WEB-UNIT-BUMPED-42-RAN", build.console)
+        self.assertNotIn("Check unit: skip", build.console)
+        self.assertEqual(self.latest_statuses(WEB, sha)["unit"][1:3], ("success", JENKINS))
 
     def test_given_a_check_using_docker_when_built_then_it_can_start_a_container_on_the_ci_engine(self):
         # Testcontainers-style: start a container publishing a port, reach it through
