@@ -276,6 +276,12 @@ class InventoryTests(Fixture):
         self.assertEqual("missing", row.state)
         self.assertTrue(any("not on GitHub" in n for n in row.notes))
 
+    def test_given_a_linked_worktree_when_inventoried_then_it_is_not_a_repository_of_its_own(self):
+        clone = make_clone(self.root, "here")
+        subprocess.run(["git", "-C", str(clone), "worktree", "add", "-b", "other", str(self.root / "here-other")],
+                       check=True, capture_output=True)
+        self.assertEqual(["here"], [r.name for r in self.inventory()])
+
     def test_given_a_clone_when_inventoried_then_the_current_branch_is_recorded(self):
         make_clone(self.root, "here", branch="develop")
         self.assertEqual("develop", self.row("here", self.inventory()).branch)

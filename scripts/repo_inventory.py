@@ -410,12 +410,23 @@ def disagreements(row, entry, github_known):
     return notes
 
 
+def _linked_worktree(path):
+    """True for a `git worktree add` checkout (its `.git` is a file that points into another clone's `.git/worktrees`):
+    a second working copy of a repository that is already a row, such as yggdrasil's own move branch."""
+    marker = pathlib.Path(path) / ".git"
+    try:
+        return marker.is_file() and "/worktrees/" in marker.read_text(encoding="utf-8").replace("\\", "/")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def inventory(repos_dir, github=None, ignore=None):
     """The Rows, sorted by name: every git clone directly under repos_dir, and (with GitHub's listing, the
     list of dicts migrate.github_repositories returns) the repositories that have no clone, plus the ones the
     spec's table names that GitHub does not list. Without `github`, only clones are rows. `ignore`: see clone_state."""
     repos_dir = pathlib.Path(repos_dir)
-    clones = {p.name: p for p in sorted(repos_dir.iterdir()) if p.is_dir() and (p / ".git").exists()}
+    clones = {p.name: p for p in sorted(repos_dir.iterdir()) if p.is_dir() and (p / ".git").exists()
+              and not _linked_worktree(p)}
     listed = {entry["name"]: entry for entry in github} if github is not None else None
     names = set(clones) | (set(listed) | spec_names() if listed is not None else set())
     rows = []
