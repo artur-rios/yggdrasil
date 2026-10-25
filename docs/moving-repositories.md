@@ -254,7 +254,7 @@ only branch. Each branch is local to the clone and has never been pushed.
 | | heimdall-ui | `c99a397` | `develop` | |
 | | fortuna-api | `2b3ff9f` | `develop` | |
 | | fortuna-ui | `90e85f5` | `develop` | |
-| | chimera | `5ac4c1a` | `develop` | |
+| | chimera | `8c81330` | `develop` | |
 | 2. yggdrasil | yggdrasil | `247ab03` | `develop` | In the worktree `D:\Repositories\yggdrasil-move`; the head is before the rebase of 5.8a, which moves it and merges it ([below](#yggdrasil-itself)) |
 | 3. Libraries | dotnet-configuration | `93b613d` | `develop` | Each also has a docs site, `<repo>-docs` |
 | | dotnet-data | `86a357f` | `develop` | Tags `<package>@<version>`; release branches named by date |
