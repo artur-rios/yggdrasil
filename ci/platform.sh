@@ -36,9 +36,10 @@ echo "== Test the Docker socket proxies against Traefik and Alloy"
 # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API. The suite hands each proxy
 # container its fake socket by path, a path the engine must see: on the CI agent the engine is the host's, which
 # sees the checkout at this same path (it is mounted at it) but not this container's /tmp. So the suite's scratch
-# directory is in the checkout here.
+# directory is in the checkout here. discover, as below: the suite imports traefik_config flat, and as
+# `-m unittest scripts.test_socket_proxies` (ci.yml's form) that import failed and every test was skipped.
 mkdir -p "$root/.ci-tmp"
-TMPDIR="$root/.ci-tmp" YGG_DOCKER_TESTS=1 python3 -m unittest scripts.test_socket_proxies -v
+TMPDIR="$root/.ci-tmp" YGG_DOCKER_TESTS=1 python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
 rm -rf "$root/.ci-tmp"
 
 echo "== Test forge.sh and rules.py against Forgejo"
