@@ -1027,7 +1027,9 @@ git stash list | head -1                # stash@{0}: On ...: cutover 4.2 catalog
 
    The plan may be on `develop` already (merged before the window, which froze yggdrasil's releases until now):
    then the merge says `Already up to date.` and there is nothing to push, and `git merge-base --is-ancestor
-   feature/plan-5-repositories develop && echo merged` prints `merged`. Go on to 2.
+   feature/plan-5-repositories develop && echo merged` prints `merged`. Its branch may be gone too, deleted after
+   that merge: then the merge says `not something we can merge`, and `git log --oneline develop --grep
+   'feature/plan-5-repositories' -1` prints the merge of pull request #76 instead. Either way, go on to 2.
 
 2. **yggdrasil's move branch, rebased onto it, then onto `develop`.** The branch was cut from the plan before its last
    commits:
