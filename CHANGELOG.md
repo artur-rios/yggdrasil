@@ -157,6 +157,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **`scripts/deploy.sh` exports `GIT_COMMIT`**, the whole SHA of the checkout being deployed (it already exported
+  `YGG_ENVIRONMENT`), so a stack passes both to a build in `build.args`, as the site templates' `site.yml` does:
+  they replace Vercel's `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV`.
 - **The rules are applied by `python3 scripts/rules.py`** (replaces `python3 github/rulesets.py`, which still
   works and runs it). On a GitHub installation it changes what the rulesets require: on `develop` and `main`,
   `branch-policy` and the `checks` stay required but are bound to no app (any status of that name satisfies

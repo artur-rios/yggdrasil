@@ -42,6 +42,10 @@ FAKE_DOCKER = textwrap.dedent(r"""
         build*)
           # The build context is $APP_DIR in every stack file: record what is in it at build time.
           (cd "$APP_DIR" && find . -type f -not -path './.git/*' | sort) >"$state/build.files"
+          # What Compose would substitute into a stack's build.args.
+          printf '%s
+%s
+' "${GIT_COMMIT-unset}" "${YGG_ENVIRONMENT-unset}" >"$state/build.env"
           ;;
         "config --images")
           while read -r repository; do echo "$repository:$IMAGE_TAG"; done <"$state/repositories"
@@ -127,8 +131,9 @@ class DeployTests(unittest.TestCase):
         git = ["git", "-C", str(self.app), "-c", "user.name=t", "-c", "user.email=t@example.com"]
         subprocess.run(git[:3] + ["init", "--quiet"], check=True)
         subprocess.run(git + ["commit", "--quiet", "--allow-empty", "-m", "app"], check=True)
-        self.commit = subprocess.run(git[:3] + ["rev-parse", "HEAD"], check=True,
-                                     capture_output=True, text=True).stdout.strip()[:7]
+        self.full_commit = subprocess.run(git[:3] + ["rev-parse", "HEAD"], check=True,
+                                          capture_output=True, text=True).stdout.strip()
+        self.commit = self.full_commit[:7]
 
         self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                         FAKE_DOCKER_DIR=str(self.state), YGG_SECRETS_DIR=str(secrets))
@@ -433,13 +438,40 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(self.public_values(), ("heimdall-dev.docs.example.org", "/docs"))
 
     def state_reset(self):
-        for name in ("calls", "ups", "up1.public", "up1.tag", "up1.labels", "up1.lock"):
+        for name in ("calls", "ups", "up1.public", "up1.tag", "up1.labels", "up1.lock", "build.env"):
             (self.state / name).unlink(missing_ok=True)
 
     def test_given_no_default_domain_and_no_application_domain_when_deployed_then_the_public_host_is_empty(self):
         result = self.deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.public_values(), ("", ""))
+
+    def test_given_a_deploy_when_built_then_git_commit_and_environment_are_build_args(self):
+        # Vercel gave a site its commit and environment (VERCEL_GIT_COMMIT_SHA, VERCEL_ENV); the stacks now
+        # pass GIT_COMMIT and YGG_ENVIRONMENT in build.args, so both must be in the environment Compose
+        # reads when it builds. The commit is the whole SHA of the checkout being deployed (the short one is
+        # only the version's suffix and the label), the environment the one being deployed to.
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("build.env").splitlines(), [self.full_commit, ENVIRONMENT])
+        self.assertEqual(len(self.full_commit), 40)
+
+        self.state_reset()
+        result = self.deploy(environment=ON_DEMAND, DEPLOY_START="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("build.env").splitlines(), [self.full_commit, ON_DEMAND])
+
+    def test_given_a_checkout_that_is_not_a_git_repository_when_deployed_then_git_commit_is_empty_and_it_still_builds(self):
+        # A hand deploy of a plain directory has no commit to give: the build arg is empty, not an error.
+        plain = self.temp / "plain"
+        plain.mkdir()
+        result = subprocess.run(["bash", str(DEPLOY), ENVIRONMENT, STACK, str(plain), "2.0.0"],
+                                env=dict(self.env, PROJECT_UNDER_TEST=f"{STACK}-{ENVIRONMENT}",
+                                         GIT_COMMIT="inherited-from-the-caller"),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # An empty value, and not whatever the caller's environment had: the deploy states the commit itself.
+        self.assertEqual(self.read("build.env").splitlines(), ["", ENVIRONMENT])
 
     def test_given_deploy_inputs_when_deploying_then_they_are_in_the_build_context(self):
         inputs = self.temp / "inputs"

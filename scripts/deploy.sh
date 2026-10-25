@@ -60,6 +60,10 @@
 # YGG_DOMAIN, which the deploy agent gets from the platform's DOMAIN; both are empty when the
 # application is not public or no domain is known (stacks that don't use them are unaffected).
 #
+# Build arguments: a stack passes YGG_ENVIRONMENT (the environment being deployed to) and GIT_COMMIT (the whole
+# SHA of the checkout) in its build.args, both exported here; a site's Dockerfile takes them as the build
+# arguments of the same names (templates/stacks/site.yml).
+#
 # DEPLOY_INPUTS_DIR: a directory whose contents (the archives of the checks a site's image needs)
 # are copied into the build context's root -- the application checkout, which every stack uses as
 # its build context -- before the images build. A name that already exists there stops the deploy:
@@ -168,6 +172,11 @@ export YGG_ENVIRONMENT="$environment"
 YGG_PUBLIC_HOST=$(python3 "$root/scripts/catalog.py" public-host "$stack" "$environment" "${YGG_DOMAIN:-}") || exit 1
 YGG_PUBLIC_PATH=$(python3 "$root/scripts/catalog.py" public-path "$stack") || exit 1
 export YGG_PUBLIC_HOST YGG_PUBLIC_PATH
+# The whole SHA of the checkout being deployed, for stacks to pass in build.args as GIT_COMMIT (what a site's
+# build read as VERCEL_GIT_COMMIT_SHA). Set here, never taken from the caller's environment; empty when the
+# directory is not a git checkout (a deploy by hand), which is not an error.
+GIT_COMMIT=$(git -C "$app_dir" rev-parse HEAD 2>/dev/null || true)
+export GIT_COMMIT
 export IMAGE_TAG="$tag"
 export API_IMAGE_TAG="$tag"
 
@@ -176,7 +185,7 @@ compose() { docker compose --project-name "$project" --env-file "$env_file" "${f
 # What the status API reports as the deployment. The version is <release>-<commit> when Jenkins
 # deploys; a hand deploy may use any version, and then all of it is the release.
 # Exactly 7 characters, as Jenkins writes it (--short can return more to stay unambiguous).
-commit=$(git -C "$app_dir" rev-parse HEAD 2>/dev/null | cut -c1-7 || true)
+commit=${GIT_COMMIT:0:7}
 release=$version
 [[ -n "$commit" && "$version" == *"-$commit" ]] && release=${version%-"$commit"}
 deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
