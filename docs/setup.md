@@ -1487,7 +1487,7 @@ catalog):
 | `get-statuses <repo> <sha>` | Reads the commit's statuses | `<context>`, a tab, `<state>`, a tab, `<creator>`, one line per context (the latest); `<creator>` is the login that set the status, empty when the server has none. The pipeline reuses a result only when its creator is `forge.jenkinsUser` |
 | `merge-pr <repo> <number> <sha> <title>` | Merges a pull request with a merge commit, and fails if its head is no longer `<sha>` | the merge commit |
 | `create-tag <repo> <tag> <sha>` | Creates a tag | nothing |
-| `create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]` | Creates a release (an unpublished draft with `--draft`) | the release id, a tab, its page address |
+| `create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]` | Creates a release (an unpublished draft with `--draft`), a **prerelease** when the tag's version has a SemVer pre-release part ([Releases](#releases)) | the release id, a tab, its page address |
 | `upload-release-file <repo> <release-id> <file>` | Attaches a file to a release | the file's download address (on Forgejo `<server>/attachments/<uuid>`) |
 | `publish-release <repo> <release-id>` | Publishes a draft release | the release's page address |
 | `release-tags <repo>` | Lists the published releases (drafts left out) | `<tag>`, a tab, `<target>` (the commit it was released from: the pipeline sends the release's commit; a release made by hand may name a branch), one line per release |
@@ -1773,15 +1773,30 @@ the repository's release lock:
    the set taken before it ran, so it cannot change the files, and a failure stops the release before any
    draft exists. A Windows run that fails or times out leaves the release to go on without those files
    (unstable, listed in the notes).
+   Then **`release.finalize`**, when declared, on the release agent: what has to cover the whole set (a
+   manifest of every file with its checksum, the manifest's signature). It sees the set as the validation
+   does (`RELEASE_FILES`, `build/` and `windows/` under it, a fresh copy of the gathered set), runs from the
+   tag's checkout with `RELEASE_TAG`, `RELEASE_VERSION` and only the credentials
+   `release.finalize.credentials` names (each allowed by `releaseCredentials`, as for the build), and each
+   of its `files` globs, matched in the checkout, is added to the upload set under `finalize/` (a glob that
+   matches nothing fails the release). It may **only add**: the set is checksummed before and after it
+   runs, and a file changed, removed or added there (rather than declared in `files`) fails the release,
+   naming it. A failure of any kind stops the release before any draft exists, as a failed validation
+   does, and `release-resume` runs it again. It runs over what was gathered: after a Windows run that
+   failed, without the Windows files (a finalize step that needs them fails on its own).
 6. On the publish agent, the **publication**: the notes (the version's `CHANGELOG.md` section, else the titles of
    the pull requests merged since the previous tag), a draft release on Forgejo and, with a `mirror` that
    releases (the default), on GitHub, every file uploaded and checked by name and size on each; then Forgejo's
    is published, and GitHub's **last**, so a release that is public on GitHub is complete everywhere.
+   A release whose version has a SemVer **pre-release** part (`1.2.0-alpha.1`, `v1.2.0-rc.2`; for a
+   `<package>@<version>` tag, the version after the last `@`) is made a **prerelease** on both servers, so
+   GitHub never makes it the latest release; any other version is a normal release, build metadata alone
+   included (`1.2.0+build.5`). The notes are the same either way.
 7. The **release branch is deleted**. Forgejo keeps it (`release/*` is protected, `delete-branch` exits `3`): a
    note in the log, not a failure; delete old release branches by hand.
 
-The order is the point: nothing is published before the files are validated, and the release is visible on
-GitHub only when it is whole.
+The order is the point: nothing is published before the files are validated and finalized, and the release is
+visible on GitHub only when it is whole.
 
 ### Finishing a release that stopped
 
@@ -1790,8 +1805,8 @@ how to finish it: *the pull request is merged and tagged `vx.y.z`; finish the re
 job (`REPOSITORY=<id>`, `TAG=vx.y.z`)*. In Jenkins, open the **`release-resume`** job and **Build with
 Parameters**: `REPOSITORY` is the catalog id (an application with a release environment, or an `owner-tag`
 entry) and `TAG` the tag, which must exist and be on `main`. It does what a release does after its merge, from
-the tag: builds and validates the files, pushes a library's packages, and publishes the release and its GitHub
-copy. It is safe to run twice: the tag, the drafts and the files already there are reused, a release already
+the tag: builds, validates and finalizes the files, pushes a library's packages, and publishes the release and its
+GitHub copy. It is safe to run twice: the tag, the drafts and the files already there are reused, a release already
 published is left alone, and NuGet versions the feed has are skipped. Use it also to make the GitHub copy of a
 release published after the skip, and for a tag that was never built.
 
@@ -1844,8 +1859,8 @@ fresh workspace that holds this repository's `scripts/` and the packages only: `
 `dotnet nuget push --skip-duplicate` in a pinned .NET SDK image, with the Jenkins credential `nuget-api-key`
 bound for this step alone, where none of the repository's code runs. A version the feed already has is skipped,
 so a rerun goes on. When the library also declares `release`, the packages are pushed after the release files are
-built and validated and before the release is published: a push cannot be taken back, so a release whose files
-fail pushes nothing.
+built, validated and finalized and before the release is published: a push cannot be taken back, so a release
+whose files fail pushes nothing.
 
 - The credential `nuget-api-key` exists when `NUGET_API_KEY_FILE` is set ([9.2](#92-the-env-files-first-pass));
   without it a library's tag build packs, then fails at the push, naming the credential. Its id is fixed, and no
