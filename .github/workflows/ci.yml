@@ -101,10 +101,11 @@ jobs:
       - name: Test the catalog tooling
         run: python3 -m unittest discover -s scripts -v
       - name: Test the Docker socket proxies against Traefik and Alloy
-        # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API.
+        # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API. discover: the
+        # suite imports traefik_config flat, which `-m unittest scripts.test_socket_proxies` cannot.
         env:
           YGG_DOCKER_TESTS: "1"
-        run: python3 -m unittest scripts.test_socket_proxies -v
+        run: python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
       - name: Test forge.sh and rules.py against Forgejo
         # The pinned Forgejo image, its API answers and the protections rules.py applies, with real
         # users and repositories (scripts/test_forgejo_live.py). discover: the tests import flat.
