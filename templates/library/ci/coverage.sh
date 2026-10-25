@@ -13,6 +13,7 @@
 set -euo pipefail
 
 SOLUTION='src/ArturRios.<Name>.sln'
+# renovate: datasource=nuget depName=dotnet-reportgenerator-globaltool
 REPORTGENERATOR_VERSION=5.5.11
 
 case $SOLUTION in
