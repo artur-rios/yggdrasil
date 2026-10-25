@@ -273,7 +273,7 @@ only branch. Each branch is local to the clone and has never been pushed.
 | | coding-challenge-library | `f0b02c7` | `main` | |
 | | reveal.js | `3290a3f` | `master` | A fork |
 | | dotnet-libraries | `710a709` | `main` | The index of the libraries' docs; the docs site is `dotnet-libraries-docs` |
-| 5. Sites | tech-craftsmen-company-page | `1231a8d` | `develop` | Create `develop` first ([below](#sites)) |
+| 5. Sites | tech-craftsmen-company-page | `b99bd84` | `develop` | Its `develop` is the cutover's ([5.9a](cutover.md#59a-the-company-pages-develop), [below](#sites)) |
 | | personal-page | `d3a2488` | `develop` | |
 | | personal-blog | `1092020` | `main` | |
 | | under-construction-template | `c2be3e9` | `master` | A fork |
@@ -360,14 +360,10 @@ the tag. So steps 1 to 3 do not apply to it, and the head in section 2 is the on
 
 ### Sites
 
-- **tech-craftsmen-company-page** has **no `develop`**. Create it from `main` on Forgejo before its pull request, and at
-  the cutover before [5.15](cutover.md#515-the-rules) so that `rules.py` can make it the default branch:
-
-  ```bash
-  git push https://git.techcraftsmen.net/artur-rios/tech-craftsmen-company-page.git main:refs/heads/develop
-  ```
-
-  Its release flow needs `develop`. If `rules.py` already ran, run it again after.
+- **tech-craftsmen-company-page** had **no `develop`** on GitHub. The cutover made it from `main`
+  ([5.9a](cutover.md#59a-the-company-pages-develop)), before the import, so it is on Forgejo, the default branch and
+  protected; its pull request goes into it. Its branch adds a `yggdrasil.yml` that names no check: the file turns the
+  pipeline on, so the pull request gets `branch-policy`, which `develop` requires.
 - **personal-page.** Its `CONTRIBUTING.md` names `www-dev.artur-rios.tech` and `www-hml.artur-rios.tech`: check that DNS
   has them (the wildcard record of the zone should).
 - **personal-blog.**

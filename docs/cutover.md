@@ -1147,6 +1147,26 @@ scope, 4.1) and run the snapshot again before going on. A `0 rulesets` line for 
 some, without an error: the same.
 **Back out:** `git revert --no-edit "$(cat ~/cutover-log/catalog-commit.txt)" && git push origin main`.
 
+### 5.9a The company page's `develop`
+
+tech-craftsmen-company-page is an application in the release flow (`release/*` deploys homologation, the release
+pull request production), but on GitHub it has only `main`. Its `develop` is made on GitHub now, from `main`, so that
+5.11 imports it, 5.15's `rules.py` makes it the default branch and protects it, and its move
+([moving-repositories.md](moving-repositories.md#sites)) has a branch to open its pull request into. On your
+machine, in its clone, whose `origin` is still GitHub (5.19 changes that):
+
+```bash
+git -C D:/Repositories/tech-craftsmen-company-page fetch origin
+git -C D:/Repositories/tech-craftsmen-company-page push origin origin/main:refs/heads/develop
+```
+
+**Success looks like:** `git -C D:/Repositories/tech-craftsmen-company-page ls-remote origin refs/heads/main
+refs/heads/develop` prints the same commit twice.
+**If it fails:** a refused push names the rule; you are the repository's administrator. `develop` exists already:
+check that it is `main`'s commit, and leave it.
+**Back out:** `git -C D:/Repositories/tech-craftsmen-company-page push origin --delete develop`, before 5.11 (nothing
+reads it until then).
+
 ### 5.10 The repository move: the shell has everything
 
 The rest of the move runs in 5.2's shell. Check it holds every variable, without printing a value:
@@ -1322,7 +1342,7 @@ not available here`.
 | Check | Means | Back to |
 |---|---|---|
 | `on Forgejo` | not imported | 5.11 |
-| `default branch` | a release-model catalog repository's is not `develop` (`wants develop`); any other's (a `rules: basic` catalog repository's included, which `rules.py` leaves alone) differs from GitHub's | a release-model catalog repository: 5.15 (`rules.py` sets `develop`); any other: set it back to GitHub's in its **Settings → Branches** on Forgejo |
+| `default branch` | a release-model catalog repository's is not `develop` (`wants develop`); any other's (a `rules: basic` catalog repository's included, which `rules.py` leaves alone) differs from GitHub's | a release-model catalog repository: 5.15 (`rules.py` sets `develop`); any other: set it back to GitHub's in its **Settings → Branches** on Forgejo. tech-craftsmen-company-page with `wants develop` and no `develop` on Forgejo: 5.9a was skipped, and GitHub is only a mirror now, so make it on Forgejo instead (`git push https://git.techcraftsmen.net/artur-rios/tech-craftsmen-company-page.git origin/main:refs/heads/develop` from its clone, after a `git fetch origin`), then 5.15 again |
 | `visibility` | `public on Forgejo, private on GitHub` (or the other way) | the copy's **Settings → Repository → Visibility** on Forgejo, to GitHub's; a private repository shown public was readable by anyone signed in since 5.11: say so in 5.22 |
 | `push mirror` | `no push mirror`, `never synced`, `last error: ...`, or `another push mirror to ...` | 5.13; for an error, read it (4.5); a sync can be asked by hand: **Settings → Repository → Mirror settings → Synchronize now**; another mirror: delete it there, unless you made it on purpose |
 | `refs` | a branch or tag differs, or is on one side only (every branch and tag is compared); `nothing compared` | wait a minute and run again (the first sync may still run); `only on GitHub` after that is a push to GitHub during the window, which the next sync deletes: get it from whoever pushed it; `nothing compared`: neither side listed a branch of a copy that has some: run again, and report it if it stays |
@@ -1519,6 +1539,7 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
 | 5.3 to 5.7 | The old VPS is stopped; its volumes were read; copies on the apps machine; GitHub workflows disabled | Starting the old VPS (step 6 below); the workflows enabled again (step 3) | Nothing |
 | 5.8 | DNS points at the apps machine | `cloudflare_dns.py --apps <old ip>`, and the records deleted by hand in 5.8 put back from 1.5's zone export | A record that was DNS only before stays proxied until you switch it back by hand |
 | 5.9 | `catalog.yaml` on `main` names Forgejo | Reverting the commit | Nothing |
+| 5.9a | tech-craftsmen-company-page has a `develop` on GitHub, at `main`'s commit | Nothing: the old setup never reads it (5.9a's back out deletes it) | Nothing |
 | 5.11 | Copies on Forgejo | Nothing to undo on GitHub | The copies stay on Forgejo; delete them before trying the window again, or they are `already imported` and stale |
 | 5.12 | GitHub: rulesets deleted, issues off, the description, automated security fixes off. Forgejo: the Dependabot commits | 5.9's snapshot (`github-before.json`, `github-before/`): descriptions, issues, every ruleset and the security fixes that were on; a revert per repository | A ruleset 5.9 could not read (a private repository on a plan without them has none) |
 | 5.13 | GitHub has Forgejo's state: the Dependabot commits | Deleting every push mirror (step 1; stopping Forgejo only pauses them); the commits are reverted | A branch or tag that only GitHub had, only where `--allow-prune` let it go: `mirrors` refuses every other such repository. Nothing brings one back but a clone that has it |
