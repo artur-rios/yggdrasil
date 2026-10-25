@@ -848,6 +848,10 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         # rules: basic sends develop and main protections with pushing allowed and nothing else: Forgejo
         # refuses a force push and a deletion under any protection, even to the owner, whom the
         # protection does not otherwise bind. Pushing on top is still allowed.
+        # A basic repository keeps the default branch it was made with (rules.forgejo_settings sets none for
+        # it): main here, as create_repository made it.
+        default = self.api[OWNER].request("GET", f"/repos/{OWNER}/{DOTTED}")["default_branch"]
+        self.assertEqual(default, "main")
         for user in (CLAUDE, JENKINS, OWNER):
             for branch in ("develop", "main"):
                 before = self.head(DOTTED, branch)
@@ -860,13 +864,13 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
                 self.assertIn(f"branch {branch} is protected from force push", forced.stderr, (user, branch))
                 deleted = self.git(user, "push", "origin", f":refs/heads/{branch}", cwd=clone)
                 self.assertNotEqual(deleted.returncode, 0, (user, branch))
-                # develop is the default branch, which Forgejo refuses to delete before it asks the
-                # protection; main shows the protection's own refusal.
-                self.assertIn("is the default branch and cannot be deleted" if branch == "develop"
-                              else "branch main is protected from deletion", deleted.stderr, (user, branch))
+                # The default branch Forgejo refuses to delete before it asks the protection; the other
+                # shows the protection's own refusal.
+                self.assertIn("is the default branch and cannot be deleted" if branch == default
+                              else f"branch {branch} is protected from deletion", deleted.stderr, (user, branch))
                 error = self.refused(user, "DELETE", f"/repos/{OWNER}/{DOTTED}/branches/{branch}")
                 self.assertEqual((error.status, error.message),
-                                 (403, "can not delete default branch" if branch == "develop" else "branch protected"))
+                                 (403, "can not delete default branch" if branch == default else "branch protected"))
                 self.assertEqual(self.head(DOTTED, branch), before, (user, branch))
 
         clone = self.clone(CLAUDE, DOTTED)
