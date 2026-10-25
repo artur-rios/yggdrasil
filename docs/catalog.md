@@ -112,7 +112,10 @@ library>`), or an application and its docs site (two applications with one `repo
   merges `main` and who creates the version tags must have one answer.
 - **One set of branch rules** ([`scripts/rules.py`](setup.md#12-apply-the-branch-rules)). The deciding entry
   is the releasing one, else the `repositories` entry, else the first application in catalog order. It
-  supplies the model (`rules`), who merges `main`, who pushes release branches and the tag pattern. Every
+  supplies the model (`rules`), who merges `main`, who pushes release branches and the tag pattern. An application
+  that decides gets the release model only when it releases: one with no `trigger: release` environment (a site
+  deployed on pushes to `main`) gets `basic`, since under the release model only Jenkins merges `main`, on a
+  release. Every
   entry's `checks` and `actionsChecks` are required (the deciding entry's first), so each job's statuses
   are required.
 - **One `yggdrasil.yml`**, read by every job of the repository; each job runs only its own entry's
@@ -159,7 +162,7 @@ repositories:
 | `releaseCredentials` | `[]` | The only Jenkins credentials its release build (`release.build.credentials` in `yggdrasil.yml`) may bind: signing keys and the like. Kept apart from `credentials` because a check runs any branch's code: an id listed here is never bindable by a check, and an id in both lists is an error. Same id format. |
 | `release` | `none` | `none`: no versions. `owner-tag`: the owner creates the version tags by hand, matching `tags`. (Applications are different: Jenkins creates their `v*` tags.) |
 | `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*` and `[...]` classes (`[0-9]*` for versions without a `v`). Only meaningful with `release: owner-tag`. |
-| `rules` | `release` | `release`: the full branching model (protected `develop`, `main` and `release/*`). `basic`: `develop` and `main` only, without force pushes or deletion. |
+| `rules` | `release` | `release`: the full branching model (protected `develop`, `main` and `release/*`). `basic`: `develop` and `main` only, without force pushes or deletion; the repository's default branch is left as it is. |
 
 Any other key is an error. Read the list with `python3 scripts/catalog.py repositories` (ids) and one
 entry, defaults applied, with `python3 scripts/catalog.py repository-entry <id>`. The git server's rules

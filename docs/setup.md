@@ -1257,11 +1257,15 @@ python3 scripts/rules.py --dry-run
 ### What each server gets
 
 Per repository, from the catalog (a `rules: basic` repository gets `develop` and `main` without force push or
-deletion and nothing else of the table, plus the settings in its first row and, on Forgejo, the webhook):
+deletion and nothing else of the table, plus the settings in its first row but its default branch, which stays as
+it was, and, on Forgejo, the webhook). A repository whose deciding entry is an application with no `trigger:
+release` environment, such as a site deployed on pushes to `main`, is basic too: under the release model only
+`forge.jenkinsUser` merges its `main`, and Jenkins merges only for a release ([One repository, several
+entries](catalog.md#one-repository-several-entries)).
 
 | Rule | Forgejo | GitHub |
 |---|---|---|
-| Default branch, merged branches | `develop` is the default; head branches are deleted after merge; merge commits and squashes allowed, rebasing not | `develop` is the default; head branches are deleted after merge |
+| Default branch, merged branches | `develop` is the default (a basic repository keeps its own); head branches are deleted after merge; merge commits and squashes allowed, rebasing not | `develop` is the default (not for a basic repository); head branches are deleted after merge |
 | `develop` | A protected branch: no direct push (force push and deletion are always refused), changes only through a pull request whose required checks pass: `branch-policy`, the application's `checks` and its `actionsChecks`. Merged by the owner and `forge.developers` | A `develop` ruleset: no deletion or force push, a pull request (squash or merge commit), the same required checks. `actionsChecks` are bound to GitHub Actions, so only that app can satisfy them; the other checks (Jenkins') are bound to nobody |
 | `main` | The same, with `branch-policy`, `checks` and one `deploy/<environment>` per release environment. Merged only by `forge.jenkinsUser` for an application, only by the owner for an `owner-tag` repository | A `main` ruleset: the same required checks, all bound to nobody (`actionsChecks` are not required on `main`), merge commit only. Who merges is not restricted: the checks are the gate |
 | `release/*` | Only the owner pushes | No rule (none today) |

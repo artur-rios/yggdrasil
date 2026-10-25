@@ -34,9 +34,13 @@ Per repository the model is:
                  Jenkins no longer reads but a repository may still carry
 
 A repository with `rules: basic` gets develop and main without force push or deletion, and no other
-rule. It still gets the repository settings (default branch develop, head branches deleted after
-merge; on Forgejo the merge styles too) and, on Forgejo when configured, the Jenkins webhook: Jenkins
-builds it too.
+rule. So does a repository whose deciding entry is an application with no `trigger: release`
+environment (a site deployed on pushes to main): under the release model only the Jenkins user merges
+main, and Jenkins merges main only for a release, which such an application never has, so its main
+could never change. A basic repository still gets the repository settings (head branches deleted after
+merge; on Forgejo the merge styles too) but keeps its default branch as it is: it may have no develop
+at all (a site that only ever had main). On Forgejo when configured it gets the Jenkins webhook too:
+Jenkins builds it as well.
 
 Version tags on GitHub: the ruleset `release tags` (update and deletion) has no bypass at all, so not
 even the owner, an administrator, moves or deletes one; an owner-tagged repository also gets `release
@@ -154,7 +158,8 @@ def desired_rules(catalog):
     One entry decides the model, who merges main, who pushes release branches and the tags: the one that
     releases (an application with a trigger: release environment, or a `repositories` entry whose release
     is not none; catalog.py allows at most one), else the `repositories` entry, else the first
-    application. The required checks and actionsChecks are those of every entry, the deciding one's
+    application. A deciding application that does not release gets the basic model (the module's
+    docstring says why). The required checks and actionsChecks are those of every entry, the deciding one's
     first, so each job's statuses are required."""
     owner = catalog["owner"]
     forge = catalog_module.forge(catalog)
@@ -166,8 +171,12 @@ def desired_rules(catalog):
     for repo, entries in catalog_module.repository_entries(catalog).items():
         deciding = entries[0]
         if deciding["kind"] == "application":
-            # Jenkins merges an application's main and creates its v* tags.
-            model, merger, tags, owner_tags = "release", jenkins, "v*", False
+            # Jenkins merges an application's main and creates its v* tags -- on a release, so only an
+            # application that has one gets the release model. One that deploys on branches alone (a site
+            # on main) would otherwise have a main nobody may change: basic, like a repository with no
+            # branch policy. The deciding application releases whenever any entry of the repository does.
+            model = "release" if deciding["releases"] else "basic"
+            merger, tags, owner_tags = jenkins, "v*", False
         else:
             # The owner releases these by hand: they merge main and create the tags themselves.
             entry = deciding["entry"]
@@ -411,9 +420,16 @@ def _github_steps(api, owner, r, dry_run):
     base = f"/repos/{owner}/{r.repo}"
     yield f"{owner}/{r.repo}"
 
-    settings = {"default_branch": "develop", "delete_branch_on_merge": True}
-    yield from _github_write(api, dry_run, "PATCH", base, settings, "default branch develop, delete head branches on merge",
-                             "set the default branch to develop and delete head branches on merge")
+    # A basic repository keeps its default branch: it may have no develop (a site that only had main).
+    if r.model == "basic":
+        settings = {"delete_branch_on_merge": True}
+        yield from _github_write(api, dry_run, "PATCH", base, settings, "delete head branches on merge",
+                                 "delete head branches on merge")
+    else:
+        settings = {"default_branch": "develop", "delete_branch_on_merge": True}
+        yield from _github_write(api, dry_run, "PATCH", base, settings,
+                                 "default branch develop, delete head branches on merge",
+                                 "set the default branch to develop and delete head branches on merge")
 
     payloads = github_rulesets(r)
     existing = yield from _ruleset_steps(api, base, payloads, dry_run)
@@ -471,12 +487,16 @@ MODEL_BRANCHES = {"develop", "main", "release/*"}
 WEBHOOK_EVENTS = ["create", "delete", "push", "pull_request"]
 
 
-def forgejo_settings():
-    """The repository settings this script owns: develop is the default branch, merged branches are
-    deleted, merge commits (and squashes, for develop) are allowed, rebasing is not."""
-    return {"default_branch": "develop", "default_delete_branch_after_merge": True, "allow_merge_commits": True,
-            "allow_squash_merge": True, "allow_rebase": False, "allow_rebase_explicit": False,
-            "default_merge_style": "merge"}
+def forgejo_settings(model="release"):
+    """The repository settings this script owns: develop is the default branch (release model only),
+    merged branches are deleted, merge commits (and squashes, for develop) are allowed, rebasing is not.
+    A basic repository keeps the default branch it was migrated with: it may have no develop at all."""
+    settings = {"default_branch": "develop", "default_delete_branch_after_merge": True, "allow_merge_commits": True,
+                "allow_squash_merge": True, "allow_rebase": False, "allow_rebase_explicit": False,
+                "default_merge_style": "merge"}
+    if model == "basic":
+        del settings["default_branch"]
+    return settings
 
 
 def forgejo_branch_protections(r):
@@ -579,10 +599,16 @@ def _forgejo_steps(api, owner, r, webhook, dry_run):
     def write(*args, **kwargs):
         return _write_step(api, dry_run, *args, **kwargs)
 
-    settings = forgejo_settings()
+    settings = forgejo_settings(r.model)
     if _differs(api.request("GET", base) or {}, settings):
-        yield from write("PATCH", base, settings, "default branch develop, delete head branches on merge, merge settings",
-                         "set the default branch to develop, delete head branches on merge and set the merge settings")
+        if "default_branch" in settings:
+            yield from write("PATCH", base, settings,
+                             "default branch develop, delete head branches on merge, merge settings",
+                             "set the default branch to develop, delete head branches on merge and set the merge "
+                             "settings")
+        else:
+            yield from write("PATCH", base, settings, "delete head branches on merge, merge settings (default "
+                             "branch kept)", "delete head branches on merge and set the merge settings")
     else:
         yield "  repository settings unchanged"
 

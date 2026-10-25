@@ -530,7 +530,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
 
         for repo in (APP, DOTTED):
             settings = owner.request("GET", f"/repos/{OWNER}/{repo}")
-            self.assertEqual({k: settings[k] for k in rules.forgejo_settings()}, rules.forgejo_settings(), repo)
+            expected = rules.forgejo_settings(self.rules[repo].model)  # a basic one keeps its default branch
+            self.assertEqual({k: settings[k] for k in expected}, expected, repo)
 
         protections = {p["rule_name"]: p for p in owner.request("GET", f"/repos/{OWNER}/{APP}/branch_protections")}
         self.assertEqual(set(protections), {"develop", "main", "release/*"})
