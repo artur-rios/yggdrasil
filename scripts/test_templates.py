@@ -526,9 +526,50 @@ class RenovatePresetTests(unittest.TestCase):
         self.preset = json.loads(PRESET.read_text(encoding="utf-8"))
 
     def manager(self):
+        # The first manager reads yggdrasil.yml's images; the second the annotated tool pins (tool_manager).
         managers = self.preset["customManagers"]
-        self.assertEqual(len(managers), 1)
+        self.assertEqual(len(managers), 2)
         return managers[0]
+
+    def tool_manager(self):
+        return self.preset["customManagers"][1]
+
+    def test_given_the_tool_manager_when_its_file_patterns_run_then_only_check_scripts_and_dockerfiles_match(self):
+        # The repositories pin tools that no package manager sees (ReportGenerator, Dart Sass, a CPython build)
+        # in ci/*.sh and Dockerfiles; anywhere else a `# renovate:` comment is not ours to read.
+        patterns = [re.compile(pattern.strip("/")) for pattern in self.tool_manager()["managerFilePatterns"]]
+        for path, expected in (("ci/test.sh", True), ("sub/ci/python.sh", True), ("Dockerfile", True),
+                               ("docs.Dockerfile", True), ("docs/Dockerfile", True), ("ci/nested/x.sh", False),
+                               ("scripts/test.sh", False), ("Dockerfile.dockerignore", False)):
+            self.assertEqual(any(pattern.search(path) for pattern in patterns), expected, path)
+
+    def test_given_an_annotated_pin_when_the_tool_regex_runs_then_its_datasource_name_and_version_are_read(self):
+        regex = python_regex(self.tool_manager()["matchStrings"][0])
+        samples = {
+            "# renovate: datasource=nuget depName=dotnet-reportgenerator-globaltool\nREPORTGENERATOR_VERSION=5.5.11":
+                ("nuget", "dotnet-reportgenerator-globaltool", None, "5.5.11"),
+            "  # renovate: datasource=github-releases depName=sass/dart-sass\n  ARG DART_SASS_VERSION=1.105.1":
+                ("github-releases", "sass/dart-sass", None, "1.105.1"),
+            "# renovate: datasource=github-releases depName=astral-sh/python-build-standalone versioning=loose\n"
+            "readonly PYTHON_RELEASE=\"20261021\"":
+                ("github-releases", "astral-sh/python-build-standalone", "loose", "20261021"),
+            "# renovate: datasource=npm depName=x\nENV X_VERSION='2.0.0'": ("npm", "x", None, "2.0.0"),
+        }
+        for text, (datasource, name, versioning, version) in samples.items():
+            with self.subTest(text=text):
+                match = regex.search(text)
+                self.assertIsNotNone(match)
+                self.assertEqual((match["datasource"], match["depName"], match["versioning"], match["currentValue"]),
+                                 (datasource, name, versioning, version))
+
+    def test_given_a_pin_without_its_comment_when_the_tool_regex_runs_then_nothing_matches(self):
+        # Only an annotated variable is followed: a bare assignment, or a comment that is not on the line above.
+        regex = python_regex(self.tool_manager()["matchStrings"][0])
+        for text in ("REPORTGENERATOR_VERSION=5.5.11",
+                     "# renovate: datasource=nuget depName=x\n\nX_VERSION=1.0.0",
+                     "# renovate: depName=x\nX_VERSION=1.0.0"):
+            with self.subTest(text=text):
+                self.assertIsNone(regex.search(text))
 
     def test_given_the_preset_when_read_then_it_is_json_that_extends_the_recommended_config_on_develop(self):
         self.assertEqual(self.preset["extends"], ["config:recommended"])

@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "yggdrasil's shared Renovate preset. A repository extends it with renovate.json: {\"extends\": [\"local>artur-rios/yggdrasil//renovate/default\"]}. It covers what each repository's dependabot.yml covered (nuget, npm, github-actions, docker), and the pinned images of yggdrasil.yml.",
+  "description": "yggdrasil's shared Renovate preset. A repository extends it with renovate.json: {\"extends\": [\"local>artur-rios/yggdrasil//renovate/default\"]}. It covers what each repository's dependabot.yml covered (nuget, npm, github-actions, docker), and the pinned images of yggdrasil.yml, and the tools pinned in check scripts and Dockerfiles with a `# renovate:` comment.",
   "extends": ["config:recommended"],
   "baseBranchPatterns": ["develop"],
   "enabledManagers": ["nuget", "npm", "github-actions", "dockerfile", "docker-compose", "custom.regex"],
@@ -45,6 +45,15 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "A tool pinned by a variable in a check script or a Dockerfile, with a `# renovate: datasource=<datasource> depName=<name>` comment (optionally ` versioning=<versioning>`) on the line above: `NAME=1.2.3`, `NAME=\"1.2.3\"`, `ARG NAME=1.2.3` or `ENV NAME=1.2.3`. A checksum next to the version is the repository's to update with it.",
+      "managerFilePatterns": ["/(^|/)ci/[^/]+\\.sh$/", "/(^|/)([^/]+\\.)?Dockerfile$/"],
+      "matchStrings": [
+        "#[ \\t]*renovate:[ \\t]*datasource=(?<datasource>\\S+)[ \\t]+depName=(?<depName>\\S+)([ \\t]+versioning=(?<versioning>\\S+))?[ \\t]*\\n[ \\t]*(?:export\\s+|ARG\\s+|ENV\\s+|readonly\\s+)?[A-Za-z_][A-Za-z0-9_]*=[\"']?(?<currentValue>[^\\s\"']+)"
+      ],
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver-coerced{{/if}}"
     }
   ]
 }
