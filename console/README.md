@@ -38,7 +38,7 @@ The same app, packaged as a normal Windows installer, `yggdrasil-console-<versio
 
 ## Getting it
 
-The Windows installer and the APK are attached to every `v*` release of this repository by `.github/workflows/release.yml`, `<version>` being the tag without `v`. On a platform host the web console runs in a container (below), built by `scripts/platform.sh up`.
+The Windows installer and the APK are attached to every `v*` release of this repository (built by `ci/release-build.sh` and `.github/workflows/release-windows.yml`, `release` in `yggdrasil.yml`), `<version>` being the tag without `v`. On a platform host the web console runs in a container (below), built by `scripts/platform.sh up`.
 
 Building, testing, running it against a mock status API and building the Windows installer are described in [CONTRIBUTING.md](../CONTRIBUTING.md#console).
 

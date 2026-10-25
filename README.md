@@ -19,6 +19,11 @@ like) in one catalog file. yggdrasil then:
 
 Adding an application, an environment or a whole system is a catalog entry, not a change to the platform.
 
+This repository lives at [git.techcraftsmen.net/artur-rios/yggdrasil](https://git.techcraftsmen.net/artur-rios/yggdrasil)
+(`git clone https://git.techcraftsmen.net/artur-rios/yggdrasil.git`).
+[github.com/artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil) is a read-only mirror of it, where the
+console's Windows builds run on GitHub Actions; the releases are published on both.
+
 ```mermaid
 flowchart LR
     dev([Developer]) -- push / pull request --> gh
@@ -159,8 +164,8 @@ The same Flutter app on three platforms:
 | | How to get it | Hosts |
 |---|---|---|
 | **Web** | `https://yggdrasil.<DOMAIN>` on each host | Starts on the host that serves it |
-| **Windows** | `yggdrasil-console-<version>-setup.exe` from the GitHub releases. Per-user install by default, no administrator rights | Add each one (URL and token) in the **Hosts** screen, then switch from the overview |
-| **Android** | `yggdrasil-console-<version>.apk` from the GitHub releases | Same as Windows (HTTPS only) |
+| **Windows** | `yggdrasil-console-<version>-setup.exe` from the [releases](https://git.techcraftsmen.net/artur-rios/yggdrasil/releases) (or their GitHub copies). Per-user install by default, no administrator rights | Add each one (URL and token) in the **Hosts** screen, then switch from the overview |
+| **Android** | `yggdrasil-console-<version>.apk` from the same releases | Same as Windows (HTTPS only) |
 
 - A **host** shows every environment it runs, each with its status, e.g. `Development · Stopped`, `Homologation · Stopped`, `Production · Up`.
 - Every **system** is a card with one status chip per environment: its applications there taken together, `down` when every deployed one is down, `degraded` when any is down or degraded, else `unknown` or `up`; `not deployed` ones don't count ([the rules](docs/status-api.md#roll-up)). Problems sort first.
@@ -174,7 +179,10 @@ The same Flutter app on three platforms:
 - Data comes from each host's **status API** (`GET /api/status`, bearer token), one for all its environments. The console refreshes every 30 s while visible; the API probes every 15 s.
 - Contract: [docs/status-api.md](docs/status-api.md).
 
-The installer and the APK are attached to every `v*` release of this repository by `.github/workflows/release.yml`.
+The installer and the APK are attached to every `v*` release of this repository by its own pipeline: Jenkins builds
+the APK (`ci/release-build.sh`) and has GitHub Actions on the mirror build the installer
+(`.github/workflows/release-windows.yml`), as [`yggdrasil.yml`](yggdrasil.yml) declares
+([CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
 
 ## Getting started
 

@@ -30,6 +30,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **yggdrasil lives at [git.techcraftsmen.net/artur-rios/yggdrasil](https://git.techcraftsmen.net/artur-rios/yggdrasil)**,
+  with [github.com/artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil) as its read-only mirror, and its own
+  CI and releases run on its pipeline: `yggdrasil.yml` declares the checks `status`, `console` and `platform`
+  (`ci/*.sh`) and the release (the APK built by Jenkins, the Windows installer by `release-windows.yml` on the
+  mirror). `ci.yml` keeps only `Console (Windows)`; `pipeline-live.yml` is the manual live suite; the Branch Policy
+  workflow and Dependabot are gone (Renovate, `renovate.json`). A fork releases by pushing an annotated `v*` tag
+  ([CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
+
 - **The cutover converts the old VPS in place.** [docs/cutover.md](docs/cutover.md) no longer rents a fresh apps
   machine: only the dev machine is new, and the old VPS becomes the apps machine during the window, as
   [docs/hosts.md](docs/hosts.md#9-upgrading-a-host-from-rootful-docker) section 9 describes. Section 3 now only reads
