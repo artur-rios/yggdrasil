@@ -341,8 +341,10 @@ mirror:
   own. In the App's **General** page, **Generate a private key** (an App can have several: the old controller
   keeps its own), then 9.1 as written. 7.4 says how.
 - **9.2**: `DOMAIN=techcraftsmen.net`, `PLATFORM_HOST_SUFFIX=-dev`, `CLOUDFLARE_PROXIED=false`,
-  `COMPOSE_PROFILES=forge` first, `YGGDRASIL_LIBRARY_VERSION` the release tag of yggdrasil that has this pipeline
-  (it is on GitHub now, on Forgejo after 5.11), `GITHUB_APP_ID` the old controller's.
+  `COMPOSE_PROFILES=forge` first, `YGGDRASIL_LIBRARY_VERSION` the latest release tag that exists
+  (`git tag --list 'v*'` in your clone, the one the dry runs of 4 use; it is on Forgejo after 5.11), `GITHUB_APP_ID`
+  the old controller's. The pipeline of the repositories' plan arrives with the release of
+  [5.8a](#58a-the-release-that-carries-the-repositories-plan), when you set the variable to its tag.
 - **9.6**: the first account is the owner, `--username artur-rios`: the catalog's `owner` is the Forgejo owner of
   every repository.
 - **9.7**: `jenkins`, `jenkins-ci` and `renovate` with their tokens, **and a fourth account, `claude`**, made the
@@ -979,10 +981,93 @@ new machine's console behind it (a `200`, or Traefik's `404` for an application 
 proxied: turn the proxy off by hand where it was off before, and put back what you deleted above, both from
 1.5's zone export.
 
+### 5.8a The release that carries the repositories' plan
+
+yggdrasil itself moves first, and is released, before 5.9, because everything after 5.9 depends on it: 5.9 puts the
+forge blocks on `main`; 5.10 to 5.18 read `main`'s catalog, which must list every repository (the plan that prepared
+the repositories adds the ones the older catalog lacks, and their checks); and the new controller loads the pipeline
+library at a release tag, and the `scripts/` it runs at the same tag, so it needs a tag that has this plan's
+pipeline. Until now that plan sat on `feature/plan-5-repositories`, and yggdrasil's own move branch,
+`feature/move-to-forgejo` in the worktree `D:\Repositories\yggdrasil-move`, on top of it. The old controller is
+stopped (5.3), so nothing reads `develop` or `main` while you do this, and pushes still go to GitHub. On your
+machine, in your clone of yggdrasil. Before 5.9's catalog change (4.2) is committed, put it aside (`git stash`) and
+bring it back at the end (`git stash pop`).
+
+1. **The plan, onto `develop`.** As the repository's administrator (the rulesets let you push; a refused push names
+   the rule):
+
+   ```bash
+   git switch develop && git pull
+   git merge --no-ff feature/plan-5-repositories -m "chore: merge the repositories' plan"
+   git push origin develop
+   ```
+
+2. **yggdrasil's move branch, rebased onto it, then onto `develop`.** The branch was cut from the plan before its last
+   commits:
+
+   ```bash
+   git -C D:/Repositories/yggdrasil-move rebase develop
+   git switch develop
+   git merge --no-ff feature/move-to-forgejo -m "chore: move yggdrasil to forgejo and jenkins"
+   git push origin develop
+   ```
+
+   Read the rebase's conflicts, if any, as yggdrasil's own files: the move branch's `ci/` scripts and `yggdrasil.yml`,
+   its trimmed `.github/workflows` (the Windows jobs, run on every push to the mirror) and its links. Write the new
+   head in the checklist's *Prepared branch* cell
+   ([migration-checklist.md](migration-checklist.md)).
+
+3. **The release, as yggdrasil releases on GitHub.** A release branch is a snapshot of `develop` and carries no commits
+   of its own, so first, on `develop`, give `## [Unreleased]` of `CHANGELOG.md` its version heading (`## [x.y.z] -
+   <date>`, above a new empty `## [Unreleased]`), through a `feature/` branch merged as in 1. `x.y.z` is the version
+   after the last of `git tag --list 'v*'`; for the repositories' plan, a new minor version. Then:
+
+   ```bash
+   git switch develop && git pull
+   git switch -c release/<x.y.z> && git push -u origin release/<x.y.z>
+   ```
+
+   Open the pull request `release/<x.y.z>` into `main` on GitHub and merge it with a merge commit, as the
+   administrator (its old checks are gone with the old controller and the trimmed workflows). Then tag the merge
+   commit, **annotated**:
+
+   ```bash
+   git switch main && git pull
+   git tag -a v<x.y.z> -m v<x.y.z> && git push origin v<x.y.z>
+   ```
+
+   GitHub Actions may start workflows for these pushes: let them run or cancel them, they change nothing here. The
+   tag is what the controller loads. Its release files are not built now (Jenkins builds a tag it finds within a day
+   of its creation, which may be 5.18's scan: then this is yggdrasil's first release on Forgejo, and its end-to-end
+   test, read like any other in [moving-repositories.md](moving-repositories.md#step-4-the-first-release-publish-or-site-deploy)).
+
+4. **The controller, on the new tag.** On the dev machine, as `ygg`: in `platform.env`
+   (`/etc/yggdrasil/platform.env`), set `YGGDRASIL_LIBRARY_VERSION=v<x.y.z>`, then:
+
+   ```bash
+   cd /opt/yggdrasil && git fetch --tags && git checkout v<x.y.z>
+   scripts/platform.sh up
+   ```
+
+   Compose recreates the controller. The tag is on GitHub only until 5.11 imports yggdrasil: no build runs before
+   that, and 5.18's scan is the first to load the library.
+
+**Success looks like:** `git ls-remote --tags origin 'v<x.y.z>*'` prints the tag and its `^{}` commit (annotated);
+`git show v<x.y.z>:jenkins/library/vars/yggdrasilPipeline.groovy | grep -c finalize` prints a number above `0`;
+`scripts/platform.sh ps` shows `jenkins` `(healthy)`; `grep '^YGGDRASIL_LIBRARY_VERSION='
+/etc/yggdrasil/platform.env` prints the new tag.
+**If it fails:** a refused push to `develop` or `main`: the rulesets (you are the administrator: the message names
+the rule). A rebase conflict: resolve it in `yggdrasil-move`, `git rebase --continue`. `platform.sh up` stopping
+without the variable: it is set in the file the controller reads, not in your shell.
+**Back out:** nothing of it is read before 5.18, so leave it. To go back to the old pipeline, set
+`YGGDRASIL_LIBRARY_VERSION` to the tag 2.3 used, `platform.sh up`. A wrong release is a new patch release: never move or
+delete the tag.
+
 ### 5.9 The catalog goes to `main`
 
 Now the forge and mirror blocks go into your fork's `main`, on GitHub, so that the import carries them to Forgejo.
-The old controller is stopped (5.3), so nothing reads them yet. First keep what `prepare-github` will change on
+`main` is the release of 5.8a: the `git pull` below brings the repositories' plan in, and your catalog change of 4.2
+goes on top of it. The old controller is stopped (5.3), so nothing reads them yet. First keep what `prepare-github` will change on
 GitHub, to put it back in a rollback. On your machine:
 
 ```bash

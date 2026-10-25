@@ -256,6 +256,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `scripts/renovate.sh`, `renovate/default.json`) says that Renovate targets `develop` and that a repository on `main`
   or `master` overrides `baseBranchPatterns` in its own `renovate.json`.
 
+- **The branch policy passes for a repository under the `basic` rules.** A site deployed on pushes to `main`, a fork or
+  a `repositories` entry with `rules: basic` has no release model, so its pull requests no longer report
+  `branch-policy` failed (it demanded `release/x.y.z` into `main` of a repository that has no `develop`): the status
+  says `basic: nothing to check`, and neither `scripts/branch-policy.sh` nor the file's own `branchPolicy` runs.
+  `pipeline_config.py describe` adds `rules` to the entry (`catalog.py`'s new `repository_model`, which
+  `scripts/rules.py` uses too).
+- [docs/cutover.md](docs/cutover.md) has a new step, 5.8a, between 5.8 and 5.9: this plan and yggdrasil's own move
+  branch go onto `develop`, yggdrasil is released (a `release/x.y.z` pull request into `main`, then an annotated
+  `v<x.y.z>` tag) and the controller's `YGGDRASIL_LIBRARY_VERSION` is set to that tag, so that `main` has the catalog 5.9
+  extends and the controller has this pipeline. 2.3 starts the controller on the latest existing tag for the dry runs.
+
 ### Removed
 
 - `DOCKER_GID` and the `docker` group setup of the platform: nothing reads them. Delete `DOCKER_GID` from
@@ -275,6 +286,9 @@ keeps working pinned: it still clones `scripts/` from `main`, and the `github.sh
 <checkout> <version>` take the same arguments as before. **Then, before relying on it on GitHub:** run a scratch
 GitHub repository with `forge.type: github` through a pull request, its checks and a release, end to end; the
 GitHub paths have been tested against fakes only ([docs/setup.md](docs/setup.md#an-existing-github-installation)).
+
+(Moving an installation to Forgejo, the release that carries the pipeline is made inside the window:
+[docs/cutover.md](docs/cutover.md#58a-the-release-that-carries-the-repositories-plan).)
 
 Nothing in a repository has to change for it to keep deploying and releasing. On the dev (controller) host: set
 `YGGDRASIL_LIBRARY_VERSION` (a release tag of your fork that has this pipeline), `CI_AGENT_WORKDIR` and

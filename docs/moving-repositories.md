@@ -41,27 +41,28 @@ pushing one, `git -C D:/Repositories/<repo> rev-parse --short=7 feature/move-to-
 [section 2](#2-the-branches-in-order). A different commit means somebody changed it since: read `git log` before you
 push.
 
-**The controller's pipeline has the plan's changes.** Every branch relies on the pipeline of this plan (checks scoped
-to a catalog entry, `release.finalize`, prereleases, the `basic` rules). Jenkins loads the pipeline library at the tag
-in the controller's `YGGDRASIL_LIBRARY_VERSION` ([cutover.md, 2.3](cutover.md#23-forgejo-the-controller-and-the-agents)),
-so that tag must be a yggdrasil release that has them. Check it before the first pull request:
+**yggdrasil has already moved, and is released.** The cutover's [5.8a](cutover.md#58a-the-release-that-carries-the-repositories-plan)
+merges this plan and yggdrasil's own move branch into `develop`, releases yggdrasil, and points the controller at
+that tag. Every branch below relies on the pipeline of this plan (checks scoped to a catalog entry,
+`release.finalize`, prereleases, the `basic` rules), which Jenkins loads at the tag in the controller's
+`YGGDRASIL_LIBRARY_VERSION`. Check that it is a tag that has them before the first pull request:
 
 ```bash
-git ls-remote --tags origin 'v*' | tail -3                                   # the tags on Forgejo's yggdrasil
+grep '^YGGDRASIL_LIBRARY_VERSION=' /etc/yggdrasil/platform.env                  # on the dev machine
+git ls-remote --tags origin 'v*' | tail -3                                      # the tags on Forgejo's yggdrasil
 git show <tag>:jenkins/library/vars/yggdrasilPipeline.groovy | grep -c finalize    # not 0 when the tag has them
 ```
 
-If it is `0`, land yggdrasil's own branch and release it first (its section in [section 3](#yggdrasil-itself)): that release
-is what carries the pipeline. Then upgrade the library ([README, Day to day](../README.md#day-to-day): "Upgrade the
-pipeline"). That bends the order below for yggdrasil alone.
+If it is `0`, 5.8a was not done or the variable was not changed: do that first. Later, to upgrade the pipeline,
+release yggdrasil and set the variable again ([README, Day to day](../README.md#day-to-day): "Upgrade the pipeline").
 
 **What must not happen early.**
 
-- **yggdrasil's own branches stay off `main` until 5.9.** This plan's branch (`feature/plan-5-repositories`) may land on
-  `develop` at any time, but not on `main`, and yggdrasil is not released, before the catalog goes to `main` in
-  [5.9](cutover.md#59-the-catalog-goes-to-main): the old controller reads `main`. The `forge` and `mirror` blocks of
-  `catalog.yaml` are added only there, at [2.2](cutover.md#22-the-catalog-the-dev-machine-reads),
-  [4.2](cutover.md#42-your-catalog-locally) and 5.9; `python3 scripts/catalog.py forge type` prints `github` until then.
+- **Nothing of this plan reaches `main` before the window.** The old controller reads `main`, so the plan's branch
+  (`feature/plan-5-repositories`) and yggdrasil's move branch go onto `develop` and `main` in 5.8a, once the old
+  controller is stopped (5.3), and the `forge` and `mirror` blocks of `catalog.yaml` are added only at
+  [2.2](cutover.md#22-the-catalog-the-dev-machine-reads), [4.2](cutover.md#42-your-catalog-locally) and
+  [5.9](cutover.md#59-the-catalog-goes-to-main); `python3 scripts/catalog.py forge type` prints `github` until then.
 - **No branch is pushed to Forgejo before the window has finished.** Until 5.16 passes, pushes still go to GitHub.
 
 **Create the credentials and variables a branch needs before its first check or release uses them.** The Jenkins
@@ -143,9 +144,8 @@ use **Merge anyway** on the pull request ([setup.md](setup.md#forgejo-details-wo
 
 - **A repository under the `basic` rules and with no `develop`** (the sites deployed from `main`, and
   coding-challenge-library, dotnet-libraries and reveal.js) has no required checks, so Forgejo may let you merge
-  normally. `branch-policy` reports a failure on its pull request: it allows a pull request into `main` only from
-  `release/x.y.z`, and the pipeline runs it on every pull request into `main` or `develop`. It is not required there;
-  read the other checks, and merge ([section 4](#4-not-done-here)).
+  normally. Its `branch-policy` passes with `basic: nothing to check` for any pull request, so a pull request from
+  `feature/move-to-forgejo` into `main` is fine; read the other checks, and merge.
 - **A merge into `main` of such a site deploys it.** See step 4.
 - **A merge into `develop`** of an application deploys it to `development`, which is on demand: Jenkins starts it,
   checks it and stops it again.
@@ -236,7 +236,7 @@ only branch. Each branch is local to the clone and has never been pushed.
 | | fortuna-api | `2b3ff9f` | `develop` | |
 | | fortuna-ui | `90e85f5` | `develop` | |
 | | chimera | `5ac4c1a` | `develop` | |
-| 2. yggdrasil | yggdrasil | `247ab03` | `develop` | In the worktree `D:\Repositories\yggdrasil-move`; rebase it first ([below](#yggdrasil-itself)) |
+| 2. yggdrasil | yggdrasil | `247ab03` | `develop` | In the worktree `D:\Repositories\yggdrasil-move`; the head is before the rebase of 5.8a, which moves it and merges it ([below](#yggdrasil-itself)) |
 | 3. Libraries | dotnet-configuration | `93b613d` | `develop` | Each also has a docs site, `<repo>-docs` |
 | | dotnet-data | `86a357f` | `develop` | Tags `<package>@<version>`; release branches named by date |
 | | dotnet-extensions | `d15fd94` | `develop` | |
@@ -292,24 +292,20 @@ checklist's *Prepared branch* column.
 ### yggdrasil itself
 
 Its branch lives in the worktree `D:\Repositories\yggdrasil-move` (`feature/move-to-forgejo`@`247ab03`, based on
-`7f29487`), cut from this plan's branch and **never merged into it**: trimming `ci.yml` and relinking on `develop`
-would drop the GitHub CI and point links at a server that is not live yet.
+`7f29487`), cut from this plan's branch and never merged into it, so that the plan could land on `develop` without
+trimming `ci.yml` and relinking to a server that was not live yet. It is **already merged by the time the
+per-repository order starts**: the cutover's [5.8a](cutover.md#58a-the-release-that-carries-the-repositories-plan)
+rebases it onto the plan, merges both into `develop`, releases yggdrasil (a `release/<x.y.z>` pull request into
+`main`, merged by you, then an annotated `v<x.y.z>` tag) and sets the controller's `YGGDRASIL_LIBRARY_VERSION` to
+the tag. So steps 1 to 3 do not apply to it, and the head in section 2 is the one before the rebase. What is left:
 
-- **Before the cutover, rebase it onto the end of the plan's branch** (or onto `develop` once the plan's branch has
-  landed there), so it carries the commits that came after `7f29487`:
-
-  ```bash
-  cd D:/Repositories/yggdrasil-move
-  git rebase develop            # or feature/plan-5-repositories, until that has landed on develop
-  git log --oneline -1          # the new head: write it into the checklist's Prepared branch cell
-  ```
-
-- **Do not merge it into `develop` or `main` before 5.9**; push it after the window like any other branch
-  ([step 1](#step-1-push-the-branch-to-forgejo); the worktree shares the clone's remotes).
-- **It is released by an annotated `v<version>` tag** on `main`, after the cutover. The release is also how the
-  controller learns the plan's pipeline: set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the dev machine's
-  `platform.env` and run `scripts/platform.sh up` ([README, Day to day](../README.md#day-to-day)).
-- Its `pipeline-live` workflow is not a check: it stays a GitHub Actions workflow on the GitHub copy, run by hand.
+- **Its release on Forgejo.** The tag of 5.8a, if Jenkins finds it within a day of its creation (5.18's scan), is built
+  as yggdrasil's first release there: the release files, then the release on Forgejo and its GitHub copy. If not,
+  the next release is the end-to-end test ([step 4](#step-4-the-first-release-publish-or-site-deploy)): an annotated
+  `v<version>` tag on `main`, after a `release/<version>` pull request merged by you.
+- `Console (Windows)` is an `actionsCheck`, and its `pipeline-live` workflow is no check: it stays a GitHub Actions
+  workflow on the GitHub copy, run by hand.
+- Tick its row of the checklist, with the head 5.8a left.
 
 ### The libraries
 
@@ -387,9 +383,6 @@ What the plan left for later or for you:
   over the branch's checkout and read what it would change.
 - **A 0.x prerelease option** in the pipeline, only if you want one (alexandria-ui's 0.x releases were prereleases).
 - **Rotate the GitHub CLI token** that was exposed in a subagent's transcript during Task 1 of this plan.
-- **`branch-policy` on `basic` repositories.** The pipeline runs it on every pull request into `main` or `develop`,
-  whatever the repository's rules, so a pull request into the `main` of a repository with no `develop` always reports it
-  failed (it is not required there). Skipping it for `rules: basic` is a change to the pipeline.
 - **chimera's ReportGenerator test** skips because of `--allow-roll-forward`, before and after the move.
 - **fortuna-ui's release APK** lacks the `INTERNET` permission, and is debug-signed.
 - **The checklist's generated *Jobs* column** says `→ check` for jobs that became `release.build` (cerberus-ui,
