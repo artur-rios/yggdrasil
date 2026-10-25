@@ -982,6 +982,7 @@ class AddApplicationTests(unittest.TestCase):
 # --- The real catalog against the migration checklist -------------------------------------------------
 
 ROOT = c.CATALOG.parent
+HOSTS = ROOT / "docs" / "hosts.md"
 CHECKLIST = ROOT / "docs" / "migration-checklist.md"
 TEMPLATES = ROOT / "templates" / "stacks"
 # The kinds of the checklist (the spec's "Every repository" table) that get a Jenkins job; code only,
@@ -1104,7 +1105,7 @@ class RealCatalogTests(unittest.TestCase):
                     self.assertIsNotNone(becomes, "missing from the Credentials section")
                     match = BECOMES.match(becomes)
                     if match is None:
-                        self.assertTrue(becomes.startswith("not needed: "), becomes)
+                        self.assertTrue(becomes.startswith(("not needed: ", "dropped: ")), becomes)
                         continue
                     field = "credentials" if match["what"] == "credential" else "releaseCredentials"
                     self.assertIn(match["name"], self.entry_field(repo, field))
@@ -1119,6 +1120,20 @@ class RealCatalogTests(unittest.TestCase):
         everywhere = set().union(*(self.entry_field(repo, f) for repo in self.entries
                                    for f in ("credentials", "releaseCredentials")))
         self.assertNotIn("nuget-api-key", everywhere)
+
+    def test_given_every_catalog_credential_when_hosts_md_is_read_then_its_table_has_a_row_for_it(self):
+        # docs/hosts.md "Credentials" is what the owner creates in Jenkins: a credential the catalog lets a check or
+        # a release build bind, but that the table forgets, is one the first build fails on.
+        text = HOSTS.read_text(encoding="utf-8")
+        body = text[text.index("\n## 6. Credentials\n"):]
+        body = body[:body.index("\n## 7. ")]
+        # The first cell of a row starts with the credential's id in backticks.
+        listed = {match[1] for match in (re.match(r"`([^`]+)`", cells[0]) for cells in map(_cells, body.splitlines())
+                                         if cells) if match}
+        ids = set().union(*(self.entry_field(repo, field)
+                            for repo in self.entries for field in ("credentials", "releaseCredentials")))
+        self.assertTrue(ids)
+        self.assertEqual(sorted(ids - listed), [], "missing from docs/hosts.md, Credentials")
 
     def test_given_every_site_when_its_stack_files_are_read_then_they_are_the_templates_with_its_id(self):
         sites = [app for _, app in c.applications(self.catalog, deployable=True) if app.get("domain")]

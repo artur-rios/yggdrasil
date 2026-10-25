@@ -235,51 +235,52 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 
 Written by hand, and kept when the table is regenerated. Every secret of the table: the Jenkins credential
 id it became, in the entry's `credentials` (a check may bind it) or `releaseCredentials` (only its release
-build may), or why none is needed. docs/hosts.md lists the credentials to create.
+build may), "not needed: <why>" where the job needs no Jenkins credential of its own, or "dropped: <why>" where the
+secret goes away with what used it. docs/hosts.md lists the credentials to create and the secrets that go.
 
 | Repository | Secret | Becomes |
 |---|---|---|
 | cerberus-api | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` |
-| dotnet-configuration | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-configuration | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-configuration | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-configuration | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-data | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-data | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-data | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-data | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-extensions | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-extensions | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-extensions | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-extensions | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-jwt | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-jwt | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-jwt | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-jwt | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-libraries | `GITHUB_TOKEN` | not needed: GitHub's own token, which only read GitHub Packages (that comparison goes with the feed) |
-| dotnet-logging | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-libraries | `GITHUB_TOKEN` | dropped: GitHub's own token, which only read GitHub Packages (that comparison goes with the feed) |
+| dotnet-logging | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-logging | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-logging | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-mediator | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-mediator | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-mediator | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-mediator | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-messaging | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-messaging | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-messaging | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-messaging | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-output | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-output | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-output | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-output | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-test-util | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-test-util | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-test-util | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-test-util | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-util | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-util | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-util | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-util | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-validation | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-validation | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-validation | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-validation | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| dotnet-webapi-util | `GITHUB_TOKEN` | not needed: GitHub's own token, which only pushed to GitHub Packages (dropped) |
+| dotnet-webapi-util | `GITHUB_TOKEN` | dropped: GitHub's own token, which only pushed to GitHub Packages |
 | dotnet-webapi-util | `NUGET_API_KEY` | not needed: the release agent's fixed `nuget-api-key`, bound around the push step only (never a catalog credential) |
 | dotnet-webapi-util | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` (the `coverage` check) |
-| fortuna-api | `GITHUB_TOKEN` | not needed: GitHub's own token, with which the audit posted a check run (Jenkins reports `audit` itself) |
+| fortuna-api | `GITHUB_TOKEN` | dropped: GitHub's own token, with which the audit posted a check run (Jenkins reports `audit` itself) |
 | fortuna-api | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` |
-| heimdall-api | `GITHUB_TOKEN` | not needed: GitHub's own token, with which the Pages build fetched the coverage artifact (the docs site takes it through deploy.inputs) |
+| heimdall-api | `GITHUB_TOKEN` | dropped: GitHub's own token, with which the Pages build fetched the coverage artifact (the docs site takes it through deploy.inputs) |
 | heimdall-api | `REPORTGENERATOR_LICENSE` | credential `reportgenerator-license` |
 | heimdall-ui | `HEIMDALL_UI_KEYSTORE_BASE64` | releaseCredential `heimdall-ui-android-keystore` |
 | heimdall-ui | `HEIMDALL_UI_KEYSTORE_PASSWORD` | releaseCredential `heimdall-ui-android-keystore-password` |
