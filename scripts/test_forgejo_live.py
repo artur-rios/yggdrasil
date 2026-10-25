@@ -15,7 +15,8 @@ then deleted), and collaborators. One test pins a known gap instead: jenkins, wh
 tags, can also move and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
-container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
+container of the pinned image, named ygg-forgejo-test-*, on a free local port (or in the network of the
+container YGG_FORGEJO_TEST_NETWORK names, as ci/platform.sh does in a check), with SQLite and the
 compose file's sign-in settings; creates the users artur-rios (the owner, an administrator), jenkins
 and claude, with tokens, and the repositories shop-api (an application) and reveal.js (a `rules:
 basic` repository, with a dot in its name), each with main, develop and a Jenkinsfile; applies the
@@ -267,9 +268,14 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         cls.temp = pathlib.Path(tempfile.mkdtemp(prefix="forgejo-live-"))
         cls.addClassCleanup(shutil.rmtree, cls.temp, ignore_errors=True)
 
-        port = free_port()
+        # YGG_FORGEJO_TEST_NETWORK=container:<id>: Forgejo joins that container's network instead of
+        # publishing a port, and is reached at 127.0.0.1:3000 there. ci/platform.sh sets it to the check's own
+        # container, from which the engine's host and its published ports are out of reach.
+        network = os.environ.get("YGG_FORGEJO_TEST_NETWORK")
+        port = 3000 if network else free_port()
         cls.url = f"http://127.0.0.1:{port}"
-        docker("run", "--detach", f"--name={cls.container}", f"--publish=127.0.0.1:{port}:3000", "--memory=1g",
+        reach = f"--network={network}" if network else f"--publish=127.0.0.1:{port}:3000"
+        docker("run", "--detach", f"--name={cls.container}", reach, "--memory=1g",
                "--env=FORGEJO__security__INSTALL_LOCK=true",
                "--env=FORGEJO__database__DB_TYPE=sqlite3",
                f"--env=FORGEJO__server__ROOT_URL={cls.url}/",
