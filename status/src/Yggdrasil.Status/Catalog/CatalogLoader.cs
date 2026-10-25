@@ -302,6 +302,33 @@ public static partial class CatalogLoader
             errors.Add($"{where}: host '{host}' is not a host name (lowercase labels, e.g. heimdall-api)");
         }
 
+        // Not trimmed, and not defaulted by blank: as scripts/catalog.py reads them, so that a value it
+        // refuses is refused here too, and the address built from the two is the same.
+        var domain = raw.Domain;
+        if (domain is not null && !(HostName().IsMatch(domain) && domain.Contains('.')))
+        {
+            errors.Add($"{where}: domain '{domain}' is not a lowercase host name with a dot (e.g. docs.example.com)");
+        }
+
+        var path = raw.Path;
+        if (path is not null && !(path.StartsWith('/') && !path.EndsWith('/') && !path.Contains("..")))
+        {
+            errors.Add($"{where}: path '{path}' must start with / and not end with one, and not hold '..' (e.g. /docs)");
+        }
+
+        var apex = false;
+        if (raw.Apex is not null)
+        {
+            if (TryParseBool(raw.Apex, out var value))
+            {
+                apex = value;
+            }
+            else
+            {
+                errors.Add($"{where}: apex must be true or false");
+            }
+        }
+
         var repository = NullIfBlank(raw.Repository);
         if (repository is not null && !RepositoryName().IsMatch(repository))
         {
@@ -379,7 +406,7 @@ public static partial class CatalogLoader
         }
 
         return new ApplicationDefinition(
-            id, raw.Name!.Trim(), kind, repository, health!, metrics, metricsPath, host, checks,
+            id, raw.Name!.Trim(), kind, repository, health!, metrics, metricsPath, host, domain, path, apex, checks,
             new ContainerSelector(project, service), deployments);
     }
 
@@ -456,6 +483,11 @@ public static partial class CatalogLoader
         public string? Metrics { get; set; }
         public string? MetricsPath { get; set; }
         public string? Host { get; set; }
+        public string? Domain { get; set; }
+        public string? Path { get; set; }
+
+        // An object, like onDemand: a wrong value is one more error in the list.
+        public object? Apex { get; set; }
         public List<string?>? Checks { get; set; }
         public RawContainer? Container { get; set; }
 

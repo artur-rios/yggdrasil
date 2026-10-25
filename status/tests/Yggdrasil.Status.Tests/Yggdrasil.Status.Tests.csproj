@@ -26,6 +26,8 @@
   <ItemGroup>
     <!-- The real catalog, so a change to it that this service cannot load fails the tests. -->
     <None Include="..\..\..\catalog.yaml" Link="catalog.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The catalog and the addresses it must give, shared with scripts/test_status_parity.py. -->
+    <None Include="fixtures\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -166,6 +166,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **The status API reports each application's real address.** `url` is now
+  `https://<host><hostSuffix>.<domain><path>`: the application's own `domain` (else `YGGDRASIL_DOMAIN`) and `path`,
+  and the bare domain for an `apex` site without a `host`, as `scripts/catalog.py public-host` and `public-path`
+  form it for `deploy.sh`; the console links to it unchanged. A platform component stays
+  `https://<host>.<YGGDRASIL_DOMAIN>`. The status API now refuses a catalog whose `domain`, `path` or `apex` is
+  invalid, as `catalog.py validate` does. The contract stays version 2
+  ([docs/status-api.md](docs/status-api.md)).
 - **`scripts/deploy.sh` exports `GIT_COMMIT`**, the whole SHA of the checkout being deployed (it already exported
   `YGG_ENVIRONMENT`), so a stack passes both to a build in `build.args`, as the site templates' `site.yml` does:
   they replace Vercel's `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV`.
