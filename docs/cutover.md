@@ -81,7 +81,9 @@ Libraries on older versions) → `yggdrasil` → **Default version**.
 checkout is at that tag too (0.1's `git describe`).
 **If it fails:** set it now, as the CHANGELOG says, and keep the checkout at that tag (`git -C /opt/yggdrasil
 checkout <tag>`).
-**Back out:** nothing to undo: the pin stays until the old VPS is switched off.
+**Back out:** nothing to undo: the pin stays until the old VPS is switched off. A restart of the old controller drops
+it (Configuration as Code applies `casc.yaml`'s `defaultVersion: main` again), so set it again after any restart,
+before a build runs: `main` has 0.8.0 since before the window, and 0.9.0 after 5.8a.
 
 ### 0.3 The GitHub paths were tried on a scratch repository
 
@@ -347,8 +349,8 @@ mirror:
   own. In the App's **General** page, **Generate a private key** (an App can have several: the old controller
   keeps its own), then 9.1 as written. 7.4 says how.
 - **9.2**: `DOMAIN=techcraftsmen.net`, `PLATFORM_HOST_SUFFIX=-dev`, `CLOUDFLARE_PROXIED=false`,
-  `COMPOSE_PROFILES=forge` first, `YGGDRASIL_LIBRARY_VERSION` the latest release tag that exists
-  (`git tag --list 'v*'` in your clone, the one the dry runs of 4 use; it is on Forgejo after 5.11), `GITHUB_APP_ID`
+  `COMPOSE_PROFILES=forge` first, `YGGDRASIL_LIBRARY_VERSION=v0.8.0` (the release that carries this pipeline and the
+  machines' tools, the one the dry runs of 4 use; it is on Forgejo after 5.11), `GITHUB_APP_ID`
   the old controller's. The pipeline of the repositories' plan arrives with the release of
   [5.8a](#58a-the-release-that-carries-the-repositories-plan), when you set the variable to its tag. And
   `NUGET_API_KEY_FILE=/etc/yggdrasil/nuget-api-key`: the libraries' tags push their packages to nuget.org with it
@@ -1049,7 +1051,8 @@ git stash list | head -1                # stash@{0}: On ...: cutover 4.2 catalog
 3. **The release, as yggdrasil releases on GitHub.** A release branch is a snapshot of `develop` and carries no commits
    of its own, so first, on `develop`, give `## [Unreleased]` of `CHANGELOG.md` its version heading (`## [x.y.z] -
    <date>`, above a new empty `## [Unreleased]`), through a `feature/` branch merged as in 1. `x.y.z` is the version
-   after the last of `git tag --list 'v*'`; for the repositories' plan, a new minor version. Then:
+   after the last of `git tag --list 'v*'`: for the repositories' plan, `0.9.0` (0.8.0, before the window, carried the
+   pipeline and the machines). Then:
 
    ```bash
    git switch develop && git pull
@@ -1107,7 +1110,7 @@ git stash list | head -1                # stash@{0}: On ...: cutover 4.2 catalog
 the rule). A rebase conflict: resolve it in `yggdrasil-move`, `git rebase --continue`. `platform.sh up` stopping
 without the variable: it is set in the file the controller reads, not in your shell.
 **Back out:** nothing of it is read before 5.18, so leave it. To go back to the old pipeline, set
-`YGGDRASIL_LIBRARY_VERSION` to the tag 2.3 used, `platform.sh up`. A wrong release is a new patch release: never move or
+`YGGDRASIL_LIBRARY_VERSION` to the tag 2.3 used (`v0.8.0`), `platform.sh up`. A wrong release is a new patch release: never move or
 delete the tag.
 
 ### 5.9 The catalog goes to `main`
@@ -1713,6 +1716,12 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
 
    **Then start the old VPS**, on it as its admin: `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start
    production` (and the on-demand environments that were on).
+
+   **Then pin the old controller's library again** before anything builds: its start applied `casc.yaml`'s
+   `defaultVersion: main`, and `main` is now 0.9.0, the pipeline this controller cannot run (its builds would wait
+   for a `ci` agent it does not have). As in [0.2](#02-the-old-controllers-library-is-pinned): **Manage Jenkins →
+   System → Global Trusted Pipeline Libraries** → `yggdrasil` → **Default version** = the tag of 0.1 (`v0.7.4`);
+   **Build Now** on one application's `main` prints `yggdrasil@v0.7.4`.
 7. **Check**: the old console shows production up; a push to an application's `develop` on GitHub deploys it.
 8. **Tell the users**, and write down where it went wrong before trying again. A new attempt starts at 4.8, with
    the Forgejo copies deleted first (each one's **Settings → Danger Zone**), which needs Forgejo running: only once
