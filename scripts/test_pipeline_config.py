@@ -523,6 +523,17 @@ class PlanTests(unittest.TestCase):
     def test_given_paths_and_a_matching_change_when_planned_then_it_runs(self):
         self.assertEqual(plan(changed=["README.md", "tests/a/b_test.cs"])["unit"]["action"], "run")
 
+    def test_given_paths_and_only_the_pipeline_file_changed_when_planned_then_it_runs(self):
+        # A Renovate bump of a check's image touches yggdrasil.yml alone: a skip would report the check passed
+        # without ever running it on the new image.
+        planned = plan(changed=["yggdrasil.yml"])
+        self.assertEqual(planned["unit"]["action"], "run")
+        self.assertIn("yggdrasil.yml changed", planned["unit"]["reason"])
+
+    def test_given_paths_and_a_pipeline_file_in_a_subdirectory_when_planned_then_it_is_still_skipped(self):
+        # Only the repository's own file at its root is the pipeline's; another one is just a file.
+        self.assertEqual(plan(changed=["docs/yggdrasil.yml"])["unit"]["action"], "skip")
+
     def test_given_paths_and_no_changed_files_at_all_when_planned_then_it_is_skipped(self):
         # An empty list is a known answer (nothing changed), unlike None.
         self.assertEqual(plan(changed=[])["unit"]["action"], "skip")

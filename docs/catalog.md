@@ -278,7 +278,8 @@ them; each once, and nothing else of the file. `--release` for a job that does n
   created by anyone else is not trusted, and neither is a failure or a pending: those checks `run`.
 - **skip**: the check has `paths`, the changed files are known and none matches. `*` stays in one directory,
   `**` crosses directories (`src/**` matches `src/a/b.cs`, `docs/*.md` does not match `docs/a/b.md`, `**/*.md`
-  matches `README.md`). When the changes are unknown (`-`) the check runs.
+  matches `README.md`). When the changes are unknown (`-`) the check runs, and so it does when `yggdrasil.yml`
+  itself changed: an image bump or a new command must run before it is merged.
 - **run**: everything else. On a `renovate/*` branch `credentials` is always `{}`.
 
 Reuse works across the jobs of one repository: a `coverage` success posted by the library's job is reused by

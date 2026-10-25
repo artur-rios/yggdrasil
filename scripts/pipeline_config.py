@@ -424,7 +424,9 @@ def plan_checks(config, entry, statuses, changed, branch, jenkins_user, deployin
             a status, so a success by somebody else proves nothing and the check runs; a failure, an
             error or a pending of Jenkins' own runs again (that is what a rebuild is for).
     skip    the check has `paths`, the changed files are known and none matches one of them. An empty
-            `paths` is no restriction, and changed None (unknown: no base to compare with) runs it.
+            `paths` is no restriction, and changed None (unknown: no base to compare with) runs it. A
+            change to yggdrasil.yml itself matches every check's `paths`: it may move the image or the
+            command a check runs with (a Renovate image bump changes nothing else), so the check is run.
     run     the rest.
 
     `statuses` are (context, state, creator) as `forge.sh get-statuses` prints them (the last of a
@@ -443,7 +445,8 @@ def plan_checks(config, entry, statuses, changed, branch, jenkins_user, deployin
         paths = check.get("paths") or []
         if state == "success" and creator == jenkins_user:
             action, reason = "reuse", f"reused: success by {jenkins_user} on this commit"
-        elif paths and changed is not None and not any(glob_match(glob, path) for glob in paths for path in changed):
+        elif (paths and changed is not None and CONFIG_FILE not in changed
+              and not any(glob_match(glob, path) for glob in paths for path in changed)):
             action, reason = "skip", f"skipped: no changes under {', '.join(paths)}"
         else:
             action = "run"
@@ -454,7 +457,8 @@ def plan_checks(config, entry, statuses, changed, branch, jenkins_user, deployin
             else:
                 reason = f"last result: {state}"
             if paths:
-                reason += "; changed files unknown" if changed is None else "; changed files match"
+                reason += ("; changed files unknown" if changed is None
+                           else f"; {CONFIG_FILE} changed" if CONFIG_FILE in changed else "; changed files match")
         planned.append({"name": name, "action": action, "reason": reason, "image": check["image"],
                         "run": check["run"], "docker": check.get("docker", False),
                         "credentials": {} if no_secrets else dict(check.get("credentials") or {}),
