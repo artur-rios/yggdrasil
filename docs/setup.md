@@ -1732,7 +1732,10 @@ A release pull request waits for the `actionsChecks` the same way, for up to the
 `checksTimeout` (one hour by default). One that failed stops the release (`Not releasing`). One that did not
 finish, because it is still running, GitHub did not answer, or the mirror has not pushed the commit,
 makes Jenkins ask, outside any agent: **"GitHub Actions checks didn't finish. Deploy without them?"**, with the
-button **Deploy without GitHub Actions checks**. Abort fails the release before anything is deployed. After the
+button **Deploy without GitHub Actions checks**. Abort fails the release before anything is deployed. A release
+that declares both `release.windows` and `release.finalize` is **never asked**: the skip would publish it
+without its Windows files, which `release.finalize` must cover, so the build fails there instead (`Not
+releasing`), before anything is deployed; build the pull request again once GitHub Actions answers. After the
 skip:
 
 - it is recorded in the build log, in the build's description (`v1.4.0 (deployed without GitHub Actions
@@ -1782,8 +1785,14 @@ the repository's release lock:
    matches nothing fails the release). It may **only add**: the set is checksummed before and after it
    runs, and a file changed, removed or added there (rather than declared in `files`) fails the release,
    naming it. A failure of any kind stops the release before any draft exists, as a failed validation
-   does, and `release-resume` runs it again. It runs over what was gathered: after a Windows run that
-   failed, without the Windows files (a finalize step that needs them fails on its own).
+   does, and `release-resume` runs it again. It never covers a partial set: with `release.windows` too, a
+   Windows run that fails or times out **stops the release** instead of letting it go on without those files
+   (*the pull request is merged and tagged…*, as above), and `release-resume` runs the Windows workflow, the
+   validation and `release.finalize` again on the whole set. Such a release is never offered the skip
+   ([below](#github-actions-and-the-skip)).
+   Every file of the upload set (the release files and `release.finalize`'s) must have its **own name**: a
+   release shows one file per name. Two files named alike, in any directories, fail the release here, naming
+   them, before anything that cannot be undone (a library's NuGet push, a draft).
 6. On the publish agent, the **publication**: the notes (the version's `CHANGELOG.md` section, else the titles of
    the pull requests merged since the previous tag), a draft release on Forgejo and, with a `mirror` that
    releases (the default), on GitHub, every file uploaded and checked by name and size on each; then Forgejo's
@@ -1791,7 +1800,8 @@ the repository's release lock:
    A release whose version has a SemVer **pre-release** part (`1.2.0-alpha.1`, `v1.2.0-rc.2`; for a
    `<package>@<version>` tag, the version after the last `@`) is made a **prerelease** on both servers, so
    GitHub never makes it the latest release; any other version is a normal release, build metadata alone
-   included (`1.2.0+build.5`). The notes are the same either way.
+   included (`1.2.0+build.5`). The notes are the same either way. The rule is strict SemVer
+   (`X.Y.Z-pre[+build]`): `v1.2-rc.1`, not a SemVer version, is a normal release.
 7. The **release branch is deleted**. Forgejo keeps it (`release/*` is protected, `delete-branch` exits `3`): a
    note in the log, not a failure; delete old release branches by hand.
 

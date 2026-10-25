@@ -249,7 +249,13 @@ may not start with `-`).
   checkout and validated like `build`'s, are added to the release; its `credentials`, like `build`'s, may only
   name `releaseCredentials`. It may **only add**: the set is checksummed before and after it runs, and a file
   of the set that it changes or removes (or one it adds there instead of in `files`) fails the release. A
-  failure stops the release before anything is published; `release-resume` runs it again.
+  failure stops the release before anything is published; `release-resume` runs it again. It never covers a
+  partial set: with `windows` declared, Windows files that are missing (a run that failed or timed out) stop
+  the release the same way, until `release-resume` runs all of it again, and the release pull request never
+  offers the skip past the GitHub Actions checks ([the skip](setup.md#github-actions-and-the-skip)).
+
+Every file the release uploads, from any step, must have its own name (a release shows one file per name):
+two files named alike fail the release before anything irreversible, a library's NuGet push included.
 
 The file is also checked against the catalog entry of the repository (the application, or its
 [`repositories`](#repositories) entry):
