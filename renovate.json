@@ -19,6 +19,12 @@
       "matchManagers": ["dockerfile", "custom.regex"],
       "matchFileNames": ["templates/**"],
       "enabled": false
+    },
+    {
+      "description": "jenkins/inbound-agent tags are <build>.v<hash>-<n>-jdk21, which docker versioning cannot parse.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["jenkins/inbound-agent"],
+      "versioning": "regex:^(?<major>\\d+)\\.v[0-9a-z_]+-(?<patch>\\d+)-(?<compatibility>jdk21)$"
     }
   ]
 }
