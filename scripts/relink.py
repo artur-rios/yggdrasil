@@ -14,10 +14,10 @@ Each change is printed as `path:line: old -> new`. --check changes nothing and e
 change or an address is unknown; without it the files are written (exit 1 too while unknown addresses are left).
 
 Where the new address comes from. The catalog is asked first: an application with the old site's `path` (docs
-sites) or id (personal-lab-site, the Vercel projects) gives `catalog.py public-host` + `public-path`. Task 6 of
-plan 5 adds the sites to catalog.yaml; until it does no entry exists and the fixed table below applies. Once
-an entry exists the catalog wins, so the addresses cannot drift from what is deployed. YGG_CATALOG points at
-another catalog, as for catalog.py.
+sites) or id (personal-lab-site, the Vercel projects) gives `catalog.py public-host` + `public-path`: the
+catalog lists every site, and it wins, so the addresses cannot drift from what is deployed. The fixed table
+below applies only to a site a catalog does not have (another installation's, or a test's). YGG_CATALOG points
+at another catalog, as for catalog.py.
 
 An address this tool does not know is reported as `unknown address`, never guessed:
   - `artur-rios.github.io/<something not in the table>` and `<something>.vercel.app`;
@@ -52,9 +52,9 @@ ENVIRONMENT = "production"
 
 # The docs sites, as the spec's "Sites" table lists them: GitHub Pages repositories that become
 # docs.artur-rios.tech/<repository>. The names are the repositories (and so the old Pages paths).
-# This list is the fallback. Once Task 6 puts the docs sites in catalog.yaml, the catalog is the source: a
-# docs application's `path` (/<repository>) says where its site is, and the catalog wins whenever both it
-# and this list have an entry (a docs site only the catalog knows is found too).
+# This list is the fallback. The catalog is the source: a docs application's `path` (/<repository>) says where
+# its site is, and the catalog wins whenever both it and this list have an entry (a docs site only the catalog
+# knows is found too).
 DOCS_REPOSITORIES = [
     "heimdall-docs", "fortuna-docs", "alexandria-docs", "orpheus", "heimdall-api", "dotnet-libraries",
     "dotnet-configuration", "dotnet-data", "dotnet-extensions", "dotnet-jwt", "dotnet-logging",

@@ -34,7 +34,7 @@ class RelinkTests(unittest.TestCase):
                         GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
                         GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
                         PYTHONIOENCODING="utf-8")
-        # Task 6 adds the sites to catalog.yaml; until a test says otherwise the tool must work from its
+        # catalog.yaml lists the sites; unless a test says otherwise the tool must work from its
         # fixed table, so these tests point it at a catalog that knows no site.
         self.catalog = self.repo.parent / (self.repo.name + "-catalog.yaml")
         self.addCleanup(lambda: self.catalog.unlink(missing_ok=True))
