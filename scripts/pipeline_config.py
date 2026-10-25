@@ -244,23 +244,32 @@ def entry_for(catalog, job_id):
     raise ConfigError(f"'{job_id}' is not an application or a repository in catalog.yaml")
 
 
-def validate_against(config, entry):
-    """What the catalog does not allow this repository to do, as sentences (empty when fine): a
-    check's credential outside the entry's `credentials`, a release build's outside its
-    `releaseCredentials` (each list only for its own context), a catalog check the file does not define, deploy
-    inputs naming a check that is not defined, `publish` on anything but an owner-tagged
-    repository, `release` on something that does not release. `config` is load_config()'s result."""
+def validate_against(config, entry, runs=None, releasing=None):
+    """What the catalog does not allow this job to do, as sentences (empty when fine): a credential of a
+    check it runs outside the entry's `credentials`, a release build's outside its `releaseCredentials`
+    (each list only for its own context), a catalog check the file does not define, deploy inputs naming a
+    check that is not defined, `publish` on anything but an owner-tagged repository, `release` on something
+    that does not release. `config` is load_config()'s result.
+
+    One yggdrasil.yml serves every entry of its repository (a library and its docs site), so each job is
+    judged on its own part of it. `runs`: the checks this job can run (job_checks(); default every check of
+    the file), whose credentials must be in its entry's list -- a check another entry runs is that entry's
+    to allow. `releasing`: the id of the repository's entry that releases, when one does; the `release` and
+    `publish` sections, and release.build's credentials, are that entry's alone, and every other job skips
+    them (None: no entry releases, so the sections are judged against this one, and refused)."""
     if config is None:
         return []
     errors = []
     checks = config.get("checks") or {}
+    judges_release = releasing is None or releasing == entry["id"]
 
     # A check runs any branch's code: it may bind only `credentials`. The release build runs the
     # merged release's code on the release agent: only `releaseCredentials`. Neither list covers both.
     bindings = [(f"checks.{name}.credentials", check.get("credentials"), "credentials")
-                for name, check in checks.items()]
-    bindings.append(("release.build.credentials",
-                     ((config.get("release") or {}).get("build") or {}).get("credentials"), "releaseCredentials"))
+                for name, check in checks.items() if runs is None or name in runs]
+    if judges_release:
+        bindings.append(("release.build.credentials",
+                         ((config.get("release") or {}).get("build") or {}).get("credentials"), "releaseCredentials"))
     for where, credentials, allowed in bindings:
         for variable, credential in (credentials or {}).items():
             if credential not in entry[allowed]:
@@ -275,6 +284,8 @@ def validate_against(config, entry):
         if name not in checks:
             errors.append(f"deploy.inputs: '{name}' is not a check in {CONFIG_FILE}")
 
+    if not judges_release:
+        return errors
     if "publish" in config and not (entry["kind"] == "repository" and entry["release"] == "owner-tag"):
         errors.append(f"publish: only for a library (a catalog repositories entry with release: owner-tag); "
                       f"{entry['id']} is {_described(entry)}")
@@ -282,6 +293,19 @@ def validate_against(config, entry):
         errors.append(f"release: {entry['id']} does not release (catalog.yaml: release {entry['release']}); "
                       "it needs a release environment, or release: owner-tag")
     return errors
+
+
+def job_checks(config, entry, repository_checks):
+    """Every check this job can run, the ones whose credentials its entry must allow: its catalog `checks`;
+    for an application, the deploy.inputs too (a deploy runs them); and for the application that releases
+    (release deploy), `repository_checks`, every entry's, which its release pull request runs (needed_checks()
+    with release_checks). A repositories entry never deploys: no deploy inputs."""
+    names = list(entry["checks"])
+    if entry["kind"] == "application":
+        names += ((config or {}).get("deploy") or {}).get("inputs") or []
+    if entry["release"] == "deploy":
+        names += list(repository_checks)
+    return set(names)
 
 
 def _described(entry):
@@ -474,7 +498,10 @@ def describe(catalog, job_id, repo_dir):
     except ConfigError as error:
         return {"entry": entry, "config": None, "errors": error.errors, "warnings": [],
                 "repositoryChecks": repository_checks}
-    return {"entry": entry, "config": config, "errors": validate_against(config, entry),
+    releasing = next((e["id"] for e in cat.repository_entries(catalog).get(entry["repository"], []) if e["releases"]),
+                     None)
+    errors = validate_against(config, entry, job_checks(config, entry, repository_checks), releasing)
+    return {"entry": entry, "config": config, "errors": errors,
             "warnings": unclaimed_checks(config, entries), "repositoryChecks": repository_checks}
 
 

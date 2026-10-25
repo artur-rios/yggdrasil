@@ -718,6 +718,103 @@ class OwnChecksTests(unittest.TestCase):
         self.assertEqual(self.describe("ygg-lib", None, value)[1]["repositoryChecks"], ["unit", "coverage", "links"])
 
 
+# The library template's shape on one repository: the library's checks bind ReportGenerator's licence (coverage
+# only), the docs site deploys with coverage's archive, and the library publishes. One file, two jobs.
+LIBRARY_FILE = """\
+checks:
+  unit: {image: dotnet:10, run: ci/test.sh}
+  coverage: {image: dotnet:10, run: ci/coverage.sh, archive: "coverage/**",
+             credentials: {REPORTGENERATOR_LICENSE: reportgenerator-license}}
+deploy:
+  inputs: [coverage]
+publish:
+  nuget: {image: dotnet:10, run: ci/pack.sh}
+"""
+
+
+def library_catalog(docs_credentials=("reportgenerator-license",)):
+    value = shared_catalog()
+    value["repositories"][-1]["credentials"] = ["reportgenerator-license"]
+    value["systems"][0]["applications"][-1]["credentials"] = list(docs_credentials)
+    return value
+
+
+class SharedFileJudgementTests(unittest.TestCase):
+    """One yggdrasil.yml serves every entry of its repository, and each job is judged on its own part of it: the
+    credentials of the checks it runs, and the release sections only when it is the entry that releases."""
+
+    def describe(self, job, text=LIBRARY_FILE, value=None):
+        status, out, _ = run_shared("describe", job, str(repo(text)),
+                                    value=library_catalog() if value is None else value)
+        return status, json.loads(out)
+
+    def test_given_a_librarys_docs_job_when_described_then_the_shared_file_passes(self):
+        # Its deploy runs coverage, whose licence its entry allows; publish is the library's, not its.
+        status, document = self.describe("ygg-lib-docs")
+        self.assertEqual((status, document["errors"]), (0, []))
+        status, document = self.describe("ygg-lib")
+        self.assertEqual((status, document["errors"]), (0, []))
+
+    def test_given_a_docs_job_whose_deploy_input_binds_a_credential_its_entry_lacks_when_described_then_it_is_refused(self):
+        # The docs job does run coverage (a deploy input), so it must be allowed coverage's credential.
+        status, document = self.describe("ygg-lib-docs", value=library_catalog(docs_credentials=()))
+        self.assertEqual(status, 1)
+        self.assertEqual(len(document["errors"]), 1, document["errors"])
+        self.assertIn("checks.coverage.credentials.REPORTGENERATOR_LICENSE", document["errors"][0])
+        self.assertIn("ygg-lib-docs", document["errors"][0])
+
+    def test_given_a_credential_of_a_check_only_another_entry_runs_when_described_then_this_job_is_not_judged_on_it(self):
+        # unit is the library's alone: the docs job never runs it, so it need not allow unit's credential.
+        text = LIBRARY_FILE.replace("ci/test.sh}", "ci/test.sh, credentials: {TOKEN: test-token}}")
+        value = library_catalog()
+        value["repositories"][-1]["credentials"].append("test-token")
+        self.assertEqual(self.describe("ygg-lib-docs", text, value)[1]["errors"], [])
+        # ... while the library, which runs it, still must.
+        value["repositories"][-1]["credentials"].remove("test-token")
+        status, document = self.describe("ygg-lib", text, value)
+        self.assertEqual(status, 1)
+        self.assertIn("checks.unit.credentials.TOKEN", document["errors"][0])
+
+    def test_given_the_releasing_entry_when_described_then_its_publish_and_release_are_still_judged(self):
+        # The library releases (owner-tag): a release build's credential outside its releaseCredentials is refused
+        # for it, and the docs job skips the release sections altogether.
+        text = LIBRARY_FILE + "release:\n  build: {image: x, run: y, credentials: {SIGN: sign-key}}\n"
+        status, document = self.describe("ygg-lib", text)
+        self.assertEqual(status, 1)
+        self.assertIn("release.build.credentials.SIGN", document["errors"][0])
+        self.assertEqual(self.describe("ygg-lib-docs", text)[1]["errors"], [])
+        # A repository nobody releases: every entry is judged on publish, and refused.
+        value = library_catalog()
+        value["repositories"][-1]["release"] = "none"
+        for job in ("ygg-lib", "ygg-lib-docs"):
+            with self.subTest(job=job):
+                status, document = self.describe(job, value=value)
+                self.assertEqual(status, 1)
+                self.assertTrue(any(error.startswith("publish:") for error in document["errors"]), document)
+
+    def test_given_the_releasing_application_when_described_then_the_credentials_of_every_entrys_checks_are_judged(self):
+        # Its release pull request runs every check main requires of the repository, a sibling's too.
+        text = RELEASING_FILE.replace("links: {image: x, run: y}", "links: {image: x, run: y, credentials: {T: links-key}}")
+        status, out, _ = run_shared("describe", "shop-api", str(repo(text)), value=releasing_catalog())
+        document = json.loads(out)
+        self.assertEqual(status, 1)
+        self.assertIn("checks.links.credentials.T", document["errors"][0])
+
+    def test_given_the_real_catalog_when_each_librarys_docs_job_is_described_against_the_template_then_it_passes(self):
+        # Every docs application on a library's repository, against templates/library, as Task 9 copies it.
+        value = cat.load()
+        # The .NET libraries: the entries the library template is for (its test and coverage checks).
+        libraries = {entry["id"] for entry in cat.repositories(value) if entry["checks"] == ["test", "coverage"]}
+        self.assertEqual(len(libraries), 12)
+        docs = [app["id"] for _, app in cat.applications(value, deployable=True) if app.get("repository") in libraries]
+        self.assertEqual(len(docs), 12)
+        template = pathlib.Path(__file__).resolve().parent.parent / "templates" / "library"
+        for job in docs + sorted(libraries):
+            with self.subTest(job=job):
+                document = pc.describe(value, job, template)
+                self.assertEqual(document["errors"], [])
+
+
 # shop-api releases (prod: trigger release) and shares its repository with its docs site, which names a
 # check of its own. One file for both.
 RELEASING_FILE = """\

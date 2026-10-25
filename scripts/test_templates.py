@@ -120,9 +120,13 @@ class TemplateFilesTests(unittest.TestCase):
                    "release": "owner-tag", "tags": "[0-9]*", "checks": ["test", "coverage"],
                    "credentials": ["reportgenerator-license"], "releaseCredentials": [], "actionsChecks": []}
         docs = {"id": "dotnet-sample-docs", "kind": "application", "repository": "dotnet-sample",
-                "release": "none", "tags": "v*", "checks": [], "credentials": [], "releaseCredentials": [],
-                "actionsChecks": []}
+                "release": "none", "tags": "v*", "checks": [], "credentials": ["reportgenerator-license"],
+                "releaseCredentials": [], "actionsChecks": []}
         self.assertEqual(pc.validate_against(config, library), [])
+        # The docs job is judged on what it runs (coverage, its deploy input, whose licence its entry allows),
+        # and not on publish, which is the releasing library's.
+        self.assertEqual(pc.job_checks(config, docs, []), {"coverage"})
+        self.assertEqual(pc.validate_against(config, docs, pc.job_checks(config, docs, []), "dotnet-sample"), [])
         self.assertEqual(pc.unclaimed_checks(config, [library, docs]), [])
         # The docs job runs coverage only because it deploys, and nothing else of the file.
         self.assertEqual(pc.needed_checks(config, docs, deploying=True), ["coverage"])

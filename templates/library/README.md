@@ -30,6 +30,7 @@ repositories:
       - id: dotnet-util-docs
         repository: dotnet-util
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs coverage, which binds it
         domain: artur-rios.tech
         host: docs                 # docs.artur-rios.tech/dotnet-util
         path: /dotnet-util

@@ -8,8 +8,10 @@
 #
 # One file, two catalog entries (docs/catalog.md, "One repository, several entries"): the library (a `repositories`
 # entry: release: owner-tag, checks: [test, coverage], credentials: [reportgenerator-license]) and its docs site
-# (an application, `<library>-docs`, with repository: <library> and checks: []). Each job runs only its own entry's
-# checks; the docs site's job runs `coverage` too, when it deploys, because deploy.inputs names it.
+# (an application, `<library>-docs`, with repository: <library>, checks: [] and credentials:
+# [reportgenerator-license]). Each job runs only its own entry's checks; the docs site's job runs `coverage` too,
+# when it deploys, because deploy.inputs names it, so its entry allows coverage's credential as well. The publish
+# section is the library's: the docs job, which does not release, is not judged on it.
 #
 # The scripts under ci/ run from the repository's root, so you can run them on your machine too. Replace
 # <Name> in SOLUTION at the top of each (src/ArturRios.<Name>.sln).

@@ -134,6 +134,7 @@ systems:
       - id: dotnet-util-docs      # its docs site, built from the coverage report
         repository: dotnet-util
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs coverage, which binds it
         # ...
 ```
 
@@ -236,9 +237,12 @@ may not start with `-`).
 The file is also checked against the catalog entry of the repository (the application, or its
 [`repositories`](#repositories) entry):
 
-- every credential in `checks.*.credentials` must be in the entry's `credentials`, and every one in
-  `release.build.credentials` in its `releaseCredentials` (never the other list: a check runs any branch's
-  code, so a release build's signing key is never a check's); none is bound on `renovate/*` builds;
+- every credential of a check **this job runs** must be in the entry's `credentials`: its catalog `checks`, an
+  application's `deploy.inputs` (a deploy runs them), and for an application that releases, every entry's checks (its
+  release pull request runs them). A check only another entry of the repository runs is that entry's to allow: a
+  library's docs job is not judged on `test`'s credentials, but is on `coverage`'s, its deploy input. Every
+  credential in `release.build.credentials` must be in `releaseCredentials` (never the other list: a check runs any
+  branch's code, so a release build's signing key is never a check's); none is bound on `renovate/*` builds;
 - every name in the entry's `checks` must be defined under `checks`;
 - `deploy.inputs` may only name checks defined in the file;
 - `publish` is allowed only for a `repositories` entry with `release: owner-tag`. Its packages are pushed
@@ -246,6 +250,9 @@ The file is also checked against the catalog entry of the repository (the applic
   pipeline binds only on the release agent around `scripts/nuget-push.sh`: it is never a check's or a
   release build's, whatever `credentials` or `releaseCredentials` say ([Owner tags and NuGet](setup.md#owner-tags-and-nuget));
 - `release` is allowed for an application with a release environment and for `release: owner-tag`.
+- `release`, `publish` and `release.build.credentials` are judged only for the repository's **releasing** entry; the
+  other entries sharing the file (a library's docs site) skip them. When no entry of the repository releases, every
+  one is judged on them, so the file cannot declare a release nobody makes.
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
 (`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,

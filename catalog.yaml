@@ -332,6 +332,7 @@ systems:
         host: docs
         path: /heimdall-api
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs a check of the API's that binds it
         environments:
           production: { trigger: branch, branches: main }
       - id: heimdall-docs
@@ -478,6 +479,7 @@ systems:
         host: docs
         path: /dotnet-configuration
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-data-docs
@@ -489,6 +491,7 @@ systems:
         host: docs
         path: /dotnet-data
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-extensions-docs
@@ -500,6 +503,7 @@ systems:
         host: docs
         path: /dotnet-extensions
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-jwt-docs
@@ -511,6 +515,7 @@ systems:
         host: docs
         path: /dotnet-jwt
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-logging-docs
@@ -522,6 +527,7 @@ systems:
         host: docs
         path: /dotnet-logging
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-mediator-docs
@@ -533,6 +539,7 @@ systems:
         host: docs
         path: /dotnet-mediator
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-messaging-docs
@@ -544,6 +551,7 @@ systems:
         host: docs
         path: /dotnet-messaging
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-output-docs
@@ -555,6 +563,7 @@ systems:
         host: docs
         path: /dotnet-output
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-test-util-docs
@@ -566,6 +575,7 @@ systems:
         host: docs
         path: /dotnet-test-util
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-util-docs
@@ -577,6 +587,7 @@ systems:
         host: docs
         path: /dotnet-util
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-validation-docs
@@ -588,6 +599,7 @@ systems:
         host: docs
         path: /dotnet-validation
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-webapi-util-docs
@@ -599,6 +611,7 @@ systems:
         host: docs
         path: /dotnet-webapi-util
         checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
 
