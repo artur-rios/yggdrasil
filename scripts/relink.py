@@ -14,7 +14,7 @@ Each change is printed as `path:line: old -> new`. --check changes nothing and e
 change or an address is unknown; without it the files are written (exit 1 too while unknown addresses are left).
 
 Where the new address comes from. The catalog is asked first: an application with the old site's `path` (docs
-sites) or id (personal-lab, the Vercel projects) gives `catalog.py public-host` + `public-path`. Task 6 of
+sites) or id (personal-lab-site, the Vercel projects) gives `catalog.py public-host` + `public-path`. Task 6 of
 plan 5 adds the sites to catalog.yaml; until it does no entry exists and the fixed table below applies. Once
 an entry exists the catalog wins, so the addresses cannot drift from what is deployed. YGG_CATALOG points at
 another catalog, as for catalog.py.
@@ -65,7 +65,7 @@ DOCS_REPOSITORIES = [
 # (catalog application id, new host) of the sites that were on Pages at the root of their own path or on
 # Vercel. A Pages path maps to the host's root (personal-lab served /personal-lab/, now lab.artur-rios.tech/).
 PAGES_ROOT_SITES = {
-    "personal-lab": ("personal-lab", "lab.artur-rios.tech"),
+    "personal-lab": ("personal-lab-site", "lab.artur-rios.tech"),
 }
 # Vercel's addresses are <project>.vercel.app, and only the projects found in the repositories are known: the
 # others have no old address to rewrite. The key is the project's whole host.

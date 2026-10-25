@@ -479,7 +479,8 @@ class StackTemplateTests(unittest.TestCase):
         self.assertEqual(labels[f"{apex}.rule"], "Host(`example.com`)")
         self.assertEqual(labels[f"{apex}.entrypoints"], "websecure")
         middleware = "traefik.http.middlewares.APPLICATION_ID-production-apex"
-        self.assertEqual(labels[f"{apex}.middlewares"], "APPLICATION_ID-production-apex")
+        # The shared headers first, so the 301 carries HSTS like every other answer (scripts/test_edge.py).
+        self.assertEqual(labels[f"{apex}.middlewares"], "secure-headers@file,APPLICATION_ID-production-apex")
         # Any path and query on the bare domain moves to the same one on www, permanently, over https. The
         # replacement keeps Traefik's ${1}: Compose must not have read it as one of its own variables.
         regex = labels[f"{middleware}.redirectregex.regex"]

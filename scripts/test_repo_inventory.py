@@ -490,6 +490,26 @@ class RenderTests(Fixture):
     def test_given_no_checklist_yet_when_columns_are_carried_then_there_are_none(self):
         self.assertEqual({}, inv.carried_columns(self.root / "nothing.md"))
 
+    def test_given_sections_written_after_the_table_when_written_again_then_they_are_kept_as_they_are(self):
+        # The check names and credentials each job and secret became are decisions, not facts the clones
+        # show: regenerating the table must not lose them, nor carry the generated part twice.
+        make_clone(self.root, "widget", {"ci.yml": CI})
+        out = self.root / "checklist.md"
+        rows = inv.inventory(self.root)
+        sections = "## Check names\n\n| Repository | Job | Becomes |\n|---|---|---|\n| widget | `ci.yml/build` | check `build` |\n"
+        out.write_text(inv.document(rows) + "\n" + sections, encoding="utf-8")
+        self.assertEqual(sections, inv.carried_sections(out))
+        again = inv.document(rows, inv.carried_columns(out), inv.carried_sections(out))
+        self.assertEqual(out.read_text(encoding="utf-8"), again)
+        self.assertEqual(1, again.count("# Migration checklist"))
+
+    def test_given_no_sections_after_the_table_when_carried_then_there_are_none(self):
+        make_clone(self.root, "widget")
+        out = self.root / "checklist.md"
+        out.write_text(inv.document(inv.inventory(self.root)), encoding="utf-8")
+        self.assertEqual("", inv.carried_sections(out))
+        self.assertEqual("", inv.carried_sections(self.root / "nothing.md"))
+
 
 class MainTests(Fixture):
     def run_main(self, *argv):

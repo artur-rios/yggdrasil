@@ -438,10 +438,11 @@ class RelinkTests(unittest.TestCase):
                     apex: true
                     path: /dotnet-data
                     environments: {production: {}}
-                  - id: personal-lab
+                  - id: personal-lab-site
                     name: Lab
                     kind: web
-                    health: http://personal-lab:8080/healthz
+                    health: http://personal-lab-site:8080/healthz
+                    repository: personal-lab
                     host: laboratory
                     domain: example.org
                     environments: {production: {}}

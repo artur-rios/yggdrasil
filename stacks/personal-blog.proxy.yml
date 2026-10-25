@@ -1,0 +1,19 @@
+# Personal blog, personal-blog in catalog.yaml: templates/stacks/site.proxy.yml
+# with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["personal-blog.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.personal-blog-${YGG_ENVIRONMENT}.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh from the catalog; give the application a host and a domain}`)
+      - traefik.http.routers.personal-blog-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.personal-blog-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.personal-blog-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true

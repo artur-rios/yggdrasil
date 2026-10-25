@@ -3,6 +3,12 @@
 import contextlib
 import copy
 import io
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -257,12 +263,23 @@ class ChimeraCatalogTests(unittest.TestCase):
         self.assertEqual(application["host"], "chimera")
         self.assertEqual(application["container"], {"service": "web"})
         self.assertTrue(application["releaseArtifacts"])
+        # The checks Jenkins runs, named as in chimera's yggdrasil.yml; Cross-platform, which only gathered the
+        # browser, Safari and native results on GitHub, is gone: each is required by itself.
         self.assertEqual(application["checks"], [
-            "Analyze and test",
-            "Cross-platform",
-            "Container",
-            "Accessibility and performance",
+            "analyze-and-test",
+            "browser-tests",
+            "native-linux",
+            "container",
+            "accessibility-performance",
+            "cleanup-contract",
+            "generated-library",
+            "evaluate-projects",
+            "version-contract",
+            "build-contract",
+            "minimal-library",
         ])
+        self.assertIn("Safari", application["actionsChecks"])
+        self.assertIn("Native (windows)", application["actionsChecks"])
 
         plan = c.resolve(value, "chimera")
         self.assertEqual(
@@ -572,8 +589,14 @@ class RepositoryTests(unittest.TestCase):
     def test_given_no_repositories_when_read_then_there_are_none(self):
         self.assertEqual(c.repositories(catalog()), [])
 
-    def test_given_the_repository_catalog_when_read_then_it_has_no_repositories_yet(self):
-        self.assertEqual(c.repositories(c.load()), [])
+    def test_given_the_repository_catalog_when_read_then_the_libraries_are_released_by_their_owners_bare_tags(self):
+        entries = {entry["id"]: entry for entry in c.repositories(c.load())}
+        self.assertEqual(entries["dotnet-util"], {
+            "id": "dotnet-util", "checks": ["test", "coverage"], "actionsChecks": [],
+            "credentials": ["reportgenerator-license"], "releaseCredentials": [], "release": "owner-tag",
+            "tags": "[0-9]*", "rules": "release"})
+        self.assertEqual(entries["yggdrasil"]["release"], "owner-tag")
+        self.assertEqual(entries["yggdrasil"]["tags"], "v*")
 
     def test_given_applications_and_repositories_when_names_are_asked_then_every_git_repository_is_listed_once(self):
         # What a tool that visits every repository (Renovate) needs: an application's `repository`, else its
@@ -929,6 +952,194 @@ class AddApplicationTests(unittest.TestCase):
     def test_given_the_repository_catalog_when_adding_then_it_still_loads(self):
         text = c.add_application(c.CATALOG.read_text(encoding="utf-8"), {"id": "new-system"}, dict(NEW, id="new-app"))
         self.assertEqual(c.system_of(c.yaml.safe_load(text), "new-app")["id"], "new-system")
+
+
+# --- The real catalog against the migration checklist -------------------------------------------------
+
+ROOT = c.CATALOG.parent
+CHECKLIST = ROOT / "docs" / "migration-checklist.md"
+TEMPLATES = ROOT / "templates" / "stacks"
+# The kinds of the checklist (the spec's "Every repository" table) that get a Jenkins job; code only,
+# archived and plain forks are imported and mirrored, nothing more.
+JENKINS_KINDS = {"application", "library", "ci", "site"}
+CHECK_NAME = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")  # pipeline_config.py's: a check of yggdrasil.yml
+JOB = re.compile(r"(?P<job>\S+/\S+ on \S+) (?P<verdict>.+)")
+BECOMES = re.compile(r"(?P<what>check|actionsCheck|releaseCredential|credential) `(?P<name>[^`]+)`")
+
+
+def _cells(line):
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", line)[1:-1]]
+
+
+def checklist_rows():
+    """The table's rows: {repository: {"kinds", "jobs" [(job on runner, verdict)], "secrets"}}."""
+    rows = {}
+    for line in CHECKLIST.read_text(encoding="utf-8").split("\n## ", 1)[0].splitlines():
+        if not line.startswith("| ") or line.startswith("| Repository |"):
+            continue
+        cells = _cells(line)
+        kinds = {kind.strip().split(" ")[0] for kind in cells[1].split(",")}
+        jobs = [(m["job"], m["verdict"]) for m in (JOB.fullmatch(j) for j in cells[3].split("<br>") if j) if m]
+        rows[cells[0]] = {"kinds": kinds, "jobs": jobs, "secrets": re.findall(r"`([A-Z0-9_]+)`", cells[4])}
+    return rows
+
+
+def checklist_section(title):
+    """A hand-written section's table: [(repository, the job or secret, what it became)]."""
+    text = CHECKLIST.read_text(encoding="utf-8")
+    body = text[text.index(f"\n## {title}\n"):]
+    body = body[:body.find("\n## ", 1)] if "\n## " in body[1:] else body
+    return [(cells[0], cells[1].strip("`"), cells[2]) for cells in map(_cells, body.splitlines())
+            if len(cells) == 3 and cells[0] not in ("Repository", "---")]
+
+
+class RealCatalogTests(unittest.TestCase):
+    """catalog.yaml is the installation's: every repository and site moving onto Forgejo and Jenkins, from
+    docs/migration-checklist.md (Task 1's inventory of their GitHub workflows and its hand-written sections)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = c.load()  # validates: a broken catalog fails here
+        cls.rows = checklist_rows()
+        cls.entries = c.repository_entries(cls.catalog)
+
+    def entry_field(self, repository, field):
+        """`field` of every catalog entry of `repository`, together."""
+        return set(c.entries_union(self.entries.get(repository, []), field))
+
+    def test_given_the_real_catalog_when_validated_then_every_checklist_repository_with_ci_has_an_entry(self):
+        expected = {name for name, row in self.rows.items() if row["kinds"] & JENKINS_KINDS}
+        self.assertEqual(set(c.repository_names(self.catalog)), expected)
+        self.assertEqual(len(c.repository_names(self.catalog)), len(expected))  # each once
+        applications = {app["id"]: app for _, app in c.applications(self.catalog, deployable=True)}
+        repositories = {entry["id"]: entry for entry in c.repositories(self.catalog)}
+        for name in sorted(expected):
+            kinds = self.rows[name]["kinds"]
+            with self.subTest(repository=name, kinds=sorted(kinds)):
+                if "application" in kinds:
+                    self.assertIn(name, applications)
+                if "library" in kinds:
+                    self.assertEqual((repositories[name]["release"], repositories[name]["tags"]), ("owner-tag", "[0-9]*"))
+                    self.assertEqual(applications[f"{name}-docs"].get("repository"), name)
+                if "ci" in kinds:
+                    self.assertIn(name, repositories)
+                if "site" in kinds:
+                    sites = [app for app in applications.values()
+                             if (app.get("repository") or app["id"]) == name and app.get("domain")]
+                    self.assertEqual(len(sites), 1, sites)
+                # The branch model the repository had on GitHub (a branch-policy workflow or not), where a
+                # repositories entry decides it.
+                deciding = self.entries[name][0]
+                if deciding["kind"] == "repository":
+                    had = any(job.startswith("branch-policy.yml/") for job, _ in self.rows[name]["jobs"])
+                    self.assertEqual(deciding["entry"]["rules"], "release" if had else "basic")
+
+    def test_given_the_checklist_when_every_ci_job_is_followed_then_it_is_a_catalog_check_or_says_why_not(self):
+        # Each job runs only its catalog entry's checks, and those are what Forgejo requires: a `→ check` job
+        # missing from the catalog would silently stop running. So every one, and every Windows or macOS job
+        # left on GitHub Actions, is in the "Check names" section, becoming a check or an actionsCheck of one
+        # of the repository's entries, or saying why not (release files, not required, dropped).
+        mapped = {(repo, job): becomes for repo, job, becomes in checklist_section("Check names")}
+        for repo, row in self.rows.items():
+            for job, verdict in row["jobs"]:
+                if not (verdict.startswith("→ check") or verdict.startswith("stays (Actions)")):
+                    continue
+                with self.subTest(repository=repo, job=job):
+                    self.assertIn((repo, job), mapped, "missing from the Check names section")
+                    self.assertIn(repo, self.entries, "a job with CI, and no catalog entry")
+        named = {"check": {}, "actionsCheck": {}}
+        for (repo, job), becomes in mapped.items():
+            with self.subTest(repository=repo, job=job, becomes=becomes):
+                self.assertIn(job, [j for j, _ in self.rows[repo]["jobs"]], "not a job of the table")
+                match = BECOMES.match(becomes)
+                if match is None:
+                    self.assertRegex(becomes, r"^(release\.build|release\.windows|not required: |dropped)")
+                    continue
+                field = "checks" if match["what"] == "check" else "actionsChecks"
+                self.assertIn(match["name"], self.entry_field(repo, field))
+                named[match["what"]].setdefault(repo, set()).add(match["name"])
+        # ... and nothing in the catalog that no job of the table became.
+        for repo in self.entries:
+            with self.subTest(repository=repo):
+                self.assertEqual(self.entry_field(repo, "checks"), named["check"].get(repo, set()))
+                self.assertEqual(self.entry_field(repo, "actionsChecks"), named["actionsCheck"].get(repo, set()))
+                for check in self.entry_field(repo, "checks"):
+                    self.assertRegex(check, CHECK_NAME)
+
+    def test_given_the_checklist_when_every_secret_is_followed_then_it_is_a_credential_of_the_right_kind(self):
+        mapped = {(repo, secret): becomes for repo, secret, becomes in checklist_section("Credentials")}
+        used = {"credential": {}, "releaseCredential": {}}
+        for repo, row in self.rows.items():
+            for secret in row["secrets"]:
+                with self.subTest(repository=repo, secret=secret):
+                    becomes = mapped.get((repo, secret))
+                    self.assertIsNotNone(becomes, "missing from the Credentials section")
+                    match = BECOMES.match(becomes)
+                    if match is None:
+                        self.assertTrue(becomes.startswith("not needed: "), becomes)
+                        continue
+                    field = "credentials" if match["what"] == "credential" else "releaseCredentials"
+                    self.assertIn(match["name"], self.entry_field(repo, field))
+                    used[match["what"]].setdefault(repo, set()).add(match["name"])
+        self.assertEqual(len(mapped), sum(len(row["secrets"]) for row in self.rows.values()))
+        for repo in self.entries:
+            with self.subTest(repository=repo):
+                self.assertEqual(self.entry_field(repo, "credentials"), used["credential"].get(repo, set()))
+                self.assertEqual(self.entry_field(repo, "releaseCredentials"),
+                                 used["releaseCredential"].get(repo, set()))
+        # The NuGet key is the release agent's alone, around its push step: never a catalog credential.
+        everywhere = set().union(*(self.entry_field(repo, f) for repo in self.entries
+                                   for f in ("credentials", "releaseCredentials")))
+        self.assertNotIn("nuget-api-key", everywhere)
+
+    def test_given_every_site_when_its_stack_files_are_read_then_they_are_the_templates_with_its_id(self):
+        sites = [app for _, app in c.applications(self.catalog, deployable=True) if app.get("domain")]
+        self.assertEqual(len(sites), 24)
+        for app in sites:
+            proxy = ("site-path.proxy.yml" if app.get("path") else
+                     "site-apex-redirect.proxy.yml" if app.get("apex") else "site.proxy.yml")
+            for template, name in (("site.yml", f"{app['id']}.yml"), (proxy, f"{app['id']}.proxy.yml")):
+                with self.subTest(application=app["id"], stack=name):
+                    expected = c.yaml.safe_load(
+                        (TEMPLATES / template).read_text(encoding="utf-8").replace("APPLICATION_ID", app["id"]))
+                    actual = c.yaml.safe_load((ROOT / "stacks" / name).read_text(encoding="utf-8"))
+                    web = actual["services"]["web"]
+                    # The two additions a site's stack may make: its own Dockerfile's name (a repository whose
+                    # Dockerfile is another image's) and its variables handed to the container.
+                    if web.get("build", {}).pop("dockerfile", None) is not None:
+                        self.assertEqual(app["id"], "heimdall-api-docs")
+                    if web.pop("env_file", None) is not None:
+                        self.assertEqual(app["id"], "github-readme-stats")
+                    self.assertEqual(actual, expected)
+
+    @unittest.skipUnless(shutil.which("docker"), "needs docker")
+    def test_given_every_site_when_its_stack_is_rendered_then_compose_accepts_it_in_each_environment(self):
+        # As deploy.sh runs it: the values it exports, the host and path the catalog gives, and APEX_HOST from
+        # the application's variables.
+        for _, app in c.applications(self.catalog, deployable=True):
+            if not app.get("domain"):
+                continue
+            for env in c.resolve(self.catalog, app["id"]):
+                with self.subTest(application=app["id"], environment=env["id"]), \
+                        tempfile.TemporaryDirectory() as app_dir:
+                    env_file = pathlib.Path(app_dir) / "app.env"
+                    env_file.write_text("GITHUB_TOKEN=sample\n", encoding="utf-8")
+                    host = c.public_host(self.catalog, app["id"], env["id"], "techcraftsmen.net")
+                    values = dict(os.environ, APP_DIR=app_dir, APP_ENV_FILE=str(env_file), YGG_ENVIRONMENT=env["id"],
+                                  YGG_PUBLIC_HOST=host, YGG_PUBLIC_PATH=app.get("path", ""),
+                                  GIT_COMMIT="0" * 40, IMAGE_TAG=f"{env['id']}-1.0.0-0000000",
+                                  APEX_HOST=app["domain"])
+                    result = subprocess.run(
+                        ["docker", "compose", "--project-name", f"{app['id']}-{env['id']}", "--env-file", os.devnull,
+                         "-f", str(ROOT / "stacks" / f"{app['id']}.yml"),
+                         "-f", str(ROOT / "stacks" / f"{app['id']}.{env['mode']}.yml"),
+                         "config", "--format", "json"], env=values, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    labels = c.json.loads(result.stdout)["services"]["web"]["labels"]
+                    rule = labels[f"traefik.http.routers.{app['id']}-{env['id']}.rule"]
+                    self.assertIn(f"Host(`{host}`)", rule)
+                    if app.get("path"):
+                        self.assertIn(f"PathPrefix(`{app['path']}/`)", rule)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,8 @@
 # the router sits on the secure entrypoint and only https arrives, and the replacement is always https. Traefik
 # needs a service for every router, so the redirect router names the site's: it answers before any request
 # reaches it. The certificate covers the bare domain (the host's certificate lists the domain and its wildcard).
+# The redirect goes through secure-headers@file first, like every router of a stack, so the bare domain's 301
+# carries HSTS and the other headers too (a browser that only ever typed the bare domain learns it there).
 #
 # Named after the environment, from YGG_ENVIRONMENT, so that several environments can share one host: the alias
 # APPLICATION_ID.<environment> (how the status API reaches the catalog's `health`, qualified with the
@@ -35,7 +37,7 @@ services:
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.service=APPLICATION_ID-${YGG_ENVIRONMENT}
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.rule=Host(`${APEX_HOST:?set APEX_HOST in the application's variables to the bare domain}`)
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.entrypoints=websecure
-      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.middlewares=APPLICATION_ID-${YGG_ENVIRONMENT}-apex
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.middlewares=secure-headers@file,APPLICATION_ID-${YGG_ENVIRONMENT}-apex
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.service=APPLICATION_ID-${YGG_ENVIRONMENT}
       - traefik.http.middlewares.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.redirectregex.regex=^https?://[^/]+(.*)
       - traefik.http.middlewares.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.redirectregex.replacement=https://${YGG_PUBLIC_HOST}$${1}

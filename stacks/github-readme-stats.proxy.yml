@@ -1,0 +1,19 @@
+# GitHub readme stats, github-readme-stats in catalog.yaml: templates/stacks/site.proxy.yml
+# with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["github-readme-stats.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.github-readme-stats-${YGG_ENVIRONMENT}.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh from the catalog; give the application a host and a domain}`)
+      - traefik.http.routers.github-readme-stats-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.github-readme-stats-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.github-readme-stats-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true
