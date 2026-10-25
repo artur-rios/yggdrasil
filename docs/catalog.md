@@ -295,6 +295,71 @@ repository stops the deploy before anything is copied: inputs never overwrite re
 may merge into one). Only `DEPLOY_TO` builds ("Build with Parameters", which run no check) deploy with none,
 so a stack that needs them cannot build there.
 
+## Templates for repositories
+
+`templates/` has a starting point for each kind of repository a catalog entry can back. Copy the files named in the
+template's `README.md` to the repository, and the stack files from `templates/stacks/` to this repository's
+`stacks/`. Every image in them is pinned by version and digest (`name:version@sha256:...`), and `renovate/default.json`
+(below) keeps the pins up to date.
+
+| Template | For | Files |
+|---|---|---|
+| `templates/application/` | a deployed application: `yggdrasil.yml` and the `CONTRIBUTING.md` of the release model | `yggdrasil.yml`, `CONTRIBUTING.md` |
+| `templates/site-static/` | a site that is already built (a directory of files) | `Dockerfile`, `yggdrasil.yml`, `README.md` |
+| `templates/site-hugo/` | a Hugo site | the same |
+| `templates/site-vite/` | a Vite single-page app | the same |
+| `templates/site-next-static/` | a Next.js static export | the same |
+| `templates/site-next-server/` | a server-rendered Next.js site | the same, and `app/healthz/route.js` |
+| `templates/site-node-api/` | a Node.js service (github-readme-stats) | the same |
+| `templates/library/` | a .NET library and its docs site | `ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh`, `yggdrasil.yml`, the docs site's `Dockerfile`, `README.md` |
+| `templates/stacks/` | the site stack files, copied to `stacks/<application-id>.yml` and `.proxy.yml` | `site.yml`, `site.proxy.yml`, `site-path.proxy.yml`, `site-apex-redirect.proxy.yml` |
+
+**What every site image does.** It listens on port 8080 as a non-root user and answers `/healthz` with 200, which
+is the catalog's `health` (`http://<id>:8080/healthz`). The static ones (static, Hugo, Vite, Next static, the
+library's docs) are the [static-web-server](https://static-web-server.net/) image, pinned, with no shell: the site
+is built in a pinned builder stage (Hugo, Node) and only copied into it, under the application's `path`, since the
+proxy does not strip the prefix; `/healthz` is a file of its own. Server-rendered Next.js and the Node service run
+`node` as the image's `node` user, with a `HEALTHCHECK`.
+
+**Build arguments.** A site's Dockerfile takes the values Vercel gave its build as build arguments, which the
+stack file `site.yml` passes in `build.args` from what `scripts/deploy.sh` exports:
+
+| Build argument | Value | Replaces |
+|---|---|---|
+| `GIT_COMMIT` | the whole SHA of the checkout being deployed (empty when it is not a git checkout) | `VERCEL_GIT_COMMIT_SHA` |
+| `YGG_ENVIRONMENT` | the environment being deployed to | `VERCEL_ENV` |
+| `PUBLIC_HOST`, `PUBLIC_PATH` | `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH`, the catalog's `host`/`domain` and `path` (empty without them) | the site's URL: Hugo's `baseURL` is `https://<host><path>/`, Vite's `base`, Next's `basePath` |
+
+They are public values, compiled into the image: a secret is the application's variable, never a build argument.
+
+**Stack templates.** In `site.yml` (the service, `web`) and one overlay, copied with `APPLICATION_ID` replaced by the
+application's id:
+
+- `site.proxy.yml`: the router `Host(${YGG_PUBLIC_HOST})`;
+- `site-path.proxy.yml`: `Host(...) && (Path(${YGG_PUBLIC_PATH}) || PathPrefix(${YGG_PUBLIC_PATH}/))`, without stripping the
+  prefix, since the site is built for it;
+- `site-apex-redirect.proxy.yml`: the same router on `www.`, and one more on the bare domain (`APEX_HOST`, in the
+  application's variables) with a permanent `redirectRegex` to the `www.` address.
+
+**A library.** `templates/library/` is the file for two catalog entries ([One repository, several
+entries](#one-repository-several-entries)): the library's `test` and `coverage` checks, its `publish.nuget`, and the
+docs application's `deploy.inputs: [coverage]`. `ci/coverage.sh` makes ReportGenerator's PRO report when
+`REPORTGENERATOR_LICENSE` is bound, and the free report, saying so, when it is not (a `renovate/*` build binds no
+credential).
+
+**Renovate.** `renovate/default.json` is the shared preset, which a repository's `renovate.json` extends with
+`{"extends": ["local>artur-rios/yggdrasil//renovate/default"]}`. It extends `config:recommended`, targets `develop`,
+covers nuget, npm, github-actions and docker (Dockerfiles and Compose files), groups the NuGet packages the
+way the repositories' `dependabot.yml` did, and adds a regex manager for the `image: <name>:<tag>@sha256:<digest>`
+lines of `yggdrasil.yml`. Those image bumps wait for the owner to merge them: `yggdrasil.yml` is a protected file on
+`develop` ([step 12](setup.md#12-apply-the-branch-rules)).
+
+`scripts/test_templates.py` keeps all of it honest: every template's `yggdrasil.yml` validates, every image is pinned,
+the stack templates render under `docker compose config`, the library scripts run against a fake `dotnet`, and the
+preset's regex matches a pinned image line. With `YGG_TEMPLATE_TESTS=1` (and Docker) it also builds each site
+template around a tiny sample site and checks `/healthz` and a deep link, and runs Renovate's own config validator
+on the preset.
+
 ## Environments
 
 An environment is a place applications run: a laptop, a staging server, production. A host (a

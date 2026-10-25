@@ -1,0 +1,39 @@
+# The service definition of a site, for stacks/<application-id>.yml (copy this file there and replace
+# APPLICATION_ID with the application's id from catalog.yaml, everywhere in the file). scripts/deploy.sh uses it
+# when the repository has no docker-compose.yml of its own; with a proxy overlay (site.proxy.yml,
+# site-path.proxy.yml or site-apex-redirect.proxy.yml, copied to stacks/<application-id>.proxy.yml) it is a site
+# behind Traefik. The Dockerfile in the repository is one of templates/site-*/ (or templates/library/).
+#
+# The build arguments are public values compiled into the image: never pass a credential or another secret here
+# (a secret is the application's env variable, read at run time). deploy.sh exports every value used below:
+#   GIT_COMMIT       the whole SHA of the checkout being deployed (empty for a directory that is not a git
+#                    checkout). Replaces Vercel's VERCEL_GIT_COMMIT_SHA.
+#   YGG_ENVIRONMENT  the environment being deployed to (production, homologation...). Replaces VERCEL_ENV.
+#   YGG_PUBLIC_HOST  <host><hostSuffix>.<domain> from the catalog's host, domain and apex; empty without a domain.
+#   YGG_PUBLIC_PATH  the catalog's path (/name); empty for a site at its host's root.
+# A Dockerfile ignores a build argument it does not declare, so the same file serves every kind of site.
+#
+# The image is built for each environment (the same commit compiles its environment into the site) and tagged
+# <environment>-<version> by deploy.sh, which rolls back and prunes by that tag.
+
+services:
+  web:
+    build:
+      context: ${APP_DIR:?APP_DIR is set by scripts/deploy.sh}
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        YGG_ENVIRONMENT: ${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}
+        PUBLIC_HOST: ${YGG_PUBLIC_HOST:-}
+        PUBLIC_PATH: ${YGG_PUBLIC_PATH:-}
+    image: APPLICATION_ID:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

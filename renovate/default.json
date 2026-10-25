@@ -1,0 +1,50 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "yggdrasil's shared Renovate preset. A repository extends it with renovate.json: {\"extends\": [\"local>artur-rios/yggdrasil//renovate/default\"]}. It covers what each repository's dependabot.yml covered (nuget, npm, github-actions, docker), and the pinned images of yggdrasil.yml.",
+  "extends": ["config:recommended"],
+  "baseBranchPatterns": ["develop"],
+  "enabledManagers": ["nuget", "npm", "github-actions", "dockerfile", "docker-compose", "custom.regex"],
+  "semanticCommits": "enabled",
+  "semanticCommitType": "build",
+  "prConcurrentLimit": 5,
+  "packageRules": [
+    {
+      "description": "Packages that are released together and must move together, as Dependabot grouped them.",
+      "matchManagers": ["nuget"],
+      "matchPackageNames": ["Microsoft.*", "System.*"],
+      "groupName": "microsoft"
+    },
+    {
+      "matchManagers": ["nuget"],
+      "matchPackageNames": ["ArturRios.*"],
+      "groupName": "arturrios"
+    },
+    {
+      "matchManagers": ["nuget"],
+      "matchPackageNames": ["xunit*", "coverlet.*"],
+      "groupName": "test-tooling"
+    },
+    {
+      "description": "NuGet and npm updates weekly, as Dependabot did.",
+      "matchManagers": ["nuget", "npm"],
+      "schedule": ["on monday"]
+    },
+    {
+      "description": "Actions and images monthly. The images of yggdrasil.yml and the Dockerfiles are pinned by digest, and the owner merges the change to yggdrasil.yml (a protected file on develop).",
+      "matchManagers": ["github-actions", "dockerfile", "docker-compose", "custom.regex"],
+      "schedule": ["on the first day of the month"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The images pinned by version and digest in yggdrasil.yml: `image: <name>:<tag>@sha256:<digest>`, quoted or not, in a check, in release.build and validate, and in publish.nuget.",
+      "managerFilePatterns": ["/(^|/)yggdrasil\\.yml$/"],
+      "matchStrings": [
+        "image:\\s*[\"']?(?<depName>[^\\s\"'@]+?):(?<currentValue>[^\\s\"'@:/]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ]
+}

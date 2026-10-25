@@ -229,6 +229,9 @@ Rules to keep:
   also exports `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH` from the catalog's `host`, `domain`, `path` and `apex`
   ([catalog.md](catalog.md#application-fields)), which a stack file may use instead. An `apex` site without a
   `host` is on the bare domain in every environment: deploy it to one environment only.
+- To give a build the commit and the environment (what Vercel's `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV` were),
+  pass `GIT_COMMIT` (the whole SHA of the checkout) and `YGG_ENVIRONMENT` in `build.args`: `deploy.sh` exports both.
+  [The site templates](catalog.md#templates-for-repositories) do.
 - Use named volumes, not relative bind mounts (`./data:/data`). Under Jenkins, Compose runs inside
   the agent container, so a relative path points into the agent's workspace, not the host.
 

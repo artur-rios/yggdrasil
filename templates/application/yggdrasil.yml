@@ -8,11 +8,21 @@
 # Check it where the catalog is, in the yggdrasil checkout:
 #   python3 scripts/pipeline_config.py describe <application-id> <this repository's checkout>
 #
+# This is the general file. For these kinds of repository there is a template to start from instead, with the
+# Dockerfile, the checks, the pinned images and a README (the stack files for sites are in templates/stacks/):
+#   a static site             templates/site-static/
+#   a Hugo site               templates/site-hugo/
+#   a Vite app                templates/site-vite/
+#   a Next.js static export   templates/site-next-static/
+#   a Next.js server          templates/site-next-server/
+#   a Node.js service         templates/site-node-api/
+#   a .NET library + docs     templates/library/
+#
 # The commented lines below are optional: remove the "# " to use one.
 
 checks:
   test:                                  # the check's name: its status on every pull request
-    image: mcr.microsoft.com/dotnet/sdk:10.0
+    image: mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2
     run: ci/test.sh                      # given to sh -c, in the image, from the repository's root
     # docker: true                       # the CI engine's socket: Testcontainers, image builds
     # credentials:                       # ENV_VAR: Jenkins credential id, one of the catalog's `credentials`

@@ -154,6 +154,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the move needs `read:user` besides `write:repository`: `migrate.py collaborators` looks the bot accounts up, and
   Forgejo refuses that to a token without it. [docs/hosts.md](docs/hosts.md)'s restore and upgrade steps now run the
   pinned `busybox` image that `backup.sh` and `volumes.sh` use, not whatever `busybox` is current.
+- **Templates for the sites and the libraries.** `templates/site-static/`, `site-hugo/`, `site-vite/`,
+  `site-next-static/`, `site-next-server/` and `site-node-api/` (a Dockerfile, a `yggdrasil.yml` and a README each),
+  `templates/library/` (`ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh` and the docs site's Dockerfile, in place of a
+  library's three workflows) and the stack files `templates/stacks/site.yml`, `site.proxy.yml`,
+  `site-path.proxy.yml` and `site-apex-redirect.proxy.yml`. The images are pinned by version and digest
+  (static-web-server, Node, Hugo, the .NET SDK); the sites listen on port 8080 as a non-root user and answer
+  `/healthz`. `renovate/default.json` is the shared Renovate preset (nuget, npm, github-actions, docker, and the
+  pinned images of `yggdrasil.yml`). `scripts/test_templates.py` tests them, and with `YGG_TEMPLATE_TESTS=1` builds
+  each site around a sample and probes it. See [docs/catalog.md](docs/catalog.md#templates-for-repositories).
 
 ### Changed
 
