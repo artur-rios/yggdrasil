@@ -57,7 +57,8 @@ _ci_x86_64() {
 
 ensure_docker() {
   command -v docker >/dev/null 2>&1 && return 0
-  _ci_x86_64 "Docker client" && _ci_tools_dir
+  _ci_x86_64 "Docker client" || return 1
+  _ci_tools_dir
   echo "ci/tools.sh: no docker on the PATH; fetching the Docker $DOCKER_VERSION client"
   _ci_fetch "https://download.docker.com/linux/static/stable/x86_64/docker-$DOCKER_VERSION.tgz" "$DOCKER_SHA256" \
     "$YGG_CI_TOOLS/docker.tgz"
@@ -69,7 +70,8 @@ ensure_docker() {
 # _ci_plugin <name> <url> <sha256>: a Docker CLI plugin, when `docker <name> version` does not answer.
 _ci_plugin() {
   docker "$1" version >/dev/null 2>&1 && return 0
-  _ci_x86_64 "docker $1" && _ci_tools_dir
+  _ci_x86_64 "docker $1" || return 1
+  _ci_tools_dir
   echo "ci/tools.sh: no docker $1; fetching it"
   # A DOCKER_CONFIG of our own, so the plugin is found without writing to the user's ~/.docker.
   export DOCKER_CONFIG="$YGG_CI_TOOLS/docker-config"
@@ -92,7 +94,8 @@ ensure_compose() {
 
 ensure_jq() {
   command -v jq >/dev/null 2>&1 && return 0
-  _ci_x86_64 jq && _ci_tools_dir
+  _ci_x86_64 jq || return 1
+  _ci_tools_dir
   echo "ci/tools.sh: no jq on the PATH; fetching $JQ_VERSION"
   _ci_fetch "https://github.com/jqlang/jq/releases/download/$JQ_VERSION/jq-linux-amd64" "$JQ_SHA256" "$YGG_CI_TOOLS/bin/jq"
   chmod +x "$YGG_CI_TOOLS/bin/jq"
@@ -100,7 +103,8 @@ ensure_jq() {
 
 ensure_shellcheck() {
   command -v shellcheck >/dev/null 2>&1 && return 0
-  _ci_x86_64 ShellCheck && _ci_tools_dir
+  _ci_x86_64 ShellCheck || return 1
+  _ci_tools_dir
   echo "ci/tools.sh: no shellcheck on the PATH; fetching ShellCheck $SHELLCHECK_VERSION"
   _ci_fetch "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz" \
     "$SHELLCHECK_SHA256" "$YGG_CI_TOOLS/shellcheck.tar.xz"
