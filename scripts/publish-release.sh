@@ -14,7 +14,8 @@
 #   2. a draft release for the tag: the one a failed earlier run left, else a new one with the notes;
 #   3. every file under <files-dir> (any depth, by its file name) the release does not have yet with the
 #      same size is uploaded; a file that is there under the same name with another size stops the run
-#      (the owner deletes it: there is no command to);
+#      (on a draft the owner deletes it: there is no command to; a published release is never changed, so
+#      there the files are a new release's);
 #   4. the release's files are read again and must hold every file of <files-dir> with its size.
 # Only when both servers' drafts are complete is Forgejo's published, then GitHub's, last: a release
 # that is public on GitHub has been published everywhere else. A run that stopped half way is started
@@ -204,8 +205,12 @@ upload_files() {
       unset "remote_sizes[$name]"
     fi
     if [[ -n "${remote_sizes[$name]+set}" ]]; then
-      [[ "${remote_sizes[$name]}" == "${local_sizes[$name]}" ]] \
-        || fail "uploading $name to $(label "$side")" "the release has a file of that name with ${remote_sizes[$name]} bytes, not ${local_sizes[$name]}; delete it and run again"
+      if [[ "${remote_sizes[$name]}" != "${local_sizes[$name]}" ]]; then
+        # A published release is never changed: what it holds was released, so these files are another release's.
+        [[ "${release_draft[$side]:-}" == true ]] \
+          || fail "uploading $name to $(label "$side")" "the release of $tag there is published, with a file of that name of ${remote_sizes[$name]} bytes, not ${local_sizes[$name]}: a published release is never changed, so these files go in a new release, with a new version"
+        fail "uploading $name to $(label "$side")" "the release has a file of that name with ${remote_sizes[$name]} bytes, not ${local_sizes[$name]}; delete it and run again"
+      fi
       continue
     fi
     must_forge "uploading $name to $(label "$side")" "$side" upload-release-file "$repo" "$id" "${paths[$index]}"

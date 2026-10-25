@@ -423,6 +423,23 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertIn("3 bytes, not 9", result.stderr)
         self.assertEqual(self.calls_of("forgejo upload-release-file"), [])
 
+    def test_given_a_published_release_with_a_file_of_another_size_when_resumed_then_it_points_at_a_new_release(self):
+        # A published release is never changed: a resume whose file differs from the released one is refused
+        # without telling the owner to delete anything from it.
+        self.tag("forgejo", SHA)
+        (self.state / "forgejo" / "releases" / "1" / "assets").mkdir(parents=True)
+        for name, content in (("tag", "v1.4.0"), ("draft", "false")):
+            (self.state / "forgejo" / "releases" / "1" / name).write_text(content)
+        (self.state / "forgejo" / "releases" / "1" / "assets" / "app.zip").write_text("3\n")
+        result = self.publish()
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("publish-release: uploading app.zip to Forgejo failed", result.stderr)
+        self.assertIn("the release of v1.4.0 there is published", result.stderr)
+        self.assertIn("3 bytes, not 9", result.stderr)
+        self.assertIn("a published release is never changed, so these files go in a new release", result.stderr)
+        self.assertNotIn("delete", result.stderr)
+        self.assertEqual([c for c in self.calls() if " upload-release-file " in c or " delete-release-file " in c], [])
+
     def test_given_files_in_subdirectories_when_published_then_they_are_uploaded_by_name(self):
         nested = self.files / "windows-build"
         nested.mkdir()

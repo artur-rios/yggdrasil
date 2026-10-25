@@ -1834,7 +1834,8 @@ release published after the skip, and for a tag that was never built.
 
 Two cautions. It **rebuilds** the files from the tag instead of copying the published ones, so a build that is
 not reproducible can give a file with the same size and other bytes than the one already on Forgejo, and the
-GitHub copy would then differ in content; a different size stops the run. A release with `release.finalize` is
+GitHub copy would then differ in content; a different size stops the run (on a published release, with a message
+that these files belong in a new release, a new version: nothing of a published release is deleted). A release with `release.finalize` is
 the exception for its **drafts**: their manifest and signature are made again in this run, so a draft's files are
 deleted and uploaded again (`publish-release.sh --replace-files`) rather than reused by name and size, and a
 draft's files whose names are not in the run's set are deleted, so a draft never keeps a file its new manifest
