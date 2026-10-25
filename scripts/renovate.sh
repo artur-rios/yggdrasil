@@ -20,7 +20,7 @@
 #                           the applications' and the `repositories` entries), the owner being FORGE_OWNER,
 #                           else the catalog's, as forge.sh reads it. Renovate never autodiscovers: it visits
 #                           these and nothing else the token can see.
-#   RENOVATE_CONFIG         the global options: branchPrefix renovate/, baseBranches develop (the default
+#   RENOVATE_CONFIG         the global options: branchPrefix renovate/, baseBranchPatterns develop (the default
 #                           a repository's baseBranchPatterns overrides), and no
 #                           onboarding: a repository without a Renovate config of its own is skipped
 #                           (requireConfig: required) instead of getting an onboarding pull request.
@@ -50,7 +50,7 @@ RENOVATE_IMAGE=renovate/renovate:44.181.0@sha256:1a06e15f2d8bc08342828ec43c0a90d
 
 # The global options (see the header): the branches Renovate pushes and opens pull requests from, where they
 # go, and what it does with a repository that has no config of its own.
-RENOVATE_GLOBAL_CONFIG='{"branchPrefix":"renovate/","baseBranches":["develop"],"onboarding":false,"requireConfig":"required"}'
+RENOVATE_GLOBAL_CONFIG='{"branchPrefix":"renovate/","baseBranchPatterns":["develop"],"onboarding":false,"requireConfig":"required"}'
 
 usage="usage: renovate.sh run"
 [[ "${1:-}" == run && $# -eq 1 ]] || { echo "renovate: $usage" >&2; exit 2; }

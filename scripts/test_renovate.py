@@ -212,7 +212,9 @@ class RenovateTests(unittest.TestCase):
         self.assertEqual(env["RENOVATE_ENDPOINT"], "https://git.example.com/api/v1")
         config = json.loads(env["RENOVATE_CONFIG"])
         self.assertEqual(config["branchPrefix"], "renovate/")
-        self.assertEqual(config["baseBranches"], ["develop"])
+        # Renovate 44's name (it still reads baseBranches, but warns), as the shared preset spells it.
+        self.assertEqual(config["baseBranchPatterns"], ["develop"])
+        self.assertNotIn("baseBranches", config)
         # Repositories that carry no Renovate config of their own are left alone, not onboarded.
         self.assertIs(config["onboarding"], False)
         self.assertEqual(config["requireConfig"], "required")
