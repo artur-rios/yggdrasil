@@ -1080,13 +1080,15 @@ class RealCatalogTests(unittest.TestCase):
         for (repo, job), becomes in mapped.items():
             with self.subTest(repository=repo, job=job, becomes=becomes):
                 self.assertIn(job, [j for j, _ in self.rows[repo]["jobs"]], "not a job of the table")
-                match = BECOMES.match(becomes)
-                if match is None:
+                if BECOMES.match(becomes) is None:
                     self.assertRegex(becomes, r"^(release\.build|release\.windows|not required: |dropped)")
                     continue
-                field = "checks" if match["what"] == "check" else "actionsChecks"
-                self.assertIn(match["name"], self.entry_field(repo, field))
-                named[match["what"]].setdefault(repo, set()).add(match["name"])
+                # A job may become more than one: alexandria-ui's Linux integration job is the check
+                # `integration` and, for its sandboxed test, an actionsCheck too.
+                for match in BECOMES.finditer(becomes):
+                    field = "checks" if match["what"] == "check" else "actionsChecks"
+                    self.assertIn(match["name"], self.entry_field(repo, field))
+                    named[match["what"]].setdefault(repo, set()).add(match["name"])
         # ... and nothing in the catalog that no job of the table became.
         for repo in self.entries:
             with self.subTest(repository=repo):

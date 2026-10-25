@@ -159,6 +159,7 @@ repositories:
       - Unit and widget tests (windows)
       - Integration (windows)
       - Release build (windows)
+      - Sandboxed page engine (linux)   # needs user namespaces a Jenkins check container doesn't have
     release: owner-tag
     rules: release
   - id: cerberus-ui               # its v* tag build (web, Android, Linux; Windows on Actions) is the release
@@ -183,6 +184,7 @@ repositories:
     release: owner-tag
     rules: release
   - id: personal-lab              # its site is the application personal-lab-site, deployed on main
+    checks: [build]               # the site's image, as the Pages build ran on every pull request
     release: owner-tag
     rules: release
 

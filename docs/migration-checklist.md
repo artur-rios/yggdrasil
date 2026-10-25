@@ -113,7 +113,7 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | alexandria-ui | `ci.yml/test on windows-latest` | actionsCheck `Unit and widget tests (windows)` |
 | alexandria-ui | `ci.yml/test on ubuntu-latest` | check `test` |
 | alexandria-ui | `ci.yml/integration on windows-latest` | actionsCheck `Integration (windows)` |
-| alexandria-ui | `ci.yml/integration on ubuntu-latest` | check `integration` |
+| alexandria-ui | `ci.yml/integration on ubuntu-latest` | check `integration`; its sandboxed page-engine test is the actionsCheck `Sandboxed page engine (linux)` (Chromium's sandbox needs user namespaces a Jenkins check container doesn't have) |
 | alexandria-ui | `ci.yml/build on windows-latest` | actionsCheck `Release build (windows)` |
 | alexandria-ui | `ci.yml/build on ubuntu-latest` | check `build` |
 | alexandria-ui | `release.yml/windows on windows-latest` | release.windows |
@@ -221,6 +221,7 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | orpheus | `release.yml/windows on windows-latest` | release.windows |
 | orpheus | `verify.yml/linux on ubuntu-latest` | check `linux` (GitHub: `Linux and Android`) |
 | orpheus | `verify.yml/windows on windows-latest` | actionsCheck `Windows and the installer` |
+| personal-lab | `deploy.yml/build on ubuntu-latest` | check `build` (the site's image, as the Pages build ran on every pull request) |
 | personal-page | `ci.yml/lint-and-build on ubuntu-latest` | check `lint-and-build` |
 | reveal.js | `spellcheck.yml/codespell on ubuntu-latest` | check `codespell` |
 | reveal.js | `test.yml/build on ubuntu-latest` | check `build` (Node 22 and 24) |
