@@ -11,6 +11,38 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 root=$PWD
 
+# The socket proxies suite's scratch directory (below), in the checkout. Whoever makes it removes it.
+scratch_owner=false
+if [[ -z "${YGG_CI_SCRATCH:-}" ]]; then
+  YGG_CI_SCRATCH="$root/.ci-tmp"
+  scratch_owner=true
+fi
+
+# The agents run every check as root (scripts/run-check.sh). The suites are a user's, as on the GitHub runner:
+# platform.sh, volumes.sh and machine.sh refuse root, as on a host, and their tests expect that refusal to be
+# someone else's. So as root, this script runs itself again as a throwaway user of the container, with the Docker
+# socket's group (docker: true). The checkout stays root's, untouched: that user only reads it, and writes its
+# temporary files and the scratch directory, which is made here for it and removed here.
+if [[ $(id -u) -eq 0 ]]; then
+  user=ygg-check
+  home=/tmp/$user
+  id "$user" >/dev/null 2>&1 || useradd --system --create-home --home-dir "$home" --shell /bin/bash "$user"
+  # git refuses a repository another user owns: the tests read this checkout with git.
+  printf '[safe]\n\tdirectory = *\n' >"$home/.gitconfig"
+  chown "$user:" "$home/.gitconfig"
+  groups=$(id -g "$user")
+  if [[ -S /var/run/docker.sock ]]; then
+    groups="$groups,$(stat -c %g /var/run/docker.sock)"
+  fi
+  mkdir -p "$YGG_CI_SCRATCH"
+  chmod 1777 "$YGG_CI_SCRATCH"
+  trap 'rm -rf "$YGG_CI_SCRATCH"' EXIT
+  status=0
+  HOME=$home USER=$user LOGNAME=$user YGG_CI_SCRATCH=$YGG_CI_SCRATCH \
+    setpriv --reuid="$user" --regid="$user" --groups="$groups" -- bash "$root/ci/platform.sh" || status=$?
+  exit "$status"
+fi
+
 # shellcheck source=ci/tools.sh
 source ci/tools.sh
 ensure_shellcheck
@@ -18,8 +50,7 @@ ensure_jq
 ensure_compose
 
 work=$(mktemp -d)
-# The socket proxies suite's scratch directory (below) is in the checkout; it goes whatever happens.
-trap 'rm -rf "$work" "$root/.ci-tmp"' EXIT
+trap 'rm -rf "$work"; if $scratch_owner; then rm -rf "$YGG_CI_SCRATCH"; fi' EXIT
 
 python3 -m venv "$work/venv"
 export PATH="$work/venv/bin:$PATH"
@@ -38,9 +69,8 @@ echo "== Test the Docker socket proxies against Traefik and Alloy"
 # sees the checkout at this same path (it is mounted at it) but not this container's /tmp. So the suite's scratch
 # directory is in the checkout here. discover, as below: the suite imports traefik_config flat, which
 # `-m unittest scripts.test_socket_proxies` cannot (every test was skipped).
-mkdir -p "$root/.ci-tmp"
-TMPDIR="$root/.ci-tmp" YGG_DOCKER_TESTS=1 python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
-rm -rf "$root/.ci-tmp"
+mkdir -p "$YGG_CI_SCRATCH"
+TMPDIR="$YGG_CI_SCRATCH" YGG_DOCKER_TESTS=1 python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
 
 echo "== Test forge.sh and rules.py against Forgejo"
 # The pinned Forgejo image, its API answers and the protections rules.py applies, with real users and
