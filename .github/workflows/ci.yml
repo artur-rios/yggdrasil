@@ -4,11 +4,15 @@ name: CI
 # platform in yggdrasil.yml, from ci/) and copies this job's result ("Console (Windows)", the catalog's
 # actionsCheck) onto the Forgejo commit. The release's Windows installer is release-windows.yml, and the live
 # pipeline suite pipeline-live.yml.
+#
+# Every branch push, and nothing narrower: the pull requests are on Forgejo, the mirror only receives every branch,
+# and Jenkins copies this job's result for a pull request's head commit by its SHA (docs/setup.md, "GitHub Actions
+# and the skip"). So no pull_request (it never fires on the mirror) and no paths (a skipped commit has no result).
 
 on:
   push:
-    branches: [develop, main, 'release/*']
-  pull_request:
+    branches: ['**']
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
