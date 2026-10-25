@@ -33,10 +33,15 @@ Per repository the model is:
                  runs: images, commands, the credentials a check binds); the Jenkinsfile too, which
                  Jenkins no longer reads but a repository may still carry
 
-A repository with `rules: basic` gets develop and main without force push or deletion, and no other
-rule. It still gets the repository settings (default branch develop, head branches deleted after
-merge; on Forgejo the merge styles too) and, on Forgejo when configured, the Jenkins webhook: Jenkins
-builds it too.
+A repository with `rules: basic` gets develop, main and master without force push or deletion, and no
+other rule (master: a fork's default branch, which the basic model treats like main). So does a
+repository whose deciding entry is an application with no `trigger: release` environment (a site
+deployed on pushes to main): under the release model only the Jenkins user merges
+main, and Jenkins merges main only for a release, which such an application never has, so its main
+could never change. A basic repository still gets the repository settings (head branches deleted after
+merge; on Forgejo the merge styles too) but keeps its default branch as it is: it may have no develop
+at all (a site that only ever had main). On Forgejo when configured it gets the Jenkins webhook too:
+Jenkins builds it as well.
 
 Version tags on GitHub: the ruleset `release tags` (update and deletion) has no bypass at all, so not
 even the owner, an administrator, moves or deletes one; an owner-tagged repository also gets `release
@@ -89,6 +94,9 @@ import catalog as catalog_module  # noqa: E402  (scripts/catalog.py)
 
 # The check that limits a pull request's source branch; every protected branch requires it first.
 BRANCH_POLICY = "branch-policy"
+# The branches the basic model protects: develop and main, and master, a fork's default branch, treated
+# like main (the pipeline checks pull requests into it and pushes to it the same way).
+BASIC_BRANCHES = ("develop", "main", "master")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -145,30 +153,44 @@ def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag
 
 
 def desired_rules(catalog):
-    """The rules of every repository of the catalog: applications first (catalog order), then the
-    `repositories` entries. Applications are deployable ones only (platform components live in this
-    repository and have none)."""
+    """The rules of every repository of the catalog, one set each, in catalog.repository_names() order:
+    the applications' repositories first (catalog order), then the `repositories` entries'. Applications
+    are deployable ones only (platform components live in this repository and have none).
+
+    A repository may back several catalog entries (an application's `repository`, else its id; a
+    `repositories` entry's id): an application and its docs site, a library and its docs application.
+    One entry decides the model, who merges main, who pushes release branches and the tags: the one that
+    releases (an application with a trigger: release environment, or a `repositories` entry whose release
+    is not none; catalog.py allows at most one), else the `repositories` entry, else the first
+    application. A deciding application that does not release gets the basic model (the module's
+    docstring says why). The required checks and actionsChecks are those of every entry, the deciding one's
+    first, so each job's statuses are required."""
     owner = catalog["owner"]
     forge = catalog_module.forge(catalog)
     jenkins, developers = forge["jenkinsUser"], forge["developers"]
 
-    # An application's repository is its `repository`, else its id. Applications that share one are
-    # a single repository: their checks and release environments are required together.
-    applications = {}
-    for _, app in catalog_module.applications(catalog, deployable=True):
-        entry = applications.setdefault(app.get("repository") or app["id"], {"checks": [], "actions": [], "deploys": []})
-        entry["checks"] += app.get("checks") or []
-        entry["actions"] += app.get("actionsChecks") or []
-        entry["deploys"] += [e["id"] for e in catalog_module.resolve(catalog, app["id"]) if e["trigger"] == "release"]
-
-    modelled = [_rules(repo, "release", owner, _unique(e["checks"]), _unique(e["actions"]), _unique(e["deploys"]),
-                       jenkins, "v*", jenkins, developers, owner_tags=False)
-                for repo, e in applications.items()]
-    for entry in catalog_module.repositories(catalog):
-        # The owner releases these by hand: they merge main and create the tags themselves.
-        owner_tag = entry["release"] == "owner-tag"
-        modelled.append(_rules(entry["id"], entry["rules"], owner, entry["checks"], entry["actionsChecks"], (),
-                               owner, entry["tags"] if owner_tag else "v*", owner, developers, owner_tags=True))
+    modelled = []
+    # catalog.repository_entries: the grouping and the deciding entry (first), shared with
+    # pipeline_config.py, whose release pull requests run the same checks main requires here.
+    for repo, entries in catalog_module.repository_entries(catalog).items():
+        deciding = entries[0]
+        if deciding["kind"] == "application":
+            # Jenkins merges an application's main and creates its v* tags -- on a release, so only an
+            # application that has one gets the release model. One that deploys on branches alone (a site
+            # on main) would otherwise have a main nobody may change: basic, like a repository with no
+            # branch policy. The deciding application releases whenever any entry of the repository does.
+            model = catalog_module.repository_model(catalog, repo)
+            merger, tags, owner_tags = jenkins, "v*", False
+        else:
+            # The owner releases these by hand: they merge main and create the tags themselves.
+            entry = deciding["entry"]
+            model, merger, owner_tags = catalog_module.repository_model(catalog, repo), owner, True
+            tags = entry["tags"] if entry["release"] == "owner-tag" else "v*"
+        deploys = [env["id"] for e in entries if e["kind"] == "application"
+                   for env in catalog_module.resolve(catalog, e["id"]) if env["trigger"] == "release"]
+        modelled.append(_rules(repo, model, owner, catalog_module.entries_union(entries, "checks"),
+                               catalog_module.entries_union(entries, "actionsChecks"), _unique(deploys),
+                               merger, tags, merger, developers, owner_tags=owner_tags))
     return modelled
 
 
@@ -324,12 +346,12 @@ def _fixed_tags(name, r):
 def github_rulesets(r):
     """The ruleset payloads of one repository, in the order they are written: `develop`, `main`, for an
     owner-tagged repository `release tag creation`, and (release model) `release tags`. The first three names are the ones
-    github/rulesets.py always used, so existing rulesets are updated in place."""
+    github/rulesets.py always used, so existing rulesets are updated in place. A basic repository gets
+    `develop`, `main` and `master` (BASIC_BRANCHES)."""
     if r.model == "basic":
         # Protection from deletion and force push, nothing else: no pull request, checks or tags.
-        basic = [{"type": "deletion"}, {"type": "non_fast_forward"}]
-        return [_ruleset("develop", "branch", "refs/heads/develop", basic),
-                _ruleset("main", "branch", "refs/heads/main", list(basic))]
+        return [_ruleset(name, "branch", f"refs/heads/{name}", [{"type": "deletion"}, {"type": "non_fast_forward"}])
+                for name in BASIC_BRANCHES]
 
     # A repository the owner tags: only the owner creates its tags, through the bypass of a ruleset of its
     # own -- in the same ruleset as `update` and `deletion`, the bypass would let the owner move and delete
@@ -402,9 +424,16 @@ def _github_steps(api, owner, r, dry_run):
     base = f"/repos/{owner}/{r.repo}"
     yield f"{owner}/{r.repo}"
 
-    settings = {"default_branch": "develop", "delete_branch_on_merge": True}
-    yield from _github_write(api, dry_run, "PATCH", base, settings, "default branch develop, delete head branches on merge",
-                             "set the default branch to develop and delete head branches on merge")
+    # A basic repository keeps its default branch: it may have no develop (a site that only had main).
+    if r.model == "basic":
+        settings = {"delete_branch_on_merge": True}
+        yield from _github_write(api, dry_run, "PATCH", base, settings, "delete head branches on merge",
+                                 "delete head branches on merge")
+    else:
+        settings = {"default_branch": "develop", "delete_branch_on_merge": True}
+        yield from _github_write(api, dry_run, "PATCH", base, settings,
+                                 "default branch develop, delete head branches on merge",
+                                 "set the default branch to develop and delete head branches on merge")
 
     payloads = github_rulesets(r)
     existing = yield from _ruleset_steps(api, base, payloads, dry_run)
@@ -415,9 +444,10 @@ def _github_steps(api, owner, r, dry_run):
         yield from _github_write(api, dry_run, "DELETE", f"{base}/rulesets/{existing['default']}", None,
                                  "removed ruleset 'default'", "remove ruleset 'default'")
 
-    # A tag ruleset the repository's model no longer has -- a repository turned `rules: basic`, an
-    # owner-tagged one that became an application -- is kept: the run says so, the owner decides.
-    for name in sorted((set(TAG_RULESETS) & set(existing)) - {p["name"] for p in payloads}):
+    # A ruleset the repository's model no longer has -- a tag one of a repository turned `rules: basic`, of
+    # an owner-tagged one that became an application, the `master` one of a basic repository turned
+    # release -- is kept: the run says so, the owner decides.
+    for name in sorted(((set(TAG_RULESETS) | {"master"}) & set(existing)) - {p["name"] for p in payloads}):
         yield f"  {_stale('ruleset', name)}"
 
 
@@ -455,19 +485,23 @@ def apply_mirror(api, mirror_owner, r, dry_run):
 
 # --- Forgejo: settings, protections, tags, webhook ----------------------------------------------------
 
-# The branch protections the release model makes (forgejo_branch_protections).
-MODEL_BRANCHES = {"develop", "main", "release/*"}
+# The branch protections either model makes (forgejo_branch_protections).
+MODEL_BRANCHES = {"develop", "main", "release/*", *BASIC_BRANCHES}
 
 # What Jenkins is told about: branches and tags appearing and disappearing, pushes, pull requests.
 WEBHOOK_EVENTS = ["create", "delete", "push", "pull_request"]
 
 
-def forgejo_settings():
-    """The repository settings this script owns: develop is the default branch, merged branches are
-    deleted, merge commits (and squashes, for develop) are allowed, rebasing is not."""
-    return {"default_branch": "develop", "default_delete_branch_after_merge": True, "allow_merge_commits": True,
-            "allow_squash_merge": True, "allow_rebase": False, "allow_rebase_explicit": False,
-            "default_merge_style": "merge"}
+def forgejo_settings(model="release"):
+    """The repository settings this script owns: develop is the default branch (release model only),
+    merged branches are deleted, merge commits (and squashes, for develop) are allowed, rebasing is not.
+    A basic repository keeps the default branch it was migrated with: it may have no develop at all."""
+    settings = {"default_branch": "develop", "default_delete_branch_after_merge": True, "allow_merge_commits": True,
+                "allow_squash_merge": True, "allow_rebase": False, "allow_rebase_explicit": False,
+                "default_merge_style": "merge"}
+    if model == "basic":
+        del settings["default_branch"]
+    return settings
 
 
 def forgejo_branch_protections(r):
@@ -479,7 +513,7 @@ def forgejo_branch_protections(r):
         # repository turned basic loses them (and they are compared on every run).
         return [{"rule_name": name, "enable_push": True, "enable_merge_whitelist": False, "enable_status_check": False,
                  "status_check_contexts": [], "protected_file_patterns": "", "apply_to_admins": False}
-                for name in ("develop", "main")]
+                for name in BASIC_BRANCHES]
 
     def guarded(name, mergers, checks, files):
         # Nobody pushes: a change gets in through a pull request that the checks passed, merged by
@@ -570,10 +604,16 @@ def _forgejo_steps(api, owner, r, webhook, dry_run):
     def write(*args, **kwargs):
         return _write_step(api, dry_run, *args, **kwargs)
 
-    settings = forgejo_settings()
+    settings = forgejo_settings(r.model)
     if _differs(api.request("GET", base) or {}, settings):
-        yield from write("PATCH", base, settings, "default branch develop, delete head branches on merge, merge settings",
-                         "set the default branch to develop, delete head branches on merge and set the merge settings")
+        if "default_branch" in settings:
+            yield from write("PATCH", base, settings,
+                             "default branch develop, delete head branches on merge, merge settings",
+                             "set the default branch to develop, delete head branches on merge and set the merge "
+                             "settings")
+        else:
+            yield from write("PATCH", base, settings, "delete head branches on merge, merge settings (default "
+                             "branch kept)", "delete head branches on merge and set the merge settings")
     else:
         yield "  repository settings unchanged"
 

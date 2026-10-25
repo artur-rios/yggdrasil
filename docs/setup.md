@@ -226,9 +226,13 @@ Rules to keep:
   `<environment>-<version>`, and rolls back and prunes only those.
 - In `proxy` mode, nothing publishes a host port: only Traefik does.
 - Host names come from the env file (`PUBLIC_HOST`, `UI_HOST`), not hard-coded. For a site, `deploy.sh`
-  also exports `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH` from the catalog's `host`, `domain`, `path` and `apex`
+  also exports `YGG_PUBLIC_HOST`, `YGG_PUBLIC_PATH` and, for an `apex` site with a `host`, `YGG_APEX_HOST` (the name its
+  bare-domain redirect answers on) from the catalog's `host`, `domain`, `path` and `apex`
   ([catalog.md](catalog.md#application-fields)), which a stack file may use instead. An `apex` site without a
   `host` is on the bare domain in every environment: deploy it to one environment only.
+- To give a build the commit and the environment (what Vercel's `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV` were),
+  pass `GIT_COMMIT` (the whole SHA of the checkout) and `YGG_ENVIRONMENT` in `build.args`: `deploy.sh` exports both.
+  [The site templates](catalog.md#templates-for-repositories) do.
 - Use named volumes, not relative bind mounts (`./data:/data`). Under Jenkins, Compose runs inside
   the agent container, so a relative path points into the agent's workspace, not the host.
 
@@ -1066,9 +1070,10 @@ Run it **once by hand first**, as above, and read what it says: the unit then ru
 visits only the repositories of the catalog and, with `requireConfig: required`, skips a repository that has no
 Renovate configuration of its own: there are no onboarding pull requests. Each repository's configuration comes
 with the move of the repositories to Forgejo. Its branches are `renovate/*` and go into `develop`, where the
-branch policy accepts them; a build of a `renovate/*` branch never gets a credential. A Renovate pull request
-that changes `yggdrasil.yml` (an image bump there) is a change to a protected file: it waits for the owner's
-**Merge anyway** ([Forgejo details](#forgejo-details-worth-knowing)).
+branch policy accepts them (a repository on `main` or `master` sets `baseBranchPatterns` in its own
+`renovate.json` and gets them there); a build of a `renovate/*` branch never gets a credential. A Renovate pull
+request that changes `yggdrasil.yml` (an image bump there) is a change to a protected file: it waits for the
+owner's **Merge anyway** ([Forgejo details](#forgejo-details-worth-knowing)).
 
 ## 10. The apps machine
 
@@ -1253,12 +1258,17 @@ python3 scripts/rules.py --dry-run
 
 ### What each server gets
 
-Per repository, from the catalog (a `rules: basic` repository gets `develop` and `main` without force push or
-deletion and nothing else of the table, plus the settings in its first row and, on Forgejo, the webhook):
+Per repository, from the catalog (a `rules: basic` repository gets `develop`, `main` and `master` without force
+push or deletion and nothing else of the table -- on Forgejo three branch protections, on GitHub three rulesets of
+those names; `master` is a fork's default branch, which the basic model treats like `main` -- plus the settings in
+its first row but its default branch, which stays as it was, and, on Forgejo, the webhook). A repository whose deciding entry is an application with no `trigger:
+release` environment, such as a site deployed on pushes to `main`, is basic too: under the release model only
+`forge.jenkinsUser` merges its `main`, and Jenkins merges only for a release ([One repository, several
+entries](catalog.md#one-repository-several-entries)).
 
 | Rule | Forgejo | GitHub |
 |---|---|---|
-| Default branch, merged branches | `develop` is the default; head branches are deleted after merge; merge commits and squashes allowed, rebasing not | `develop` is the default; head branches are deleted after merge |
+| Default branch, merged branches | `develop` is the default (a basic repository keeps its own); head branches are deleted after merge; merge commits and squashes allowed, rebasing not | `develop` is the default (not for a basic repository); head branches are deleted after merge |
 | `develop` | A protected branch: no direct push (force push and deletion are always refused), changes only through a pull request whose required checks pass: `branch-policy`, the application's `checks` and its `actionsChecks`. Merged by the owner and `forge.developers` | A `develop` ruleset: no deletion or force push, a pull request (squash or merge commit), the same required checks. `actionsChecks` are bound to GitHub Actions, so only that app can satisfy them; the other checks (Jenkins') are bound to nobody |
 | `main` | The same, with `branch-policy`, `checks` and one `deploy/<environment>` per release environment. Merged only by `forge.jenkinsUser` for an application, only by the owner for an `owner-tag` repository | A `main` ruleset: the same required checks, all bound to nobody (`actionsChecks` are not required on `main`), merge commit only. Who merges is not restricted: the checks are the gate |
 | `release/*` | Only the owner pushes | No rule (none today) |
@@ -1479,10 +1489,11 @@ catalog):
 | `get-statuses <repo> <sha>` | Reads the commit's statuses | `<context>`, a tab, `<state>`, a tab, `<creator>`, one line per context (the latest); `<creator>` is the login that set the status, empty when the server has none. The pipeline reuses a result only when its creator is `forge.jenkinsUser` |
 | `merge-pr <repo> <number> <sha> <title>` | Merges a pull request with a merge commit, and fails if its head is no longer `<sha>` | the merge commit |
 | `create-tag <repo> <tag> <sha>` | Creates a tag | nothing |
-| `create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]` | Creates a release (an unpublished draft with `--draft`) | the release id, a tab, its page address |
+| `create-release <repo> <tag> <sha> <title> [--draft] [--notes-file <file>]` | Creates a release (an unpublished draft with `--draft`), a **prerelease** when the tag's version has a SemVer pre-release part ([Releases](#releases)) | the release id, a tab, its page address |
 | `upload-release-file <repo> <release-id> <file>` | Attaches a file to a release | the file's download address (on Forgejo `<server>/attachments/<uuid>`) |
 | `publish-release <repo> <release-id>` | Publishes a draft release | the release's page address |
 | `release-tags <repo>` | Lists the published releases (drafts left out) | `<tag>`, a tab, `<target>` (the commit it was released from: the pipeline sends the release's commit; a release made by hand may name a branch), one line per release |
+| `delete-release-file <repo> <release-id> <name>` | Deletes a release's file by its name; exits `4` when the release has none of that name. `publish-release.sh --replace-files` uses it on a draft | nothing |
 | `tag-sha <repo> <tag>` | Finds the commit a tag points to (an annotated tag is followed to its commit); exits `4` when there is no such tag | the commit |
 | `delete-branch <repo> <branch>` | Deletes a branch; a branch that is already gone is not an error | nothing |
 
@@ -1507,8 +1518,8 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
   machine sees it in the process list, and it is never printed.
 - **Exit codes:** `0` done; `1` an error, explained on standard error as `forge: <what> failed: <the server's
   message>`; `2` no command at all; `3` (`delete-branch` only) that the server **keeps** the branch because
-  it is protected: the owner's decision, not a reason to stop a release; `4` (`find-release` and `tag-sha`
-  only) that there is no such release or tag.
+  it is protected: the owner's decision, not a reason to stop a release; `4` (`find-release`, `tag-sha` and
+  `delete-release-file` only) that there is no such release, tag or file.
 - **On Forgejo every `release/x.y.z` branch is kept after a release.** `release/*` is protected, and Forgejo
   refuses to delete a protected branch to everyone, the owner included: `delete-branch` exits `3`
   (`forge: kept: release/x.y.z is protected`). Delete old release branches by hand, as the owner: remove the
@@ -1635,7 +1646,8 @@ A change to `scripts/` therefore reaches the pipeline only with a new tag. To up
 set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's `platform.env`, and run
 `scripts/platform.sh up` (Compose recreates the controller).
 
-A job sees `develop`, `main`, pull requests from branches of the repository itself (a fork's never run),
+A job sees `develop`, `main` (and `master` when its repository is under the `basic` rules: a fork's default
+branch, treated like `main`), pull requests from branches of the repository itself (a fork's never run),
 `release/*`, the `branches` of its branch environments and, for a `release: owner-tag` entry, tags that match its
 `tags`. A build lasts at most 4 hours and the last 50 are kept. A newer push to a pull request that is not into
 `main` replaces the build still running for the older commit; release builds of one repository wait for each
@@ -1645,10 +1657,10 @@ other instead (one lock per repository, so two releases never overlap).
 
 | Event | A repository **without** `yggdrasil.yml` | A repository **with** one |
 |---|---|---|
-| Pull request into `develop` | Nothing (on GitHub the Branch Policy workflow and Actions check it) | `branch-policy`, then every check, as statuses on the head commit; the build fails once all have reported if any failed. On Forgejo with a `mirror`, the `actionsChecks` are copied from GitHub Actions too ([below](#github-actions-and-the-skip)) |
-| Pull request into `main` from anything but `release/x.y.z` | Nothing | `branch-policy` fails it |
+| Pull request into `develop` (or, under the `basic` rules, into `main` or `master`) | Nothing (on GitHub the Branch Policy workflow and Actions check it) | `branch-policy`, then the job's checks (its catalog entry's `checks`), as statuses on the head commit; the build fails once all have reported if any failed. On Forgejo with a `mirror`, the `actionsChecks` are copied from GitHub Actions too ([below](#github-actions-and-the-skip)) |
+| Pull request into `main` from anything but `release/x.y.z` | Nothing | `branch-policy` fails it (a `basic` repository passes it) |
 | Release pull request `release/x.y.z` → `main` | GitHub: every GitHub Actions check waited for, each release environment deployed, then merged, tagged and released as before. Forgejo: the same steps without release files | The pipeline of [Releases](#releases) below: checks, GitHub Actions checks (or the skip), deploys, merge, tag, files, publication |
-| Push to `develop`, `main` or `release/*` | Deploys to the environments whose `trigger: branch` globs match | The checks first (reused or skipped where the rules allow); the deploys only if every check passed, and of the commit the checks saw |
+| Push to `develop`, `main` or `release/*` (and `master` under the `basic` rules) | Deploys to the environments whose `trigger: branch` globs match | The job's checks first, and its `deploy.inputs` when it deploys (reused or skipped where the rules allow); the deploys only if every check passed, and of the commit the checks saw |
 | Push to another branch that a `branches` glob matches | Deploys | Deploys, with no checks |
 | Tag matching an owner-tagged entry's `tags`, at most a day old | The tag is read on the release agent and must be on `main`; nothing else happens | What the file declares: release files and/or NuGet packages ([Owner tags and NuGet](#owner-tags-and-nuget)) |
 | **Build with Parameters → `DEPLOY_TO`** | Deploys the branch to a `manual` or `branch` environment, no checks | The same |
@@ -1660,20 +1672,27 @@ An application with no `trigger: release` environment is never merged or release
 
 The branch policy is `scripts/branch-policy.sh`, run on the `ci` agent, then the repository's own
 `branchPolicy` (an `image` and a `run`) if its file has one. It is reported as the status `branch-policy` and
-is never reused:
+is never reused. A repository under the `basic` rules ([`rules`](catalog.md#repositories): a site deployed on pushes
+to `main`, a fork, a repository whose entry says `rules: basic`) has no branching model to follow, so it passes
+for any pull request, with `basic: nothing to check`, and neither the script nor the file's own `branchPolicy`
+runs. Its `master`, a fork's default branch, is treated like `main`: a pull request into it gets the branch
+policy and the checks, and a push to it the checks. Under the release model:
 
 - into `develop`: only `feature/<name>`, `fix/<name>` or `renovate/...` (it replaces `dependabot/...`), cut
   from `develop` (a branch that contains a release merge commit from `main` was cut from `main`);
 - into `main`: only `release/x.y.z`, a snapshot of `develop` (every commit already on it), whose version has
   no `vx.y.z` tag.
 
-Each check of the file runs through `scripts/run-check.sh`, in its `image`, as root of the `ci` user's engine
-(the service user on the host), on the checkout, with its `run` line given to `sh -c`; `docker: true` also
-gives it that engine's socket (Testcontainers). Up to four run at once. Its `credentials` are written to a
-private file and handed to the container as environment variables: only ids the catalog allows the repository,
-never one of the pipeline's own (`forge-*`, `github-*`) or the NuGet key, and **never on a `renovate/*`
-build**. Its test results (`junit`) and `archive` are collected whatever the outcome, unless a symbolic link
-in the checkout leads out of it (the build is then unstable and collects nothing).
+A job runs its own catalog entry's `checks`, and the checks `deploy.inputs` names when it deploys; the
+file's other checks are another entry's of the same repository, and that job runs and reports them
+([Repository pipeline file](catalog.md#repository-pipeline-file)). Each check runs through
+`scripts/run-check.sh`, in its `image`, as root of the `ci` user's engine (the service user on the host), on
+the checkout, with its `run` line given to `sh -c`; `docker: true` also gives it that engine's socket
+(Testcontainers). Up to four run at once. Its `credentials` are written to a private file and handed to the
+container as environment variables: only ids the catalog allows the repository, never one of the pipeline's
+own (`forge-*`, `github-*`) or the NuGet key, and **never on a `renovate/*` build**. Its test results
+(`junit`) and `archive` are collected whatever the outcome, unless a symbolic link in the checkout leads out
+of it (the build is then unstable and collects nothing).
 
 Every check is posted from the controller as a commit status on the build's commit: `pending`, then `success`
 or `failure`, with the build's page as its address and the check's name as its context. A check skipped by
@@ -1702,11 +1721,29 @@ from the publish agent and without holding an executor while it waits, and posts
 Forgejo commit with the GitHub run as its address. If they have not finished in time the status stays pending
 (`GitHub Actions didn't answer`) and the build is unstable; a new build looks again.
 
+**Their triggers.** The pull requests live on Forgejo; the mirror has none, it only receives every branch the push
+mirror pushes. Jenkins looks up the job's run for the pull request's head commit by its SHA. So on Forgejo with a
+`mirror`, an `actionsChecks` job runs on `push` to every branch, and on nothing narrower:
+
+```yaml
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+```
+
+No `pull_request` (it never fires on the mirror) and no `paths` (a commit the filter skips has no run, so its
+status stays pending). A release build's Windows workflow (`release.windows`) is different: Jenkins dispatches it
+on the tag, so it has only `workflow_dispatch` with a `tag` input.
+
 A release pull request waits for the `actionsChecks` the same way, for up to the first release environment's
 `checksTimeout` (one hour by default). One that failed stops the release (`Not releasing`). One that did not
 finish, because it is still running, GitHub did not answer, or the mirror has not pushed the commit,
 makes Jenkins ask, outside any agent: **"GitHub Actions checks didn't finish. Deploy without them?"**, with the
-button **Deploy without GitHub Actions checks**. Abort fails the release before anything is deployed. After the
+button **Deploy without GitHub Actions checks**. Abort fails the release before anything is deployed. A release
+that declares both `release.windows` and `release.finalize` is **never asked**: the skip would publish it
+without its Windows files, which `release.finalize` must cover, so the build fails there instead (`Not
+releasing`), before anything is deployed; build the pull request again once GitHub Actions answers. After the
 skip:
 
 - it is recorded in the build log, in the build's description (`v1.4.0 (deployed without GitHub Actions
@@ -1726,7 +1763,11 @@ skip:
 A release pull request (Forgejo, or a GitHub repository with a `yggdrasil.yml`) goes through these steps, under
 the repository's release lock:
 
-1. Its **branch policy and checks**, as any pull request. A failure: `Not releasing`.
+1. Its **branch policy and checks**, as any pull request, except that the checks are every one `main`
+   requires of the repository: each catalog entry's `checks` when it backs several (a docs site's too), then
+   `deploy.inputs`. Production is deployed before the merge, so a check that would block the merge must pass
+   first. A failure: `Not releasing`. The repository's other jobs build the same pull request with their own
+   checks only, and a failure there reads `Failed: <checks>.`
 2. The **`actionsChecks`**, and the skip above.
 3. Every `deploy/<environment>` is set `pending`, then each release environment is **deployed in catalog order**
    (a click on **Deploy** first where `approval: true`, waiting outside any agent), `deploy/<environment>` set
@@ -1743,15 +1784,41 @@ the repository's release lock:
    the set taken before it ran, so it cannot change the files, and a failure stops the release before any
    draft exists. A Windows run that fails or times out leaves the release to go on without those files
    (unstable, listed in the notes).
+   Then **`release.finalize`**, when declared, on the release agent: what has to cover the whole set (a
+   manifest of every file with its checksum, the manifest's signature). It sees the set as the validation
+   does (`RELEASE_FILES`, `build/` and `windows/` under it, a fresh copy of the gathered set), and runs in a
+   workspace of its own: a fresh checkout of the tag and of yggdrasil's tools, since the validation ran as root
+   with its whole workspace (yggdrasil's scripts included) and nothing it left there may reach a step that
+   holds credentials. It gets `RELEASE_TAG`, `RELEASE_VERSION` and only the credentials
+   `release.finalize.credentials` names (each allowed by `releaseCredentials`, as for the build), and each
+   of its `files` globs, matched in the checkout, is added to the upload set under `finalize/` (a glob that
+   matches nothing fails the release). It may **only add**: the set is checksummed before and after it
+   runs, and a file changed, removed or added there (rather than declared in `files`) fails the release,
+   naming it. A failure of any kind stops the release before any draft exists, as a failed validation
+   does, and `release-resume` runs it again. It never covers a partial set: with `release.windows` too, a
+   Windows run that fails or times out **stops the release** instead of letting it go on without those files
+   (*the pull request is merged and tagged…*, as above), and `release-resume` runs the Windows workflow, the
+   validation and `release.finalize` again on the whole set. Such a release is never offered the skip
+   ([below](#github-actions-and-the-skip)).
+   Every file of the upload set (the release files and `release.finalize`'s) must have its **own name**: a
+   release shows one file per name. Two files named alike, in any directories, fail the release here, naming
+   them, before anything that cannot be undone (a library's NuGet push, a draft).
 6. On the publish agent, the **publication**: the notes (the version's `CHANGELOG.md` section, else the titles of
    the pull requests merged since the previous tag), a draft release on Forgejo and, with a `mirror` that
    releases (the default), on GitHub, every file uploaded and checked by name and size on each; then Forgejo's
    is published, and GitHub's **last**, so a release that is public on GitHub is complete everywhere.
+   A release whose version has a SemVer **pre-release** part (`1.2.0-alpha.1`, `v1.2.0-rc.2`; for a
+   `<package>@<version>` tag, the version after the last `@`) is made a **prerelease** on both servers, so
+   GitHub never makes it the latest release; any other version is a normal release, build metadata alone
+   included (`1.2.0+build.5`). The notes are the same either way. The rule is strict SemVer
+   (`X.Y.Z-pre[+build]`, no leading zeros): `v1.2-rc.1`, not a SemVer version, is a normal release. Only an
+   owner's tag can be a pre-release: an application's version comes from its `release/X.Y.Z` branch, which
+   has no pre-release part.
 7. The **release branch is deleted**. Forgejo keeps it (`release/*` is protected, `delete-branch` exits `3`): a
    note in the log, not a failure; delete old release branches by hand.
 
-The order is the point: nothing is published before the files are validated, and the release is visible on
-GitHub only when it is whole.
+The order is the point: nothing is published before the files are validated and finalized, and the release is
+visible on GitHub only when it is whole.
 
 ### Finishing a release that stopped
 
@@ -1760,14 +1827,23 @@ how to finish it: *the pull request is merged and tagged `vx.y.z`; finish the re
 job (`REPOSITORY=<id>`, `TAG=vx.y.z`)*. In Jenkins, open the **`release-resume`** job and **Build with
 Parameters**: `REPOSITORY` is the catalog id (an application with a release environment, or an `owner-tag`
 entry) and `TAG` the tag, which must exist and be on `main`. It does what a release does after its merge, from
-the tag: builds and validates the files, pushes a library's packages, and publishes the release and its GitHub
-copy. It is safe to run twice: the tag, the drafts and the files already there are reused, a release already
+the tag: builds, validates and finalizes the files, pushes a library's packages, and publishes the release and its
+GitHub copy. It is safe to run twice: the tag, the drafts and the files already there are reused, a release already
 published is left alone, and NuGet versions the feed has are skipped. Use it also to make the GitHub copy of a
 release published after the skip, and for a tag that was never built.
 
 Two cautions. It **rebuilds** the files from the tag instead of copying the published ones, so a build that is
 not reproducible can give a file with the same size and other bytes than the one already on Forgejo, and the
-GitHub copy would then differ in content; a different size stops the run. And if the merge went through but the
+GitHub copy would then differ in content; a different size stops the run (on a published release, with a message
+that these files belong in a new release, a new version: nothing of a published release is deleted). A release with `release.finalize` is
+the exception for its **drafts**: their manifest and signature are made again in this run, so a draft's files are
+deleted and uploaded again (`publish-release.sh --replace-files`) rather than reused by name and size, and a
+draft's files whose names are not in the run's set are deleted, so a draft never keeps a file its new manifest
+does not describe. A published release is never changed. One consequence: if Forgejo's release was published and
+publishing GitHub's copy then failed, `release-resume` uploads GitHub's draft again from its own run, so the two
+copies can hold **different bytes** (a build that is not reproducible), each one matching the manifest it carries;
+compare the two manifests if that matters.
+And if the merge went through but the
 tag did not, the message says *merged as `<sha>`, but not tagged* and names a third parameter: run
 `release-resume` with `COMMIT=<sha>` too. Only the Jenkins user may create an application's `v*` tags (on
 Forgejo not even you), so the job makes it: it checks that the commit is one of `main`'s own merges (on its
@@ -1779,7 +1855,9 @@ publish agent and goes on as above. A tag of that name already on the commit is 
 stops the job. `COMMIT` is refused for an `owner-tag` repository, whose tags are yours to make.
 
 The **`actions-release`** job (`REPOSITORY`, `TAG`) runs the Windows workflow again for a tag and attaches its
-files to a release that was published without them.
+files to a release that was published without them. It refuses a release that declares both `release.windows` and
+`release.finalize`, whose Windows files are covered by its manifest and so are never attached afterwards, and
+points to `release-resume`, which makes the release whole.
 
 The notes are not rewritten afterwards: a release published without its Windows files keeps the
 *Missing files* section of its notes after `actions-release` or `release-resume` has attached them (both
@@ -1814,8 +1892,8 @@ fresh workspace that holds this repository's `scripts/` and the packages only: `
 `dotnet nuget push --skip-duplicate` in a pinned .NET SDK image, with the Jenkins credential `nuget-api-key`
 bound for this step alone, where none of the repository's code runs. A version the feed already has is skipped,
 so a rerun goes on. When the library also declares `release`, the packages are pushed after the release files are
-built and validated and before the release is published: a push cannot be taken back, so a release whose files
-fail pushes nothing.
+built, validated and finalized and before the release is published: a push cannot be taken back, so a release
+whose files fail pushes nothing.
 
 - The credential `nuget-api-key` exists when `NUGET_API_KEY_FILE` is set ([9.2](#92-the-env-files-first-pass));
   without it a library's tag build packs, then fails at the push, naming the credential. Its id is fixed, and no

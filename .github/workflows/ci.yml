@@ -101,10 +101,11 @@ jobs:
       - name: Test the catalog tooling
         run: python3 -m unittest discover -s scripts -v
       - name: Test the Docker socket proxies against Traefik and Alloy
-        # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API.
+        # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API. discover: the
+        # suite imports traefik_config flat, which `-m unittest scripts.test_socket_proxies` cannot.
         env:
           YGG_DOCKER_TESTS: "1"
-        run: python3 -m unittest scripts.test_socket_proxies -v
+        run: python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
       - name: Test forge.sh and rules.py against Forgejo
         # The pinned Forgejo image, its API answers and the protections rules.py applies, with real
         # users and repositories (scripts/test_forgejo_live.py). discover: the tests import flat.
@@ -158,15 +159,16 @@ jobs:
           docker compose -p yggdrasil-agent-ci --env-file "$secrets/agent.env" -f platform/build-agent.yml config --quiet
           echo "platform/build-agent.yml ok"
           # Every stack that has its service here, in both modes, with a dummy value for each
-          # variable it requires. (Stacks based on the application's own docker-compose.yml are
-          # validated by deploy.sh on the first deploy.)
+          # variable it requires: a port for *PORT, an empty file for *_FILE (an env_file, such as
+          # APP_ENV_FILE, must exist), x for the rest. (Stacks based on the application's own
+          # docker-compose.yml are validated by deploy.sh on the first deploy.)
           for stack in $(python3 scripts/catalog.py applications --deployable); do
             [[ -f "stacks/$stack.yml" ]] || continue
             for mode in proxy ports; do
               [[ -f "stacks/$stack.$mode.yml" ]] || continue
               paths=("stacks/$stack.yml" "stacks/$stack.$mode.yml")
               grep -ohE '[$][{][A-Z_]+' "${paths[@]}" | cut -c3- | sort -u \
-                | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s/$/=x/' > "$secrets/$stack.env"
+                | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s#^(.*_FILE)$#\1=/dev/null#; t; s/$/=x/' > "$secrets/$stack.env"
               APP_DIR=. docker compose --env-file "$secrets/$stack.env" -f "${paths[0]}" -f "${paths[1]}" config --quiet
               echo "stacks/$stack.$mode.yml ok"
             done

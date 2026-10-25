@@ -1,0 +1,84 @@
+# The catalog the public-address parity tests read: scripts/test_status_parity.py runs
+# scripts/catalog.py on it, and PublicAddressTests runs the status API on it, and both must
+# produce public-addresses.expected.txt. Keep the three files in step.
+owner: artur-rios
+environments:
+  - id: development
+    name: Development
+    trigger: branch
+    branches: develop
+    agent: vps
+    hostSuffix: -dev
+  - id: production
+    name: Production
+    mode: proxy
+    trigger: release
+    agent: vps
+systems:
+  - id: sites
+    name: Sites
+    description: Applications with addresses of every shape
+    applications:
+      # The common case: <host><hostSuffix>.<DOMAIN>.
+      - id: plain-api
+        name: Plain API
+        kind: api
+        health: http://plain-api:8080/healthz
+        host: plain-api
+      # Its own domain: the host's DOMAIN plays no part.
+      - id: own-domain
+        name: Own domain
+        kind: web
+        health: http://own-domain:8080/healthz
+        host: www
+        domain: acme.dev
+      # A docs site under a path of the host's domain.
+      - id: docs
+        name: Docs
+        kind: web
+        health: http://docs:8080/healthz
+        host: docs
+        path: /docs
+      # Both: its own domain and a path, with the environment's suffix on the host.
+      - id: docs-own-domain
+        name: Docs on its own domain
+        kind: web
+        health: http://docs-own-domain:8080/healthz
+        host: help
+        domain: acme.dev
+        path: /guides/start
+      # No host: the bare domain, in every environment, whatever the suffix.
+      - id: apex-only
+        name: Apex only
+        kind: web
+        health: http://apex-only:8080/healthz
+        apex: true
+        environments: { production: {} }
+      - id: apex-own-domain
+        name: Apex on its own domain
+        kind: web
+        health: http://apex-own-domain:8080/healthz
+        apex: true
+        domain: acme.dev
+        path: /blog
+        environments: { production: {} }
+      # A host wins over apex: the bare domain is served too, but the address is the host's.
+      - id: apex-and-host
+        name: Apex and host
+        kind: web
+        health: http://apex-and-host:8080/healthz
+        host: site
+        apex: true
+      # Not public: no host, no apex. A path alone gives it no address either.
+      - id: private-worker
+        name: Private worker
+        kind: worker
+        health: http://private-worker:8080/healthz
+        path: /ignored
+      # A platform component keeps https://<host>.<DOMAIN>, whatever else it says.
+      - id: console
+        name: Console
+        kind: platform
+        health: http://console:8080/healthz
+        host: console
+        environments: { production: {} }

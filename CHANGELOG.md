@@ -154,9 +154,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the move needs `read:user` besides `write:repository`: `migrate.py collaborators` looks the bot accounts up, and
   Forgejo refuses that to a token without it. [docs/hosts.md](docs/hosts.md)'s restore and upgrade steps now run the
   pinned `busybox` image that `backup.sh` and `volumes.sh` use, not whatever `busybox` is current.
+- **Templates for the sites and the libraries.** `templates/site-static/`, `site-hugo/`, `site-vite/`,
+  `site-next-static/`, `site-next-server/` and `site-node-api/` (a Dockerfile, a `yggdrasil.yml` and a README each),
+  `templates/library/` (`ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh` and the docs site's Dockerfile, in place of a
+  library's three workflows) and the stack files `templates/stacks/site.yml`, `site.proxy.yml`,
+  `site-path.proxy.yml` and `site-apex-redirect.proxy.yml`. The images are pinned by version and digest
+  (static-web-server, Node, Hugo, the .NET SDK); the sites listen on port 8080 as a non-root user and answer
+  `/healthz`. `renovate/default.json` is the shared Renovate preset (nuget, npm, github-actions, docker, and the
+  pinned images of `yggdrasil.yml`). `scripts/test_templates.py` tests them, and with `YGG_TEMPLATE_TESTS=1` builds
+  each site around a sample and probes it. See [docs/catalog.md](docs/catalog.md#templates-for-repositories).
+- **The guide to moving each repository**, [docs/moving-repositories.md](docs/moving-repositories.md): after the
+  cutover, how to land the `feature/move-to-forgejo` branch prepared for each of 38 repositories (the table gives every
+  head): push it to Forgejo, open the pull request, read Jenkins' results and merge with the owner's override, make
+  the first release, publish or site deploy, switch GitHub Pages or Vercel off and drop `--skip-caa artur-rios.tech`,
+  and tick [docs/migration-checklist.md](docs/migration-checklist.md). It lists what each repository needs from the
+  owner (credentials, variables, tags, files to delete) and what the plan left undone. The checklist now records every
+  prepared branch, maps github-readme-stats' workflows (its `test` job is the check `test`, the rest is upstream
+  automation, dropped) and gives a reason for each of the 24 repositories without a branch.
+  `scripts/repo_inventory.py` no longer lists a linked worktree (yggdrasil's own move branch) as a repository.
 
 ### Changed
 
+- **The status API reports each application's real address.** `url` is now
+  `https://<host><hostSuffix>.<domain><path>`: the application's own `domain` (else `YGGDRASIL_DOMAIN`) and `path`,
+  and the bare domain for an `apex` site without a `host`, as `scripts/catalog.py public-host` and `public-path`
+  form it for `deploy.sh`; the console links to it unchanged. A platform component stays
+  `https://<host>.<YGGDRASIL_DOMAIN>`. The status API now refuses a catalog whose `domain`, `path` or `apex` is
+  invalid, as `catalog.py validate` does. The contract stays version 2
+  ([docs/status-api.md](docs/status-api.md)).
+- **`scripts/deploy.sh` exports `GIT_COMMIT`**, the whole SHA of the checkout being deployed (it already exported
+  `YGG_ENVIRONMENT`), so a stack passes both to a build in `build.args`, as the site templates' `site.yml` does:
+  they replace Vercel's `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV`.
 - **The rules are applied by `python3 scripts/rules.py`** (replaces `python3 github/rulesets.py`, which still
   works and runs it). On a GitHub installation it changes what the rulesets require: on `develop` and `main`,
   `branch-policy` and the `checks` stay required but are bound to no app (any status of that name satisfies
@@ -224,6 +252,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   [docs/hosts.md](docs/hosts.md#6-credentials) lists `forge-read`, `forge-write`, `forge-webhook`, `github-app`,
   `github-read` and `nuget-api-key` and where each lives.
 
+- The Renovate documentation (docs/catalog.md, docs/setup.md 9.9,
+  `scripts/renovate.sh`, `renovate/default.json`) says that Renovate targets `develop` and that a repository on `main`
+  or `master` overrides `baseBranchPatterns` in its own `renovate.json`.
+
+- **The branch policy passes for a repository under the `basic` rules.** A site deployed on pushes to `main`, a fork or
+  a `repositories` entry with `rules: basic` has no release model, so its pull requests no longer report
+  `branch-policy` failed (it demanded `release/x.y.z` into `main` of a repository that has no `develop`): the status
+  says `basic: nothing to check`, and neither `scripts/branch-policy.sh` nor the file's own `branchPolicy` runs.
+  `pipeline_config.py describe` adds `rules` to the entry (`catalog.py`'s new `repository_model`, which
+  `scripts/rules.py` uses too).
+- [docs/cutover.md](docs/cutover.md) has a new step, 5.8a, between 5.8 and 5.9: this plan and yggdrasil's own move
+  branch go onto `develop`, yggdrasil is released (a `release/x.y.z` pull request into `main`, then an annotated
+  `v<x.y.z>` tag) and the controller's `YGGDRASIL_LIBRARY_VERSION` is set to that tag, so that `main` has the catalog 5.9
+  extends and the controller has this pipeline. 2.3 starts the controller on the latest existing tag for the dry runs.
+
 ### Removed
 
 - `DOCKER_GID` and the `docker` group setup of the platform: nothing reads them. Delete `DOCKER_GID` from
@@ -243,6 +286,9 @@ keeps working pinned: it still clones `scripts/` from `main`, and the `github.sh
 <checkout> <version>` take the same arguments as before. **Then, before relying on it on GitHub:** run a scratch
 GitHub repository with `forge.type: github` through a pull request, its checks and a release, end to end; the
 GitHub paths have been tested against fakes only ([docs/setup.md](docs/setup.md#an-existing-github-installation)).
+
+(Moving an installation to Forgejo, the release that carries the pipeline is made inside the window:
+[docs/cutover.md](docs/cutover.md#58a-the-release-that-carries-the-repositories-plan).)
 
 Nothing in a repository has to change for it to keep deploying and releasing. On the dev (controller) host: set
 `YGGDRASIL_LIBRARY_VERSION` (a release tag of your fork that has this pipeline), `CI_AGENT_WORKDIR` and

@@ -18,7 +18,7 @@
 // docs/catalog.md has the options. What a build checks comes from the repository's yggdrasil.yml
 // (data, never code: see scripts/pipeline_config.py), read on the ci agent before anything else.
 //
-//   pull request into develop or main (with yggdrasil.yml)
+//   pull request into develop or main (and master, under the basic rules), with yggdrasil.yml
 //                            -> Branch policy (scripts/branch-policy.sh, then the file's branchPolicy)
 //                               and Checks (each planned check in parallel on the ci agent), each
 //                               reported as a commit status; the build fails once all have reported if
@@ -35,14 +35,15 @@
 //                               deploy/<environment> (required on main) after each; then, on the publish
 //                               agent, merge the pull request and tag vx.y.z; build the release files on
 //                               the release agent (and the Windows ones on GitHub), validate them there
-//                               (pass or fail only: validation cannot change what is uploaded), and
-//                               publish the release with publish-release.sh -- drafts on the git server
-//                               and, with a mirror, GitHub, the files uploaded and checked, then the git
-//                               server's published and GitHub's last (see releasePullRequest). A failure
-//                               after the merge says how to finish: the release-resume job. On GitHub, a
-//                               repository without yggdrasil.yml keeps the path it always had (release():
-//                               every GitHub Actions check waited for, releaseArtifacts: true's artifact
-//                               workflow)
+//                               (pass or fail only: validation cannot change what is uploaded), run
+//                               release.finalize over them (it only adds files: a manifest, a
+//                               signature), and publish the release with publish-release.sh -- drafts
+//                               on the git server and, with a mirror, GitHub, the files uploaded and
+//                               checked, then the git server's published and GitHub's last (see
+//                               releasePullRequest). A failure after the merge says how to finish: the
+//                               release-resume job. On GitHub, a repository without yggdrasil.yml keeps
+//                               the path it always had (release(): every GitHub Actions check waited
+//                               for, releaseArtifacts: true's artifact workflow)
 //   the actions-release job  -> the Windows files of a release published without them (actionsRelease)
 //   the tag-check job        -> daily: every published release's tag still on the commit it was
 //                               released from, else the build fails naming it MOVED or DELETED
@@ -58,7 +59,7 @@
 //   the release-resume job   -> the same for a tag that exists already: a release that failed after its
 //                               merge, the GitHub copy of a release published after the skip, a push of
 //                               packages that stopped half way (releaseResume)
-//   push to develop, main or release/* (with yggdrasil.yml)
+//   push to develop, main or release/* (and master, under the basic rules), with yggdrasil.yml
 //                            -> the checks, then the branch's deploys only if every check passed; a
 //                               check named in deploy.inputs hands its archive to the image build
 //   branch pushed            -> every environment with trigger: branch whose `branches` glob matches
@@ -93,9 +94,9 @@
 //     node(), and by onPublishAgent(), on the publish agent (forge.publishAgent: merges, tags, releases,
 //     uploads), the one agent that also gets the GitHub App for a release. Neither the ci nor the
 //     release agent ever holds either: checkouts and reads there use the read credential, and the
-//     release agent's builds only the ids release.build.credentials names (allow-listed against the
-//     entry's `releaseCredentials`, never its checks' `credentials`). Files cross between the agents
-//     as stashes;
+//     release agent's builds and finalize steps only the ids release.build.credentials and
+//     release.finalize.credentials name (allow-listed against the entry's `releaseCredentials`, never its
+//     checks' `credentials`). Files cross between the agents as stashes;
 //   - nothing waits on an agent: GitHub Actions, a Windows run, a tag reaching GitHub and the skip are
 //     waited for outside node(), each look a short call on the publish agent (pollGithub);
 //   - a check binds only the ids its plan names, each one checked against the catalog entry's
@@ -131,15 +132,17 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final int ACTIONS_POLL_SECONDS = 60
 @Field static final int TAG_POLL_SECONDS = 10
 @Field static final int TAG_WAIT_SECONDS = 600
-// A tag of a release (v1.4.0, 1.4.0), before it reaches git or the forge.
-@Field static final String TAG = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}'
+// A tag of a release (v1.4.0, 1.4.0, or <package>@<version> for a library that versions each of its packages
+// apart: ArturRios.Data.Sqlite@3.1.0), before it reaches git or the forge. `@` never first: git refuses a ref
+// named `@`, and a tag must start with a letter or digit like every name the pipeline takes.
+@Field static final String TAG = '[A-Za-z0-9][A-Za-z0-9._@-]{0,99}'
 // The version the library was loaded at (a yggdrasil release tag; a branch name is accepted too), and
 // what of this repository is the owner's data, always taken from main (checkoutTools).
 @Field static final String LIBRARY_VERSION = '[A-Za-z0-9][A-Za-z0-9._/-]{0,99}'
 @Field static final List OWNER_DATA = ['catalog.yaml', 'stacks']
-// A release file glob (release.build.files, release.windows.files) as the stash step takes it: Ant
-// patterns (*, **, ?), relative, with no comma or whitespace (stash splits its includes on them); a
-// `.` or `..` segment is refused separately (releaseProblem).
+// A release file glob (release.build.files, release.windows.files, release.finalize.files) as the stash
+// step takes it: Ant patterns (*, **, ?), relative, with no comma or whitespace (stash splits its includes
+// on them); a `.` or `..` segment is refused separately (releaseProblem).
 @Field static final String RELEASE_GLOB = '[A-Za-z0-9_.*?+@=][A-Za-z0-9_.*?/+@=-]{0,199}'
 // A GitHub workflow file (release.windows.workflow).
 @Field static final String WORKFLOW = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}\\.ya?ml'
@@ -186,6 +189,29 @@ if [ -n "$outside" ]; then
   echo "$outside" | head -n 20 >&2
   exit 3
 fi
+'''
+
+// Run from a directory: every path under it with its type (`f ./a`, `d ./b`, `l ./c`...), sorted, then
+// every regular file's SHA-256 (sha256sum's lines). Two runs print the same only when nothing was changed,
+// added, removed or replaced by a link there: what release.finalize may not do to the release's files
+// (finalizeReleaseFiles). A file that cannot be read fails it.
+@Field static final String RELEASE_SUMS = '''
+set -eu
+(set -o pipefail) 2>/dev/null && set -o pipefail
+export LC_ALL=C
+find . -mindepth 1 -printf '%y %p\n' | sort
+find . -type f -print0 | sort -z | xargs -0 -r sha256sum --
+'''
+
+// Run from a directory: the file names (base names, not paths) that more than one file under it has, each
+// ended by a NUL (a name may hold any other character, a newline too), sorted; nothing when every name is
+// unique. A release shows one file per name (publish-release.sh uploads each by its name), so the upload set
+// must have no two (refuseDuplicateNames, which names at most 20). bash, for pipefail: a find that fails
+// fails the check instead of passing it with what it read so far.
+@Field static final String DUPLICATE_NAMES = '''#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+find . -type f -printf '%f\\0' | sort -z | uniq -zd
 '''
 
 // Runs one of this repository's scripts, yggdrasil/scripts/<YGG_TOOL>, from the workspace's root with
@@ -250,8 +276,9 @@ def call(Map config = [:]) {
 // What the catalog says about a job: [app, repo (its git repository), forge, mirror, checksTimeout (of
 // its first environment), plan (its environments, resolved), releaseArtifacts, release (deploy: an
 // application with a trigger: release environment; owner-tag; none -- pipeline_config.py entry_for's
-// reading), tags (its version tag pattern), owner, repository (this repository's name)]. Fails unless
-// `app` is a catalog id of an application or a repositories entry.
+// reading), tags (its version tag pattern), rules (its git repository's model, release or basic:
+// repositoryModel), owner, repository (this repository's name)]. Fails unless `app` is a catalog id of an
+// application or a repositories entry.
 Map catalogContext(String app) {
   if (!(app ==~ CATALOG_ID)) {
     error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
@@ -264,7 +291,8 @@ Map catalogContext(String app) {
   }
   // A repositories entry (a library, yggdrasil itself) has no environments: it never deploys.
   List plan = application != null ? resolve(catalog, app) : []
-  return [app: app, repo: application != null ? (application.repository ?: app) : app, forge: forgeOf(catalog),
+  String repo = application != null ? (application.repository ?: app) : app
+  return [app: app, repo: repo, forge: forgeOf(catalog), rules: repositoryModel(catalog, repo),
           mirror: mirrorOf(catalog), checksTimeout: (plan ? plan[0].checksTimeout : 3600) as int, plan: plan,
           releaseArtifacts: application?.releaseArtifacts == true,
           release: application != null ? (plan.any { it.trigger == 'release' } ? 'deploy' : 'none')
@@ -292,15 +320,20 @@ void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
     // checks, every promotion, merge, packaging and publication, so two release branches cannot race
     // through production or publish out of deployment order.
     lock(resource: "release-${app}") {
-      // deploying: the release deploys, so deploy.inputs' checks run and their archives are stashed.
-      Map state = prepare(ctx, 'pull-request', true)
+      List environments = plan.findAll { it.trigger == 'release' }
+      // Only the job with a release environment releases. It deploys production before it merges, so it
+      // runs every check main requires of the repository (each catalog entry's, not only its own), then
+      // deploy.inputs, whose archives are stashed. The other jobs of the repository (a library, a docs site
+      // without a release environment) build the same pull request with their own checks alone.
+      boolean releasing = environments as boolean
+      Map state = prepare(ctx, 'pull-request', releasing, releasing)
       if (state.config != null) {
         List failed = verify(ctx, state)
         if (failed) {
-          error "Not releasing: ${failed.join(', ')} failed."
+          error releasing ? "Not releasing: ${failed.join(', ')} failed."
+                          : "Failed: ${failed.join(', ')}."
         }
       }
-      List environments = plan.findAll { it.trigger == 'release' }
       if (ctx.forge.type == 'github' && state.config == null) {
         // A GitHub installation's repository without yggdrasil.yml releases exactly as it always did.
         release(app, environments, releaseArtifacts, ctx.repo)
@@ -310,7 +343,7 @@ void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
     }
     return
   }
-  if (!(target in ['develop', 'main'])) {
+  if (!(target in checkedBranches(ctx.rules))) {
     echo "Nothing to deploy for a pull request from ${printable(env.CHANGE_BRANCH)} into ${printable(target)}."
     return
   }
@@ -356,7 +389,7 @@ void branchBuild(Map ctx, List plan) {
   // nothing was prepared (other branches, DEPLOY_TO), which deploys the checkout as it always did.
   String checkedSha = null
   // "Build with Parameters" deploys without checks, as it always did.
-  if (!deployToParameter && (branch in ['develop', 'main'] || branch.startsWith('release/'))) {
+  if (!deployToParameter && (branch in checkedBranches(ctx.rules) || branch.startsWith('release/'))) {
     Map state = prepare(ctx, 'push', targets as boolean)
     checkedSha = state.sha
     if (state.config != null) {
@@ -383,15 +416,18 @@ void branchBuild(Map ctx, List plan) {
 // ---- yggdrasil.yml, the plan ----
 
 // On the ci agent: checks out the commit, describes the repository (pipeline_config.py describe) and,
-// for a pull request into develop or main or a push to develop, main or release/*, plans its checks.
+// for a pull request into develop or main or a push to develop, main or release/* (master too, under the
+// basic rules: checkedBranches), plans its checks.
 // Returns [sha, entry, config (null without yggdrasil.yml), plan (null when not planned)]. A file the
 // catalog does not allow (an unknown field, a credential not in the entry's `credentials`, ...) fails
 // the build here, before anything of it runs.
 //
 // mode: 'pull-request' (changes against the target branch) or 'push' (against the last commit whose
 // checks passed). deploying: the build deploys afterwards, so the checks named in deploy.inputs run
-// even when they could be reused or skipped -- their archive goes into the image.
-Map prepare(Map ctx, String mode, boolean deploying = false) {
+// even when they could be reused or skipped -- their archive goes into the image. releasing: a release
+// pull request of the job that releases, which runs every check main requires of the repository
+// (describe's repositoryChecks) instead of its own entry's.
+Map prepare(Map ctx, String mode, boolean deploying = false, boolean releasing = false) {
   // The build's commit, known before any checkout: every ci step fetches exactly this one.
   Map state = [sha: buildCommit()]
   stage('Read yggdrasil.yml') {
@@ -401,10 +437,11 @@ Map prepare(Map ctx, String mode, boolean deploying = false) {
         Map document = describeCheckout(ctx)
         state.entry = document.entry
         state.config = document.config
+        state.repositoryChecks = document.repositoryChecks
         if (state.config != null) {
           String tmp = scratch()
           withEnv(["YGG_TMP=${tmp}", "YGG_JOB=${ctx.app}", "YGG_CATALOG=${tmp}/catalog.yaml"]) {
-            state.plan = planChecks(ctx, state, mode, deploying)
+            state.plan = planChecks(ctx, state, mode, deploying, releasing)
           }
         }
       } finally {
@@ -442,14 +479,25 @@ Map describeCheckout(Map ctx) {
     if (document.errors) {
       error "yggdrasil.yml cannot be used:\n${bulleted(document.errors as List)}"
     }
-    described = [entry: document.entry, config: document.config]
+    // Allowed but likely a mistake (a check no catalog entry of the repository runs): said, and the build
+    // marked UNSTABLE so it shows, never fatal.
+    for (Object warning : (document.warnings ?: [])) {
+      echo "Warning: ${printable(warning)}"
+    }
+    if (document.warnings) {
+      unstable("yggdrasil.yml: ${(document.warnings as List).size()} warning(s), above")
+    }
+    described = [entry: document.entry, config: document.config, repositoryChecks: document.repositoryChecks]
   }
   return described
 }
 
 // Inside prepare(): the commit's statuses (who already checked what) and the changed files, then
-// pipeline_config.py plan. Returns the plan, checked again here (planProblem).
-List planChecks(Map ctx, Map state, String mode, boolean deploying) {
+// pipeline_config.py plan (--deploying when the build deploys). Returns the plan, checked again here
+// (planProblem, planCoverage). The plan holds this job's checks only: its catalog entry's `checks`, and
+// deploy.inputs when it deploys. yggdrasil.yml serves every catalog entry of the repository (a library and
+// its docs site), so its other checks are another job's: they neither run nor report here.
+List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean releasing = false) {
   String diffMode = 'none'
   String diffBase = ''
   String branch
@@ -467,7 +515,7 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
     }
   }
   withEnv(["YGG_REPO=${ctx.repo}", "YGG_SHA=${state.sha}", "YGG_DIFF_MODE=${diffMode}", "YGG_DIFF_BASE=${diffBase}",
-           "YGG_BRANCH=${branch}"]) {
+           "YGG_BRANCH=${branch}", "YGG_DEPLOYING=${deploying ? '1' : ''}", "YGG_RELEASING=${releasing ? '1' : ''}"]) {
     withForgeToken('read') {
       // Without the statuses nothing is reused: every check runs, which is the safe way to be wrong.
       sh(script: '''
@@ -489,17 +537,26 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
       if [ "$changed" = - ]; then
         echo "The changed files are not known: every check runs." >&2
       fi
+      set --
+      if [ -n "$YGG_DEPLOYING" ]; then set -- "$@" --deploying; fi
+      if [ -n "$YGG_RELEASING" ]; then set -- "$@" --release; fi
       python3 yggdrasil/scripts/pipeline_config.py plan "$YGG_JOB" app --statuses "$YGG_TMP/statuses" \\
-        --changed "$changed" --branch "$YGG_BRANCH" >"$YGG_TMP/plan.json"
+        --changed "$changed" --branch "$YGG_BRANCH" "$@" >"$YGG_TMP/plan.json"
     ''', returnStatus: true)
     if (code != 0) {
       error "pipeline_config.py plan failed (exit ${code}); its message is above."
     }
   }
   List planned = parseJson(readScratch(scratch(), 'plan.json')) as List
-  String problem = planProblem(planned, state.entry) ?: planCoverage(planned, state.config)
+  List wanted = neededChecks(state.entry, state.config, deploying,
+                             releasing ? state.repositoryChecks as List : null)
+  String problem = planProblem(planned, state.entry) ?: planCoverage(planned, wanted)
   if (problem) {
     error "The plan of the checks is not usable: ${problem}"
+  }
+  String others = notNeeded(state.config, planned)
+  if (others) {
+    echo "Not run by ${ctx.app} (not its catalog checks): ${others}"
   }
   if (deploying) {
     List inputs = deployInputs(state.config)
@@ -517,17 +574,22 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
 }
 
 // The commit of the last successful build of this branch that passed its checks (it set
-// YGG_CHECKED_COMMIT), or null: a push's changes are counted from there. Looks back 20 successful
-// builds at most; a build that only deployed (DEPLOY_TO, no yggdrasil.yml yet) has no commit and is
-// passed over.
+// YGG_CHECKED_COMMIT), or null: a push's changes are counted from there. UNSTABLE counts as successful:
+// it is how describe's warnings show, after checks that passed. Looks back 20 successful builds (among
+// 100 at most); a build that only deployed (DEPLOY_TO, no yggdrasil.yml yet) has no commit and is passed
+// over.
 String lastCheckedCommit() {
-  def build = currentBuild.previousSuccessfulBuild
-  for (int looked = 0; build != null && looked < 20; looked++) {
-    String sha = build.buildVariables?.YGG_CHECKED_COMMIT
-    if (sha && sha ==~ COMMIT) {
-      return sha
+  def build = currentBuild.previousBuild
+  int looked = 0
+  for (int seen = 0; build != null && seen < 100 && looked < 20; seen++) {
+    if (build.result in ['SUCCESS', 'UNSTABLE']) {
+      looked++
+      String sha = build.buildVariables?.YGG_CHECKED_COMMIT
+      if (sha && sha ==~ COMMIT) {
+        return sha
+      }
     }
-    build = build.previousSuccessfulBuild
+    build = build.previousBuild
   }
   return null
 }
@@ -537,10 +599,19 @@ String lastCheckedCommit() {
 // Stage Branch policy, on a pull request into develop or main: scripts/branch-policy.sh, then the
 // file's own branchPolicy (in its image, with HEAD_REF, BASE_REF, HEAD_SHA and YGGDRASIL_DIR, the
 // yggdrasil checkout's path, in its environment). Reported as branch-policy, never reused. Returns
-// whether it passed.
+// whether it passed. A repository under the `basic` rules (describe's entry.rules: a site deployed on pushes
+// to main, a fork) has no release model to follow: it passes for any pair of refs, and neither the script
+// nor the file's own branchPolicy runs.
 boolean branchPolicy(Map ctx, Map state) {
   boolean passed = false
   String reason = 'The branch policy could not run; see the build'
+  if (state.entry?.rules == 'basic') {
+    stage('Branch policy') {
+      echo 'Branch policy: the repository has the basic rules, so there is no branching model to check.'
+      reportStatus(ctx.repo, state.sha, 'success', 'branch-policy', 'basic: nothing to check')
+    }
+    return true
+  }
   stage('Branch policy') {
     reportStatus(ctx.repo, state.sha, 'pending', 'branch-policy', 'Checking the branching model')
     try {
@@ -609,7 +680,7 @@ List runChecks(Map ctx, Map state) {
   List failed = []
   stage('Checks') {
     if (!state.plan) {
-      echo 'yggdrasil.yml has no checks.'
+      echo 'Nothing to check: the catalog entry of this job names no checks, and this build needs no deploy.inputs.'
       return
     }
     Map branches = [:]
@@ -905,7 +976,7 @@ def onPublishAgent(Map ctx, boolean write, boolean github, Closure body) {
 //      leaves out of the notes) and the tag v<version> on the merge commit;
 //   4. releaseFromTag, shared with the tag builds and the release-resume job: with yggdrasil.yml's
 //      release, the release files (releaseFiles: built on the release agent, the Windows ones from
-//      GitHub, validated on the release agent); then, on the publish agent, the notes and
+//      GitHub, validated and finalized on the release agent); then, on the publish agent, the notes and
 //      publish-release.sh (publishRelease), which makes the drafts, uploads and checks the files and
 //      publishes the release (Forgejo, then GitHub last; after a skip Forgejo only, "GitHub copy
 //      pending"). A failure here says the pull request is merged and tagged, and to finish the release
@@ -1015,7 +1086,7 @@ String resumeNote(Map ctx, String tag) {
 //   seconds  how long a Windows run may take (default 3600)
 //   nuget    publish.nuget of an owner-tagged library: its packages packed and pushed (publishPackages;
 //            a version the feed has already is skipped, so a rerun goes on) -- after the release files are
-//            built and validated, before anything is published: a push cannot be taken back, so a release
+//            built, validated and finalized, before anything is published: a push cannot be taken back, so a release
 //            whose files fail pushes nothing
 //   release  false: no release on the git server (a library that only publishes packages); default true
 // Returns [urls: the releases' addresses, missing: the Windows files left out, reason: why,
@@ -1040,7 +1111,7 @@ Map releaseFromTag(Map ctx, Map entry, Map releaseConfig, String tag, String sha
   if (githubPending) {
     echo "GitHub copy pending: the GitHub Actions checks were skipped, so ${tag} is published on the git server only. The release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}) makes its GitHub copy."
   }
-  List urls = publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx) && !skipped)
+  List urls = publishRelease(ctx, entry, tagVersion(tag), tag, sha, files, mirrorsReleases(ctx) && !skipped)
   return [urls: urls, missing: files.missing, reason: files.reason, githubPending: githubPending, packages: nuget != null,
           released: true]
 }
@@ -1075,6 +1146,11 @@ boolean waitForReleaseActions(Map ctx, Map state, int seconds) {
       return
     }
     echo "GitHub Actions checks didn't finish within ${seconds} s (actions-status exit ${look.code}): ${names.join(', ')}."
+    // After the skip the Windows files are not built, and a release with release.finalize never goes out
+    // without them (finalize covers the whole set): no skip to offer, the release stops here.
+    if (needsWindowsFiles(state.config?.release as Map)) {
+      error "Not releasing: yggdrasil.yml's release.finalize must cover the Windows files, which are not built without the GitHub Actions checks, so there is no deploying without them. Nothing was deployed; build the pull request again once GitHub Actions answers."
+    }
     askToSkip()
     skipped = true
     echo "Deploying without GitHub Actions checks: ${names.join(', ')} did not finish. This is recorded in the deploy/<environment> statuses and the build's description; Windows files are not built."
@@ -1171,9 +1247,11 @@ void deleteReleaseBranch(Map ctx) {
 //   - release.windows: the workflow dispatched on the tag, its files from GitHub (windowsFiles); after
 //     a skip, or when that fails, they are missing;
 //   - everything gathered on the release agent, release.validate run over it, and the validated set
-//     stashed as release-files (gatherReleaseFiles).
-// Returns [stash: 'release-files', missing: the missing Windows files (globs, or the workflow's name),
-// reason: why they are missing].
+//     stashed as release-files (gatherReleaseFiles); then release.finalize, whose files join the set
+//     (finalizeReleaseFiles, in a node of its own: the stash release-upload).
+// Returns [stash: the upload set's stash, replace: whether a draft's files are uploaded again (with
+// release.finalize), missing: the missing Windows files (globs, or the workflow's
+// name), reason: why they are missing].
 Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, boolean skipped, int seconds) {
   Map files = [stash: null, missing: [], reason: '']
   stage('Release files') {
@@ -1184,12 +1262,19 @@ Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, 
       if (got.stashes == null) {
         files.missing = windowsNames(releaseConfig.windows as Map)
         files.reason = got.reason
+        // release.finalize covers the whole set: never a partial one. The release stops before anything is
+        // published, as a failed validation does; release-resume runs windows, validate and finalize again.
+        if (needsWindowsFiles(releaseConfig)) {
+          error "The Windows files are missing (${got.reason}): ${files.missing.join(', ')}. release.finalize must cover the whole set, so the release does not go on without them: nothing is published, and no draft release was made."
+        }
         echo "The Windows files are missing (${got.reason}): ${files.missing.join(', ')}. The release goes on without them."
       } else {
         windows = got.stashes
       }
     }
-    files.stash = gatherReleaseFiles(ctx, releaseConfig, tag, sha, built, windows)
+    files.stash = gatherReleaseFiles(ctx, entry, releaseConfig, tag, sha, built, windows)
+    // A manifest signed now describes this run's files: a draft's older ones are uploaded again.
+    files.replace = releaseConfig.finalize != null
   }
   return files
 }
@@ -1206,7 +1291,7 @@ List buildReleaseFiles(Map ctx, Map entry, Map build, String tag, String sha) {
       checkoutTag(ctx, tag, sha)
       withCheckCredentials([name: 'release-build', credentials: build.credentials], entry, 'releaseCredentials') { String envFile ->
         withEnv(["YGG_IMAGE=${build.image}", "YGG_RUN=${build.run}", "YGG_ENV_FILE=${envFile ?: "${scratch()}/release-build.env"}",
-                 "YGG_TAG=${tag}", "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+                 "YGG_TAG=${tag}", "YGG_VERSION=${tagVersion(tag)}"]) {
           int code = sh(script: '''
             umask 077
             mkdir -p "$(dirname "$YGG_ENV_FILE")"
@@ -1288,6 +1373,15 @@ Map windowsFiles(Map ctx, Map windows, String tag, int seconds) {
   }
 }
 
+// Whether a release cannot go out without its Windows files: it declares release.windows and
+// release.finalize, which must cover the whole set. Such a release is never skipped past its GitHub Actions
+// checks (waitForReleaseActions), stops when the Windows files are missing (releaseFiles), and gets no
+// Windows files attached afterwards (actionsRelease): release-resume makes it whole.
+@NonCPS
+boolean needsWindowsFiles(Map releaseConfig) {
+  return releaseConfig != null && releaseConfig.windows != null && releaseConfig.finalize != null
+}
+
 // What a release lists as missing when its Windows files could not be had: release.windows.files, or
 // the workflow's name when it declares none.
 @NonCPS
@@ -1303,9 +1397,12 @@ List windowsNames(Map windows) {
 // whole workspace mounted, with RELEASE_TAG and RELEASE_VERSION; it runs as root and can write anywhere
 // there, but the stash is taken, so nothing it adds or changes reaches the release. A validation that fails
 // stops the release here: publish-release.sh, which is what creates the drafts, is never called, so there
-// is nothing to publish (and no draft at all). Returns the stash's name.
-String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, List built, List windows) {
+// is nothing to publish (and no draft at all). Then release.finalize, when declared, in a node of its own
+// (finalizeReleaseFiles), and the upload set is release-files plus what it adds. Returns the upload set's
+// stash.
+String gatherReleaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, List built, List windows) {
   Map validate = releaseConfig.validate as Map
+  Map finalize = releaseConfig.finalize as Map
   node('release') {
     try {
       if (validate) {
@@ -1329,12 +1426,13 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
       }
       dir('release-files') {
         refuseLinks(true, 'the release files')
+        refuseDuplicateNames('the release files')
         // The upload set, before anything else runs here.
         stash name: 'release-files', includes: '**', allowEmpty: true
       }
       if (validate) {
         withEnv(["YGG_IMAGE=${validate.image}", "YGG_RUN=${validate.run}", "YGG_TMP=${scratch()}", "YGG_TAG=${tag}",
-                 "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+                 "YGG_VERSION=${tagVersion(tag)}"]) {
           int code = sh(script: '''
             umask 077
             mkdir -p "$YGG_TMP"
@@ -1353,19 +1451,159 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
           }
         }
       }
+      // Nothing runs here after the validation: it had the whole workspace, yggdrasil/scripts/ included, as
+      // root. finalize, which runs a script of the workspace on the host with its credentials bound, gets a
+      // node and a checkout of its own.
     } finally {
       cleanScratch()
       cleanWs()
     }
   }
-  return 'release-files'
+  return finalize ? finalizeReleaseFiles(ctx, entry, finalize, tag, sha) : 'release-files'
+}
+
+// On the release agent, in a node of its own, after gatherReleaseFiles (release-files stashed, and
+// validated): release.finalize, the step that makes what must cover the whole set -- a manifest of every
+// file, its signature. Its workspace starts from a fresh checkout of the tag and of yggdrasil's tools
+// (checkoutTag, as release.build's does): release.validate ran as root with its whole workspace mounted,
+// yggdrasil/scripts/ included, so nothing of that workspace -- a rewritten run-check.sh, a file its globs
+// would match -- may reach this step, which runs run-check.sh on the host with its credentials bound. It
+// sees the set as release.validate does: RELEASE_FILES is release-check/ (unstashed from release-files),
+// and it runs in its image, from the application's root, the whole workspace mounted, with
+// RELEASE_TAG, RELEASE_VERSION and the credentials release.finalize.credentials names (allow-listed
+// against the entry's releaseCredentials, as release.build's are). It adds files and changes none: the set
+// is checksummed before and after (RELEASE_SUMS: every path with its type, every file's SHA-256), and a
+// path changed, added or removed there fails the release, naming it. Its own files are its `files` globs,
+// matched in the checkout like release.build's (a glob matching no file fails, a link leading out of the
+// checkout refuses them all), and go into the upload set under finalize/. Any failure stops the release
+// before anything is published, as a failed validation does. Returns the upload set's stash,
+// release-upload: release-files and finalize/.
+String finalizeReleaseFiles(Map ctx, Map entry, Map finalize, String tag, String sha) {
+  String upload = null
+  node('release') {
+    try {
+      checkoutTag(ctx, tag, sha)
+      upload = finalizeInWorkspace(entry, finalize, tag)
+    } finally {
+      cleanScratch()
+      cleanWs()
+    }
+  }
+  return upload
+}
+
+// finalizeReleaseFiles' steps, in its node: the tag and the tools checked out there, nothing else yet.
+String finalizeInWorkspace(Map entry, Map finalize, String tag) {
+  List globs = (finalize.files ?: []) as List
+  for (String directory : ['release-check', 'release-upload']) {
+    dir(directory) {
+      deleteDir()
+    }
+  }
+  dir('release-check') {
+    unstash 'release-files'
+  }
+  String before = releaseSums()
+  withCheckCredentials([name: 'release-finalize', credentials: finalize.credentials], entry, 'releaseCredentials') { String envFile ->
+    withEnv(["YGG_IMAGE=${finalize.image}", "YGG_RUN=${finalize.run}", "YGG_ENV_FILE=${envFile ?: "${scratch()}/release-finalize.env"}",
+             "YGG_TAG=${tag}", "YGG_VERSION=${tagVersion(tag)}"]) {
+      int code = sh(script: '''
+        umask 077
+        mkdir -p "$(dirname "$YGG_ENV_FILE")"
+        {
+          printf 'RELEASE_FILES=%s\\n' "$WORKSPACE/release-check"
+          printf 'RELEASE_TAG=%s\\n' "$YGG_TAG"
+          printf 'RELEASE_VERSION=%s\\n' "$YGG_VERSION"
+        } >>"$YGG_ENV_FILE"
+        bash yggdrasil/scripts/run-check.sh release-finalize "$YGG_IMAGE" "$WORKSPACE" --env-file "$YGG_ENV_FILE" \\
+          -- sh -c 'cd app && exec sh -c "$1"' sh "$YGG_RUN"
+      ''', returnStatus: true)
+      if (code != 0) {
+        error "release.finalize failed (exit ${code}): nothing is published, and no draft release was made."
+      }
+    }
+  }
+  // The container had the whole workspace as root. What the host reads from it from here on must still be
+  // the workspace's own: app/ (where finalize's files are matched) and release-check/ (what is checksummed)
+  // real directories, not links to elsewhere on the agent; release-upload/ is made anew below, whatever the
+  // step put there.
+  int layout = sh(script: '''
+    for directory in app release-check; do
+      if [ -L "$directory" ] || [ ! -d "$directory" ]; then
+        echo "$directory is no longer a directory of the workspace" >&2
+        exit 3
+      fi
+    done
+  ''', returnStatus: true)
+  if (layout != 0) {
+    error "release.finalize replaced app/ or release-check/ with something else (exit ${layout}): refused. Nothing is published, and no draft release was made."
+  }
+  String after = releaseSums()
+  if (after != before) {
+    error "release.finalize changed the release files, which it may only add to: ${sumsChanged(before, after).join(', ')}. Nothing is published, and no draft release was made."
+  }
+  List stashes = []
+  dir('app') {
+    refuseLinks(false, 'the release finalize step')
+    for (int i = 0; i < globs.size(); i++) {
+      String name = "release-finalize-${i}"
+      stashGlob(name, globs[i] as String, 'release.finalize.files')
+      stashes << name
+    }
+  }
+  // The upload set is built only now, after the container: anything the step wrote into release-upload/ (it
+  // could, with the whole workspace mounted) is deleted with it, and rm does not follow a link put there.
+  sh(script: 'rm -rf -- release-upload && mkdir -p release-upload/finalize')
+  dir('release-upload') {
+    unstash 'release-files'
+  }
+  dir('release-upload/finalize') {
+    for (String name : stashes) {
+      unstash name
+    }
+  }
+  dir('release-upload') {
+    refuseLinks(true, 'the release files')
+    refuseDuplicateNames("the release files and release.finalize's")
+    stash name: 'release-upload', includes: '**', allowEmpty: true
+  }
+  return 'release-upload'
+}
+
+// RELEASE_SUMS run in release-check/: the list finalizeReleaseFiles compares before and after the step.
+// A checksum that cannot be taken (a file the step made unreadable) fails the release too.
+String releaseSums() {
+  String sums = ''
+  dir('release-check') {
+    sums = sh(script: RELEASE_SUMS, returnStdout: true)
+  }
+  return sums
+}
+
+// The paths whose line in RELEASE_SUMS differs between `before` and `after` (changed, removed or added),
+// each once and at most 20: what the failure names.
+@NonCPS
+List sumsChanged(String before, String after) {
+  Set was = new LinkedHashSet(before.readLines())
+  Set now = new LinkedHashSet(after.readLines())
+  Set paths = new LinkedHashSet()
+  for (String line : ((was - now) + (now - was))) {
+    // "<type> <path>" or "<sha256>  <path>".
+    paths << printable(line.replaceFirst('^(?:[a-z] |[0-9a-f]{64}  )', ''))
+  }
+  List named = new ArrayList(paths)
+  return named ? named.take(20) : ['the checksums differ']
 }
 
 // Stage Publish the release, on the publish agent: the notes (release_notes.py: the version's CHANGELOG.md
-// section, else the pull requests merged since the previous tag), the files (the release-files stash,
-// nothing else) and publish-release.sh, with the release's GitHub copy when `mirrorReleases` (the
-// catalog's mirror.releases, unless the GitHub Actions checks were skipped: releaseFromTag) -- the tag
-// waited for first, outside node(): the mirror pushes it. Returns the releases' addresses.
+// section, else the pull requests merged since the previous tag), the files (the upload set's stash,
+// files.stash -- release-files, or release-upload with release.finalize's files -- and nothing else) and
+// publish-release.sh, with the release's GitHub copy when `mirrorReleases` (the catalog's
+// mirror.releases, unless the GitHub Actions checks were skipped: releaseFromTag) -- the tag waited for
+// first, outside node(): the mirror pushes it. With release.finalize, publish-release.sh gets
+// --replace-files: a draft's files of the same name are uploaded again, not reused by their size, so a
+// resumed release never keeps an old file its new manifest does not describe. Returns the releases'
+// addresses.
 List publishRelease(Map ctx, Map entry, String version, String tag, String sha, Map files, boolean mirrorReleases) {
   List urls = []
   stage('Publish the release') {
@@ -1390,7 +1628,9 @@ List publishRelease(Map ctx, Map entry, String version, String tag, String sha, 
         }
         refuseLinks(true, 'the release files')
       }
-      withEnv(["YGG_TMP=${tmp}", "YGG_TAG=${tag}", "YGG_VERSION=${version}", "YGG_TAGS=${entry?.tags ?: ctx.tags}"]) {
+      // The previous tag the notes start from: one of the same package for a <package>@<version> tag.
+      withEnv(["YGG_TMP=${tmp}", "YGG_TAG=${tag}", "YGG_VERSION=${version}",
+               "YGG_TAGS=${previousTagPattern(tag, (entry?.tags ?: ctx.tags) as String)}"]) {
         sh(script: '''
           mkdir -p "$YGG_TMP"
           set --
@@ -1403,6 +1643,9 @@ List publishRelease(Map ctx, Map entry, String version, String tag, String sha, 
       List arguments = [ctx.repo, tag, sha, tag, "${tmp}/notes.md", "${env.WORKSPACE}/release-files"]
       if (mirrorReleases) {
         arguments << '--mirror-releases'
+      }
+      if (files.replace) {
+        arguments << '--replace-files'
       }
       if (files.missing) {
         arguments += ['--missing', files.missing.join(',')]
@@ -1449,6 +1692,25 @@ void refuseLinks(boolean any, String what) {
   }
 }
 
+// In the current directory, the upload set (release-files/, or release-upload/ with release.finalize's
+// files): DUPLICATE_NAMES must find nothing. On the release agent, before anything irreversible -- a library's
+// NuGet push, a draft -- so two files of one name fail the release here, naming them, instead of in
+// publish-release.sh after the push.
+void refuseDuplicateNames(String what) {
+  String names = sh(script: DUPLICATE_NAMES, returnStdout: true)
+  if (names) {
+    error "${what}: ${duplicateText(names)}; a release has one file per name (each is uploaded by its name). Nothing is published, and no draft release was made."
+  }
+}
+
+// DUPLICATE_NAMES' answer as the failure says it.
+@NonCPS
+String duplicateText(String names) {
+  List named = names.split('\u0000').findAll { it }.collect { printable(it) }
+  String more = named.size() > 20 ? " and ${named.size() - 20} more" : ''
+  return "more than one file is named ${named.take(20).join(', ')}${more}"
+}
+
 // One glob's files from the current directory, as the stash `name`: none fails the release (a declared
 // file that is not there is a broken release).
 void stashGlob(String name, String glob, String field) {
@@ -1465,7 +1727,7 @@ void stashGlob(String name, String glob, String field) {
 // fields; this is the library's own look at what reaches a shell, a stash or GitHub). null when fine.
 @NonCPS
 String releaseProblem(Map releaseConfig) {
-  for (String part : ['build', 'validate']) {
+  for (String part : ['build', 'validate', 'finalize']) {
     Map section = releaseConfig[part] as Map
     if (section == null) {
       continue
@@ -1479,10 +1741,12 @@ String releaseProblem(Map releaseConfig) {
   }
   Map build = releaseConfig.build as Map
   Map windows = releaseConfig.windows as Map
+  Map finalize = releaseConfig.finalize as Map
   if (windows != null && !(windows.workflow instanceof String && windows.workflow ==~ WORKFLOW)) {
     return "release.windows.workflow: '${printable(windows?.workflow)}' is not a workflow file (name.yml)"
   }
-  for (Map files : [[field: 'release.build.files', globs: build?.files], [field: 'release.windows.files', globs: windows?.files]]) {
+  for (Map files : [[field: 'release.build.files', globs: build?.files], [field: 'release.windows.files', globs: windows?.files],
+                    [field: 'release.finalize.files', globs: finalize?.files]]) {
     for (Object glob : (files.globs ?: []) as List) {
       if (!usableGlob(glob)) {
         return "${files.field}: '${printable(glob)}' is not a relative glob (letters, digits, . _ * ? + @ = - and /, no . or .. part)"
@@ -1528,7 +1792,7 @@ void tagBuild(Map ctx) {
     echo "Nothing to do for the tag ${printable(tag)}: ${ctx.app} is not released by its owner's tags (catalog.yaml: release ${ctx.release})."
     return
   }
-  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+  if (!isVersionTag(ctx.tags, tag)) {
     echo "Nothing to do for the tag ${printable(tag)}: not a version tag of ${ctx.app} (${ctx.tags})."
     return
   }
@@ -1565,7 +1829,7 @@ void releaseResume() {
   if (!(ctx.release in ['deploy', 'owner-tag'])) {
     error "${app} does not release (catalog.yaml: an application with no trigger: release environment, or a repositories entry without release: owner-tag)."
   }
-  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+  if (!isVersionTag(ctx.tags, tag)) {
     error "'${printable(tag)}' is not a version tag of ${app} (${ctx.tags})"
   }
   if (commit && !(commit ==~ COMMIT)) {
@@ -1764,7 +2028,7 @@ void packPackages(Map ctx, Map nuget, String tag, String sha) {
     try {
       checkoutTag(ctx, tag, sha)
       withEnv(["YGG_IMAGE=${nuget.image}", "YGG_RUN=${nuget.run}", "YGG_TMP=${scratch()}", "YGG_TAG=${tag}",
-               "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+               "YGG_VERSION=${tagVersion(tag)}"]) {
         int code = sh(script: '''
           umask 077
           mkdir -p "$YGG_TMP"
@@ -1837,7 +2101,7 @@ void actionsRelease() {
   String app = (params.REPOSITORY ?: '').toString().trim()
   String tag = (params.TAG ?: '').toString().trim()
   Map ctx = catalogContext(app)
-  if (!(tag ==~ TAG) || !globMatches(ctx.tags, tag)) {
+  if (!isVersionTag(ctx.tags, tag)) {
     error "'${printable(tag)}' is not a version tag of ${app} (${ctx.tags})"
   }
   if (!githubActions(ctx)) {
@@ -1856,6 +2120,11 @@ void actionsRelease() {
         String problem = releaseProblem(releaseConfig)
         if (problem) {
           error "yggdrasil.yml's release cannot be used: ${problem}"
+        }
+        // Attached afterwards, Windows files would be outside what release.finalize covered (its manifest,
+        // its signature): such a release is only ever made whole, by release-resume.
+        if (needsWindowsFiles(releaseConfig)) {
+          error "${app}'s yggdrasil.yml at ${tag} declares release.finalize, which must cover the Windows files: they are never attached afterwards. Run the release-resume job (REPOSITORY=${app}, TAG=${tag}), which builds them and runs release.validate and release.finalize on the whole set."
         }
         Map got = null
         stage('Windows files') {
@@ -2672,20 +2941,42 @@ String planProblem(List planned, Map entry) {
   return null
 }
 
-// Whether the plan covers the file's checks exactly: every check of yggdrasil.yml once, and nothing
-// else. A check the plan left out would never run and never report, and a required status that never
-// comes only blocks the merge -- on a push it would deploy unchecked. null when fine.
+// The checks this job needs (pipeline_config.py needed_checks): its catalog entry's `checks` (on the
+// releasing job's release pull request, `releaseChecks`: every entry's of the repository), then, when the
+// build deploys, the deploy.inputs not among them. Each once, in that order.
 @NonCPS
-String planCoverage(List planned, Map config) {
+List neededChecks(Map entry, Map config, boolean deploying, List releaseChecks = null) {
+  List names = new ArrayList((releaseChecks != null ? releaseChecks : (entry.checks ?: [])) as List)
+  if (deploying) {
+    names.addAll(((config.deploy ?: [:]).inputs ?: []) as List)
+  }
+  return names.unique()
+}
+
+// The checks of yggdrasil.yml the plan does not hold, sorted (the parsed document's maps keep no order),
+// printable and comma separated ('' for none): another catalog entry's of the repository (or no one's:
+// describe warned). For the log only.
+@NonCPS
+String notNeeded(Map config, List planned) {
   List names = planned.collect { it.name }
-  List wanted = new ArrayList(((config.checks ?: [:]) as Map).keySet())
+  List others = new ArrayList(((config.checks ?: [:]) as Map).keySet()).findAll { !(it in names) }
+  return others.collect { printable(it) }.sort().join(', ')
+}
+
+// Whether the plan covers the job's checks exactly (neededChecks): each once, and nothing else. A check the
+// plan left out would never run and never report, and a required status that never comes only blocks the
+// merge -- on a push it would deploy unchecked, and a deploy input's archive would be missing. A check it
+// adds would run, and post a status, for another job. null when fine.
+@NonCPS
+String planCoverage(List planned, List wanted) {
+  List names = planned.collect { it.name }
   List missing = wanted.findAll { !(it in names) }
   if (missing) {
     return "the plan leaves out ${missing.collect { printable(it) }.join(', ')}"
   }
   List extra = names.findAll { !(it in wanted) }
   if (extra) {
-    return "the plan has checks yggdrasil.yml does not: ${extra.collect { printable(it) }.join(', ')}"
+    return "the plan has checks this job does not need: ${extra.collect { printable(it) }.join(', ')}"
   }
   List twice = names.findAll { name -> names.count(name) > 1 }.unique()
   if (twice) {
@@ -2769,6 +3060,32 @@ Map findRepositoryEntry(Map catalog, String id) {
   return (catalog.repositories ?: []).find { it.id == id } as Map
 }
 
+// The branching model of a git repository, "release" or "basic" (catalog.py repository_model, which describe
+// reports as entry.rules): release when an application on it releases (a trigger: release environment), else
+// the `repositories` entry's `rules` (default release), else basic -- applications that only deploy on
+// branches. "release" for a repository the catalog does not have.
+@NonCPS
+String repositoryModel(Map catalog, String repository) {
+  List applications = catalog.systems.collectMany { it.applications ?: [] }
+    .findAll { it.kind != 'platform' && (it.repository ?: it.id) == repository }
+  if (applications.any { app -> resolve(catalog, app.id as String).any { it.trigger == 'release' } }) {
+    return 'release'
+  }
+  Map entry = findRepositoryEntry(catalog, repository)
+  if (entry != null) {
+    return (entry.rules ?: 'release').toString()
+  }
+  return applications ? 'basic' : 'release'
+}
+
+// The branches a pull request into, or a push to, gets the branch policy and the checks: develop and main,
+// and under the basic rules master too -- a fork's default branch, treated like main (rules.py protects it
+// the same way, and the Job DSL discovers it). release/* pushes are checked under either model.
+@NonCPS
+List checkedBranches(String rules) {
+  return rules == 'basic' ? ['develop', 'main', 'master'] : ['develop', 'main']
+}
+
 // The git server: Forgejo at forge.url, or GitHub without a forge block, and the publish agent
 // (catalog.py forge()).
 @NonCPS
@@ -2834,6 +3151,32 @@ List resolve(Map catalog, String app) {
     plan << resolved
   }
   return plan
+}
+
+// The version a release tag names, RELEASE_VERSION and YGG_VERSION: after the last `@` of a
+// <package>@<version> tag (ArturRios.Data.Sqlite@3.1.0 is 3.1.0), else the tag without a leading v (v1.4.0
+// and 1.4.0 are both 1.4.0).
+@NonCPS
+String tagVersion(String tag) {
+  int at = tag.lastIndexOf('@')
+  return at >= 0 ? tag.substring(at + 1) : tag.replaceFirst('^v', '')
+}
+
+// What `git describe --match` looks for, for the tag before `tag`: the same package's tags (<package>@*) for a
+// <package>@<version> tag, so a package's notes never start from another package's release; else `tags`, the
+// entry's pattern.
+@NonCPS
+String previousTagPattern(String tag, String tags) {
+  int at = tag.lastIndexOf('@')
+  return at >= 0 ? tag.substring(0, at) + '@*' : tags
+}
+
+// Whether `tag` is a version tag of an entry whose pattern is `tags`: a tag the pipeline takes (TAG), matching the
+// pattern, and naming a version (tagVersion not empty). A pattern such as *@* also matches ArturRios.Data.Sqlite@,
+// whose RELEASE_VERSION would be empty, and v* matches v: neither is a version, whatever the catalog says.
+@NonCPS
+boolean isVersionTag(String tags, String tag) {
+  return tag ==~ TAG && globMatches(tags, tag) && !tagVersion(tag).isEmpty()
 }
 
 // Whether `text` matches a catalog tag pattern (a glob with * and [classes], as catalog.py's TAG_PATTERN

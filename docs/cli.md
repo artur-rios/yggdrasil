@@ -194,7 +194,7 @@ reads it as `ygg` inside its container, can still read it. Changes you don't app
 | `ygg agent up\|down\|ps\|logs --user ci\|release` | Host › agent | The Jenkins build agent of a service user (`scripts/agent.sh`), as that user. As the admin |
 | `ygg backup run\|list` | Host › backup | Back up this machine, or list the backups (`scripts/backup.sh`). As `ygg` |
 | `ygg self-install` | Host › self-install | The `ygg` command and its tab completion |
-| `ygg catalog validate \| environments \| applications \| systems \| show \| public-host \| public-path \| plan \| environment \| get \| owner \| repository \| forge \| mirror \| repositories \| repository-entry \| repository-names` | Catalog | Reads `catalog.yaml` (`scripts/catalog.py`) |
+| `ygg catalog validate \| environments \| applications \| systems \| show \| public-host \| apex-host \| public-path \| plan \| environment \| get \| owner \| repository \| forge \| mirror \| repositories \| repository-entry \| repository-names` | Catalog | Reads `catalog.yaml` (`scripts/catalog.py`) |
 | `ygg help [<command>]`, `ygg version`, `ygg completion bash` | Help and version | |
 
 Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command, a missing argument),

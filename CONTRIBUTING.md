@@ -105,7 +105,7 @@ for each variable they require. Traefik's configuration is rendered first, as `p
 CI also runs the proxies, then Traefik and Alloy through them, against a fake Docker API; locally:
 
 ```bash
-YGG_DOCKER_TESTS=1 python3 -m unittest scripts.test_socket_proxies -v
+YGG_DOCKER_TESTS=1 python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
 ```
 
 It creates an internal network and a few `ygg-sp-test-*` containers, removes them, and never mounts the real Docker

@@ -120,6 +120,10 @@ RELEASE, DESKTOP, TOOLS, BROKEN = "shop-release", "shop-desktop", "shop-tools", 
 # A release that fails after its merge (its release build binds a credential Jenkins does not have yet),
 # then finished by the release-resume job.
 RESUME = "shop-resume"
+# release.finalize's two refusals: shop-signed declares release.windows too, so it is never skipped past its
+# GitHub Actions checks and stops when its Windows files are missing (then release-resume finishes it);
+# shop-tamper's finalize rewrites a file of the set, which fails the release.
+SIGNED, TAMPER = "shop-signed", "shop-tamper"
 # A release merged but never tagged (its tag was taken while it waited for approval), then tagged and
 # finished by the release-resume job given its merge commit.
 UNTAGGED = "shop-untagged"
@@ -129,6 +133,14 @@ OWNED, LIBRARY = "ygg-tool", "dotnet-lib"
 # An owner-tagged repository declaring both release files and NuGet packages, whose validation fails: the
 # packages must never be packed or pushed.
 BOTH = "ygg-both"
+# One repository, two catalog entries (two Jenkins jobs, one yggdrasil.yml): a library-like `repositories`
+# entry (checks unit and coverage, rules basic so the owner pushes to main) and its docs site, an
+# application on that repository naming no check of its own that deploys from main with the coverage's
+# archive (deploy.inputs).
+DOCS_LIB, DOCS_SITE = "ygg-docs-lib", "ygg-docs-lib-docs"
+# A releasing application sharing its repository with its docs site, whose own check (links) fails: the
+# release pull request must not deploy, since main requires links too.
+SHARED, SHARED_DOCS = "shop-shared", "shop-shared-docs"
 MIRROR_OWNER = "artur-rios-mirror"
 GITHUB_TOKEN = "a-throwaway-github-token"
 SKIP_QUESTION = "GitHub Actions checks didn't finish. Deploy without them?"
@@ -196,7 +208,26 @@ DESKTOP_PIPELINE = {"release": {
                         ' && echo extra >../release-files/build/dist/extra-direct.txt'
                         ' && echo tampered >../release-files/build/dist/shop-desktop.sha256'
                         ' && echo "TAMPERED-$((1 + 1))"'},
+    # After the validation, over a fresh copy of the gathered set: a manifest of every file (printed, so the
+    # test sees which bytes it covered) and its "signature" with the allow-listed credential, both added to
+    # the release by its files glob.
+    "finalize": {"image": "alpine:3",
+                 "run": 'mkdir -p signed'
+                        ' && (cd "$RELEASE_FILES" && find . -type f | sort | xargs sha256sum) >signed/shop-desktop-manifest.txt'
+                        ' && sed "s/^/MANIFEST /" signed/shop-desktop-manifest.txt'
+                        ' && printf %s "$SIGNING_KEY" | sha256sum | cut -c1-64 >signed/shop-desktop-manifest.sig'
+                        ' && echo "FINALIZE-KEY $(cat signed/shop-desktop-manifest.sig)"'
+                        # Files it puts in the upload set's directory instead of declaring them: never uploaded.
+                        ' && mkdir -p ../release-upload/finalize ../release-upload/build/dist'
+                        ' && echo sneaky >../release-upload/finalize/sneaky.txt'
+                        ' && echo sneaky >../release-upload/build/dist/sneaky.tar.gz'
+                        ' && echo "FINALIZED-$(wc -l <signed/shop-desktop-manifest.txt | tr -d " ")-FILES"',
+                 "files": ["signed/*"],
+                 "credentials": {"SIGNING_KEY": "shop-db-password"}},
 }}
+# What shop-desktop's release is made of, under RELEASE_FILES: the manifest finalize writes lists these.
+DESKTOP_SET = ("build/dist/shop-desktop-1.0.0.tar.gz", "build/dist/shop-desktop.sha256",
+               "windows/shop-desktop-windows/shop-desktop-setup.msi")
 TOOLS_PIPELINE = {"release": {
     "build": {"image": "alpine:3", "run": "mkdir -p dist && echo tools >dist/shop-tools.tar.gz",
               "files": ["dist/shop-tools.tar.gz"]},
@@ -206,6 +237,26 @@ BROKEN_PIPELINE = {"release": {
     "build": {"image": "alpine:3", "run": "mkdir -p dist && echo broken >dist/shop-broken.tar.gz",
               "files": ["dist/*.tar.gz"]},
     "validate": {"image": "alpine:3", "run": 'echo "VALIDATION-$((1 + 2))-FAILED"; exit 3'},
+}}
+SIGNED_PIPELINE = {"release": {
+    "build": {"image": "alpine:3", "run": "mkdir -p dist && echo signed >dist/shop-signed.tar.gz",
+              "files": ["dist/shop-signed.tar.gz"]},
+    "windows": {"workflow": "release-windows.yml", "files": ["*/*.msi"]},
+    "finalize": {"image": "alpine:3",
+                 "run": 'mkdir -p signed'
+                        ' && (cd "$RELEASE_FILES" && find . -type f | sort | xargs sha256sum) >signed/shop-signed-manifest.txt'
+                        ' && echo "SIGNED-FINALIZED-$(wc -l <signed/shop-signed-manifest.txt | tr -d " ")-FILES"',
+                 "files": ["signed/*"]},
+}}
+TAMPER_PIPELINE = {"release": {
+    "build": {"image": "alpine:3", "run": "mkdir -p dist && echo tamper >dist/shop-tamper.tar.gz",
+              "files": ["dist/shop-tamper.tar.gz"]},
+    # It adds its file as it should, then rewrites one of the set in place.
+    "finalize": {"image": "alpine:3",
+                 "run": 'mkdir -p signed && echo manifest >signed/shop-tamper-manifest.txt'
+                        ' && echo rewritten >"$RELEASE_FILES/build/dist/shop-tamper.tar.gz"'
+                        ' && echo "TAMPER-FINALIZED-$((1 + 1))"',
+                 "files": ["signed/*"]},
 }}
 RESUME_KEY = "a-throwaway-resume-key"
 RESUME_PIPELINE = {"release": {
@@ -254,6 +305,19 @@ UNIT = {"image": "alpine:3", "run": 'echo "UNIT-$((40 + 2))-RAN"'}
 RELEASE_PIPELINE = {"checks": {"unit": {**UNIT, "run": UNIT["run"] + " && mkdir -p out && echo input >out/input.txt",
                                         "archive": "out/**"}},
                     "deploy": {"inputs": ["unit"]}}
+# ygg-docs-lib's file, for both its jobs. lint is no entry's check: it never runs (describe warns).
+DOCS_LIB_UNIT_RAN, DOCS_LIB_COVERAGE_RAN, DOCS_LIB_LINT_RAN = "DOCS-LIB-UNIT-42-RAN", "DOCS-LIB-COVERAGE-42-RAN", "DOCS-LIB-LINT-42-RAN"
+DOCS_LIB_PIPELINE = {
+    "checks": {
+        "unit": {"image": "alpine:3", "run": 'echo "DOCS-LIB-UNIT-$((40 + 2))-RAN"'},
+        "coverage": {"image": "alpine:3",
+                     "run": 'mkdir -p coverage && printf "COVERAGE-%s\\n" "$((6 * 7))" >coverage/index.html'
+                            ' && echo "DOCS-LIB-COVERAGE-$((40 + 2))-RAN"',
+                     "archive": "coverage/**"},
+        "lint": {"image": "alpine:3", "run": 'echo "DOCS-LIB-LINT-$((40 + 2))-RAN"'},
+    },
+    "deploy": {"inputs": ["coverage"]},
+}
 
 HOSTILE_JENKINSFILE = """\
 // A branch's own Jenkinsfile: Jenkins must never run it (casc.yaml, globalConfigFiles).
@@ -282,7 +346,9 @@ def test_catalog():
     development (it does not release); ygg-lib, ygg-tool and dotnet-lib are tagged by their owner; the
     release applications (shop-desktop may bind shop-db-password for its release build only, through
     releaseCredentials; shop-tools requires
-    a GitHub Actions check; shop-resume's release build binds a credential added only later)."""
+    a GitHub Actions check; shop-resume's release build binds a credential added only later); shop-worker
+    and shop-untagged require unit (a job runs only its entry's checks); ygg-docs-lib (unit, coverage) and
+    its docs site ygg-docs-lib-docs share one repository."""
     return {
         "owner": OWNER,
         "repository": "yggdrasil",
@@ -295,32 +361,50 @@ def test_catalog():
         "systems": [{"id": "shop", "name": "Shop", "applications": [
             {"id": APP, "name": "API", "kind": "api", "health": "http://shop-api:8080/healthz", "checks": ["unit"],
              "credentials": ["shop-db-password"]},
-            {"id": WEB, "name": "Web", "kind": "web", "health": "http://shop-web:8080/", "checks": ["unit"]},
+            # releaseCredentials without a release: the id a check may still not bind (a job is judged on the
+            # credentials of the checks it runs, and shop-desktop runs none).
+            {"id": WEB, "name": "Web", "kind": "web", "health": "http://shop-web:8080/", "checks": ["unit"],
+             "releaseCredentials": ["shop-db-password"]},
             # Development only: an application that does not release (release-resume refuses it).
             {"id": PLAIN, "name": "Site", "kind": "web", "health": "http://plain-site:8080/",
              "environments": {"development": {}}},
-            {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/"},
+            {"id": WORKER, "name": "Worker", "kind": "worker", "health": "http://shop-worker:8080/", "checks": ["unit"]},
             {"id": RELEASE, "name": "Release", "kind": "web", "health": "http://shop-release:8080/", "checks": ["unit"]},
             {"id": DESKTOP, "name": "Desktop", "kind": "web", "health": "http://shop-desktop:8080/",
              "releaseCredentials": ["shop-db-password"]},
             {"id": TOOLS, "name": "Tools", "kind": "web", "health": "http://shop-tools:8080/",
              "actionsChecks": ["Console (Windows)"]},
             {"id": BROKEN, "name": "Broken", "kind": "web", "health": "http://shop-broken:8080/"},
+            {"id": SIGNED, "name": "Signed", "kind": "web", "health": "http://shop-signed:8080/",
+             "actionsChecks": ["Console (Windows)"]},
+            {"id": TAMPER, "name": "Tamper", "kind": "web", "health": "http://shop-tamper:8080/"},
             {"id": RESUME, "name": "Resume", "kind": "web", "health": "http://shop-resume:8080/",
              "releaseCredentials": ["shop-resume-key"]},
             # Production asks before it deploys, which is when the test takes the release's tag.
             {"id": UNTAGGED, "name": "Untagged", "kind": "web", "health": "http://shop-untagged:8080/",
-             "environments": {"development": {}, "production": {"approval": True}}},
+             "checks": ["unit"], "environments": {"development": {}, "production": {"approval": True}}},
+            # shop-shared releases; its docs site (development only) names links, which main requires too.
+            {"id": SHARED, "name": "Shared", "kind": "web", "health": "http://shop-shared:8080/", "checks": ["unit"]},
+            {"id": SHARED_DOCS, "name": "Shared docs", "kind": "web", "health": "http://shop-shared-docs:8080/",
+             "repository": SHARED, "checks": ["links"], "environments": {"development": {}}},
+            # ygg-docs-lib's docs site: development, on main instead of develop; no check of its own.
+            {"id": DOCS_SITE, "name": "Docs", "kind": "web", "health": f"http://{DOCS_SITE}:8080/",
+             "repository": DOCS_LIB, "checks": [], "environments": {"development": {"branches": "main"}}},
         ]}],
         "repositories": [{"id": LIB, "release": "owner-tag", "tags": "v*"},
                          {"id": OWNED, "release": "owner-tag", "tags": "v*"},
                          {"id": LIBRARY, "release": "owner-tag", "tags": "[0-9]*"},
-                         {"id": BOTH, "release": "owner-tag", "tags": "v*"}],
+                         {"id": BOTH, "release": "owner-tag", "tags": "v*"},
+                         {"id": DOCS_LIB, "release": "none", "rules": "basic", "checks": ["unit", "coverage"]}],
     }
 
 
-RELEASE_APPLICATIONS = {RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
-                        BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE, UNTAGGED: {"checks": {"unit": UNIT}}}
+# shop-shared's file, for it and its docs site: unit passes, links (the docs site's) fails.
+SHARED_PIPELINE = {"checks": {"unit": UNIT,
+                              "links": {"image": "alpine:3", "run": 'echo "LINKS-$((1 + 1))-FAILED"; exit 1'}}}
+RELEASE_APPLICATIONS = {SHARED: SHARED_PIPELINE, RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
+                        BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE, SIGNED: SIGNED_PIPELINE, TAMPER: TAMPER_PIPELINE,
+                        UNTAGGED: {"checks": {"unit": UNIT}}}
 # The owner-tagged repositories with a yggdrasil.yml on main (and develop, cut from it), and their files.
 OWNER_TAGGED = {OWNED: {"yggdrasil.yml": yaml.safe_dump(OWNED_PIPELINE, sort_keys=False)},
                 LIBRARY: {"yggdrasil.yml": yaml.safe_dump(LIBRARY_PIPELINE, sort_keys=False), **LIBRARY_FILES},
@@ -512,7 +596,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         cls.first_builds = {}
         cls.release_runs = {}
         cls.tag_runs = {}
-        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED)
+        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED, DOCS_LIB, DOCS_SITE, SHARED_DOCS)
         for job in jobs:
             cls.jenkins.post(job_path(job) + "/build", {"delay": "0"})
         for job in jobs:
@@ -804,7 +888,8 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         (state / "calls.log").write_text("")
         (state / "calls.log").chmod(0o666)
         for repo, files in ((DESKTOP, {"shop-desktop-setup.msi": "desktop installer\n", "debug.pdb": "symbols\n"}),
-                            (TOOLS, {"shop-tools-setup.msi": "tools installer\n"})):
+                            (TOOLS, {"shop-tools-setup.msi": "tools installer\n"}),
+                            (SIGNED, {"shop-signed-setup.msi": "signed installer\n"})):
             artifact = state / repo / "artifacts" / f"{repo}-windows"
             artifact.mkdir(parents=True)
             for name, text in files.items():
@@ -913,6 +998,11 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
                 cls.change_file(OWNER, repo, path, text, "main")
             cls.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/branches",
                                    {"new_branch_name": "develop", "old_branch_name": "main"})
+        # Two jobs, one repository: the file on main (unprotected: rules basic), develop cut from it.
+        cls.new_repository(DOCS_LIB)
+        cls.change_file(OWNER, DOCS_LIB, "yggdrasil.yml", yaml.safe_dump(DOCS_LIB_PIPELINE, sort_keys=False), "main")
+        cls.api[OWNER].request("POST", f"/repos/{OWNER}/{DOCS_LIB}/branches",
+                               {"new_branch_name": "develop", "old_branch_name": "main"})
         # The release applications: yggdrasil.yml on develop, which a release branch is a snapshot of.
         for repo, pipeline in RELEASE_APPLICATIONS.items():
             cls.new_repository(repo)
@@ -1009,7 +1099,8 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         boot = self.first_boot
         # Job DSL's giteaSCMSource and pipelineBranchDefaultsProjectFactory: one job per catalog entry,
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
-        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED})
+        self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED,
+                                             DOCS_LIB, DOCS_SITE, SHARED_DOCS})
         # The actions-release, release-resume and tag-check jobs: pipeline jobs running the scripts kept in
         # Jenkins, in the sandbox; tag-check takes only FORGET and runs every day.
         parameters = {"actions-release": ["REPOSITORY", "TAG"], "release-resume": ["REPOSITORY", "TAG", "COMMIT"],
@@ -1099,6 +1190,18 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # The checks still run and report: the owner sees everything that is wrong at once.
         self.assertEqual(latest["unit"][1], "success")
 
+    def test_given_a_basic_repository_when_a_pull_request_breaks_the_branching_model_then_branch_policy_passes(self):
+        # plain-site only deploys on branches, so its rules are basic: nothing to check, for a branch that is
+        # no feature/ or fix/ one into develop, and for one that is no release branch into main.
+        for branch, base in (("topic/anything", "develop"), ("feature/straight-to-main", "main")):
+            with self.subTest(branch=branch, base=base):
+                sha = self.branch_with(CLAUDE, PLAIN, branch, {"yggdrasil.yml": pipeline_file()}, base=base)
+                number, build = self.pull_request_build(CLAUDE, PLAIN, branch, base)
+                self.assertEqual(build.result, "SUCCESS", build.console[-4000:])
+                latest = self.latest_statuses(PLAIN, sha)
+                self.assertEqual(latest["branch-policy"][1:4], ("success", JENKINS, "basic: nothing to check"))
+                self.assertNotIn("must come from", build.console)
+
     def test_given_claudes_branch_with_its_own_jenkinsfile_when_built_then_that_file_never_runs(self):
         sha = self.branch_with(CLAUDE, APP, "feature/own-jenkinsfile",
                                {"Jenkinsfile": HOSTILE_JENKINSFILE, "yggdrasil.yml": pipeline_file(unit=UNIT)})
@@ -1123,19 +1226,20 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(self.statuses(APP, sha), [])
 
     def test_given_a_check_asking_for_a_release_credential_when_built_then_the_build_fails_before_it_runs(self):
-        # shop-desktop's release build may bind shop-db-password (releaseCredentials); a check, which runs
-        # any branch's code, may not, although Jenkins has the credential.
+        # shop-web's release build may bind shop-db-password (releaseCredentials); a check, which runs any
+        # branch's code, may not, although Jenkins has the credential. (A job is judged on the checks it runs:
+        # shop-desktop, which runs none, would only warn about this file.)
         check = {**UNIT, "credentials": {"SIGNING_KEY": "shop-db-password"}}
         branch = "feature/release-credential"
-        sha = self.branch_with(CLAUDE, DESKTOP, branch, {"yggdrasil.yml": pipeline_file(unit=check)})
-        number, build = self.pull_request_build(CLAUDE, DESKTOP, branch)
+        sha = self.branch_with(CLAUDE, WEB, branch, {"yggdrasil.yml": pipeline_file(unit=check)})
+        number, build = self.pull_request_build(CLAUDE, WEB, branch)
         self.assertEqual(build.result, "FAILURE")
         self.assertIn("yggdrasil.yml cannot be used", build.console)
-        self.assertIn(f"credential 'shop-db-password' is not allowed for {DESKTOP} (its catalog credentials: [])",
+        self.assertIn(f"credential 'shop-db-password' is not allowed for {WEB} (its catalog credentials: [])",
                       build.console)
         self.assertNotIn(UNIT_RAN, build.console)
         self.assertNotIn("(Checks)", build.console)
-        self.assertEqual(self.statuses(DESKTOP, sha), [])
+        self.assertEqual(self.statuses(WEB, sha), [])
 
     def test_given_a_forged_success_by_claude_when_built_then_the_check_still_runs(self):
         sha = self.branch_with(CLAUDE, APP, "feature/forged", {"yggdrasil.yml": pipeline_file(unit=UNIT)})
@@ -1164,14 +1268,25 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(self.latest_statuses(APP, sha)["unit"][3], f"reused: success by {JENKINS} on this commit")
 
     def test_given_a_check_with_paths_and_no_change_under_them_when_built_then_it_is_skipped(self):
-        sha = self.branch_with(CLAUDE, APP, "feature/docs-only",
-                               {"yggdrasil.yml": pipeline_file(unit={**UNIT, "paths": ["src/**"]}),
-                                "docs/readme.md": "Only documentation.\n"})
-        number, build = self.pull_request_build(CLAUDE, APP, "feature/docs-only")
+        # shop-web's yggdrasil.yml (on develop since setUpClass) gives unit the paths src/**: a pull request
+        # that changes documentation alone skips it, and the skip is a success.
+        sha = self.branch_with(CLAUDE, WEB, "feature/docs-only", {"docs/readme.md": "Only documentation.\n"})
+        number, build = self.pull_request_build(CLAUDE, WEB, "feature/docs-only")
         self.assertEqual(build.result, "SUCCESS", build.console[-4000:])
         self.assertIn("Check unit: skip (skipped: no changes under src/**)", build.console)
-        self.assertNotIn(UNIT_RAN, build.console)
-        self.assertEqual(self.latest_statuses(APP, sha)["unit"][1:4], ("success", JENKINS, "skipped: no changes under src/**"))
+        self.assertNotIn("WEB-UNIT-42-RAN", build.console)
+        self.assertEqual(self.latest_statuses(WEB, sha)["unit"][1:4], ("success", JENKINS, "skipped: no changes under src/**"))
+
+    def test_given_a_check_with_paths_and_a_change_to_the_pipeline_file_when_built_then_it_runs(self):
+        # A change to yggdrasil.yml matches every check's paths (a Renovate image bump changes nothing else):
+        # this branch changes only that file, and the check still runs, on the new command.
+        bumped = {**UNIT, "run": 'echo "WEB-UNIT-BUMPED-$((40 + 2))-RAN"', "paths": ["src/**"]}
+        sha = self.branch_with(CLAUDE, WEB, "feature/pipeline-file-only", {"yggdrasil.yml": pipeline_file(unit=bumped)})
+        number, build = self.pull_request_build(CLAUDE, WEB, "feature/pipeline-file-only")
+        self.assertEqual(build.result, "SUCCESS", build.console[-4000:])
+        self.assertIn("WEB-UNIT-BUMPED-42-RAN", build.console)
+        self.assertNotIn("Check unit: skip", build.console)
+        self.assertEqual(self.latest_statuses(WEB, sha)["unit"][1:3], ("success", JENKINS))
 
     def test_given_a_check_using_docker_when_built_then_it_can_start_a_container_on_the_ci_engine(self):
         # Testcontainers-style: start a container publishing a port, reach it through
@@ -1193,12 +1308,13 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
             'echo "answer=$answer"',
             '[ "$answer" = HELLO-FROM-A-CONTAINER ]',
         ])
-        files = {"yggdrasil.yml": pipeline_file(unit=UNIT, containers={"image": "docker:cli", "run": run, "docker": True})}
+        # unit, shop-api's one catalog check: a check the entry does not name would never run.
+        files = {"yggdrasil.yml": pipeline_file(unit={"image": "docker:cli", "run": run, "docker": True})}
         sha = self.branch_with(CLAUDE, APP, "feature/containers", files)
         number, build = self.pull_request_build(CLAUDE, APP, "feature/containers")
         self.assertIn("answer=HELLO-FROM-A-CONTAINER", build.console)
         self.assertEqual(build.result, "SUCCESS", build.console[-6000:])
-        self.assertEqual(self.latest_statuses(APP, sha)["containers"][1], "success")
+        self.assertEqual(self.latest_statuses(APP, sha)["unit"][1], "success")
 
     def test_given_the_ci_agent_when_a_check_runs_then_no_write_token_is_in_its_environment(self):
         marker = f"check-started-{uuid.uuid4().hex[:8]}"
@@ -1315,6 +1431,73 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(newer.result, "SUCCESS", newer.console[-4000:])
         self.assertIn(f"version=develop-{moved[:7]}", newer.console)
 
+    def test_given_a_library_and_its_docs_site_on_one_repository_when_main_is_pushed_then_each_job_runs_its_own_checks(self):
+        # One push, two jobs (the webhook reaches both): the library runs unit and coverage; the docs site
+        # runs only coverage, its deploy input, and deploys with its archive. lint, no entry's check, runs
+        # in neither.
+        before = {job: self.last_number(job, "main") for job in (DOCS_LIB, DOCS_SITE)}
+        sha = self.change_file(OWNER, DOCS_LIB, "docs/page.md", "a page\n", "main")
+        library = self.wait_for_build(DOCS_LIB, "main", after=before[DOCS_LIB])
+        docs = self.wait_for_build(DOCS_SITE, "main", after=before[DOCS_SITE])
+        # UNSTABLE, not SUCCESS: describe's warning (lint) marks the build; it still checks and deploys.
+        self.assertEqual(library.result, "UNSTABLE", library.console[-6000:])
+        self.assertEqual(docs.result, "UNSTABLE", docs.console[-6000:])
+
+        self.assertIn(DOCS_LIB_UNIT_RAN, library.console)
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, library.console)
+        self.assertIn("Check unit: run", library.console)
+        self.assertIn("Check coverage: run", library.console)
+        self.assertIn(f"Not run by {DOCS_LIB} (not its catalog checks): lint", library.console)
+        # The docs job: coverage (forced to run, its archive is needed), never unit.
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, docs.console)
+        self.assertNotIn(DOCS_LIB_UNIT_RAN, docs.console)
+        self.assertNotIn("Check unit:", docs.console)
+        self.assertIn("Check coverage: run", docs.console)
+        self.assertIn(f"Not run by {DOCS_SITE} (not its catalog checks): lint, unit", docs.console)
+        for build in (library, docs):
+            self.assertNotIn(DOCS_LIB_LINT_RAN, build.console)
+            self.assertIn(f"Warning: checks.lint is not in any catalog entry of {DOCS_LIB}: it never runs",
+                          build.console)
+        # Deployed with the archive in its build context (DEPLOY_INPUTS_DIR); the library deploys nothing.
+        self.assertRegex(docs.console, rf"DEPLOY-STUB environment=development stack={DOCS_SITE} checkout=app "
+                                       rf"version=main-{sha[:7]} inputs=\S+/deploy-inputs")
+        self.assertIn("DEPLOY-INPUT COVERAGE-42", docs.console)
+        self.assertNotIn("DEPLOY-STUB", library.console)
+
+        # Each job posts statuses for its own checks only, all by Jenkins.
+        statuses = self.statuses(DOCS_LIB, sha)
+        by_job = {build.url: {context for context, _, _, _, target in statuses if target == build.url}
+                  for build in (library, docs)}
+        self.assertEqual(by_job, {library.url: {"unit", "coverage"}, docs.url: {"coverage"}}, statuses)
+        self.assertEqual({creator for _, _, creator, _, _ in statuses}, {JENKINS})
+        self.assertEqual({context for context, *_ in statuses}, {"unit", "coverage"})
+
+    def test_given_a_basic_repository_on_master_when_pushed_and_a_pull_request_targets_it_then_the_checks_run(self):
+        # A fork's default branch: under the basic rules master is treated like main -- its job discovers it
+        # (casc.yaml's heads), a push to it runs the checks, and a pull request into it gets the branch
+        # policy (passing: basic) and the checks.
+        sha = self.change_file(OWNER, DOCS_LIB, "docs/master.md", "on master\n", "main", new_branch="master")
+        pushed = self.wait_for_build(DOCS_LIB, "master", after=0)
+        # UNSTABLE, as on main: describe's warning (lint, no entry's check).
+        self.assertEqual(pushed.result, "UNSTABLE", pushed.console[-6000:])
+        self.assertIn(DOCS_LIB_UNIT_RAN, pushed.console)
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, pushed.console)
+        latest = self.latest_statuses(DOCS_LIB, sha)
+        for context in ("unit", "coverage"):
+            self.assertEqual(latest[context][1:3], ("success", JENKINS), latest)
+
+        branch = "topic/into-master"
+        head = self.branch_with(CLAUDE, DOCS_LIB, branch, {"docs/topic.md": "a topic\n"}, base="master")
+        number, build = self.pull_request_build(CLAUDE, DOCS_LIB, branch, "master")
+        self.assertEqual(build.result, "UNSTABLE", build.console[-6000:])
+        self.assertNotIn("Nothing to deploy for a pull request", build.console)
+        self.assertIn(DOCS_LIB_UNIT_RAN, build.console)
+        self.assertIn(DOCS_LIB_COVERAGE_RAN, build.console)
+        latest = self.latest_statuses(DOCS_LIB, head)
+        self.assertEqual(latest["branch-policy"][1:4], ("success", JENKINS, "basic: nothing to check"))
+        for context in ("unit", "coverage"):
+            self.assertEqual(latest[context][1:3], ("success", JENKINS), latest)
+
     # --- Owner tags --------------------------------------------------------------------------------
 
     def test_given_owner_tags_on_an_old_commit_when_scanned_then_only_an_annotated_one_is_young_enough(self):
@@ -1424,6 +1607,32 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(self.description(RELEASE, f"PR-{number}", build.number), "v1.0.0")
         self.assert_no_secret(build.console, "the build log")
 
+    def test_given_a_sibling_check_failing_on_a_release_pull_request_when_built_then_nothing_is_deployed(self):
+        # shop-shared deploys production before it merges, and main requires every entry's checks of the
+        # repository (unit, and its docs site's links): so the releasing job runs links too, and stops.
+        number, build, _, _ = self.release_run(SHARED)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        # unit may be reused (develop's build checked the same commit); links, the docs site's, runs.
+        self.assertRegex(build.console, r"Check unit: (run|reuse)")
+        self.assertIn("Check links: run", build.console)
+        self.assertIn("LINKS-2-FAILED", build.console)
+        self.assertIn("Not releasing: links failed.", build.console)
+        self.assertNotIn("DEPLOY-STUB", build.console)
+        pull = self.pull_request(SHARED, number)
+        self.assertFalse(pull["merged"])
+        self.assertIsNone(self.tag_commit(SHARED, "v1.0.0"))
+        latest = self.latest_statuses(SHARED, pull["head"]["sha"])
+        self.assertNotIn("deploy/production", latest)
+        self.assertEqual(latest["links"][1:3], ("failure", JENKINS))
+        # The docs site's job builds the same pull request with its own check alone, and never says it is
+        # releasing: it does not release.
+        docs = self.wait_for_build(SHARED_DOCS, f"PR-{number}", after=0, timeout=1200)
+        self.assertEqual(docs.result, "FAILURE", docs.console[-6000:])
+        self.assertIn("Failed: links.", docs.console)
+        self.assertNotIn("Not releasing", docs.console)
+        self.assertNotIn("Check unit:", docs.console)
+        self.assertNotIn("DEPLOY-STUB", docs.console)
+
     def test_given_the_release_branch_when_released_then_it_is_kept_with_a_note(self):
         number, build, _, _ = self.release_run(RELEASE)
         self.assertEqual(build.result, "SUCCESS", build.console[-6000:])
@@ -1438,8 +1647,10 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIsNotNone(release)
         self.assertFalse(release["draft"])
         assets = {asset["name"]: asset["size"] for asset in release["assets"]}
-        # The declared globs' files only: not dist/notes.txt, not the artifact's debug.pdb.
-        self.assertEqual(set(assets), {"shop-desktop-1.0.0.tar.gz", "shop-desktop.sha256", "shop-desktop-setup.msi"})
+        # The declared globs' files only: not dist/notes.txt, not the artifact's debug.pdb; and the two files
+        # release.finalize added -- not the two it wrote straight into release-upload/ (sneaky.*).
+        self.assertEqual(set(assets), {"shop-desktop-1.0.0.tar.gz", "shop-desktop.sha256", "shop-desktop-setup.msi",
+                                       "shop-desktop-manifest.txt", "shop-desktop-manifest.sig"})
         self.assertEqual(assets["shop-desktop-1.0.0.tar.gz"], len("shop-desktop 1.0.0\n"))
         self.assertEqual(assets["shop-desktop-setup.msi"], len("desktop installer\n"))
         # The validation is pass or fail only: what it added or rewrote after the files were gathered
@@ -1451,6 +1662,15 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # The allow-listed credential reached the release build (its digest; the log masks the value).
         self.assertIn(f"BUILD-KEY {hashlib.sha256(DB_PASSWORD.encode()).hexdigest()}", build.console)
         self.assertNotIn(DB_PASSWORD, build.console)
+        # release.finalize ran after the validation passed, over the gathered set as it was before the
+        # validation tampered with its copy (the built file's own bytes, three files), with its allow-listed
+        # credential; what it wrote is in the release, its manifest one line per file of the set.
+        self.assertLess(build.console.index("VALIDATED-3-FILES"), build.console.index("FINALIZED-3-FILES"))
+        built = hashlib.sha256(b"shop-desktop 1.0.0\n").hexdigest()
+        self.assertIn(f"MANIFEST {built}  ./build/dist/shop-desktop-1.0.0.tar.gz", build.console)
+        self.assertIn(f"FINALIZE-KEY {hashlib.sha256(DB_PASSWORD.encode()).hexdigest()}", build.console)
+        self.assertEqual(assets["shop-desktop-manifest.txt"], sum(64 + 2 + len(f"./{path}\n") for path in DESKTOP_SET))
+        self.assertEqual(assets["shop-desktop-manifest.sig"], 64 + 1)
         # GitHub: the tag waited for, the workflow dispatched on it, its run watched and its files
         # downloaded -- every call on the publish agent (vps), with the App's token; none on release.
         mine = [line for line in calls if f" args={DESKTOP} " in f"{line} "]
@@ -1476,6 +1696,119 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIsNone(self.release_of(BROKEN, "v1.0.0"))
         self.assertTrue(self.pull_request(BROKEN, number)["merged"])
         self.assertIsNotNone(self.tag_commit(BROKEN, "v1.0.0"))
+
+    def test_given_a_finalize_that_rewrites_a_release_file_when_released_then_nothing_is_published(self):
+        # release.finalize may only add: it ran (TAMPER-FINALIZED-2), rewrote a file of the set, and the
+        # checksums before and after name it; the release stops before any draft, with the resume note.
+        number, build, _, _ = self.release_run(TAMPER)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn("TAMPER-FINALIZED-2", build.console)
+        self.assertIn("release.finalize changed the release files, which it may only add to: "
+                      "./build/dist/shop-tamper.tar.gz. Nothing is published, and no draft release was made.", build.console)
+        self.assertIn(f"Not released: the pull request is merged and tagged v1.0.0; finish the release with the "
+                      f"release-resume job (REPOSITORY={TAMPER}, TAG=v1.0.0).", build.console)
+        self.assertNotIn("(Publish the release)", build.console)
+        self.assertIsNone(self.release_of(TAMPER, "v1.0.0"))
+        self.assertTrue(self.pull_request(TAMPER, number)["merged"])
+
+    def test_given_finalize_and_windows_files_when_they_are_missing_then_it_never_publishes_a_partial_set(self):
+        state = self.github_double / "state" / SIGNED
+        # 1. GitHub Actions never answers: no skip is offered (it would publish without the Windows files), the
+        #    release fails before anything is deployed or merged.
+        number, build, _, _ = self.release_run(SIGNED)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn("GitHub Actions checks didn't finish within 20 s (actions-status exit 2): Console (Windows).",
+                      build.console)
+        self.assertIn("Not releasing: yggdrasil.yml's release.finalize must cover the Windows files", build.console)
+        self.assertNotIn(SKIP_QUESTION, build.console)
+        head = self.pull_request(SIGNED, number)["head"]["sha"]
+        self.assertEqual([s for s in self.statuses(SIGNED, head) if s[0].startswith("deploy/")], [])
+        self.assertFalse(self.pull_request(SIGNED, number)["merged"])
+        self.assertIsNone(self.tag_commit(SIGNED, "v1.0.0"))
+
+        # 2. The checks pass now, but the Windows run fails: deployed, merged and tagged, then stopped before
+        #    finalize and before any draft, with the resume note.
+        (state / "actions").write_text("0\n")
+        (state / "run").write_text("failure\n")
+        second = self.rebuild(SIGNED, f"PR-{number}")
+        self.assertEqual(second.result, "FAILURE", second.console[-6000:])
+        self.assertIn("The Windows files are missing (release-windows.yml run 4242 failed): */*.msi. release.finalize "
+                      "must cover the whole set, so the release does not go on without them: nothing is published, and "
+                      "no draft release was made.", second.console)
+        self.assertIn(f"Not released: the pull request is merged and tagged v1.0.0; finish the release with the "
+                      f"release-resume job (REPOSITORY={SIGNED}, TAG=v1.0.0).", second.console)
+        self.assertNotIn("SIGNED-FINALIZED", second.console)
+        self.assertIsNone(self.release_of(SIGNED, "v1.0.0"))
+        self.assertTrue(self.pull_request(SIGNED, number)["merged"])
+
+        # A draft of the release is there already, as an earlier resume that stopped half way would leave it,
+        # with an older Windows file of the same name and size as the one this run builds: with finalize, the
+        # draft's file must be replaced, not reused because its name and size match.
+        stale = self.temp / "stale" / "shop-signed-setup.msi"
+        stale.parent.mkdir(exist_ok=True)
+        stale.write_text("stale! installer\n")
+        self.assertEqual(len(stale.read_text()), len("signed installer\n"))
+        merge = self.tag_commit(SIGNED, "v1.0.0")
+        created = self.owner_forge("create-release", SIGNED, "v1.0.0", merge, "v1.0.0", "--draft")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        draft_id = created.stdout.split("\t")[0]
+        uploaded = self.owner_forge("upload-release-file", SIGNED, draft_id, str(stale))
+        self.assertEqual(uploaded.returncode, 0, uploaded.stderr)
+
+        # 3. The Windows run works again: release-resume runs windows, validate and finalize on the whole set.
+        (state / "run").write_text("success\n")
+        resumed = self.release_resume(SIGNED, "v1.0.0")
+        self.assertEqual(resumed.result, "SUCCESS", resumed.console[-8000:])
+        self.assertIn("SIGNED-FINALIZED-2-FILES", resumed.console)
+        release = self.release_of(SIGNED, "v1.0.0")
+        self.assertFalse(release["draft"])
+        self.assertEqual(str(release["id"]), draft_id, "the draft that was there is the one published")
+        installer, = [a for a in release["assets"] if a["name"] == "shop-signed-setup.msi"]
+        self.assertEqual(self.download(installer["browser_download_url"]), b"signed installer\n")
+        self.assertEqual(self.assets(release), {"shop-signed.tar.gz": len("signed\n"),
+                                                "shop-signed-setup.msi": len("signed installer\n"),
+                                                "shop-signed-manifest.txt": 2 * 64 + 2 * 2 + len(
+                                                    "./build/dist/shop-signed.tar.gz\n"
+                                                    "./windows/shop-signed-windows/shop-signed-setup.msi\n")})
+        self.assertNotIn("## Missing files", release["body"])
+
+        # Run again, the published release is left as it is: nothing replaced on a public release.
+        again = self.release_resume(SIGNED, "v1.0.0")
+        self.assertEqual(again.result, "SUCCESS", again.console[-6000:])
+
+        def files(of):
+            # The same attachments (ids), names and sizes; download_count moved with the download above.
+            return sorted((a["id"], a["name"], a["size"]) for a in of["assets"])
+
+        self.assertEqual(files(self.release_of(SIGNED, "v1.0.0")), files(release))
+
+        # 4. actions-release never attaches Windows files to it: they are part of what finalize covers.
+        before = self.last_number("actions-release", None)
+        github_before = len(self.github_calls(SIGNED))
+        self.jenkins.post(job_path("actions-release") + "/buildWithParameters", {"REPOSITORY": SIGNED, "TAG": "v1.0.0"})
+        refused = self.wait_for_build("actions-release", None, after=before, timeout=900)
+        self.assertEqual(refused.result, "FAILURE", refused.console[-4000:])
+        self.assertIn(f"{SIGNED}'s yggdrasil.yml at v1.0.0 declares release.finalize, which must cover the Windows files: "
+                      f"they are never attached afterwards. Run the release-resume job (REPOSITORY={SIGNED}, TAG=v1.0.0)",
+                      refused.console)
+        self.assertEqual(len(self.github_calls(SIGNED)), github_before, "refused before anything is asked of GitHub")
+
+    def owner_forge(self, *arguments):
+        """scripts/forge.sh run here as the owner, against the run's Forgejo."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("FORGE_", "GITHUB_")) and k != "GH_TOKEN"}
+        env.update(FORGE_TYPE="forgejo", FORGE_API_URL=f"{self.url}/api/v1", FORGE_OWNER=OWNER,
+                   FORGE_TOKEN=self.tokens[OWNER], CURL_CA_BUNDLE=os.environ["SSL_CERT_FILE"])
+        return subprocess.run(["bash", str(ROOT / "scripts" / "forge.sh"), *arguments], env=env, capture_output=True,
+                              text=True, timeout=120, stdin=subprocess.DEVNULL)
+
+    def download(self, url):
+        """A release file's bytes (the repositories are private: a token is needed). Forgejo names its files at
+        its own address (FORGE_URL, on the containers' network): the test reaches it at self.url."""
+        if url.startswith(FORGE_URL):
+            url = self.url + url[len(FORGE_URL):]
+        request = urllib.request.Request(url, headers={"Authorization": f"token {self.tokens[OWNER]}"})
+        with urllib.request.urlopen(request, timeout=30) as answer:
+            return answer.read()
 
     def test_given_github_not_answering_when_released_then_the_skip_is_offered_and_recorded(self):
         # The release as this build left it (the actions-release test may have attached files since).

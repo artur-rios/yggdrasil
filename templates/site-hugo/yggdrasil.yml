@@ -1,0 +1,16 @@
+# The pipeline file for a Hugo site (templates/site-hugo/).
+# Copy it to the repository's root as yggdrasil.yml. The pipeline of the yggdrasil installation that deploys the
+# repository reads it (yggdrasil's docs/catalog.md, "Repository pipeline file", has every field). It is data, never
+# code: images (pinned by version and digest, which Renovate keeps up to date: the owner merges those changes),
+# commands, globs and the names of Jenkins credentials. Every check the catalog lists in the application's `checks`
+# must be defined here. Check it where the catalog is, in the yggdrasil checkout:
+#   python3 scripts/pipeline_config.py describe <application-id> <this repository's checkout>
+#
+# The deploy builds the image (the Dockerfile) with the same Hugo; this check builds the site on a pull request
+# before it can reach develop, so a broken page or a theme that no longer installs is caught there. List it in the
+# application's `checks` in catalog.yaml. For a site whose Hugo directory is not the root, cd into it first.
+
+checks:
+  build:
+    image: hugomods/hugo:debian-node-lts-0.165.0@sha256:eef6a12572c8cf3fea72fb034606f3e6a0821368682139378608eabc94e67c87
+    run: "[ ! -f package-lock.json ] || npm ci; hugo --environment production --minify --gc --destination /tmp/site"

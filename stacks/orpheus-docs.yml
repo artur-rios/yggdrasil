@@ -1,0 +1,24 @@
+# Orpheus docs, orpheus-docs in catalog.yaml: templates/stacks/site.yml
+# with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
+
+services:
+  web:
+    build:
+      context: ${APP_DIR:?APP_DIR is set by scripts/deploy.sh}
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        YGG_ENVIRONMENT: ${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}
+        PUBLIC_HOST: ${YGG_PUBLIC_HOST:-}
+        PUBLIC_PATH: ${YGG_PUBLIC_PATH:-}
+    image: orpheus-docs:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

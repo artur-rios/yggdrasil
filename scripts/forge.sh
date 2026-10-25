@@ -14,6 +14,7 @@
 #     scripts/forge.sh find-release   <repo> <tag>                  -> "<id>\t<html_url>\t<draft: true|false>"
 #     scripts/forge.sh release-tags   <repo>                        -> "<tag>\t<target_commitish>" per published release
 #     scripts/forge.sh release-files  <repo> <release-id>           -> "<name>\t<size>" per line
+#     scripts/forge.sh delete-release-file <repo> <release-id> <name>
 #     scripts/forge.sh tag-sha        <repo> <tag>                  -> the commit the tag points to
 #     scripts/forge.sh delete-branch  <repo> <branch>
 #
@@ -25,15 +26,21 @@
 # is already gone. find-release finds a release, a draft too, by its tag (GitHub's own lookup by tag
 # does not return drafts, so the list of releases is searched); tag-sha peels an annotated tag to the
 # commit it points to. release-files lists the files attached to a release, which is how an upload is
-# checked. release-tags lists the published releases (drafts left out), each with the target it was
-# released from: create-release sends the release's commit as target_commitish, so for a release the
-# pipeline made it is the commit the tag must still point to (what the tag-check job compares with
-# tag-sha); a release made by hand may name a branch there instead.
+# checked; delete-release-file removes one of them by its name (exit 4 when the release has none of that
+# name), which is how publish-release.sh --replace-files uploads a draft's file again. release-tags lists
+# the published releases (drafts left out), each with the target it was released from: create-release
+# sends the release's commit as target_commitish, so for a release the pipeline made it is the commit the
+# tag must still point to (what the tag-check job compares with tag-sha); a release made by hand may name a
+# branch there instead. create-release makes the release a
+# prerelease exactly when the version its tag names has a SemVer pre-release part (prerelease_tag):
+# 1.2.0-alpha.1, v1.2.0-rc.2, Pkg@1.2.0-beta.1 (an `@` tag's version is what follows its last `@`). Any
+# other tag is a normal release, 1.2.0+build.5 (build metadata, no pre-release part) among them. The same
+# rule on both servers, so a release and its GitHub copy agree, and GitHub never makes a prerelease latest.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
-# 4 (find-release and tag-sha only) that there is no such release or tag, which is an answer, not an
-# error: the caller creates it, or waits for it;
+# 4 (find-release, tag-sha and delete-release-file only) that there is no such release, tag or file, which
+# is an answer, not an error: the caller creates it, or waits for it;
 # 2 that there was no command at all (it prints the list of commands).
 # On Forgejo merge-pr waits (every 3 s, up to 20 times) while the server answers "try again later": it
 # checks a pull request again in the background after a new commit status. The token reaches curl on
@@ -243,6 +250,29 @@ release_options() {
   [[ -z "$notes_file" || -f "$notes_file" ]] || die "create-release: no notes file $notes_file"
 }
 
+# prerelease_tag <tag>: true when the tag's version (after its last `@`, else without a leading v: the
+# pipeline's RELEASE_VERSION) is a SemVer version with a pre-release part, else false. Build metadata
+# (+...) may follow either way and is not a pre-release part, even when it has a dash in it. SemVer 2.0.0's
+# own grammar: no leading zero in the three numbers or in a numeric pre-release identifier (1.2.0-01 and
+# 01.2.3-rc.1 are not SemVer, so normal releases), while build identifiers may have one (1.2.0-rc.1+001).
+prerelease_tag() {
+  local version=$1
+  local number='(0|[1-9][0-9]*)'
+  # A numeric identifier without a leading zero, or one with a letter or a dash in it.
+  local pre="(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+  local build='[0-9A-Za-z-]+'
+  if [[ "$version" == *@* ]]; then
+    version=${version##*@}
+  else
+    version=${version#v}
+  fi
+  if [[ "$version" =~ ^$number\.$number\.$number-$pre(\.$pre)*(\+$build(\.$build)*)?$ ]]; then
+    echo true
+  else
+    echo false
+  fi
+}
+
 # ---- GitHub ----
 
 github_set_status() { set_status "$@"; }
@@ -291,8 +321,9 @@ github_create_release() {
     notes=(--argjson generate false --rawfile notes "$notes_file")
   fi
   out=$(request "create-release $tag" POST "$(repo_url "$repo")/releases" --json "$(jq -n \
-    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" "${notes[@]}" \
-    '{tag_name: $tag, target_commitish: $sha, name: $title, draft: $draft, prerelease: false}
+    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" \
+    --argjson prerelease "$(prerelease_tag "$tag")" "${notes[@]}" \
+    '{tag_name: $tag, target_commitish: $sha, name: $title, draft: $draft, prerelease: $prerelease}
      + (if $generate then {generate_release_notes: true} else {body: $notes} end)')") || return 1
   if [[ "$draft" == true ]]; then
     jq -e '.draft == true' <<<"$out" >/dev/null || die "create-release failed: the server did not create an unpublished draft release for $tag"
@@ -379,6 +410,19 @@ github_tag_sha() {
   printf '%s\n' "$sha"
 }
 
+github_delete_release_file() {
+  local repo=$1 id=$2 name=$3 out page=1 count asset=""
+  while ((page <= 100)) && [[ -z "$asset" ]]; do
+    out=$(request "delete-release-file $name" GET "$(repo_url "$repo")/releases/$(encode "$id")/assets?per_page=100&page=$page") || return 1
+    asset=$(jq -r --arg name "$name" 'first(.[] | select(.name == $name) | .id) // empty' <<<"$out") || return 1
+    count=$(jq 'length' <<<"$out") || return 1
+    ((count == 100)) || break
+    page=$((page + 1))
+  done
+  [[ -n "$asset" ]] || { echo "forge: release $id has no file named $name" >&2; return 4; }
+  request "delete-release-file $name" DELETE "$(repo_url "$repo")/releases/assets/$(encode "$asset")" >/dev/null
+}
+
 github_delete_branch() {
   local repo=$1 branch=$2 out
   # "delete head branches on merge" (github/rulesets.py turns it on) means GitHub has usually deleted
@@ -447,8 +491,9 @@ forgejo_create_release() {
   local notes=(--arg notes "")
   [[ -z "$notes_file" ]] || notes=(--rawfile notes "$notes_file")
   out=$(request "create-release $tag" POST "$(repo_url "$repo")/releases" --json "$(jq -n \
-    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" "${notes[@]}" \
-    '{tag_name: $tag, target_commitish: $sha, name: $title, body: $notes, draft: $draft, prerelease: false}')") || return 1
+    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" \
+    --argjson prerelease "$(prerelease_tag "$tag")" "${notes[@]}" \
+    '{tag_name: $tag, target_commitish: $sha, name: $title, body: $notes, draft: $draft, prerelease: $prerelease}')") || return 1
   if [[ "$draft" == true ]]; then
     jq -e '.draft == true' <<<"$out" >/dev/null || die "create-release failed: the server did not create an unpublished draft release for $tag"
   fi
@@ -513,6 +558,14 @@ forgejo_release_files() {
   jq -r '.[] | [.name, .size] | @tsv' <<<"$out"
 }
 
+forgejo_delete_release_file() {
+  local repo=$1 id=$2 name=$3 out asset
+  out=$(request "delete-release-file $name" GET "$(repo_url "$repo")/releases/$(encode "$id")/assets") || return 1
+  asset=$(jq -r --arg name "$name" 'first(.[] | select(.name == $name) | .id) // empty' <<<"$out") || return 1
+  [[ -n "$asset" ]] || { echo "forge: release $id has no file named $name" >&2; return 4; }
+  request "delete-release-file $name" DELETE "$(repo_url "$repo")/releases/$(encode "$id")/assets/$(encode "$asset")" >/dev/null
+}
+
 forgejo_tag_sha() {
   local repo=$1 tag=$2
   # .commit is the commit the tag points to, also for an annotated tag (.id is the tag object).
@@ -560,6 +613,7 @@ usage: forge.sh <command> <arguments>
   find-release        <repo> <tag>
   release-tags        <repo>
   release-files       <repo> <release-id>
+  delete-release-file <repo> <release-id> <name>
   tag-sha             <repo> <tag>
   delete-branch       <repo> <branch>
 Reference: docs/setup.md, "The git server commands".
@@ -580,6 +634,7 @@ case "$command" in
   find-release) usage="<repo> <tag>" min=2 max=2 ;;
   release-tags) usage="<repo>" min=1 max=1 ;;
   release-files) usage="<repo> <release-id>" min=2 max=2 ;;
+  delete-release-file) usage="<repo> <release-id> <name>" min=3 max=3 ;;
   tag-sha) usage="<repo> <tag>" min=2 max=2 ;;
   delete-branch) usage="<repo> <branch>" min=2 max=2 ;;
   *) die "unknown command '$command'" ;;

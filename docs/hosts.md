@@ -144,9 +144,10 @@ ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-po
 covers what that can't.
 
 Something that gets its certificates over HTTP-01 is refused by that record too. `artur-rios.tech`'s `www.` and
-`blog.` are served by Vercel until their sites move, and Vercel renews their certificates through Let's Encrypt over
-HTTP-01, so that zone's `CAA` waits: `--skip-caa artur-rios.tech` leaves it out ("CAA skipped on artur-rios.tech
-(--skip-caa)"): neither created, updated nor reported. Drop the flag once those sites have moved
+`blog.`, and `techcraftsmen.net`'s company page (`www.` and the bare domain), are served by Vercel until their sites
+move, and Vercel renews their certificates through Let's Encrypt over HTTP-01, so those zones' `CAA` waits:
+`--skip-caa artur-rios.tech --skip-caa techcraftsmen.net` leaves it out ("CAA skipped on <zone> (--skip-caa)"):
+neither created, updated nor reported. Drop each zone's flag once its Vercel sites have moved
 ([cutover.md, 1.5](cutover.md#15-the-records)).
 
 Why the dev machine is not proxied:
@@ -362,7 +363,9 @@ without this, a check in `ci`'s engine could publish `-p 80:80 -p 443:443`, take
 restarts, and pass Let's Encrypt's HTTP-01 check for `git.` or `jenkins.`. The rule is on the user's slice, so it
 covers the user's engine and every container in it, a container binding port 80 inside its own network
 included: such a check must listen on 1024 or above. `ygg check` shows a "low ports" row per user. The
-[`CAA` record](#dns-records) closes the same door at the certificate authority.
+[`CAA` record](#dns-records) closes the same door at the certificate authority, once it exists: while the company
+page is still on Vercel, techcraftsmen.net carries no CAA record (`--skip-caa techcraftsmen.net`), and this rule is
+the only guard for `git.` and `jenkins.`.
 
 > **To verify on the real host:** that the rule takes effect on a running slice after `systemctl daemon-reload`
 > (or only once the user's manager restarts: `sudo systemctl restart user@<uid>`), and that it refuses the
@@ -614,7 +617,11 @@ client addresses Traefik logs ([cutover.md, 2.6](cutover.md#26-the-rootless-proo
 Where every secret lives. A line marked **later** is created by a later part of the move to Forgejo and
 Jenkins: nothing creates it yet, and the table says where it will live. The Jenkins credentials are defined by
 Configuration as Code from files the controller mounts (`platform/jenkins/controller/casc*.yaml`); a build agent
-holds one only while the build step it is bound to runs.
+holds one only while the build step it is bound to runs. The credentials of the repositories' own checks and
+release builds (`reportgenerator-license` and the signing keys) are the exception: the owner creates them in
+Jenkins by hand, as **secret text** (the pipeline binds them with `string`, so a keystore is kept base64-encoded,
+as it was a GitHub secret), under exactly the ID shown. The catalog's `credentials` and `releaseCredentials` say which
+job may bind each one, and `scripts/test_catalog.py` checks that this table has a row for every id there.
 
 | Credential | Lives with | Can | Created |
 |---|---|---|---|
@@ -633,13 +640,32 @@ holds one only while the build step it is bound to runs.
 | Jenkins agent secrets | Each agent's env file: `/etc/yggdrasil-ci/agent.env`, `/etc/yggdrasil-release/agent.env`, and the deploy agent's `JENKINS_AGENT_SECRET` in `platform.env` | Connect as that agent | now: [setup.md 9.8](setup.md#98-the-ci-and-release-agents) |
 | Application secrets, platform passwords | `/etc/yggdrasil` of the machine that uses them (`platform.env`, `<environment>/<application>.env`, or the [variables store](variables.md)) | As today | now |
 | Cloudflare API token (DNS edit on the `techcraftsmen.net` and `artur-rios.tech` zones only) | `acme.env` on each machine | Prove domain control for certificates; edit those two zones' DNS records | now |
-| ReportGenerator license | Jenkins credential, bound into the `test` checks that use it | Never bound on `renovate/*` builds | later |
+| `reportgenerator-license`: secret text, the ReportGenerator license key (`REPORTGENERATOR_LICENSE` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `credentials` of the 12 libraries (dotnet-configuration to dotnet-webapi-util), cerberus-api, heimdall-api and fortuna-api, and of the docs sites whose deploy runs their coverage check (each library's `-docs` and heimdall-api-docs). Bound only into the check that names it, never on `renovate/*` builds | Unlock ReportGenerator's pro reports in the `test`/`coverage` checks | later: create it before the first build |
 | `nuget-api-key`: the nuget.org API key, `NUGET_API_KEY_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`); optional. The id is fixed and bound only on the release agent, in the step that pushes a library's packages (`scripts/nuget-push.sh`), where no repository code runs. No check or release build can bind it | Publish the owner's packages. It is on `dotnet`'s command line inside the push container | now: [setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget) |
-| Maestro's update-manifest signing key (Ed25519, `MAESTRO_RELEASE_SECRET_KEY_BASE64`) | Jenkins credential, allowed only for maestro's release build (the catalog's `releaseCredentials`, never its checks' `credentials`), named in `release.build.credentials` of its `yggdrasil.yml`, bound only on its release build, on the release agent | Sign what installed copies of Maestro trust | later: the credential is created when the repository moves |
-| Orpheus' Android keystore and passwords (`ANDROID_KEYSTORE_*`) | Jenkins credential, allowed only for orpheus' release build (`releaseCredentials`), bound only on its release build, on the release agent | Sign Orpheus' Android builds | later |
-| Any other secret a release workflow uses today | Same rule: a Jenkins credential, allowed per repository in the catalog's `releaseCredentials`, bound only on the release agent | The builder lists them from every `release*.yml` | later |
-| GitHub read-only token for github-readme-stats | `/etc/yggdrasil` on the apps machine, as an application secret | Read public GitHub data | later |
+| `heimdall-ui-android-keystore`: secret text, the Android keystore, base64-encoded (`HEIMDALL_UI_KEYSTORE_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Hold the key that signs Heimdall web's Android package | later: create it before the first release build |
+| `heimdall-ui-android-keystore-password`: secret text, the keystore's password (`HEIMDALL_UI_KEYSTORE_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Open the keystore | later: create it before the first release build |
+| `heimdall-ui-android-key-alias`: secret text, the signing key's alias in the keystore (`HEIMDALL_UI_KEY_ALIAS` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Name the key to sign with | later: create it before the first release build |
+| `heimdall-ui-android-key-password`: secret text, the signing key's password (`HEIMDALL_UI_KEY_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Unlock the key | later: create it before the first release build |
+| `maestro-signing-key`: secret text, the Ed25519 secret key that signs the update manifest, base64-encoded (`MAESTRO_RELEASE_SECRET_KEY_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of maestro: bound only on its release build, on the release agent, never by a check | Sign what installed copies of Maestro trust | later: create it before the first release build |
+| `maestro-signing-public-key`: secret text, the matching Ed25519 public key, base64-encoded (`MAESTRO_RELEASE_PUBLIC_KEY_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of maestro: bound only on its release build, on the release agent, never by a check | Let the release build verify the manifest it signed (the Windows package keeps its GitHub secret) | later: create it before the first release build |
+| `orpheus-android-keystore`: secret text, the Android keystore, base64-encoded (`ANDROID_KEYSTORE_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Hold the key that signs Orpheus' Android builds | later: create it before the first release build |
+| `orpheus-android-keystore-password`: secret text, the keystore's password (`ANDROID_KEYSTORE_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Open the keystore | later: create it before the first release build |
+| `orpheus-android-key-alias`: secret text, the signing key's alias in the keystore (`ANDROID_KEY_ALIAS` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Name the key to sign with | later: create it before the first release build |
+| `orpheus-android-key-password`: secret text, the signing key's password (`ANDROID_KEY_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Unlock the key | later: create it before the first release build |
+| GitHub read-only token for github-readme-stats: **not a Jenkins credential** | An application variable of the apps machine (`/etc/yggdrasil/production/github-readme-stats.env`, or the [variables store](variables.md)), which its stack hands to the container as `env_file` when it runs (`stacks/github-readme-stats.yml`); never a build argument, so no `credentials` entry in the catalog | Read public GitHub data (a fine-grained token with no permissions) | later: the owner sets it when the site is deployed |
 | Backup SSH key (`~/.ssh/yggdrasil-backup`) | `ygg`, on each machine; its public half on the other | Send backups to the other machine, and nothing else (it can only run `rrsync` in one directory) | now: [Backups](#7-backups-and-restore) |
+
+### Secrets that go away
+
+These secrets of the GitHub workflows have no Jenkins credential, and the owner creates nothing for them
+([the checklist](migration-checklist.md#credentials) lists them by repository):
+
+| Secret | Why it goes |
+|---|---|
+| `GITHUB_TOKEN` (GitHub's own: every library, dotnet-libraries, fortuna-api, heimdall-api) | Dropped: GitHub issues it to each run. It only pushed to GitHub Packages (dropped) or read it, posted the `audit` check run (Jenkins reports `audit` itself), or fetched the coverage artifact for the Pages build (the docs site takes the report through `deploy.inputs`) |
+| `NUGET_API_KEY` (every library) | Not needed in the catalog: it is the release agent's fixed `nuget-api-key` above, bound around the push step alone |
+| `VERCEL_TOKEN` and the like | Dropped: no workflow holds one (Vercel's git integration deployed the five sites), and the integration goes. `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV` become build arguments the deploy passes |
+| The GitHub Pages deployment permissions | Dropped: Pages is no longer used; each docs site is an application of its own |
 
 ### The first Forgejo account
 

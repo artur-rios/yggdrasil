@@ -1,0 +1,16 @@
+# application environment address ("-" when it has none), with the host's DOMAIN being example.com
+plain-api development https://plain-api-dev.example.com
+plain-api production https://plain-api.example.com
+own-domain development https://www-dev.acme.dev
+own-domain production https://www.acme.dev
+docs development https://docs-dev.example.com/docs
+docs production https://docs.example.com/docs
+docs-own-domain development https://help-dev.acme.dev/guides/start
+docs-own-domain production https://help.acme.dev/guides/start
+apex-only production https://example.com
+apex-own-domain production https://acme.dev/blog
+apex-and-host development https://site-dev.example.com
+apex-and-host production https://site.example.com
+private-worker development -
+private-worker production -
+console production https://console.example.com

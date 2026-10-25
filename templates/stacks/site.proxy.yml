@@ -1,0 +1,32 @@
+# A site on its own host, behind Traefik, for stacks/<application-id>.proxy.yml (copy this file there and replace
+# APPLICATION_ID with the application's id from catalog.yaml, everywhere in the file). It is the overlay of
+# site.yml (stacks/<application-id>.yml) in proxy environments.
+#
+# The router matches the host deploy.sh exports as YGG_PUBLIC_HOST, from the catalog's host, hostSuffix and
+# domain, so the file needs no edit per environment. Named after the environment, from YGG_ENVIRONMENT, so that
+# several environments can share one host: the alias APPLICATION_ID.<environment> (how the status API reaches
+# the catalog's `health`, qualified with the environment) and the router and service
+# APPLICATION_ID-<environment>. The labels are a list because Compose substitutes variables in values only.
+#
+# secure-headers@file (platform/traefik/dynamic/middlewares.yml) adds HSTS and the other headers; a site whose
+# own server sends a header of its own (Referrer-Policy...) needs a middleware that leaves it, as
+# stacks/fortuna-ui.proxy.yml has. The certificate is the host's wildcard one: the host is one label under the
+# domain (docs/catalog.md, `host`). For a site at a path under a host, use site-path.proxy.yml; for a site that
+# also answers on the bare domain, site-apex-redirect.proxy.yml.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["APPLICATION_ID.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh from the catalog; give the application a host and a domain}`)
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.APPLICATION_ID-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true

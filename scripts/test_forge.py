@@ -72,6 +72,37 @@ FAKE_PYTHON = textwrap.dedent(r"""
 
 TOKEN = "token-secret"
 
+# A tag -> whether its release is a prerelease: the version (after the last `@`, else without a leading v)
+# has a SemVer pre-release part. Build metadata (+...) is not one, even with a dash in it; a dash in the
+# package's name is not either; and a tag that is not a SemVer version at all (v1.2-rc.1, 1.2.0-01) is a
+# normal release.
+PRERELEASE_TAGS = {
+    "1.2.0-alpha.1": True,
+    "v1.2.0-rc.2": True,
+    "v1.0.0-0": True,
+    "ArturRios.Data.Sqlite@3.1.0-beta.1": True,
+    "My-Lib@2.0.0-rc.1": True,
+    "v1.2.0-rc.1+build.7": True,
+    "v1.2.3": False,
+    "1.2.0": False,
+    "1.2.0+build.5": False,
+    "v1.2.0+build-5": False,
+    "My-Lib@2.0.0": False,
+    "v1.2.0-": False,
+    "v1.2-rc.1": False,
+    "release-2024": False,
+    # SemVer forbids leading zeros in the three numbers and in a numeric pre-release identifier: not SemVer,
+    # so normal releases. A letter makes an identifier alphanumeric, where a leading zero is fine, and build
+    # identifiers may have one.
+    "1.2.0-01": False,
+    "01.2.3-rc.1": False,
+    "1.02.3-rc.1": False,
+    "v1.2.0-rc.01": False,
+    "1.2.0-0a": True,
+    "1.2.0-rc.1+001": True,
+    "10.20.30-rc.0": True,
+}
+
 
 needs_bash_and_jq = unittest.skipUnless(shutil.which("bash") and shutil.which("jq") and os.name == "posix",
                                         "needs bash and jq on a POSIX system")
@@ -125,6 +156,18 @@ class ForgeTestCase(unittest.TestCase):
     def body(self, key, number=1):
         """The JSON body curl was sent (from the file given with --data-binary)."""
         return json.loads((self.state / f"{key}.body.{number}").read_text())
+
+    def prerelease_flags(self):
+        """create-release once per PRERELEASE_TAGS tag: {tag: the prerelease flag the server was sent}."""
+        self.respond("releases", last=(0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
+        flags = {}
+        for number, tag in enumerate(PRERELEASE_TAGS, start=1):
+            result = self.forge("create-release", "app", tag, "abc123", tag)
+            self.assertEqual(result.returncode, 0, (tag, result.stderr))
+            body = self.body("releases", number)
+            self.assertEqual(body["tag_name"], tag)
+            flags[tag] = body["prerelease"]
+        return flags
 
 
 @needs_bash_and_jq
@@ -258,6 +301,43 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "17\thttps://example/release/17\n")
         self.assertTrue(self.body("releases")["draft"])
+
+    def test_given_a_file_of_a_github_release_when_deleted_by_name_then_its_asset_is_deleted(self):
+        # publish-release.sh --replace-files deletes a draft's file before it uploads this run's: by name, the
+        # asset's id looked up in the release's list.
+        self.respond("assets", (0, [{"id": 40, "name": "app.zip", "size": 9}, {"id": 41, "name": "setup.msi", "size": 4}]))
+        self.respond("41", (0, None, 204))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+        self.assertIn("/repos/someone/app/releases/17/assets?per_page=100&page=1", self.request("assets"))
+        request = self.request("41")
+        self.assertIn("--request DELETE", request)
+        self.assertTrue(request.strip().endswith("https://api.example/repos/someone/app/releases/assets/41"), request)
+
+    def test_given_a_name_a_github_release_does_not_have_when_deleted_then_it_exits_four(self):
+        # An answer, not an error: there is nothing of that name to replace.
+        self.respond("assets", (0, [{"id": 40, "name": "app.zip", "size": 9}]))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual(result.returncode, 4)
+        self.assertIn("release 17 has no file named setup.msi", result.stderr)
+        self.assertFalse((self.state / "40.request.1").exists(), "nothing is deleted")
+
+    def test_given_tags_with_and_without_a_prerelease_part_when_creating_github_releases_then_only_those_are_prereleases(self):
+        # The GitHub copy of a release (publish-release.sh --mirror-releases) and github.sh's releases are
+        # made here: a 1.2.0-rc.1 must not become GitHub's latest release, a 1.2.0+build.5 must.
+        self.assertEqual(self.prerelease_flags(), PRERELEASE_TAGS)
+
+    def test_given_a_prerelease_tag_and_notes_when_creating_a_github_release_then_only_the_flag_differs(self):
+        # Release notes are unaffected: the same body as a normal release's, only prerelease is true.
+        notes = self.temp / "notes.md"
+        notes.write_text("Fixes the thing.\n")
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "https://example/release/17"}))
+        result = self.forge("create-release", "app", "v1.3.0-rc.1", "abc123", "v1.3.0-rc.1", "--draft",
+                            "--notes-file", str(notes))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.body("releases"), {"tag_name": "v1.3.0-rc.1", "target_commitish": "abc123",
+                                                 "name": "v1.3.0-rc.1", "draft": True, "prerelease": True,
+                                                 "body": "Fixes the thing.\n"})
 
     def test_given_the_draft_comes_back_public_when_creating_a_draft_release_then_it_fails(self):
         self.respond("releases", (0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
@@ -552,7 +632,7 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         for command in ("set-status", "get-statuses", "merge-pr", "create-tag", "create-release",
                         "upload-release-file", "publish-release", "find-release", "release-tags", "release-files",
-                        "tag-sha", "delete-branch"):
+                        "delete-release-file", "tag-sha", "delete-branch"):
             self.assertRegex(result.stderr, rf"(?m)^  {command} +<repo>", command)
         self.assertEqual(list(self.state.iterdir()), [])
 
@@ -755,6 +835,36 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "17\thttps://example/release/17\n")
         self.assertTrue(self.body("releases")["draft"])
+
+    def test_given_a_file_of_a_forgejo_release_when_deleted_by_name_then_its_attachment_is_deleted(self):
+        self.respond("assets", (0, [{"id": 40, "name": "app.zip", "size": 9}, {"id": 41, "name": "setup.msi", "size": 4}]))
+        self.respond("41", (0, None, 204))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+        request = self.request("41")
+        self.assertIn("--request DELETE", request)
+        self.assertTrue(request.strip().endswith("https://api.example/repos/someone/app/releases/17/assets/41"), request)
+
+    def test_given_a_name_a_forgejo_release_does_not_have_when_deleted_then_it_exits_four(self):
+        self.respond("assets", (0, []))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual(result.returncode, 4)
+        self.assertIn("release 17 has no file named setup.msi", result.stderr)
+
+    def test_given_tags_with_and_without_a_prerelease_part_when_creating_forgejo_releases_then_only_those_are_prereleases(self):
+        # The release on the installation's own server follows the same rule as its GitHub copy.
+        self.assertEqual(self.prerelease_flags(), PRERELEASE_TAGS)
+
+    def test_given_a_prerelease_tag_and_notes_when_creating_a_forgejo_release_then_only_the_flag_differs(self):
+        notes = self.temp / "notes.md"
+        notes.write_text("Fixes the thing.\n")
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "https://example/release/17"}))
+        result = self.forge("create-release", "app", "Lib@1.3.0-beta.2", "abc123", "Lib@1.3.0-beta.2", "--draft",
+                            "--notes-file", str(notes))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.body("releases"), {"tag_name": "Lib@1.3.0-beta.2", "target_commitish": "abc123",
+                                                 "name": "Lib@1.3.0-beta.2", "body": "Fixes the thing.\n",
+                                                 "draft": True, "prerelease": True})
 
     def test_given_the_draft_comes_back_public_when_creating_a_forgejo_draft_release_then_it_fails(self):
         self.respond("releases", (0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))

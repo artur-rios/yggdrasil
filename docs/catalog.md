@@ -97,7 +97,46 @@ error. Read them with `python3 scripts/catalog.py forge` / `mirror` (see
 `repositories` lists the git repositories under `owner` that are **not applications**: libraries that
 publish a package, repositories that only run CI, yggdrasil itself. They get the git server's branch and
 tag rules and a Jenkins job like an application's repository does, but nothing is deployed from them.
-An application's repository (its `repository`, else its `id`) is never listed here.
+An application's repository (its `repository`, else its `id`) is listed here only when it is also
+a library or a CI repository in its own right, as below.
+
+### One repository, several entries
+
+A repository can back more than one catalog entry, one Jenkins job each: a library (a `repositories`
+entry with its checks and NuGet packages) and its docs site (an application with `repository: <the
+library>`), or an application and its docs site (two applications with one `repository`).
+
+- **At most one of them releases.** A releasing entry is an application with a `trigger: release`
+  environment, or a `repositories` entry whose `release` is not `none`. Two on one repository are an error
+  naming both (`repository <repo>: application <a> and repositories entry <b> both release; ...`): who
+  merges `main` and who creates the version tags must have one answer.
+- **One set of branch rules** ([`scripts/rules.py`](setup.md#12-apply-the-branch-rules)). The deciding entry
+  is the releasing one, else the `repositories` entry, else the first application in catalog order. It
+  supplies the model (`rules`), who merges `main`, who pushes release branches and the tag pattern. An application
+  that decides gets the release model only when it releases: one with no `trigger: release` environment (a site
+  deployed on pushes to `main`) gets `basic`, since under the release model only Jenkins merges `main`, on a
+  release. Every
+  entry's `checks` and `actionsChecks` are required (the deciding entry's first), so each job's statuses
+  are required.
+- **One `yggdrasil.yml`**, read by every job of the repository; each job runs only its own entry's
+  `checks` ([below](#repository-pipeline-file)).
+
+```yaml
+repositories:
+  - id: dotnet-util               # the library: tests, coverage, NuGet on owner tags
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+systems:
+  - id: docs
+    name: Docs
+    applications:
+      - id: dotnet-util-docs      # its docs site, built from the coverage report
+        repository: dotnet-util
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs coverage, which binds it
+        # ...
+```
 
 ```yaml
 repositories:
@@ -117,14 +156,14 @@ repositories:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `id` | required | The repository name under `owner`: letters, digits, `.`, `_` and `-` (`reveal.js` is fine). Unique, and not the repository of any application (`<id> is already an application's repository`). |
-| `checks` | `[]` | The checks Jenkins reports on pull requests to `develop` and `main`, as for an application's `checks`. No empty entries. |
-| `actionsChecks` | `[]` | GitHub Actions job names required besides them on `develop` (not on `main`), as for an application's `actionsChecks`. No empty entries. |
+| `id` | required | The repository name under `owner`: letters, digits, `.`, `_` and `-` (`reveal.js` is fine). Unique, and not the id of any application (`<id> is already an application's id`: each names a Jenkins job). It may be an application's repository: see [One repository, several entries](#one-repository-several-entries). |
+| `checks` | `[]` | The checks Jenkins reports on pull requests to `develop` and `main` (and `master`, under `rules: basic`), as for an application's `checks`. No empty entries. |
+| `actionsChecks` | `[]` | GitHub Actions job names required besides them on `develop` (not on `main`), as for an application's `actionsChecks`. On Forgejo with a `mirror`, such a job must run on `push` to every branch (`push: branches: ['**']`), without `pull_request` or `paths`: the pull requests are on Forgejo, the mirror pushes every branch, and Jenkins copies the job's result for the pull request's head commit by its SHA ([setup.md](setup.md#github-actions-and-the-skip)). No empty entries. |
 | `credentials` | `[]` | The only Jenkins credentials the repository's checks may bind. Jenkins credential ids: letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
-| `releaseCredentials` | `[]` | The only Jenkins credentials its release build (`release.build.credentials` in `yggdrasil.yml`) may bind: signing keys and the like. Kept apart from `credentials` because a check runs any branch's code: an id listed here is never bindable by a check, and an id in both lists is an error. Same id format. |
+| `releaseCredentials` | `[]` | The only Jenkins credentials its release build and finalize step (`release.build.credentials` and `release.finalize.credentials` in `yggdrasil.yml`) may bind: signing keys and the like. Kept apart from `credentials` because a check runs any branch's code: an id listed here is never bindable by a check, and an id in both lists is an error. Same id format. |
 | `release` | `none` | `none`: no versions. `owner-tag`: the owner creates the version tags by hand, matching `tags`. (Applications are different: Jenkins creates their `v*` tags.) |
-| `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*` and `[...]` classes (`[0-9]*` for versions without a `v`). Only meaningful with `release: owner-tag`. |
-| `rules` | `release` | `release`: the full branching model (protected `develop`, `main` and `release/*`). `basic`: `develop` and `main` only, without force pushes or deletion. |
+| `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*`, `[...]` classes and `@` (not first): `[0-9]*` for versions without a `v`, `*@[0-9]*` for a library that versions each package apart (`ArturRios.Data.Sqlite@3.1.0`). A tag that names no version (`<package>@`, a bare `v`) is never released, whatever the pattern. Only meaningful with `release: owner-tag`. The release's version (`RELEASE_VERSION`) is the tag without a leading `v`, or what follows the last `@` of an `@` tag; such a release's notes start from the same package's previous tag (`<package>@*`). |
+| `rules` | `release` | `release`: the full branching model (protected `develop`, `main` and `release/*`). `basic`: `develop`, `main` and `master` only, without force pushes or deletion; the repository's default branch is left as it is, and the pipeline's `branch-policy` passes for any pull request (`basic: nothing to check`). `master`, a fork's default branch, is treated like `main` everywhere: its job discovers it, a pull request into it gets the branch policy and the checks, a push to it the checks. The release model has no `master`. |
 
 Any other key is an error. Read the list with `python3 scripts/catalog.py repositories` (ids) and one
 entry, defaults applied, with `python3 scripts/catalog.py repository-entry <id>`. The git server's rules
@@ -142,6 +181,27 @@ On Forgejo the file is a protected file on `develop`: only the owner merges a ch
 bumps there included), with **Merge anyway** ([step 12](setup.md#12-apply-the-branch-rules)).
 A repository **without** a `yggdrasil.yml` is not an error: it behaves as before, it deploys and nothing
 else (on GitHub, its release also waits for every GitHub Actions check, as it always did).
+
+**One file per repository, each job its own checks.** When a repository backs several catalog entries
+([One repository, several entries](#one-repository-several-entries)), they share its one `yggdrasil.yml`,
+and each entry's Jenkins job runs only:
+
+- the checks its catalog entry names in `checks`, in that order;
+- when the build deploys (a push that deploys, a release pull request of an application with a release
+  environment), the checks `deploy.inputs` names as well, after them ([below](#check-results-in-the-image-build-deployinputs)).
+
+The file's other checks belong to another entry: this job neither runs them nor posts their status. A
+library's job runs `test` and `coverage`; its docs site's job (`checks: []`, `deploy.inputs: [coverage]`)
+runs only `coverage`, and only when it deploys. The one exception is a **release pull request** of the
+entry that releases (an application with a `trigger: release` environment): it deploys production before
+it merges, so it runs every check `main` requires of the repository, each entry's `checks` (`describe`'s
+`repositoryChecks`, the same list [`scripts/rules.py`](setup.md#12-apply-the-branch-rules) requires), then
+its `deploy.inputs`.
+
+A check that no job of the repository ever runs (named by no entry's `checks`, and not a deploy input of an
+application on it) is a **warning** in `describe`'s `warnings`, not an error: `checks.<name> is not in any
+catalog entry of <repo>: it never runs`. The build shows it in its log and is marked **unstable**; it
+checks and deploys as usual.
 
 ```yaml
 checks:                         # name -> a command run in a container; the name is the status context
@@ -163,6 +223,7 @@ release:                        # applications with a release environment, owner
   build:   {image: debian:12, run: ci/release.sh, files: ["dist/*.zip"], credentials: {SIGN_KEY: sign-key}}
   windows: {workflow: windows.yml, files: ["Setup.exe"]}   # built by a GitHub Actions workflow
   validate: {image: debian:12, run: ci/validate.sh}
+  finalize: {image: debian:12, run: ci/sign.sh, files: ["signed/*"], credentials: {SIGN_KEY: sign-key}}
 publish:                        # owner-tagged repositories only
   nuget: {image: mcr.microsoft.com/dotnet/sdk:10.0, run: ci/pack.sh, packages: "out/*.nupkg"}
 ```
@@ -174,12 +235,44 @@ lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit, an
 every `image` is a Docker image reference (`registry:port/name:tag` or `name@sha256:...`: no spaces, and it
 may not start with `-`).
 
+`release`'s steps run in this order. `build`, `validate` and `finalize` run on the release agent, each from
+the tag's checkout with `RELEASE_TAG` and `RELEASE_VERSION` in its environment; `windows` runs on GitHub Actions
+([Releases](setup.md#releases) has the whole flow):
+
+- `build` makes the release's own files; its `files` globs, matched in the checkout, are what it adds to the
+  release (each must match a file).
+- `windows` is a GitHub Actions workflow, dispatched on the tag on GitHub (the mirror); its `files` (globs over
+  the artifacts the release agent gets, default every file) are added too.
+- `validate` gets the whole set in `RELEASE_FILES` (`build/` and `windows/<artifact>/` under it) and passes or
+  fails: it cannot change what is released.
+- `finalize` (optional) runs after `validate` has passed, over the same layout, and makes what must cover the
+  whole set: a manifest of every file and its checksum, its signature. Its `files` globs, matched in the
+  checkout and validated like `build`'s, are added to the release; its `credentials`, like `build`'s, may only
+  name `releaseCredentials`. It may **only add**: the set is checksummed before and after it runs, and a file
+  of the set that it changes or removes (or one it adds there instead of in `files`) fails the release. A
+  failure stops the release before anything is published; `release-resume` runs it again. It never covers a
+  partial set: with `windows` declared, Windows files that are missing (a run that failed or timed out) stop
+  the release the same way, until `release-resume` runs all of it again, and the release pull request never
+  offers the skip past the GitHub Actions checks ([the skip](setup.md#github-actions-and-the-skip)), nor does
+  `actions-release` attach Windows files to it afterwards. It runs in a workspace of its own, from a fresh
+  checkout of the tag and of yggdrasil's tools, so nothing `validate` left behind reaches it. A resumed release
+  with `finalize` uploads its draft's files again instead of reusing them by name and size, and deletes the
+  draft's files that are not in its set. Only `files` reach the release: anything `finalize` writes elsewhere in
+  the workspace (the upload set's own directory included) is left out.
+
+Every file the release uploads, from any step, must have its own name (a release shows one file per name):
+two files named alike fail the release before anything irreversible, a library's NuGet push included.
+
 The file is also checked against the catalog entry of the repository (the application, or its
 [`repositories`](#repositories) entry):
 
-- every credential in `checks.*.credentials` must be in the entry's `credentials`, and every one in
-  `release.build.credentials` in its `releaseCredentials` (never the other list: a check runs any branch's
-  code, so a release build's signing key is never a check's); none is bound on `renovate/*` builds;
+- every credential of a check **this job runs** must be in the entry's `credentials`: its catalog `checks`, an
+  application's `deploy.inputs` (a deploy runs them), and for an application that releases, every entry's checks (its
+  release pull request runs them). A check only another entry of the repository runs is that entry's to allow: a
+  library's docs job is not judged on `test`'s credentials, but is on `coverage`'s, its deploy input. Every
+  credential in `release.build.credentials` and `release.finalize.credentials` must be in `releaseCredentials`
+  (never the other list: a check runs any branch's code, so a release build's signing key is never a check's);
+  none is bound on `renovate/*` builds;
 - every name in the entry's `checks` must be defined under `checks`;
 - `deploy.inputs` may only name checks defined in the file;
 - `publish` is allowed only for a `repositories` entry with `release: owner-tag`. Its packages are pushed
@@ -187,28 +280,42 @@ The file is also checked against the catalog entry of the repository (the applic
   pipeline binds only on the release agent around `scripts/nuget-push.sh`: it is never a check's or a
   release build's, whatever `credentials` or `releaseCredentials` say ([Owner tags and NuGet](setup.md#owner-tags-and-nuget));
 - `release` is allowed for an application with a release environment and for `release: owner-tag`.
+- `release`, `publish` and the release's credentials are judged only for the repository's **releasing** entry; the
+  other entries sharing the file (a library's docs site) skip them. When no entry of the repository releases, every
+  one is judged on them, so the file cannot declare a release nobody makes.
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
 (`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,
-`{"entry", "config", "errors"}`, where `config` is `null` when there is no file, and exits `1` when
-`errors` is not empty. The entry has `kind` (`application` or `repository`), `id`, `repository`,
-`credentials`, `releaseCredentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
+`{"entry", "config", "errors", "warnings", "repositoryChecks"}`, where `config` is `null` when there is no
+file, `repositoryChecks` lists every check `main` requires of the repository (each catalog entry's), and it
+exits `1` when `errors` is not empty (`warnings` never changes the exit status). The entry has `kind` (`application`
+or `repository`), `id`, `repository`, `credentials`, `releaseCredentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
 environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
 
 ### Which checks run
 
 For a build of a branch the pipeline asks `python3 scripts/pipeline_config.py plan <job-id> <repo-dir>
---statuses <file> --changed <file|-> --branch <name>` what to do with each check, and gets a JSON list in the
-file's order: `{name, action, reason, image, run, docker, credentials, junit, archive}`.
+--statuses <file> --changed <file|-> --branch <name> [--deploying] [--release]` what to do with each check
+the job needs, and gets a JSON list: `{name, action, reason, image, run, docker, credentials, junit,
+archive}`. The checks are the entry's `checks` in catalog order (with `--release`, the releasing job's
+release pull request: `repositoryChecks` instead), then, with `--deploying`, the `deploy.inputs` not among
+them; each once, and nothing else of the file. `--release` for a job that does not release is an error.
 
 - `--statuses` is the output of `forge.sh get-statuses` for the commit (`<context>`, `<state>`, `<creator>`,
-  tab separated); `--changed` lists the changed files, one path per line, or is `-` when they are unknown.
+  tab separated); `--changed` lists the changed files, one path per line, or is `-` when they are unknown;
+  `--deploying` says the build deploys afterwards; the flags come last, in any order.
 - **reuse**: the commit already has a `success` for the check created by `forge.jenkinsUser`. A success
   created by anyone else is not trusted, and neither is a failure or a pending: those checks `run`.
 - **skip**: the check has `paths`, the changed files are known and none matches. `*` stays in one directory,
   `**` crosses directories (`src/**` matches `src/a/b.cs`, `docs/*.md` does not match `docs/a/b.md`, `**/*.md`
-  matches `README.md`). When the changes are unknown (`-`) the check runs.
+  matches `README.md`). When the changes are unknown (`-`) the check runs, and so it does when `yggdrasil.yml`
+  itself changed: an image bump or a new command must run before it is merged.
 - **run**: everything else. On a `renovate/*` branch `credentials` is always `{}`.
+
+Reuse works across the jobs of one repository: when two of its entries list the same check, a success one job
+posted counts for the other's build of the same commit. A deploy input is the exception when the build deploys:
+it runs anyway, since its archive goes into the image. So a library's docs site, which runs `coverage` only as its
+deploy input (its own `checks` are empty), always runs it, whatever the library's job posted.
 
 The branch policy is not a check of the file and is never reused. The command exits `1`, naming the
 problems, when the file is invalid or breaks the catalog rules above.
@@ -229,6 +336,76 @@ context of every stack, keeping their names (`DEPLOY_INPUTS_DIR`). A name that a
 repository stops the deploy before anything is copied: inputs never overwrite repository files (a directory
 may merge into one). Only `DEPLOY_TO` builds ("Build with Parameters", which run no check) deploy with none,
 so a stack that needs them cannot build there.
+
+## Templates for repositories
+
+`templates/` has a starting point for each kind of repository a catalog entry can back. Copy the files named in the
+template's `README.md` to the repository, and the stack files from `templates/stacks/` to this repository's
+`stacks/`. Every image in them is pinned by version and digest (`name:version@sha256:...`), and `renovate/default.json`
+(below) keeps the pins up to date.
+
+| Template | For | Files |
+|---|---|---|
+| `templates/application/` | a deployed application: `yggdrasil.yml` and the `CONTRIBUTING.md` of the release model | `yggdrasil.yml`, `CONTRIBUTING.md` |
+| `templates/site-static/` | a site that is already built (a directory of files) | `Dockerfile`, `yggdrasil.yml`, `README.md` |
+| `templates/site-hugo/` | a Hugo site | the same |
+| `templates/site-vite/` | a Vite single-page app | the same |
+| `templates/site-next-static/` | a Next.js static export | the same |
+| `templates/site-next-server/` | a server-rendered Next.js site | the same, and `app/healthz/route.js` |
+| `templates/site-node-api/` | a Node.js service (github-readme-stats) | the same |
+| `templates/library/` | a .NET library and its docs site | `ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh`, `ci/branch-policy.sh` (the release version gate, for a single-package library), `yggdrasil.yml`, the docs site's `Dockerfile`, `.dockerignore`, `.gitattributes`, `README.md` |
+| `templates/stacks/` | the site stack files, copied to `stacks/<application-id>.yml` and `.proxy.yml` | `site.yml`, `site.proxy.yml`, `site-path.proxy.yml`, `site-apex-redirect.proxy.yml` |
+
+**What every site image does.** It listens on port 8080 as a non-root user and answers `/healthz` with 200, which
+is the catalog's `health` (`http://<id>:8080/healthz`). The static ones (static, Hugo, Vite, Next static, the
+library's docs) are the [static-web-server](https://static-web-server.net/) image, pinned, with no shell: the site
+is built in a pinned builder stage (Hugo, Node) and only copied into it, under the application's `path`, since the
+proxy does not strip the prefix; `/healthz` is a file of its own. Server-rendered Next.js and the Node service run
+`node` as the image's `node` user, with a `HEALTHCHECK`.
+
+**Build arguments.** A site's Dockerfile takes the values Vercel gave its build as build arguments, which the
+stack file `site.yml` passes in `build.args` from what `scripts/deploy.sh` exports:
+
+| Build argument | Value | Replaces |
+|---|---|---|
+| `GIT_COMMIT` | the whole SHA of the checkout being deployed (empty when it is not a git checkout) | `VERCEL_GIT_COMMIT_SHA` |
+| `YGG_ENVIRONMENT` | the environment being deployed to | `VERCEL_ENV` |
+| `PUBLIC_HOST`, `PUBLIC_PATH` | `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH`, the catalog's `host`/`domain` and `path` (empty without them) | the site's URL: Hugo's `baseURL` is `https://<host><path>/`, Vite's `base`, Next's `basePath` |
+
+They are public values, compiled into the image: a secret is the application's variable, never a build argument.
+
+**Stack templates.** In `site.yml` (the service, `web`) and one overlay, copied with `APPLICATION_ID` replaced by the
+application's id:
+
+- `site.proxy.yml`: the router `Host(${YGG_PUBLIC_HOST})`;
+- `site-path.proxy.yml`: `Host(...) && (Path(${YGG_PUBLIC_PATH}) || PathPrefix(${YGG_PUBLIC_PATH}/))`, without stripping the
+  prefix, since the site is built for it;
+- `site-apex-redirect.proxy.yml`: the same router on `www.`, and one more on `YGG_APEX_HOST` with a permanent
+  `redirectRegex` to the `www.` address. `scripts/deploy.sh` exports it from the catalog (`python3 scripts/catalog.py
+  apex-host <id> <environment> <default-domain>`): the bare domain in an environment without a `hostSuffix`,
+  `apex<hostSuffix>.<domain>` in the others (`apex-dev.artur-rios.tech`, to `www-dev.`), since the environments of a
+  host share one bare domain.
+
+**A library.** `templates/library/` is the file for two catalog entries ([One repository, several
+entries](#one-repository-several-entries)): the library's `test` and `coverage` checks, its `publish.nuget`, and the
+docs application's `deploy.inputs: [coverage]`. `ci/coverage.sh` makes ReportGenerator's PRO report when
+`REPORTGENERATOR_LICENSE` is bound, and the free report, saying so, when it is not (a `renovate/*` build binds no
+credential).
+
+**Renovate.** `renovate/default.json` is the shared preset, which a repository's `renovate.json` extends with
+`{"extends": ["local>artur-rios/yggdrasil//renovate/default"]}`. It extends `config:recommended`, targets
+`develop` (a repository on `main` or `master`, with no `develop`, overrides that with
+`"baseBranchPatterns": ["main"]` in its own `renovate.json`), covers nuget, npm, github-actions and docker
+(Dockerfiles and Compose files), groups the NuGet packages the way the repositories' `dependabot.yml` did, and
+adds a regex manager for the `image: <name>:<tag>@sha256:<digest>` lines of `yggdrasil.yml`. Those image
+bumps wait for the owner to merge them: `yggdrasil.yml` is a protected file on `develop`
+([step 12](setup.md#12-apply-the-branch-rules)).
+
+`scripts/test_templates.py` keeps all of it honest: every template's `yggdrasil.yml` validates, every image is pinned,
+the stack templates render under `docker compose config`, the library scripts run against a fake `dotnet`, and the
+preset's regex matches a pinned image line. With `YGG_TEMPLATE_TESTS=1` (and Docker) it also builds each site
+template around a tiny sample site and checks `/healthz` and a deep link, and runs Renovate's own config validator
+on the preset.
 
 ## Environments
 
@@ -388,14 +565,14 @@ An application's environment variables are not catalog fields: they come from th
 | `health` | Required. Absolute URL the status API probes over the Docker networks, e.g. `http://shop-api:8080/healthz`, written with the plain id as host. A 2xx answer is healthy. For an application that isn't `kind: platform`, the status API probes it in each environment at `<host>.<environment>` (`http://shop-api.production:8080/healthz`). |
 | `metrics` | `host:port` Prometheus scrapes, if the application exposes metrics (*status API*: must be `host:port`). Qualified like `health`: `shop-api.production:9464`, one target per environment, with an `environment` label. |
 | `metricsPath` | Path of the metrics endpoint when it isn't `/metrics`. Starts with `/`, and needs `metrics` (*status API*). |
-| `host` | A lowercase host name: letters, digits and dashes (*status API*). The link the console shows: `https://<host><hostSuffix>.<domain>`, with the environment's `hostSuffix` and the application's `domain` (else the host's `DOMAIN`). It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
+| `host` | A lowercase host name: letters, digits and dashes (*status API*). The link the console shows: `https://<host><hostSuffix>.<domain><path>`, with the environment's `hostSuffix`, the application's `domain` (else the host's `DOMAIN`) and `path`. It does **not** route anything: the Traefik router is in `stacks/<id>.proxy.yml`, usually from `PUBLIC_HOST` in the application's env file. Keep the two in step. Use one label (`shop`, not `api.shop`): the wildcard certificate `*.DOMAIN` doesn't cover `api.shop.example.com`. Omit it for applications that aren't public. |
 | `checks` | The checks Jenkins reports on the pull requests to `develop` and `main`, besides `branch-policy`. They are required there. Only list checks that run on **every** pull request: one that doesn't run would leave its required check pending forever (a `paths` filter in `yggdrasil.yml` makes Jenkins report such a check as skipped, which satisfies it). No empty entries (*status API*). Each name is defined under `checks` in the repository's `yggdrasil.yml`. On a GitHub installation whose repository has no `yggdrasil.yml` yet they are still the job part of `<workflow> / <job>` in a pull request's Checks tab, and `scripts/rules.py` would bind them to no app: [adopt `yggdrasil.yml` first](setup.md#an-existing-github-installation). |
-| `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`, on pull requests into `develop` only (`main` requires only what Jenkins reports): the job part of `<workflow> / <job>` in a pull request's Checks tab. A job moved here from `checks` is no longer required on `main`. On GitHub the required check is bound to GitHub Actions, so only checks from it satisfy them (`checks`, Jenkins', are bound to no app); on Forgejo they are required by name, like the others. The same rule applies: only checks that run on **every** pull request. No empty entries. |
+| `actionsChecks` | Optional list, default `[]`. GitHub Actions job names that are required too, in addition to `checks`, on pull requests into `develop` only (`main` requires only what Jenkins reports): the job part of `<workflow> / <job>` in a pull request's Checks tab. A job moved here from `checks` is no longer required on `main`. On GitHub the required check is bound to GitHub Actions, so only checks from it satisfy them (`checks`, Jenkins', are bound to no app); on Forgejo they are required by name, like the others. The same rule applies: only checks that run on **every** pull request. On Forgejo with a `mirror`, such a job must run on `push` to every branch (`push: branches: ['**']`), without `pull_request` or `paths`: the pull requests are on Forgejo, the mirror pushes every branch, and Jenkins copies the job's result for the pull request's head commit by its SHA ([setup.md](setup.md#github-actions-and-the-skip)). No empty entries. |
 | `credentials` | Optional list, default `[]`. The only Jenkins credentials the application's checks may bind: Jenkins credential ids (letters, digits, `.`, `_` and `-`, starting with a letter or digit). Anything else is refused by the pipeline. |
-| `releaseCredentials` | Optional list, default `[]`. The only Jenkins credentials the application's release build (`release.build.credentials` in its `yggdrasil.yml`) may bind, on the release agent: signing keys and the like. Never bindable by a check, which runs any branch's code; an id in both this and `credentials` is an error. Same id format. |
+| `releaseCredentials` | Optional list, default `[]`. The only Jenkins credentials the application's release build and finalize step (`release.build.credentials` and `release.finalize.credentials` in its `yggdrasil.yml`) may bind, on the release agent: signing keys and the like. Never bindable by a check, which runs any branch's code; an id in both this and `credentials` is an error. Same id format. |
 | `domain` | Optional. The domain a site is served on: a lowercase host name with at least one dot (`docs.example.com`). For applications that are published sites. Without it the host's `DOMAIN` is used (the deploy agent gets it as `YGG_DOMAIN`). `scripts/deploy.sh` exports the full host name as `YGG_PUBLIC_HOST` (`<host><hostSuffix>.<domain>`; `python3 scripts/catalog.py public-host <id> <environment> <default-domain>` prints it), which a stack file may use instead of `PUBLIC_HOST`. It does not route anything by itself. |
 | `path` | Optional. Where under the domain the site lives: starts with `/`, does not end with one, no `..` (`/docs`). `scripts/deploy.sh` exports it as `YGG_PUBLIC_PATH` (empty without one; `python3 scripts/catalog.py public-path <id>`). |
-| `apex` | Optional boolean. With `true` the site is also served on the bare domain, not only under its host name. With `apex: true` and no `host`, `YGG_PUBLIC_HOST` is the bare domain; with both, it is the `host` name (the stack file adds the bare domain itself). An apex-only site (no `host`) has the bare domain in **every** environment, whatever the `hostSuffix`: deploy it to one environment only. |
+| `apex` | Optional boolean. With `true` the site is also served on the bare domain, not only under its host name. With `apex: true` and no `host`, `YGG_PUBLIC_HOST` is the bare domain; with both, it is the `host` name, and `YGG_APEX_HOST` is the name the stack file redirects from it: the bare domain in an environment without a `hostSuffix`, `apex<hostSuffix>.<domain>` in the others (`catalog.py apex-host`). An apex-only site (no `host`) has the bare domain in **every** environment, whatever the `hostSuffix`: deploy it to one environment only. |
 | `releaseArtifacts` | Optional boolean, default `false`. GitHub's path for a repository **without** a `yggdrasil.yml`: with `true`, Jenkins creates the immutable tag and a private draft after deployment, dispatches `.github/workflows/release-artifacts.yml` with `tag`, `publish` and `release_id` inputs, and waits for that workflow to publish the verified draft. Without it, Jenkins creates the tag and public GitHub release directly. On Forgejo, and for a GitHub repository that has a `yggdrasil.yml`, its `release` section says what is published instead: `true` with a `release` section is ignored (the build log says so), and `true` without one fails the release before anything is deployed. |
 | `container` | `{project, service}`: the Compose labels that find the application's container. `project` defaults to the id; the status API looks for `<project>-<environment>`, which is what `deploy.sh` uses (platform components: `project` as it is). Without `service`, **any** container of the project matches (a running one first, then the newest), so set `service` when the stack has more than one service, e.g. `{ service: api }` next to a database. |
 | `environments` | See below. |
@@ -446,6 +623,7 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py repository-names` | Every git repository under the owner, once each and one per line: the deployable applications' (their `repository`, else their `id`) and then the `repositories` entries. What `scripts/renovate.sh` visits |
 | `python3 scripts/catalog.py repository-entry <id>` | JSON of one such repository with defaults applied (`id`, `checks`, `actionsChecks`, `credentials`, `releaseCredentials`, `release`, `tags`, `rules`). Exits `1` when the id is not listed |
 | `python3 scripts/catalog.py public-host <app> <environment> <default-domain>` / `public-path <app>` | A site's full host name in an environment (`<host><hostSuffix>.<domain>`, or the bare domain for an apex-only site; empty when the application has none or there is no domain) and its path: what `deploy.sh` exports as `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH` |
+| `python3 scripts/catalog.py apex-host <app> <environment> <default-domain>` | For an `apex: true` site with a `host`, the name its bare-domain router answers on and redirects to the host: the bare domain where the environment has no `hostSuffix`, else `apex<hostSuffix>.<domain>`; empty for any other application. What `deploy.sh` exports as `YGG_APEX_HOST` |
 | `python3 scripts/catalog.py systems` | `<id><TAB><name>`, one system per line |
 | `python3 scripts/catalog.py show <app>` | JSON: the application's fields, plus `system`, its system's id |
 | `python3 scripts/catalog.py add-application < new.json` | Adds an application, keeping every comment of `catalog.yaml`. Reads `{"system": {"id", "name", "description"}, "application": {...}}`: the application goes at the end of that system, or of a new one (then `name` and `description` count), placed before the `yggdrasil` system. Refuses anything that would make the catalog invalid. [`ygg add`](cli.md) writes the JSON for you |

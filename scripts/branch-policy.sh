@@ -11,7 +11,8 @@
 #   into main     only from release/<major>.<minor>.<patch>, and the release branch must be a snapshot of
 #                 develop: every commit on it is already on develop. A release carries no changes of its
 #                 own; a fix goes to develop through a fix/ branch and a new release is cut. The version
-#                 must not be released already (a v<version> tag).
+#                 must not be released already: a v<version> tag (an application's release) or a bare
+#                 <version> one (an owner-tagged library's, tags "[0-9]*").
 #   any other base  nothing to check.
 #
 # Exit 0 and "'<head>' -> '<base>' follows the branching model." when the pull request follows the model,
@@ -56,9 +57,11 @@ case "$base_ref" in
 
     version=${head_ref#release/}
     # The pipeline fetched the tags, so a released version's tag is a local ref.
-    if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-      fail "Version $version was already released (tag v$version exists). Bump the version."
-    fi
+    for tag in "v$version" "$version"; do
+      if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+        fail "Version $version was already released (tag $tag exists). Bump the version."
+      fi
+    done
     ;;
   *)
     echo "Pull requests into '$base_ref' are not covered by the branching model: nothing to check."

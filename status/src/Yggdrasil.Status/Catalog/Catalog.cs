@@ -35,6 +35,11 @@ public sealed record ApplicationDefinition(
     string? Metrics,
     string? MetricsPath,
     string? Host,
+    // Where a published site is served, as catalog.yaml says: its own domain (else the host's), the
+    // path under it, and whether it is also on the bare domain. See SnapshotBuilder.Url.
+    string? Domain,
+    string? Path,
+    bool Apex,
     IReadOnlyList<string> Checks,
     ContainerSelector Container,
     // Already defaulted too: the environments it deploys to, in catalog order, with its options there

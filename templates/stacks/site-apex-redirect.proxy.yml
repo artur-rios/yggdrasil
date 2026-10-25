@@ -1,0 +1,51 @@
+# A site that is served on www.<domain> and whose bare domain redirects to it (artur-rios.tech -> www.artur-rios.tech),
+# behind Traefik, for stacks/<application-id>.proxy.yml (copy this file there and replace APPLICATION_ID with the
+# application's id from catalog.yaml, everywhere in the file). It is the overlay of site.yml
+# (stacks/<application-id>.yml) in proxy environments, and replaces site.proxy.yml: it has the same router for the
+# site, and one more for the bare domain.
+#
+# The site's router matches YGG_PUBLIC_HOST, which deploy.sh exports from the catalog (host: www, apex: true, so
+# it is www.<domain>). The second router matches YGG_APEX_HOST, which deploy.sh exports too (catalog.py
+# apex-host): the bare domain in an environment without a hostSuffix (production), and apex<hostSuffix>.<domain>
+# in the others (apex-dev.<domain>, redirecting to www-dev.<domain>). The environments of one host share its bare
+# domain and only one of them may claim it; the others get a name of their own under the wildcard certificate,
+# so every environment renders the same file and tests the same redirect.
+#
+# The bare domain's router sends every request, any path and query, to the same address on www with a 301
+# (redirectregex, permanent). The regex takes the path and query after the host (${1} in the replacement; written
+# $${1} here because Compose would otherwise read it as one of its own variables). It takes either scheme, since
+# the router sits on the secure entrypoint and only https arrives, and the replacement is always https. Traefik
+# needs a service for every router, so the redirect router names the site's: it answers before any request
+# reaches it. The certificate covers the bare domain (the host's certificate lists the domain and its wildcard).
+# The redirect goes through secure-headers@file first, like every router of a stack, so the bare domain's 301
+# carries HSTS and the other headers too (a browser that only ever typed the bare domain learns it there).
+#
+# Named after the environment, from YGG_ENVIRONMENT, so that several environments can share one host: the alias
+# APPLICATION_ID.<environment> (how the status API reaches the catalog's `health`, qualified with the
+# environment) and the routers, service and middleware APPLICATION_ID-<environment>[-apex]. The labels are a
+# list because Compose substitutes variables in values only.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["APPLICATION_ID.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh from the catalog; give the application a host and a domain}`)
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.service=APPLICATION_ID-${YGG_ENVIRONMENT}
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.rule=Host(`${YGG_APEX_HOST:?YGG_APEX_HOST is set by scripts/deploy.sh from the catalog; give the application a host, a domain and apex true}`)
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.entrypoints=websecure
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.middlewares=secure-headers@file,APPLICATION_ID-${YGG_ENVIRONMENT}-apex
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.service=APPLICATION_ID-${YGG_ENVIRONMENT}
+      - traefik.http.middlewares.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.redirectregex.regex=^https?://[^/]+(.*)
+      - traefik.http.middlewares.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.redirectregex.replacement=https://${YGG_PUBLIC_HOST}$${1}
+      - traefik.http.middlewares.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.redirectregex.permanent=true
+      - traefik.http.services.APPLICATION_ID-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true

@@ -126,6 +126,14 @@ class BranchPolicyTests(unittest.TestCase):
         self.assert_refused(self.check("release/1.1.0", "main", sha),
                             "Version 1.1.0 was already released (tag v1.1.0 exists). Bump the version.")
 
+    def test_given_a_bare_version_tag_when_checked_into_main_then_it_is_refused(self):
+        # An owner-tagged library tags its releases without the v (tags "[0-9]*"): its released version
+        # must be refused too, or the release merges and the owner can no longer tag it.
+        sha = self.branch("release/1.1.0", "develop")
+        self.git("tag", "1.1.0", "develop")
+        self.assert_refused(self.check("release/1.1.0", "main", sha),
+                            "Version 1.1.0 was already released (tag 1.1.0 exists). Bump the version.")
+
     def test_given_another_versions_tag_when_checked_into_main_then_it_passes(self):
         sha = self.branch("release/1.1.0", "develop")
         self.git("tag", "v1.0.0", "develop")

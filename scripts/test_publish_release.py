@@ -83,6 +83,10 @@ FAKE_FORGE = textwrap.dedent(r"""
         echo "$size" >"$dir/releases/$2/assets/$name"
         echo "https://$type.example/download/$name"
         ;;
+      delete-release-file)
+        [[ -f "$dir/releases/$2/assets/$3" ]] || { echo "forge: release $2 has no file named $3" >&2; exit 4; }
+        rm "$dir/releases/$2/assets/$3"
+        ;;
       publish-release)
         echo false >"$dir/releases/$2/draft"
         printf 'https://%s.example/%s/releases/%s\n' "$type" "$1" "$(cat "$dir/releases/$2/tag")"
@@ -205,6 +209,99 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertEqual((self.draft("forgejo"), self.draft("github")), ("true", "true"))
         self.assertEqual([c for c in self.calls() if " publish-release " in c], [])
 
+    def test_given_a_prerelease_tag_when_published_then_both_servers_create_it_from_that_tag(self):
+        # forge.sh create-release decides prerelease from the tag it is given (test_forge.py has the rule), on
+        # the git server and on the GitHub copy alike: so both servers' drafts must be created with the
+        # release's own tag, unchanged.
+        tag = "v1.5.0-rc.1"
+        result = self.run_script("app", tag, SHA, tag, str(self.notes), str(self.files), "--mirror-releases",
+                                 env=self.mirror_env)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        created = [line for line in self.calls() if " create-release " in line]
+        self.assertEqual([line.split()[:5] for line in created],
+                         [["forgejo", "create-release", "app", tag, SHA], ["github", "create-release", "app", tag, SHA]])
+
+    def test_given_replace_files_and_a_draft_left_by_a_failure_when_published_again_then_its_files_are_uploaded_again(self):
+        # With release.finalize the manifest signed in this run describes this run's bytes: a draft's file of the
+        # same name and size from an earlier run (a rebuilt Windows file, say) must not be kept. Every file the
+        # draft already has is deleted and uploaded again, on each draft, before anything is published.
+        failing = dict(self.mirror_env, FAKE_FAIL="github upload-release-file")
+        first = self.publish("--mirror-releases", "--replace-files", env=failing)
+        self.assertEqual(first.returncode, 1)
+        self.assertEqual(self.attached("forgejo"), {"app.zip": "9", "my app.exe": "14"})
+        self.assertEqual(self.calls_of("forgejo delete-release-file"), [], "a new draft has nothing to replace")
+
+        second = self.publish("--mirror-releases", "--replace-files", env=self.mirror_env)
+        self.assertEqual((second.returncode, second.stderr), (0, ""))
+        calls = self.calls()
+        deleted = [c for c in calls if " delete-release-file " in c]
+        self.assertEqual(sorted(deleted), ["forgejo delete-release-file app 1 app.zip",
+                                           "forgejo delete-release-file app 1 my app.exe"])
+        # Each file deleted, then uploaded again: two uploads in the first run, two in this one.
+        self.assertEqual(len([c for c in calls if c.startswith("forgejo upload-release-file")]), 4)
+        for name in ("app.zip", "my app.exe"):
+            delete = calls.index(f"forgejo delete-release-file app 1 {name}")
+            upload = max(n for n, c in enumerate(calls) if c.startswith("forgejo upload-release-file") and c.endswith(name))
+            self.assertLess(delete, upload, name)
+        self.assertLess(max(n for n, c in enumerate(calls) if " delete-release-file " in c),
+                        min(n for n, c in enumerate(calls) if " publish-release " in c))
+        for kind in ("forgejo", "github"):
+            self.assertEqual(self.attached(kind), {"app.zip": "9", "my app.exe": "14"}, kind)
+            self.assertEqual(self.draft(kind), "false", kind)
+
+    def test_given_replace_files_and_a_draft_with_files_this_run_does_not_have_when_published_then_they_are_deleted(self):
+        # The draft holds exactly this run's set: a file an earlier run left there under a name the set no
+        # longer has (an old signature, say) is something the new manifest does not list, and goes.
+        extra = self.files / "old.sig"
+        extra.write_bytes(b"old signature")
+        failing = dict(self.mirror_env, FAKE_FAIL="github upload-release-file")
+        self.assertEqual(self.publish("--mirror-releases", "--replace-files", env=failing).returncode, 1)
+        self.assertEqual(set(self.attached("forgejo")), {"app.zip", "my app.exe", "old.sig"})
+        extra.unlink()
+
+        second = self.publish("--mirror-releases", "--replace-files", env=self.mirror_env)
+        self.assertEqual((second.returncode, second.stderr), (0, ""))
+        self.assertIn("forgejo delete-release-file app 1 old.sig", self.calls())
+        for kind in ("forgejo", "github"):
+            self.assertEqual(self.attached(kind), {"app.zip": "9", "my app.exe": "14"}, kind)
+            self.assertEqual(self.draft(kind), "false", kind)
+
+    def test_given_files_the_set_does_not_have_on_a_published_release_when_published_with_replace_files_then_they_stay(self):
+        # A published release is public: nothing on it is deleted, an extra file included.
+        extra = self.files / "old.sig"
+        extra.write_bytes(b"old signature")
+        self.assertEqual(self.publish("--mirror-releases", env=self.mirror_env).returncode, 0)
+        extra.unlink()
+        again = self.publish("--mirror-releases", "--replace-files", env=self.mirror_env)
+        self.assertEqual((again.returncode, again.stderr), (0, ""))
+        self.assertEqual([c for c in self.calls() if " delete-release-file " in c], [])
+        self.assertIn("old.sig", self.attached("forgejo"))
+
+    def test_given_an_extra_file_on_a_draft_without_replace_files_when_published_then_it_is_left(self):
+        # Without the option (a release without release.finalize) nothing is deleted, as before.
+        extra = self.files / "old.sig"
+        extra.write_bytes(b"old signature")
+        failing = dict(self.mirror_env, FAKE_FAIL="github upload-release-file")
+        self.assertEqual(self.publish("--mirror-releases", env=failing).returncode, 1)
+        extra.unlink()
+        self.assertEqual(self.publish("--mirror-releases", env=self.mirror_env).returncode, 0)
+        self.assertEqual([c for c in self.calls() if " delete-release-file " in c], [])
+        self.assertIn("old.sig", self.attached("forgejo"))
+
+    def test_given_replace_files_and_a_published_release_when_published_again_then_nothing_is_replaced(self):
+        # A published release is public and complete: it is never changed, only checked by name and size.
+        self.assertEqual(self.publish("--mirror-releases", env=self.mirror_env).returncode, 0)
+        again = self.publish("--mirror-releases", "--replace-files", env=self.mirror_env)
+        self.assertEqual((again.returncode, again.stderr), (0, ""))
+        self.assertEqual([c for c in self.calls() if " delete-release-file " in c], [])
+        self.assertEqual(len([c for c in self.calls() if " upload-release-file " in c]), 4, "the first run's only")
+
+    def test_given_replace_files_with_attach_when_run_then_it_is_a_usage_error(self):
+        # attach is for releases without release.finalize (actions-release refuses the others).
+        result = self.run_script("attach", "app", "v1.4.0", str(self.files), "--replace-files")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage:", result.stderr)
+
     def test_given_a_rerun_after_a_failure_when_published_then_existing_tag_and_drafts_are_reused(self):
         failing = dict(self.mirror_env, FAKE_FAIL="github upload-release-file")
         first = self.publish("--mirror-releases", env=failing)
@@ -325,6 +422,23 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertIn("publish-release: uploading app.zip to Forgejo failed", result.stderr)
         self.assertIn("3 bytes, not 9", result.stderr)
         self.assertEqual(self.calls_of("forgejo upload-release-file"), [])
+
+    def test_given_a_published_release_with_a_file_of_another_size_when_resumed_then_it_points_at_a_new_release(self):
+        # A published release is never changed: a resume whose file differs from the released one is refused
+        # without telling the owner to delete anything from it.
+        self.tag("forgejo", SHA)
+        (self.state / "forgejo" / "releases" / "1" / "assets").mkdir(parents=True)
+        for name, content in (("tag", "v1.4.0"), ("draft", "false")):
+            (self.state / "forgejo" / "releases" / "1" / name).write_text(content)
+        (self.state / "forgejo" / "releases" / "1" / "assets" / "app.zip").write_text("3\n")
+        result = self.publish()
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("publish-release: uploading app.zip to Forgejo failed", result.stderr)
+        self.assertIn("the release of v1.4.0 there is published", result.stderr)
+        self.assertIn("3 bytes, not 9", result.stderr)
+        self.assertIn("a published release is never changed, so these files go in a new release", result.stderr)
+        self.assertNotIn("delete", result.stderr)
+        self.assertEqual([c for c in self.calls() if " upload-release-file " in c or " delete-release-file " in c], [])
 
     def test_given_files_in_subdirectories_when_published_then_they_are_uploaded_by_name(self):
         nested = self.files / "windows-build"
