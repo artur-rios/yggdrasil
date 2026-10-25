@@ -36,7 +36,7 @@ checks:
 
 # release:                               # only with a release environment: the files of each release
 #   build:
-#     image: debian:12
+#     image: debian:12.15@sha256:854dd8ab51d62866dbd8f5431d15ce77b12983a2a4a1e1fe43a2395dc7ef9f61
 #     run: ci/release.sh                 # RELEASE_TAG and RELEASE_VERSION are set
 #     files: ["dist/*.tar.gz"]
 #     credentials:                       # one of the catalog's `releaseCredentials`, never a check's
@@ -45,10 +45,10 @@ checks:
 #     workflow: release-windows.yml
 #     files: ["*/*.msi"]
 #   validate:                            # pass or fail, over the whole set ($RELEASE_FILES)
-#     image: debian:12
+#     image: debian:12.15@sha256:854dd8ab51d62866dbd8f5431d15ce77b12983a2a4a1e1fe43a2395dc7ef9f61
 #     run: ci/validate.sh
 #   finalize:                            # after validate, over the same set: may only add files to it
-#     image: debian:12
+#     image: debian:12.15@sha256:854dd8ab51d62866dbd8f5431d15ce77b12983a2a4a1e1fe43a2395dc7ef9f61
 #     run: ci/sign.sh                    # a manifest of $RELEASE_FILES, its signature
 #     files: ["signed/*"]
 #     credentials:                       # one of the catalog's `releaseCredentials`, as for build
