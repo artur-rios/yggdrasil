@@ -1713,6 +1713,21 @@ from the publish agent and without holding an executor while it waits, and posts
 Forgejo commit with the GitHub run as its address. If they have not finished in time the status stays pending
 (`GitHub Actions didn't answer`) and the build is unstable; a new build looks again.
 
+**Their triggers.** The pull requests live on Forgejo; the mirror has none, it only receives every branch the push
+mirror pushes. Jenkins looks up the job's run for the pull request's head commit by its SHA. So on Forgejo with a
+`mirror`, an `actionsChecks` job runs on `push` to every branch, and on nothing narrower:
+
+```yaml
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+```
+
+No `pull_request` (it never fires on the mirror) and no `paths` (a commit the filter skips has no run, so its
+status stays pending). A release build's Windows workflow (`release.windows`) is different: Jenkins dispatches it
+on the tag, so it has only `workflow_dispatch` with a `tag` input.
+
 A release pull request waits for the `actionsChecks` the same way, for up to the first release environment's
 `checksTimeout` (one hour by default). One that failed stops the release (`Not releasing`). One that did not
 finish, because it is still running, GitHub did not answer, or the mirror has not pushed the commit,
