@@ -163,6 +163,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `/healthz`. `renovate/default.json` is the shared Renovate preset (nuget, npm, github-actions, docker, and the
   pinned images of `yggdrasil.yml`). `scripts/test_templates.py` tests them, and with `YGG_TEMPLATE_TESTS=1` builds
   each site around a sample and probes it. See [docs/catalog.md](docs/catalog.md#templates-for-repositories).
+- **The guide to moving each repository**, [docs/moving-repositories.md](docs/moving-repositories.md): after the
+  cutover, how to land the `feature/move-to-forgejo` branch prepared for each of 38 repositories (the table gives every
+  head): push it to Forgejo, open the pull request, read Jenkins' results and merge with the owner's override, make
+  the first release, publish or site deploy, switch GitHub Pages or Vercel off and drop `--skip-caa artur-rios.tech`,
+  and tick [docs/migration-checklist.md](docs/migration-checklist.md). It lists what each repository needs from the
+  owner (credentials, variables, tags, files to delete) and what the plan left undone. The checklist now records every
+  prepared branch, maps github-readme-stats' workflows (its `test` job is the check `test`, the rest is upstream
+  automation, dropped) and gives a reason for each of the 24 repositories without a branch.
+  `scripts/repo_inventory.py` no longer lists a linked worktree (yggdrasil's own move branch) as a repository.
 
 ### Changed
 
@@ -242,6 +251,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (Renovate) and a reference section, [The pipeline](docs/setup.md#the-pipeline); the credentials table of
   [docs/hosts.md](docs/hosts.md#6-credentials) lists `forge-read`, `forge-write`, `forge-webhook`, `github-app`,
   `github-read` and `nuget-api-key` and where each lives.
+
+- The Renovate documentation (docs/catalog.md, docs/setup.md 9.9,
+  `scripts/renovate.sh`, `renovate/default.json`) says that Renovate targets `develop` and that a repository on `main`
+  or `master` overrides `baseBranchPatterns` in its own `renovate.json`.
 
 ### Removed
 

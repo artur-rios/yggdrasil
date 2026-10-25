@@ -6,7 +6,8 @@ the build agents) and an **apps machine** (every environment), both rootless, wi
 server and **GitHub** as a push-mirrored copy. It covers rollout steps 2 to 5 and 8 of the
 [design](superpowers/specs/2026-10-22-self-hosted-git-and-ci-design.md#rollout): Cloudflare, the two machines,
 the maintenance window, and the clean-up. The work per repository afterwards (rollout steps 6 and 7: each
-repository's `yggdrasil.yml`, `ci/` scripts, Renovate configuration and first release) is not here.
+repository's `yggdrasil.yml`, `ci/` scripts, Renovate configuration and first release) is not here: it is
+[moving-repositories.md](moving-repositories.md), which lands the branch prepared for each repository.
 
 It does not repeat how to set a machine up: [setup.md](setup.md) does, and this page says which of its steps to
 follow, in which order, and with which answers. What this page adds is the order, the checks between the
@@ -841,7 +842,8 @@ disable() { gh workflow disable "$(basename "$2")" -R "artur-rios/$1" && echo "$
 disable <repo> .github/workflows/<file>      # one line of workflows.txt, for each to disable
 ```
 
-They stay disabled after the window: what they did moves to Jenkins with each repository (rollout steps 6 and 7).
+They stay disabled after the window: what they did moves to Jenkins with each repository (rollout steps 6 and 7,
+[moving-repositories.md](moving-repositories.md)).
 
 **Success looks like:** `sudo docker ps` prints nothing (or only containers that are not yggdrasil's);
 `workflows.txt` lists the workflows, and `gh workflow list -R artur-rios/<repo> --all` shows each one you disabled
@@ -1631,7 +1633,7 @@ The ones on other machines get 5.19 too. **Success looks like:** `git remote get
 `git.techcraftsmen.net` everywhere you work.
 
 Not in this page: turning GitHub Pages off and deleting the Vercel projects happen per site as each one moves
-(rollout steps 6 and 7).
+(rollout steps 6 and 7; [moving-repositories.md](moving-repositories.md#step-5-switch-the-old-host-off-sites)).
 
 ## 8. What you check by hand
 

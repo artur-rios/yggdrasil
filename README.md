@@ -191,7 +191,9 @@ first release. In short:
 | **Finish** | Apply the branch rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-branch-rules) |
 
 **Moving an installation that runs today** (one VPS deploying from GitHub) to the two machines and Forgejo:
-[docs/cutover.md](docs/cutover.md), the runbook for the machines, the maintenance window and the clean-up.
+[docs/cutover.md](docs/cutover.md), the runbook for the machines, the maintenance window and the clean-up, and then
+[docs/moving-repositories.md](docs/moving-repositories.md), the guide to landing each repository's prepared branch on
+Forgejo and Jenkins, one at a time.
 
 On an Ubuntu host, [`ygg`](docs/cli.md) does the host steps, as a command or from an arrow-key
 menu: it installs the tools, sets up and deploys applications, shows what runs, and shows, changes
@@ -229,7 +231,7 @@ default setup worked through on real hardware:
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads) |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, the two machines (`hosts.md`), the cutover runbook (`cutover.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
+| `docs/` | Catalog reference, setup guide, the two machines (`hosts.md`), the cutover runbook (`cutover.md`), the guide to moving each repository (`moving-repositories.md`, with `migration-checklist.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
 
 ## Day to day
 
