@@ -235,13 +235,14 @@ lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit, an
 every `image` is a Docker image reference (`registry:port/name:tag` or `name@sha256:...`: no spaces, and it
 may not start with `-`).
 
-`release`'s steps run in this order on the release agent, each from the tag's checkout with `RELEASE_TAG` and
-`RELEASE_VERSION` in its environment ([Releases](setup.md#releases) has the whole flow):
+`release`'s steps run in this order. `build`, `validate` and `finalize` run on the release agent, each from
+the tag's checkout with `RELEASE_TAG` and `RELEASE_VERSION` in its environment; `windows` runs on GitHub Actions
+([Releases](setup.md#releases) has the whole flow):
 
 - `build` makes the release's own files; its `files` globs, matched in the checkout, are what it adds to the
   release (each must match a file).
-- `windows` dispatches a GitHub Actions workflow on the tag; its `files` (globs over the downloaded artifacts,
-  default every file) are added too.
+- `windows` is a GitHub Actions workflow, dispatched on the tag on GitHub (the mirror); its `files` (globs over
+  the artifacts the release agent gets, default every file) are added too.
 - `validate` gets the whole set in `RELEASE_FILES` (`build/` and `windows/<artifact>/` under it) and passes or
   fails: it cannot change what is released.
 - `finalize` (optional) runs after `validate` has passed, over the same layout, and makes what must cover the
@@ -252,7 +253,10 @@ may not start with `-`).
   failure stops the release before anything is published; `release-resume` runs it again. It never covers a
   partial set: with `windows` declared, Windows files that are missing (a run that failed or timed out) stop
   the release the same way, until `release-resume` runs all of it again, and the release pull request never
-  offers the skip past the GitHub Actions checks ([the skip](setup.md#github-actions-and-the-skip)).
+  offers the skip past the GitHub Actions checks ([the skip](setup.md#github-actions-and-the-skip)), nor does
+  `actions-release` attach Windows files to it afterwards. It runs in a workspace of its own, from a fresh
+  checkout of the tag and of yggdrasil's tools, so nothing `validate` left behind reaches it. A resumed release
+  with `finalize` uploads its draft's files again instead of reusing them by name and size.
 
 Every file the release uploads, from any step, must have its own name (a release shows one file per name):
 two files named alike fail the release before anything irreversible, a library's NuGet push included.

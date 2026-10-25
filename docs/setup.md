@@ -1491,6 +1491,7 @@ catalog):
 | `upload-release-file <repo> <release-id> <file>` | Attaches a file to a release | the file's download address (on Forgejo `<server>/attachments/<uuid>`) |
 | `publish-release <repo> <release-id>` | Publishes a draft release | the release's page address |
 | `release-tags <repo>` | Lists the published releases (drafts left out) | `<tag>`, a tab, `<target>` (the commit it was released from: the pipeline sends the release's commit; a release made by hand may name a branch), one line per release |
+| `delete-release-file <repo> <release-id> <name>` | Deletes a release's file by its name; exits `4` when the release has none of that name. `publish-release.sh --replace-files` uses it on a draft | nothing |
 | `tag-sha <repo> <tag>` | Finds the commit a tag points to (an annotated tag is followed to its commit); exits `4` when there is no such tag | the commit |
 | `delete-branch <repo> <branch>` | Deletes a branch; a branch that is already gone is not an error | nothing |
 
@@ -1515,8 +1516,8 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
   machine sees it in the process list, and it is never printed.
 - **Exit codes:** `0` done; `1` an error, explained on standard error as `forge: <what> failed: <the server's
   message>`; `2` no command at all; `3` (`delete-branch` only) that the server **keeps** the branch because
-  it is protected: the owner's decision, not a reason to stop a release; `4` (`find-release` and `tag-sha`
-  only) that there is no such release or tag.
+  it is protected: the owner's decision, not a reason to stop a release; `4` (`find-release`, `tag-sha` and
+  `delete-release-file` only) that there is no such release, tag or file.
 - **On Forgejo every `release/x.y.z` branch is kept after a release.** `release/*` is protected, and Forgejo
   refuses to delete a protected branch to everyone, the owner included: `delete-branch` exits `3`
   (`forge: kept: release/x.y.z is protected`). Delete old release branches by hand, as the owner: remove the
@@ -1778,8 +1779,10 @@ the repository's release lock:
    (unstable, listed in the notes).
    Then **`release.finalize`**, when declared, on the release agent: what has to cover the whole set (a
    manifest of every file with its checksum, the manifest's signature). It sees the set as the validation
-   does (`RELEASE_FILES`, `build/` and `windows/` under it, a fresh copy of the gathered set), runs from the
-   tag's checkout with `RELEASE_TAG`, `RELEASE_VERSION` and only the credentials
+   does (`RELEASE_FILES`, `build/` and `windows/` under it, a fresh copy of the gathered set), and runs in a
+   workspace of its own: a fresh checkout of the tag and of yggdrasil's tools, since the validation ran as root
+   with its whole workspace (yggdrasil's scripts included) and nothing it left there may reach a step that
+   holds credentials. It gets `RELEASE_TAG`, `RELEASE_VERSION` and only the credentials
    `release.finalize.credentials` names (each allowed by `releaseCredentials`, as for the build), and each
    of its `files` globs, matched in the checkout, is added to the upload set under `finalize/` (a glob that
    matches nothing fails the release). It may **only add**: the set is checksummed before and after it
@@ -1801,7 +1804,9 @@ the repository's release lock:
    `<package>@<version>` tag, the version after the last `@`) is made a **prerelease** on both servers, so
    GitHub never makes it the latest release; any other version is a normal release, build metadata alone
    included (`1.2.0+build.5`). The notes are the same either way. The rule is strict SemVer
-   (`X.Y.Z-pre[+build]`): `v1.2-rc.1`, not a SemVer version, is a normal release.
+   (`X.Y.Z-pre[+build]`, no leading zeros): `v1.2-rc.1`, not a SemVer version, is a normal release. Only an
+   owner's tag can be a pre-release: an application's version comes from its `release/X.Y.Z` branch, which
+   has no pre-release part.
 7. The **release branch is deleted**. Forgejo keeps it (`release/*` is protected, `delete-branch` exits `3`): a
    note in the log, not a failure; delete old release branches by hand.
 
@@ -1822,7 +1827,11 @@ release published after the skip, and for a tag that was never built.
 
 Two cautions. It **rebuilds** the files from the tag instead of copying the published ones, so a build that is
 not reproducible can give a file with the same size and other bytes than the one already on Forgejo, and the
-GitHub copy would then differ in content; a different size stops the run. And if the merge went through but the
+GitHub copy would then differ in content; a different size stops the run. A release with `release.finalize` is
+the exception for its **drafts**: their manifest and signature are made again in this run, so a draft's files are
+deleted and uploaded again (`publish-release.sh --replace-files`) rather than reused by name and size, and a
+draft never keeps an older file its new manifest does not describe. A published release is never changed.
+And if the merge went through but the
 tag did not, the message says *merged as `<sha>`, but not tagged* and names a third parameter: run
 `release-resume` with `COMMIT=<sha>` too. Only the Jenkins user may create an application's `v*` tags (on
 Forgejo not even you), so the job makes it: it checks that the commit is one of `main`'s own merges (on its
@@ -1834,7 +1843,9 @@ publish agent and goes on as above. A tag of that name already on the commit is 
 stops the job. `COMMIT` is refused for an `owner-tag` repository, whose tags are yours to make.
 
 The **`actions-release`** job (`REPOSITORY`, `TAG`) runs the Windows workflow again for a tag and attaches its
-files to a release that was published without them.
+files to a release that was published without them. It refuses a release that declares both `release.windows` and
+`release.finalize`, whose Windows files are covered by its manifest and so are never attached afterwards, and
+points to `release-resume`, which makes the release whole.
 
 The notes are not rewritten afterwards: a release published without its Windows files keeps the
 *Missing files* section of its notes after `actions-release` or `release-resume` has attached them (both
