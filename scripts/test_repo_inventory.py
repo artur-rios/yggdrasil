@@ -157,6 +157,26 @@ class ClassifyJobTests(unittest.TestCase):
         self.assertEqual(inv.CHECK, inv.classify_job("ubuntu-latest", "tests.yml", [{"run": "dotnet test"}]))
         self.assertEqual(inv.CHECK, inv.classify_job("ubuntu-24.04", "tests.yml", []))
 
+    def test_given_an_ubuntu_job_in_a_release_workflow_when_classified_then_it_is_a_release_step(self):
+        # Plan 3 runs release steps on the release agent, not as checks.
+        for workflow in ("release.yml", "release-artifacts.yml", "Release.yaml"):
+            with self.subTest(workflow=workflow):
+                self.assertEqual("release (release.build)",
+                                 inv.classify_job("ubuntu-24.04", workflow, [{"run": "dotnet pack"}]))
+
+    def test_given_an_ubuntu_job_in_a_publish_package_workflow_when_classified_then_it_is_a_publish_step(self):
+        for workflow in ("publish-package.yml", "publish-package-nuget.yaml"):
+            with self.subTest(workflow=workflow):
+                self.assertEqual("publish (publish.nuget)",
+                                 inv.classify_job("ubuntu-latest", workflow, [{"run": "dotnet nuget push"}]))
+
+    def test_given_a_windows_job_in_a_release_workflow_when_classified_then_it_still_stays(self):
+        self.assertEqual(inv.STAYS, inv.classify_job("windows-2025", "release.yml", [{"run": "pack"}]))
+
+    def test_given_a_pages_job_in_a_release_workflow_when_classified_then_it_goes(self):
+        self.assertEqual("goes (Pages)", inv.classify_job("ubuntu-latest", "release.yml",
+                                                          [{"uses": "actions/deploy-pages@v4"}]))
+
     def test_given_a_windows_job_when_classified_then_it_stays_on_actions(self):
         self.assertEqual(inv.STAYS, inv.classify_job("windows-latest", "ci.yml", [{"run": "dotnet build"}]))
         self.assertEqual(inv.STAYS, inv.classify_job("windows-2025", "ci.yml", []))
@@ -201,6 +221,14 @@ class InventoryTests(Fixture):
         jobs = self.row("widget", self.inventory()).jobs
         self.assertEqual(["ci.yml/build on ubuntu-latest → check build",
                           "ci.yml/desktop on windows-latest stays (Actions)"], [j.text() for j in jobs])
+
+    def test_given_release_and_publish_workflows_when_inventoried_then_their_ubuntu_jobs_are_not_checks(self):
+        job = "on: push\njobs:\n  go:\n    runs-on: ubuntu-latest\n    steps: []\n"
+        make_clone(self.root, "shipper", {"release.yml": job, "publish-package.yml": job, "tests.yml": job})
+        self.assertEqual(["publish-package.yml/go on ubuntu-latest → publish (publish.nuget)",
+                          "release.yml/go on ubuntu-latest → release (release.build)",
+                          "tests.yml/go on ubuntu-latest → check go"],
+                         [j.text() for j in self.row("shipper", self.inventory()).jobs])
 
     def test_given_a_workflow_using_secrets_when_inventoried_then_each_secret_is_listed(self):
         make_clone(self.root, "widget", {
@@ -330,6 +358,24 @@ class KindTests(Fixture):
         self.assertEqual(["ci", "site"], self.row("orpheus", rows).kinds)
         self.assertEqual(["ci", "fork"], self.row("reveal.js", rows).kinds)
 
+    def test_given_yggdrasil_when_listed_then_it_is_ci_as_the_catalog_section_makes_it_a_repositories_entry(self):
+        make_clone(self.root, "yggdrasil", {"ci.yml": CI})
+        row = inv.inventory(self.root)[0]
+        self.assertEqual(["ci"], row.kinds)
+        self.assertEqual([], row.notes)
+
+    def test_given_a_vercel_site_of_the_spec_when_listed_then_the_kind_says_site_vercel_even_with_no_vercel_json(self):
+        make_clone(self.root, "personal-page")
+        make_clone(self.root, "heimdall-docs", {"docs.yml": PAGES})
+        rows = inv.inventory(self.root)
+        table = inv.render_table(rows)
+        self.assertIn("| personal-page | site (Vercel) |", table)
+        self.assertIn("| heimdall-docs | site |", table)
+        # The note stays, as information: Vercel's git integration needs no vercel.json.
+        note = " ".join(self.row("personal-page", rows).notes)
+        self.assertIn("no vercel.json", note)
+        self.assertIn("git integration", note)
+
     def test_given_the_spec_and_the_observation_agree_when_inventoried_then_there_is_no_note(self):
         make_clone(self.root, "heimdall-docs", {"docs.yml": PAGES})
         self.assertEqual([], inv.inventory(self.root)[0].notes)
@@ -391,7 +437,7 @@ class KindTests(Fixture):
                 self.assertEqual(len(names), len(set(names)))
         self.assertEqual(12, len([n for n in inv.KINDS["library"]]))
         self.assertEqual(5, len(inv.KINDS["application"]))
-        self.assertEqual(11, len(inv.KINDS["ci"]))
+        self.assertEqual(12, len(inv.KINDS["ci"]))
         self.assertEqual(4, len(inv.KINDS["archived"]))
         self.assertEqual(9, len(inv.KINDS["fork"]))
         # 19 Pages sites and 5 Vercel projects.
@@ -412,6 +458,11 @@ class RenderTests(Fixture):
         self.assertIn("`REPORTGENERATOR_LICENSE`", widget)
         self.assertIn("nuget, github-actions", widget)
         self.assertTrue(widget.endswith("|  |  |"))
+
+    def test_given_a_document_when_written_then_it_says_to_run_the_tool_with_windows_python_and_git(self):
+        text = inv.document([])
+        self.assertIn("Windows Python and git", text)
+        self.assertIn("CRLF", text)
 
     def test_given_a_pipe_in_a_cell_when_rendered_then_it_is_escaped(self):
         row = inv.Row(name="x", kinds=["code only"], notes=["a | b"])

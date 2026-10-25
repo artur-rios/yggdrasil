@@ -17,7 +17,9 @@ It prints a Markdown table, one row per repository:
                Observation (workflows, vercel.json, a Pages deploy step, GitHub's fork and archived) is
                checked against it second, and a disagreement is written in the row's Notes.
   Jobs         every job of every workflow as `<workflow>/<job> on <runs-on> <verdict>`, the verdict being
-               decision 3 of the plan (classify_job): `→ check <job>` for a job on ubuntu-*, `stays
+               decision 3 of the plan (classify_job): `→ check <job>` for a job on ubuntu-* (`→ release
+               (release.build)` in a release*.yml workflow, `→ publish (publish.nuget)` in a
+               publish-package*.yml one: the release agent's steps), `stays
                (Actions)` for windows-* and macos-*, `goes (Pages|Vercel|branch-policy)`, or
                `unknown — check by hand` for a runner that cannot be resolved; a call to a reusable workflow of the
                same repository is `calls <file> (judged there)`. `dependabot.yml` goes too.
@@ -38,6 +40,7 @@ Exit status: 0 done, 2 usage (<repos-dir> is not a directory).
 
 import argparse
 import dataclasses
+import fnmatch
 import os
 import pathlib
 import re
@@ -68,7 +71,8 @@ KINDS = {
                 "dotnet-mediator", "dotnet-messaging", "dotnet-output", "dotnet-test-util", "dotnet-util",
                 "dotnet-validation", "dotnet-webapi-util"),
     "ci": ("alexandria-api", "alexandria-ui", "cerberus-api", "cerberus-ui", "maestro", "orpheus", "personal-lab",
-           "ai-coding-skills", "coding-challenge-library", "dotnet-libraries", "reveal.js"),
+           "ai-coding-skills", "coding-challenge-library", "dotnet-libraries", "reveal.js",
+           "yggdrasil"),  # yggdrasil: the spec's Catalog section makes it a `repositories` entry (owner's ruling)
     "site": ("tech-craftsmen-company-page", "personal-page", "personal-blog", "personal-lab",
              "under-construction-template", "github-readme-stats",
              "heimdall-docs", "fortuna-docs", "alexandria-docs", "orpheus", "heimdall-api", "dotnet-libraries",
@@ -82,6 +86,11 @@ KINDS = {
              "under-construction-template"),
 }
 CODE_ONLY = "code only"
+
+# The 5 Vercel projects of the spec's Sites section. Vercel's git integration needs no vercel.json, so a site of
+# these with none is still a Vercel site: the Kind column says `site (Vercel)`, and the note stays as information.
+VERCEL_SITES = ("tech-craftsmen-company-page", "personal-page", "personal-blog", "under-construction-template",
+                "github-readme-stats")
 
 # Kinds whose repositories have GitHub workflows today (a site's evidence is a Pages step or a vercel.json).
 KINDS_WITH_WORKFLOWS = ("application", "library", "ci")
@@ -98,6 +107,10 @@ def spec_names():
 # --- Decision 3: which jobs move, stay or go ----------------------------------------------------------
 
 CHECK = "check"
+# An ubuntu job of a release*.yml or publish-package*.yml workflow is not a check: plan 3 runs those steps on
+# the release agent (release.build, publish.nuget).
+RELEASE = "release (release.build)"
+PUBLISH = "publish (publish.nuget)"
 STAYS = "stays (Actions)"
 UNKNOWN = "unknown — check by hand"
 
@@ -143,24 +156,36 @@ def _runner_verdict(labels):
     return UNKNOWN
 
 
+def _release_step(workflow):
+    """RELEASE or PUBLISH for a release*.yml or publish-package*.yml workflow, else CHECK."""
+    name = str(workflow).lower()
+    if fnmatch.fnmatch(name, "release*.y*ml"):
+        return RELEASE
+    if fnmatch.fnmatch(name, "publish-package*.y*ml"):
+        return PUBLISH
+    return CHECK
+
+
 def classify_job(runs_on, workflow, steps):
     """What becomes of a job (decision 3 of the plan), as a pure function.
 
     `runs_on` is the job's runner label (a list of labels is read by its operating system), `workflow` the
     workflow's file name and `steps` its steps (for a Pages or Vercel workflow, the steps of all its jobs: the
-    workflow goes whole, its build job with its deploy job). Returns one of CHECK, STAYS, UNKNOWN or
-    `goes (Pages)`, `goes (Vercel)`, `goes (branch-policy)`.
+    workflow goes whole, its build job with its deploy job). Returns one of CHECK, RELEASE, PUBLISH, STAYS,
+    UNKNOWN or `goes (Pages)`, `goes (Vercel)`, `goes (branch-policy)`.
 
     What goes is decided before the runner is looked at: a Pages or Vercel workflow, whatever it runs on, and
-    branch-policy.yml leave GitHub for good. Of the rest, ubuntu-* jobs become checks, windows-* and macos-*
-    jobs stay on GitHub Actions. A runner this cannot resolve is never guessed."""
+    branch-policy.yml leave GitHub for good. Of the rest, ubuntu-* jobs become checks (RELEASE or PUBLISH in a
+    release*.yml or publish-package*.yml workflow: the release agent's steps), windows-* and macos-* jobs stay
+    on GitHub Actions. A runner this cannot resolve is never guessed."""
     if str(workflow).lower() in BRANCH_POLICY_WORKFLOWS:
         return "goes (branch-policy)"
     if uses_pages(steps):
         return "goes (Pages)"
     if uses_vercel(steps):
         return "goes (Vercel)"
-    return _runner_verdict(runs_on)
+    verdict = _runner_verdict(runs_on)
+    return _release_step(workflow) if verdict == CHECK else verdict
 
 
 # --- Reading a clone ----------------------------------------------------------------------------------
@@ -177,7 +202,12 @@ class Job:
             return f"{self.workflow}: {self.verdict}"
         if self.verdict.startswith("calls "):
             return f"{self.workflow}/{self.job} {self.verdict}"
-        verdict = f"→ check {self.job}" if self.verdict == CHECK else self.verdict
+        if self.verdict == CHECK:
+            verdict = f"→ check {self.job}"
+        elif self.verdict in (RELEASE, PUBLISH):
+            verdict = f"→ {self.verdict}"
+        else:
+            verdict = self.verdict
         return f"{self.workflow}/{self.job} on {self.runs_on} {verdict}"
 
 
@@ -360,7 +390,11 @@ def disagreements(row, entry, github_known):
     if row.state == "missing":
         return notes
     if "site" in kinds and not (row.pages or row.vercel):
-        notes.append("the spec's table says site; no Pages deploy and no vercel.json found")
+        if row.name in VERCEL_SITES:
+            notes.append("the spec's table says site (Vercel); no vercel.json found (information only: Vercel's "
+                         "git integration needs none)")
+        else:
+            notes.append("the spec's table says site; no Pages deploy and no vercel.json found")
     if "site" not in kinds and (row.pages or row.vercel):
         found = " and ".join(name for name, on in (("Pages", row.pages), ("Vercel", row.vercel)) if on)
         notes.append(f"{found} found; the spec's table has no site here")
@@ -406,12 +440,17 @@ def _pages_vercel(row):
     return ", ".join(name for name, on in (("Pages", row.pages), ("Vercel", row.vercel)) if on) or "none"
 
 
+def _kinds_label(row):
+    """The Kind column: the spec's kinds, with `site (Vercel)` for the spec's Vercel sites."""
+    return ", ".join("site (Vercel)" if kind == "site" and row.name in VERCEL_SITES else kind for kind in row.kinds)
+
+
 def _cells(row, kept):
     jobs = [job.text() for job in row.jobs]
     dependabot = f"{', '.join(row.dependabot)} → goes (dependabot)" if row.dependabot else ""
     clone = f"{row.state} ({row.branch})" if row.branch else row.state
     prepared, moved = kept.get(row.name, ("", ""))
-    return [_cell(row.name), _cell(", ".join(row.kinds)), _cell(row.github), "<br>".join(_cell(j) for j in jobs),
+    return [_cell(row.name), _cell(_kinds_label(row)), _cell(row.github), "<br>".join(_cell(j) for j in jobs),
             ", ".join(f"`{s}`" for s in row.secrets), _pages_vercel(row), _cell(dependabot), row.branch_model,
             _cell(clone), "<br>".join(_cell(n) for n in row.notes), prepared, moved]
 
@@ -429,10 +468,16 @@ Generated by `python3 scripts/repo_inventory.py <repos-dir> --output docs/migrat
 GitHub workflows of the local clones and, with a GitHub token, the owner's repository list. Regenerating keeps
 the *Prepared branch* and *Moved* columns. Nothing here is written by hand except those two.
 
-- **Kind** is the spec's table ("Every repository"). Where what the clone or GitHub shows differs, *Notes* says
-  so; the Kind stays the spec's.
+**Run the tool with Windows Python and git** (`python scripts/repo_inventory.py D:/Repositories --output
+docs/migration-checklist.md` from Windows). In WSL, git sees the clones' CRLF line endings as changes and shows
+nearly every clone dirty; Windows git does not.
+
+- **Kind** is the spec's table ("Every repository"; `site (Vercel)` marks the five Vercel projects). Where what the
+  clone or GitHub shows differs, *Notes* says so; the Kind stays the spec's.
 - **Jobs** are `<workflow>/<job> on <runs-on> <verdict>`: `→ check <job>` (a job on `ubuntu-*`: it leaves
-  `.github/workflows` and becomes a check or a release step), `stays (Actions)` (`windows-*` and `macos-*`),
+  `.github/workflows` and becomes a check), `→ release (release.build)` (a job on `ubuntu-*` in a `release*.yml`
+  workflow) and `→ publish (publish.nuget)` (in a `publish-package*.yml` workflow), which plan 3 runs on the
+  release agent rather than as checks, `stays (Actions)` (`windows-*` and `macos-*`),
   `goes (Pages)`, `goes (Vercel)` or `goes (branch-policy)` (the workflow is deleted), or `unknown — check by
   hand` (a runner that is an expression this cannot resolve). A `${{ matrix.os }}` is expanded into one line per
   operating system. `dependabot.yml` goes too; Renovate replaces it.
