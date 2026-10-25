@@ -688,6 +688,22 @@ class RepositoryTests(unittest.TestCase):
             "notes": [("repository", "notes")]})
         self.assertEqual([e["releases"] for e in groups["dotnet-util"]], [True, False])
 
+    def test_given_a_repository_when_its_model_is_asked_then_it_is_the_deciding_entrys(self):
+        # A repositories entry says it (`rules`, release by default); an application is release only when it
+        # releases (shop-web has the trigger: release environment prod), else basic, and a docs site that
+        # shares a repository does not change what the deciding entry decided.
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag"},
+                                      {"id": "fork", "rules": "basic"}, {"id": "notes"}])
+        apps = value["systems"][0]["applications"]
+        apps.append({"id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://d:8080/",
+                     "repository": "dotnet-util", "environments": {"staging": {}}})
+        apps.append({"id": "plain", "name": "Plain", "kind": "web", "health": "http://p:8080/",
+                     "environments": {"staging": {}}})
+        self.assertEqual({repo: c.repository_model(value, repo)
+                          for repo in ("shop-web", "plain", "dotnet-util", "fork", "notes", "nowhere")},
+                         {"shop-web": "release", "plain": "basic", "dotnet-util": "release", "fork": "basic",
+                          "notes": "release", "nowhere": "release"})
+
     def test_given_shared_repositories_when_their_checks_are_asked_then_every_entrys_count_once_deciding_first(self):
         value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "checks": ["unit", "coverage"]}])
         value["systems"][0]["applications"].insert(0, {

@@ -428,7 +428,7 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(pc.entry_for(catalog(), "dotnet-util"), {
             "kind": "repository", "id": "dotnet-util", "repository": "dotnet-util",
             "credentials": ["nuget-key"], "releaseCredentials": [], "checks": ["unit"], "actionsChecks": [],
-            "release": "owner-tag", "tags": "[0-9]*"})
+            "release": "owner-tag", "tags": "[0-9]*", "rules": "release"})
 
     def test_given_a_repository_without_a_release_when_described_then_it_releases_nothing(self):
         entry = pc.entry_for(catalog(), "shop-specs")
@@ -438,7 +438,19 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(pc.entry_for(catalog(), "shop-api"), {
             "kind": "application", "id": "shop-api", "repository": "shop-api",
             "credentials": ["nuget-key"], "releaseCredentials": ["sign-key"], "checks": ["unit", "lint"],
-            "actionsChecks": ["windows"], "release": "deploy", "tags": "v*"})
+            "actionsChecks": ["windows"], "release": "deploy", "tags": "v*", "rules": "release"})
+
+    def test_given_an_application_that_only_deploys_on_branches_when_described_then_its_rules_are_basic(self):
+        # The model is the repository's (the deciding entry's), as scripts/rules.py applies it: the branch
+        # policy of the pipeline checks a pull request only under "release".
+        self.assertEqual(pc.entry_for(catalog(), "shop-site")["rules"], "basic")
+        self.assertEqual(pc.entry_for(catalog(), "shop-api")["rules"], "release")
+        self.assertEqual(pc.entry_for(catalog(), "shop-specs")["rules"], "release")
+
+    def test_given_a_repository_entry_with_basic_rules_when_described_then_its_rules_are_basic(self):
+        value = catalog()
+        value["repositories"].append({"id": "shop-fork", "rules": "basic", "checks": ["lint"]})
+        self.assertEqual(pc.entry_for(value, "shop-fork")["rules"], "basic")
 
     def test_given_an_application_without_a_release_environment_when_described_then_it_releases_nothing(self):
         entry = pc.entry_for(catalog(), "shop-site")

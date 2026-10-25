@@ -596,10 +596,19 @@ String lastCheckedCommit() {
 // Stage Branch policy, on a pull request into develop or main: scripts/branch-policy.sh, then the
 // file's own branchPolicy (in its image, with HEAD_REF, BASE_REF, HEAD_SHA and YGGDRASIL_DIR, the
 // yggdrasil checkout's path, in its environment). Reported as branch-policy, never reused. Returns
-// whether it passed.
+// whether it passed. A repository under the `basic` rules (describe's entry.rules: a site deployed on pushes
+// to main, a fork) has no release model to follow: it passes for any pair of refs, and neither the script
+// nor the file's own branchPolicy runs.
 boolean branchPolicy(Map ctx, Map state) {
   boolean passed = false
   String reason = 'The branch policy could not run; see the build'
+  if (state.entry?.rules == 'basic') {
+    stage('Branch policy') {
+      echo 'Branch policy: the repository has the basic rules, so there is no branching model to check.'
+      reportStatus(ctx.repo, state.sha, 'success', 'branch-policy', 'basic: nothing to check')
+    }
+    return true
+  }
   stage('Branch policy') {
     reportStatus(ctx.repo, state.sha, 'pending', 'branch-policy', 'Checking the branching model')
     try {

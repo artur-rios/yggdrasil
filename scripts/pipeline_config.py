@@ -233,6 +233,8 @@ def entry_for(catalog, job_id):
         release         "deploy" (an application with a release environment: Jenkins tags it),
                         "owner-tag" (the owner tags it), "none"
         tags            the version tag pattern (v* for applications)
+        rules           the repository's branching model, "release" or "basic" (catalog.repository_model):
+                        the branch policy checks a pull request only under "release"
     """
     for _, app in cat.applications(catalog):
         if app["id"] == job_id:
@@ -242,13 +244,15 @@ def entry_for(catalog, job_id):
                     "releaseCredentials": list(app.get("releaseCredentials") or []),
                     "checks": list(app.get("checks") or []),
                     "actionsChecks": list(app.get("actionsChecks") or []),
-                    "release": "deploy" if releases else "none", "tags": "v*"}
+                    "release": "deploy" if releases else "none", "tags": "v*",
+                    "rules": cat.repository_model(catalog, app.get("repository") or job_id)}
     for entry in cat.repositories(catalog):
         if entry["id"] == job_id:
             return {"kind": "repository", "id": job_id, "repository": job_id,
                     "credentials": entry["credentials"], "releaseCredentials": entry["releaseCredentials"],
                     "checks": entry["checks"],
-                    "actionsChecks": entry["actionsChecks"], "release": entry["release"], "tags": entry["tags"]}
+                    "actionsChecks": entry["actionsChecks"], "release": entry["release"], "tags": entry["tags"],
+                    "rules": cat.repository_model(catalog, job_id)}
     raise ConfigError(f"'{job_id}' is not an application or a repository in catalog.yaml")
 
 

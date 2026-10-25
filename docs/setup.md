@@ -1656,7 +1656,7 @@ other instead (one lock per repository, so two releases never overlap).
 | Event | A repository **without** `yggdrasil.yml` | A repository **with** one |
 |---|---|---|
 | Pull request into `develop` | Nothing (on GitHub the Branch Policy workflow and Actions check it) | `branch-policy`, then the job's checks (its catalog entry's `checks`), as statuses on the head commit; the build fails once all have reported if any failed. On Forgejo with a `mirror`, the `actionsChecks` are copied from GitHub Actions too ([below](#github-actions-and-the-skip)) |
-| Pull request into `main` from anything but `release/x.y.z` | Nothing | `branch-policy` fails it |
+| Pull request into `main` from anything but `release/x.y.z` | Nothing | `branch-policy` fails it (a `basic` repository passes it) |
 | Release pull request `release/x.y.z` → `main` | GitHub: every GitHub Actions check waited for, each release environment deployed, then merged, tagged and released as before. Forgejo: the same steps without release files | The pipeline of [Releases](#releases) below: checks, GitHub Actions checks (or the skip), deploys, merge, tag, files, publication |
 | Push to `develop`, `main` or `release/*` | Deploys to the environments whose `trigger: branch` globs match | The job's checks first, and its `deploy.inputs` when it deploys (reused or skipped where the rules allow); the deploys only if every check passed, and of the commit the checks saw |
 | Push to another branch that a `branches` glob matches | Deploys | Deploys, with no checks |
@@ -1670,7 +1670,10 @@ An application with no `trigger: release` environment is never merged or release
 
 The branch policy is `scripts/branch-policy.sh`, run on the `ci` agent, then the repository's own
 `branchPolicy` (an `image` and a `run`) if its file has one. It is reported as the status `branch-policy` and
-is never reused:
+is never reused. A repository under the `basic` rules ([`rules`](catalog.md#repositories): a site deployed on pushes
+to `main`, a fork, a repository whose entry says `rules: basic`) has no branching model to follow, so it passes
+for any pull request, with `basic: nothing to check`, and neither the script nor the file's own `branchPolicy`
+runs. Under the release model:
 
 - into `develop`: only `feature/<name>`, `fix/<name>` or `renovate/...` (it replaces `dependabot/...`), cut
   from `develop` (a branch that contains a release merge commit from `main` was cut from `main`);

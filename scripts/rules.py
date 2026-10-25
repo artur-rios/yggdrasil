@@ -175,12 +175,12 @@ def desired_rules(catalog):
             # application that has one gets the release model. One that deploys on branches alone (a site
             # on main) would otherwise have a main nobody may change: basic, like a repository with no
             # branch policy. The deciding application releases whenever any entry of the repository does.
-            model = "release" if deciding["releases"] else "basic"
+            model = catalog_module.repository_model(catalog, repo)
             merger, tags, owner_tags = jenkins, "v*", False
         else:
             # The owner releases these by hand: they merge main and create the tags themselves.
             entry = deciding["entry"]
-            model, merger, owner_tags = entry["rules"], owner, True
+            model, merger, owner_tags = catalog_module.repository_model(catalog, repo), owner, True
             tags = entry["tags"] if entry["release"] == "owner-tag" else "v*"
         deploys = [env["id"] for e in entries if e["kind"] == "application"
                    for env in catalog_module.resolve(catalog, e["id"]) if env["trigger"] == "release"]

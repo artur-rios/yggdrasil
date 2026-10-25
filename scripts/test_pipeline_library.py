@@ -322,6 +322,17 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("config.stack ?:", self.lib.code)
         self.assertIn("env.JOB_NAME", self.lib.code)
 
+    def test_given_a_basic_repository_when_the_branch_policy_runs_then_it_passes_without_running_anything(self):
+        # entry.rules is describe's: the repository's model. Under "basic" there is no branching model, so
+        # the stage reports success for any pair of refs, before it checks out or runs branch-policy.sh or the
+        # file's own branchPolicy.
+        body = self.lib.code[slice(*self.lib.functions["branchPolicy"])]
+        guard = body.index("state.entry?.rules == 'basic'")
+        self.assertLess(guard, body.index("node('ci')"))
+        self.assertLess(guard, body.index("branch-policy.sh"))
+        self.assertIn("'success', 'branch-policy', 'basic: nothing to check'", body[guard:body.index("node('ci')")])
+        self.assertIn("return true", body[guard:body.index("node('ci')")])
+
     def test_given_the_library_when_read_then_credentials_are_bound_only_through_the_allow_list_helper(self):
         lib = self.lib
         self.assertIn("forgeCredential", lib.functions)

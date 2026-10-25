@@ -645,6 +645,21 @@ def repository_entries(catalog):
     return ordered
 
 
+def repository_model(catalog, repository):
+    """The branching model of `repository`: "release" or "basic" ("release" for one the catalog does not
+    have). The deciding entry's: a `repositories` entry's `rules`, or, for an application, "release" when
+    it releases (a trigger: release environment) and "basic" when it only deploys on branches. scripts/
+    rules.py applies the model's protections, and the pipeline's branch policy checks a pull request only
+    under "release" (pipeline_config.py describe says it as the entry's `rules`)."""
+    entries = repository_entries(catalog).get(repository)
+    if not entries:
+        return "release"
+    deciding = entries[0]
+    if deciding["kind"] == "repository":
+        return deciding["entry"]["rules"]
+    return "release" if deciding["releases"] else "basic"
+
+
 def entries_union(entries, field):
     """`field` (checks, actionsChecks) of every one of `entries` (a repository_entries() list), in their
     order, each name once."""
