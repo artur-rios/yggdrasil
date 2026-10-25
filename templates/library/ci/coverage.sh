@@ -9,7 +9,9 @@
 # REPORTGENERATOR_LICENSE, when set and not empty, is ReportGenerator's PRO license (yggdrasil.yml binds the Jenkins
 # credential reportgenerator-license to it). Without it -- a build of a renovate/* branch binds no credential, nor
 # does a run on your machine -- the free report is made instead, and the output says so. The license is passed to
-# ReportGenerator and never printed.
+# ReportGenerator as an argument. At its default verbosity ReportGenerator prints its arguments, and the first 6
+# characters of the license with them, which Jenkins' masking (it masks only the whole string) would not hide:
+# `-verbosity:Warning` keeps that block out of the log.
 set -euo pipefail
 
 SOLUTION='src/ArturRios.<Name>.sln'
@@ -25,7 +27,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export DOTNET_NOLOGO=1 DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
 
-# Raw results go to coverage/ and the report to coverage-report/: neither is committed (add both to .gitignore).
+# Raw results go to coverage/ and the report to coverage-report/: neither is committed.
 rm -rf coverage coverage-report
 dotnet test "$SOLUTION" --configuration Release --collect:"XPlat Code Coverage" --results-directory coverage
 
@@ -35,7 +37,7 @@ tools=$(mktemp -d)
 trap 'rm -rf "$tools"' EXIT
 dotnet tool install dotnet-reportgenerator-globaltool --version "$REPORTGENERATOR_VERSION" --tool-path "$tools"
 
-arguments=("-reports:coverage/**/coverage.cobertura.xml" "-targetdir:coverage-report" "-reporttypes:Html")
+arguments=("-reports:coverage/**/coverage.cobertura.xml" "-targetdir:coverage-report" "-reporttypes:Html" "-verbosity:Warning")
 if [ -n "${REPORTGENERATOR_LICENSE:-}" ]; then
   arguments+=("-license:$REPORTGENERATOR_LICENSE")
 else
