@@ -46,7 +46,8 @@ repository: yggdrasil
 #   actionsChecks      GitHub Actions job names (Windows, macOS), as GitHub reports them, required on
 #                      develop: only jobs that run on every pull request.
 #   credentials        The Jenkins credentials its checks may bind.
-#   releaseCredentials The Jenkins credentials its release build may bind (signing keys).
+#   releaseCredentials The Jenkins credentials its release build and finalize step may bind
+#                      (release.build and release.finalize: signing keys).
 #   release            none (default) | owner-tag: the owner pushes the version tags (`tags`, default
 #                      v*) and Jenkins builds the release, or packs and pushes the NuGet packages.
 #   rules              release (default): develop, main and release/* protected, as the repositories
@@ -287,7 +288,8 @@ environments:
 #   actionsChecks   GitHub Actions job names (Windows, macOS) required on develop, as GitHub
 #                   reports them.
 #   credentials     The Jenkins credentials its checks may bind; releaseCredentials, those its
-#                   release build may (signing keys).
+#                   release build and finalize step may (release.build and release.finalize:
+#                   signing keys).
 #   domain          The domain a site is served on, when it is not the host's DOMAIN.
 #   path            Where under the host a site lives (docs.artur-rios.tech/<repository>).
 #   apex            true: the site also answers on the bare domain (which its stack redirects to www).

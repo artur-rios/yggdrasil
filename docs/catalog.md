@@ -312,9 +312,10 @@ them; each once, and nothing else of the file. `--release` for a job that does n
   itself changed: an image bump or a new command must run before it is merged.
 - **run**: everything else. On a `renovate/*` branch `credentials` is always `{}`.
 
-Reuse works across the jobs of one repository: a `coverage` success posted by the library's job is reused by
-its docs site's job on the same commit. A deploy input is the exception when the build deploys: it runs
-anyway, since its archive goes into the image.
+Reuse works across the jobs of one repository: when two of its entries list the same check, a success one job
+posted counts for the other's build of the same commit. A deploy input is the exception when the build deploys:
+it runs anyway, since its archive goes into the image. So a library's docs site, which runs `coverage` only as its
+deploy input (its own `checks` are empty), always runs it, whatever the library's job posted.
 
 The branch policy is not a check of the file and is never reused. The command exits `1`, naming the
 problems, when the file is invalid or breaks the catalog rules above.
