@@ -30,6 +30,15 @@ checks:
       REPORTGENERATOR_LICENSE: reportgenerator-license
     archive: "coverage-report/**"        # the docs site's image is built with it
 
+# What the Branch Policy workflow checked besides the branching model, for a single-package library whose old
+# branch-policy.yml had a "Validate release version" step: a release/x.y.z pull request into main must carry that
+# version in the <Version> of the packed projects (ci/branch-policy.sh, run after yggdrasil's common branch policy).
+# A library whose old workflow had no such step, or that versions each package apart, deletes this section and
+# ci/branch-policy.sh.
+branchPolicy:
+  image: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+  run: sh ci/branch-policy.sh
+
 deploy:
   inputs: [coverage]                     # the docs application's deploy runs coverage, and copies its archive in
 
