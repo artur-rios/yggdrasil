@@ -291,3 +291,12 @@ build may), or why none is needed. docs/hosts.md lists the credentials to create
 | orpheus | `ANDROID_KEYSTORE_PASSWORD` | releaseCredential `orpheus-android-keystore-password` |
 | orpheus | `ANDROID_KEY_ALIAS` | releaseCredential `orpheus-android-key-alias` |
 | orpheus | `ANDROID_KEY_PASSWORD` | releaseCredential `orpheus-android-key-password` |
+
+## Notes for the repository tasks
+
+Written by hand, and kept when the table is regenerated: what a repository's branch must do because of a catalog
+decision above.
+
+- **dotnet-data** (Task 9): its tags stay `<package>@<version>` (`tags: "*@*"` in the catalog). The pipeline sets
+  `RELEASE_TAG` to the whole tag and `RELEASE_VERSION` to what follows its last `@`, so its `ci/pack.sh` must read
+  `RELEASE_TAG` and pack only that package, not every package of the solution at that version.

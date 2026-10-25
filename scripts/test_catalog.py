@@ -721,8 +721,15 @@ class RepositoryTests(unittest.TestCase):
         errors = self.errors(repositories=[{"id": "lib", "rules": "strict"}])
         self.assertTrue(any("repositories[0].rules" in e for e in errors), errors)
 
+    def test_given_a_package_at_version_pattern_when_validated_then_it_is_valid(self):
+        # A library that versions each package apart tags <package>@<version> (ArturRios.Data.Sqlite@3.1.0).
+        for good in ("*@*", "ArturRios.Data.*@[0-9]*"):
+            with self.subTest(good=good):
+                self.assertEqual(self.errors(repositories=[{"id": "lib", "release": "owner-tag", "tags": good}]), [])
+
     def test_given_a_bad_tag_pattern_when_validated_then_it_is_an_error(self):
-        for bad in ("", "v* ", "v/*", 3, None):
+        # '@' first would be a ref git refuses (`@` alone, `@{...}` reads as a reflog).
+        for bad in ("", "v* ", "v/*", 3, None, "@*", "@"):
             with self.subTest(bad=bad):
                 errors = self.errors(repositories=[{"id": "lib", "release": "owner-tag", "tags": bad}])
                 self.assertTrue(any("repositories[0].tags" in e for e in errors), errors)
@@ -1019,7 +1026,10 @@ class RealCatalogTests(unittest.TestCase):
                 if "application" in kinds:
                     self.assertIn(name, applications)
                 if "library" in kinds:
-                    self.assertEqual((repositories[name]["release"], repositories[name]["tags"]), ("owner-tag", "[0-9]*"))
+                    # The owner's bare version tags (1.2.3), but dotnet-data's, which version each package
+                    # apart: <package>@<version>, as its publish workflow on GitHub took them.
+                    tags = "*@*" if name == "dotnet-data" else "[0-9]*"
+                    self.assertEqual((repositories[name]["release"], repositories[name]["tags"]), ("owner-tag", tags))
                     self.assertEqual(applications[f"{name}-docs"].get("repository"), name)
                 if "ci" in kinds:
                     self.assertIn(name, repositories)

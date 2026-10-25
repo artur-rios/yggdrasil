@@ -131,8 +131,10 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final int ACTIONS_POLL_SECONDS = 60
 @Field static final int TAG_POLL_SECONDS = 10
 @Field static final int TAG_WAIT_SECONDS = 600
-// A tag of a release (v1.4.0, 1.4.0), before it reaches git or the forge.
-@Field static final String TAG = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}'
+// A tag of a release (v1.4.0, 1.4.0, or <package>@<version> for a library that versions each of its packages
+// apart: ArturRios.Data.Sqlite@3.1.0), before it reaches git or the forge. `@` never first: git refuses a ref
+// named `@`, and a tag must start with a letter or digit like every name the pipeline takes.
+@Field static final String TAG = '[A-Za-z0-9][A-Za-z0-9._@-]{0,99}'
 // The version the library was loaded at (a yggdrasil release tag; a branch name is accepted too), and
 // what of this repository is the owner's data, always taken from main (checkoutTools).
 @Field static final String LIBRARY_VERSION = '[A-Za-z0-9][A-Za-z0-9._/-]{0,99}'
@@ -1073,7 +1075,7 @@ Map releaseFromTag(Map ctx, Map entry, Map releaseConfig, String tag, String sha
   if (githubPending) {
     echo "GitHub copy pending: the GitHub Actions checks were skipped, so ${tag} is published on the git server only. The release-resume job (REPOSITORY=${ctx.app}, TAG=${tag}) makes its GitHub copy."
   }
-  List urls = publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx) && !skipped)
+  List urls = publishRelease(ctx, entry, tagVersion(tag), tag, sha, files, mirrorsReleases(ctx) && !skipped)
   return [urls: urls, missing: files.missing, reason: files.reason, githubPending: githubPending, packages: nuget != null,
           released: true]
 }
@@ -1239,7 +1241,7 @@ List buildReleaseFiles(Map ctx, Map entry, Map build, String tag, String sha) {
       checkoutTag(ctx, tag, sha)
       withCheckCredentials([name: 'release-build', credentials: build.credentials], entry, 'releaseCredentials') { String envFile ->
         withEnv(["YGG_IMAGE=${build.image}", "YGG_RUN=${build.run}", "YGG_ENV_FILE=${envFile ?: "${scratch()}/release-build.env"}",
-                 "YGG_TAG=${tag}", "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+                 "YGG_TAG=${tag}", "YGG_VERSION=${tagVersion(tag)}"]) {
           int code = sh(script: '''
             umask 077
             mkdir -p "$(dirname "$YGG_ENV_FILE")"
@@ -1367,7 +1369,7 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
       }
       if (validate) {
         withEnv(["YGG_IMAGE=${validate.image}", "YGG_RUN=${validate.run}", "YGG_TMP=${scratch()}", "YGG_TAG=${tag}",
-                 "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+                 "YGG_VERSION=${tagVersion(tag)}"]) {
           int code = sh(script: '''
             umask 077
             mkdir -p "$YGG_TMP"
@@ -1423,7 +1425,9 @@ List publishRelease(Map ctx, Map entry, String version, String tag, String sha, 
         }
         refuseLinks(true, 'the release files')
       }
-      withEnv(["YGG_TMP=${tmp}", "YGG_TAG=${tag}", "YGG_VERSION=${version}", "YGG_TAGS=${entry?.tags ?: ctx.tags}"]) {
+      // The previous tag the notes start from: one of the same package for a <package>@<version> tag.
+      withEnv(["YGG_TMP=${tmp}", "YGG_TAG=${tag}", "YGG_VERSION=${version}",
+               "YGG_TAGS=${previousTagPattern(tag, (entry?.tags ?: ctx.tags) as String)}"]) {
         sh(script: '''
           mkdir -p "$YGG_TMP"
           set --
@@ -1797,7 +1801,7 @@ void packPackages(Map ctx, Map nuget, String tag, String sha) {
     try {
       checkoutTag(ctx, tag, sha)
       withEnv(["YGG_IMAGE=${nuget.image}", "YGG_RUN=${nuget.run}", "YGG_TMP=${scratch()}", "YGG_TAG=${tag}",
-               "YGG_VERSION=${tag.replaceFirst('^v', '')}"]) {
+               "YGG_VERSION=${tagVersion(tag)}"]) {
         int code = sh(script: '''
           umask 077
           mkdir -p "$YGG_TMP"
@@ -2889,6 +2893,24 @@ List resolve(Map catalog, String app) {
     plan << resolved
   }
   return plan
+}
+
+// The version a release tag names, RELEASE_VERSION and YGG_VERSION: after the last `@` of a
+// <package>@<version> tag (ArturRios.Data.Sqlite@3.1.0 is 3.1.0), else the tag without a leading v (v1.4.0
+// and 1.4.0 are both 1.4.0).
+@NonCPS
+String tagVersion(String tag) {
+  int at = tag.lastIndexOf('@')
+  return at >= 0 ? tag.substring(at + 1) : tag.replaceFirst('^v', '')
+}
+
+// What `git describe --match` looks for, for the tag before `tag`: the same package's tags (<package>@*) for a
+// <package>@<version> tag, so a package's notes never start from another package's release; else `tags`, the
+// entry's pattern.
+@NonCPS
+String previousTagPattern(String tag, String tags) {
+  int at = tag.lastIndexOf('@')
+  return at >= 0 ? tag.substring(0, at) + '@*' : tags
 }
 
 // Whether `text` matches a catalog tag pattern (a glob with * and [classes], as catalog.py's TAG_PATTERN

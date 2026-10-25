@@ -52,7 +52,10 @@ mounts as `static/coverage-report`). The docs application's stack files are `tem
   report and says so in the log.
 - **`publish.nuget`** (`ci/pack.sh`): on the owner's version tag, packs into `artifacts/`; the release agent pushes
   `artifacts/*.nupkg` with the NuGet key, which the packing never sees. With `RELEASE_VERSION` set (the tag without a
-  `v`), each package must carry that version, as the old workflow's tag-against-`<Version>` check did.
+  `v`), each package must carry that version, as the old workflow's tag-against-`<Version>` check did. A library that
+  versions each package apart tags `<package>@<version>` (catalog `tags: "*@*"`): `RELEASE_VERSION` is what follows
+  the `@`, and its `ci/pack.sh` must pack only the package `RELEASE_TAG` names, since the others keep their own
+  versions.
 
 ## The docs site
 

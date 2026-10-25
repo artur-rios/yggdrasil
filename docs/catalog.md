@@ -161,7 +161,7 @@ repositories:
 | `credentials` | `[]` | The only Jenkins credentials the repository's checks may bind. Jenkins credential ids: letters, digits, `.`, `_` and `-`, starting with a letter or digit. |
 | `releaseCredentials` | `[]` | The only Jenkins credentials its release build (`release.build.credentials` in `yggdrasil.yml`) may bind: signing keys and the like. Kept apart from `credentials` because a check runs any branch's code: an id listed here is never bindable by a check, and an id in both lists is an error. Same id format. |
 | `release` | `none` | `none`: no versions. `owner-tag`: the owner creates the version tags by hand, matching `tags`. (Applications are different: Jenkins creates their `v*` tags.) |
-| `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*` and `[...]` classes (`[0-9]*` for versions without a `v`). Only meaningful with `release: owner-tag`. |
+| `tags` | `v*` | The tag pattern, a glob of letters, digits, `.`, `_`, `-`, `*`, `[...]` classes and `@` (not first): `[0-9]*` for versions without a `v`, `*@*` for a library that versions each package apart (`ArturRios.Data.Sqlite@3.1.0`). Only meaningful with `release: owner-tag`. The release's version (`RELEASE_VERSION`) is the tag without a leading `v`, or what follows the last `@` of an `@` tag; such a release's notes start from the same package's previous tag (`<package>@*`). |
 | `rules` | `release` | `release`: the full branching model (protected `develop`, `main` and `release/*`). `basic`: `develop` and `main` only, without force pushes or deletion; the repository's default branch is left as it is. |
 
 Any other key is an error. Read the list with `python3 scripts/catalog.py repositories` (ids) and one

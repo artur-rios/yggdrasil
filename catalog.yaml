@@ -61,9 +61,9 @@ repositories:
     checks: [test, coverage]
     credentials: [reportgenerator-license]
     rules: release
-  - id: dotnet-data
+  - id: dotnet-data               # versions each package apart: ArturRios.Data.Sqlite@3.1.0
     release: owner-tag
-    tags: "[0-9]*"
+    tags: "*@*"
     checks: [test, coverage]
     credentials: [reportgenerator-license]
     rules: release

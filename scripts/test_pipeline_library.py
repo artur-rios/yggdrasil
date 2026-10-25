@@ -930,7 +930,7 @@ class ReleaseLibraryTests(unittest.TestCase):
         start, end = lib.functions["releaseFromTag"]
         body = lib.code[start:end]
         self.assertIn("boolean githubPending = mirrorsReleases(ctx) && skipped", body)
-        self.assertIn("publishRelease(ctx, entry, tag.replaceFirst('^v', ''), tag, sha, files, mirrorsReleases(ctx) && !skipped)", body)
+        self.assertIn("publishRelease(ctx, entry, tagVersion(tag), tag, sha, files, mirrorsReleases(ctx) && !skipped)", body)
         self.assertRegex(body, r"if \(githubPending\) \{\s*echo \"GitHub copy pending: ")
         start, end = lib.functions["publishRelease"]
         body = lib.code[start:end]
@@ -1000,6 +1000,34 @@ class TagReleaseLibraryTests(unittest.TestCase):
     def body(self, name):
         start, end = self.lib.functions[name]
         return self.lib.code[start:end]
+
+    def test_given_package_at_version_tags_when_checked_then_they_are_tags_but_never_start_with_an_at(self):
+        # A library that versions each package apart (dotnet-data) tags <package>@<version>; the TAG pattern
+        # every release path checks (tag builds, release-resume, actions-release, tag-check) must take it.
+        match = re.search(r"static final String TAG = '([^']+)'", self.lib.code)
+        tag = re.compile(match[1])
+        for good in ("v1.4.0", "1.4.0", "ArturRios.Data.Sqlite@3.1.0"):
+            self.assertIsNotNone(tag.fullmatch(good), good)
+        for bad in ("@3.1.0", "@", "-v1", "a b", "x/y", "a@{1}"):
+            self.assertIsNone(tag.fullmatch(bad), bad)
+
+    def test_given_a_release_tag_when_its_version_is_read_then_an_at_tag_gives_what_follows_its_last_at(self):
+        # RELEASE_VERSION is what a package must carry (pack.sh compares it): 3.1.0 for
+        # ArturRios.Data.Sqlite@3.1.0, 1.4.0 for v1.4.0 and 1.4.0. One helper for every place that sets it.
+        body = self.body("tagVersion")
+        self.assertIn("int at = tag.lastIndexOf('@')", body)
+        self.assertIn("return at >= 0 ? tag.substring(at + 1) : tag.replaceFirst('^v', '')", body)
+        self.assertEqual(self.lib.code.count("replaceFirst('^v', '')"), 1, "only tagVersion strips the v")
+        self.assertEqual(self.lib.code.count('"YGG_VERSION=${tagVersion(tag)}"'), 3)
+
+    def test_given_an_at_tag_when_the_notes_look_for_the_previous_tag_then_only_its_package_is_matched(self):
+        # git describe --match takes the previous release of the same package, so a package's notes never
+        # start from another package's tag; any other tag keeps the entry's pattern.
+        body = self.body("previousTagPattern")
+        self.assertIn("return at >= 0 ? tag.substring(0, at) + '@*' : tags", body)
+        publish = self.body("publishRelease")
+        self.assertIn('"YGG_TAGS=${previousTagPattern(tag, (entry?.tags ?: ctx.tags) as String)}"', publish)
+        self.assertIn('--match "$YGG_TAGS" --exclude "$YGG_TAG"', publish)
 
     def test_given_a_tag_build_when_read_then_only_an_owner_tag_matching_its_pattern_releases(self):
         call = self.body("call")

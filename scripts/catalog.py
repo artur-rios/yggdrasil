@@ -65,8 +65,10 @@ USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 BOT_USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[bot\])?\Z")
 # A Jenkins credential id (what a `credentials(...)` binding names).
 CREDENTIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-# A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*).
-TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-]+\Z")
+# A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*), and '@'
+# (never first) for the <package>@<version> tags of a library that versions each package apart (*@*). The
+# pipeline's TAG (yggdrasilPipeline.groovy) takes the same characters in a tag.
+TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-][A-Za-z0-9.*_\[\]@-]*\Z")
 FORGES = ("forgejo", "github")
 # A Jenkins agent label: what an environment's id is by default, so the same shape.
 AGENT_NAME = ID
@@ -408,7 +410,8 @@ def _repository_errors(catalog, systems):
         if "rules" in entry and entry["rules"] not in RULES:
             errors.append(f"{where}.rules: one of {list(RULES)}")
         if "tags" in entry and not (isinstance(entry["tags"], str) and TAG_PATTERN.match(entry["tags"])):
-            errors.append(f"{where}.tags: a tag pattern of letters, digits, '.', '_', '-', '*' and [classes], e.g. v*")
+            errors.append(f"{where}.tags: a tag pattern of letters, digits, '.', '_', '-', '*', [classes] and '@' (not "
+                          "first), e.g. v* or *@*")
         errors += _check_list_errors(where, entry)
     return errors
 
