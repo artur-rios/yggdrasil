@@ -696,7 +696,7 @@ systems:
         health: http://github-readme-stats:8080/healthz
         domain: techcraftsmen.net
         host: readme-stats
-        checks: []
+        checks: [test]            # test.yml's job: tests, lint, bench, Prettier (basic rules: not required)
         environments:
           production: { trigger: branch, branches: master }
 
