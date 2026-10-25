@@ -256,7 +256,9 @@ the tag's checkout with `RELEASE_TAG` and `RELEASE_VERSION` in its environment; 
   offers the skip past the GitHub Actions checks ([the skip](setup.md#github-actions-and-the-skip)), nor does
   `actions-release` attach Windows files to it afterwards. It runs in a workspace of its own, from a fresh
   checkout of the tag and of yggdrasil's tools, so nothing `validate` left behind reaches it. A resumed release
-  with `finalize` uploads its draft's files again instead of reusing them by name and size.
+  with `finalize` uploads its draft's files again instead of reusing them by name and size, and deletes the
+  draft's files that are not in its set. Only `files` reach the release: anything `finalize` writes elsewhere in
+  the workspace (the upload set's own directory included) is left out.
 
 Every file the release uploads, from any step, must have its own name (a release shows one file per name):
 two files named alike fail the release before anything irreversible, a library's NuGet push included.

@@ -1830,7 +1830,11 @@ not reproducible can give a file with the same size and other bytes than the one
 GitHub copy would then differ in content; a different size stops the run. A release with `release.finalize` is
 the exception for its **drafts**: their manifest and signature are made again in this run, so a draft's files are
 deleted and uploaded again (`publish-release.sh --replace-files`) rather than reused by name and size, and a
-draft never keeps an older file its new manifest does not describe. A published release is never changed.
+draft's files whose names are not in the run's set are deleted, so a draft never keeps a file its new manifest
+does not describe. A published release is never changed. One consequence: if Forgejo's release was published and
+publishing GitHub's copy then failed, `release-resume` uploads GitHub's draft again from its own run, so the two
+copies can hold **different bytes** (a build that is not reproducible), each one matching the manifest it carries;
+compare the two manifests if that matters.
 And if the merge went through but the
 tag did not, the message says *merged as `<sha>`, but not tagged* and names a third parameter: run
 `release-resume` with `COMMIT=<sha>` too. Only the Jenkins user may create an application's `v*` tags (on
