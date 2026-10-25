@@ -1056,12 +1056,14 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.eventually(lambda: self.branch_exists(target, "develop"), "the develop branch on the target")
         self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
 
-        # ...and a tag pushed to the source later goes with the next sync.
+        # ...and a tag pushed to the source later goes with the sync that push starts (sync_on_commit, above).
+        # No sync is asked for besides: a second one would push the same tag at the same time, the one that
+        # loses fails with "reference already exists", and Forgejo keeps that as the mirror's last error,
+        # which verify below reads as a failed mirror.
         clone = self.clone(OWNER, source)
         self.assertEqual(self.git(OWNER, "tag", "v0.0.1", cwd=clone).returncode, 0)
         pushed = self.git(OWNER, "push", "origin", "v0.0.1", cwd=clone)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
-        owner.request("POST", f"/repos/{OWNER}/{source}/push_mirrors-sync")
         self.eventually(lambda: "v0.0.1" in self.tags(target), "the tag on the target")
 
         # Run again: the mirror is there and has pushed, so nothing is written.
