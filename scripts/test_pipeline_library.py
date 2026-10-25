@@ -1156,6 +1156,35 @@ class ReleaseLibraryTests(unittest.TestCase):
             # A directory of that name is not a file: only files are uploaded.
             (root / "windows" / "setup.msi").mkdir()
             self.assertEqual(names(), ["SHA256SUMS", "app.tar.gz"])
+            # A name with a newline in it is one name, not two lines that could each look unique.
+            (root / "build" / "a\nb").write_text("f")
+            (root / "windows" / "a\nb").write_text("g")
+            self.assertEqual(names(), ["SHA256SUMS", "a\nb", "app.tar.gz"])
+            # Many clashes: all of them, nothing cut off in the pipe (refuseDuplicateNames names 20).
+            for n in range(30):
+                (root / "build" / f"dup-{n:02}").write_text("h")
+                (root / "windows" / f"dup-{n:02}").write_text("i")
+            self.assertEqual(len(names()), 33)
+
+    def test_given_release_finalize_when_published_then_a_drafts_files_are_uploaded_again(self):
+        # A resumed release with finalize must not keep a draft's older file of the same name and size: the
+        # upload set's map says so (replace), and publishRelease passes --replace-files to publish-release.sh.
+        self.assertIn("files.replace = releaseConfig.finalize != null", self.body("releaseFiles"))
+        body = self.body("publishRelease")
+        self.assertRegex(body, r"if \(files\.replace\) \{\s*arguments << '--replace-files'")
+        self.assertLess(body.index("'--replace-files'"), body.index("'publish-release.sh'"))
+        script = (ROOT / "scripts" / "publish-release.sh").read_text(encoding="utf-8")
+        self.assertIn('"$replace" == true && "${release_draft[$side]:-}" == true', script)
+
+    def test_given_a_release_with_finalize_and_windows_when_actions_release_runs_then_it_points_at_release_resume(self):
+        # Windows files attached afterwards would be outside what finalize's manifest covers: refused before
+        # anything is asked of GitHub, naming release-resume.
+        body = self.body("actionsRelease")
+        refused = body.index("if (needsWindowsFiles(releaseConfig)) {")
+        self.assertLess(body.index("releaseProblem(releaseConfig)"), refused)
+        self.assertLess(refused, body.index("windowsFiles("))
+        self.assertRegex(body[refused:], r"^if \(needsWindowsFiles\(releaseConfig\)\) \{\s*error \"\$\{app\}'s yggdrasil\.yml at "
+                                         r"\$\{tag\} declares release\.finalize[^\n]*release-resume job \(REPOSITORY=\$\{app\}, TAG=\$\{tag\}\)")
 
     def test_given_a_failing_validation_when_read_then_publish_release_is_never_reached(self):
         # The drafts are made by publish-release.sh: a validation that fails before it is called leaves

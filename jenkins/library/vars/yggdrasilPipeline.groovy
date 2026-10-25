@@ -1236,8 +1236,9 @@ void deleteReleaseBranch(Map ctx) {
 //     a skip, or when that fails, they are missing;
 //   - everything gathered on the release agent, release.validate run over it, and the validated set
 //     stashed as release-files (gatherReleaseFiles); then release.finalize, whose files join the set
-//     (finalizeReleaseFiles: the stash release-upload).
-// Returns [stash: the upload set's stash, missing: the missing Windows files (globs, or the workflow's
+//     (finalizeReleaseFiles, in a node of its own: the stash release-upload).
+// Returns [stash: the upload set's stash, replace: whether a draft's files are uploaded again (with
+// release.finalize), missing: the missing Windows files (globs, or the workflow's
 // name), reason: why they are missing].
 Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, boolean skipped, int seconds) {
   Map files = [stash: null, missing: [], reason: '']
@@ -1260,6 +1261,8 @@ Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, 
       }
     }
     files.stash = gatherReleaseFiles(ctx, entry, releaseConfig, tag, sha, built, windows)
+    // A manifest signed now describes this run's files: a draft's older ones are uploaded again.
+    files.replace = releaseConfig.finalize != null
   }
   return files
 }
@@ -1360,7 +1363,8 @@ Map windowsFiles(Map ctx, Map windows, String tag, int seconds) {
 
 // Whether a release cannot go out without its Windows files: it declares release.windows and
 // release.finalize, which must cover the whole set. Such a release is never skipped past its GitHub Actions
-// checks (waitForReleaseActions) and stops when the Windows files are missing (releaseFiles).
+// checks (waitForReleaseActions), stops when the Windows files are missing (releaseFiles), and gets no
+// Windows files attached afterwards (actionsRelease): release-resume makes it whole.
 @NonCPS
 boolean needsWindowsFiles(Map releaseConfig) {
   return releaseConfig != null && releaseConfig.windows != null && releaseConfig.finalize != null
@@ -1563,10 +1567,14 @@ List sumsChanged(String before, String after) {
 }
 
 // Stage Publish the release, on the publish agent: the notes (release_notes.py: the version's CHANGELOG.md
-// section, else the pull requests merged since the previous tag), the files (the release-files stash,
-// nothing else) and publish-release.sh, with the release's GitHub copy when `mirrorReleases` (the
-// catalog's mirror.releases, unless the GitHub Actions checks were skipped: releaseFromTag) -- the tag
-// waited for first, outside node(): the mirror pushes it. Returns the releases' addresses.
+// section, else the pull requests merged since the previous tag), the files (the upload set's stash,
+// files.stash -- release-files, or release-upload with release.finalize's files -- and nothing else) and
+// publish-release.sh, with the release's GitHub copy when `mirrorReleases` (the catalog's
+// mirror.releases, unless the GitHub Actions checks were skipped: releaseFromTag) -- the tag waited for
+// first, outside node(): the mirror pushes it. With release.finalize, publish-release.sh gets
+// --replace-files: a draft's files of the same name are uploaded again, not reused by their size, so a
+// resumed release never keeps an old file its new manifest does not describe. Returns the releases'
+// addresses.
 List publishRelease(Map ctx, Map entry, String version, String tag, String sha, Map files, boolean mirrorReleases) {
   List urls = []
   stage('Publish the release') {
@@ -1606,6 +1614,9 @@ List publishRelease(Map ctx, Map entry, String version, String tag, String sha, 
       List arguments = [ctx.repo, tag, sha, tag, "${tmp}/notes.md", "${env.WORKSPACE}/release-files"]
       if (mirrorReleases) {
         arguments << '--mirror-releases'
+      }
+      if (files.replace) {
+        arguments << '--replace-files'
       }
       if (files.missing) {
         arguments += ['--missing', files.missing.join(',')]
@@ -2080,6 +2091,11 @@ void actionsRelease() {
         String problem = releaseProblem(releaseConfig)
         if (problem) {
           error "yggdrasil.yml's release cannot be used: ${problem}"
+        }
+        // Attached afterwards, Windows files would be outside what release.finalize covered (its manifest,
+        // its signature): such a release is only ever made whole, by release-resume.
+        if (needsWindowsFiles(releaseConfig)) {
+          error "${app}'s yggdrasil.yml at ${tag} declares release.finalize, which must cover the Windows files: they are never attached afterwards. Run the release-resume job (REPOSITORY=${app}, TAG=${tag}), which builds them and runs release.validate and release.finalize on the whole set."
         }
         Map got = null
         stage('Windows files') {

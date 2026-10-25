@@ -302,6 +302,26 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertEqual(result.stdout, "17\thttps://example/release/17\n")
         self.assertTrue(self.body("releases")["draft"])
 
+    def test_given_a_file_of_a_github_release_when_deleted_by_name_then_its_asset_is_deleted(self):
+        # publish-release.sh --replace-files deletes a draft's file before it uploads this run's: by name, the
+        # asset's id looked up in the release's list.
+        self.respond("assets", (0, [{"id": 40, "name": "app.zip", "size": 9}, {"id": 41, "name": "setup.msi", "size": 4}]))
+        self.respond("41", (0, None, 204))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+        self.assertIn("/repos/someone/app/releases/17/assets?per_page=100&page=1", self.request("assets"))
+        request = self.request("41")
+        self.assertIn("--request DELETE", request)
+        self.assertTrue(request.strip().endswith("https://api.example/repos/someone/app/releases/assets/41"), request)
+
+    def test_given_a_name_a_github_release_does_not_have_when_deleted_then_it_exits_four(self):
+        # An answer, not an error: there is nothing of that name to replace.
+        self.respond("assets", (0, [{"id": 40, "name": "app.zip", "size": 9}]))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual(result.returncode, 4)
+        self.assertIn("release 17 has no file named setup.msi", result.stderr)
+        self.assertFalse((self.state / "40.request.1").exists(), "nothing is deleted")
+
     def test_given_tags_with_and_without_a_prerelease_part_when_creating_github_releases_then_only_those_are_prereleases(self):
         # The GitHub copy of a release (publish-release.sh --mirror-releases) and github.sh's releases are
         # made here: a 1.2.0-rc.1 must not become GitHub's latest release, a 1.2.0+build.5 must.
@@ -612,7 +632,7 @@ class ForgeGitHubTests(ForgeTestCase):
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         for command in ("set-status", "get-statuses", "merge-pr", "create-tag", "create-release",
                         "upload-release-file", "publish-release", "find-release", "release-tags", "release-files",
-                        "tag-sha", "delete-branch"):
+                        "delete-release-file", "tag-sha", "delete-branch"):
             self.assertRegex(result.stderr, rf"(?m)^  {command} +<repo>", command)
         self.assertEqual(list(self.state.iterdir()), [])
 
@@ -815,6 +835,21 @@ class ForgeForgejoTests(ForgeTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "17\thttps://example/release/17\n")
         self.assertTrue(self.body("releases")["draft"])
+
+    def test_given_a_file_of_a_forgejo_release_when_deleted_by_name_then_its_attachment_is_deleted(self):
+        self.respond("assets", (0, [{"id": 40, "name": "app.zip", "size": 9}, {"id": 41, "name": "setup.msi", "size": 4}]))
+        self.respond("41", (0, None, 204))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+        request = self.request("41")
+        self.assertIn("--request DELETE", request)
+        self.assertTrue(request.strip().endswith("https://api.example/repos/someone/app/releases/17/assets/41"), request)
+
+    def test_given_a_name_a_forgejo_release_does_not_have_when_deleted_then_it_exits_four(self):
+        self.respond("assets", (0, []))
+        result = self.forge("delete-release-file", "app", "17", "setup.msi")
+        self.assertEqual(result.returncode, 4)
+        self.assertIn("release 17 has no file named setup.msi", result.stderr)
 
     def test_given_tags_with_and_without_a_prerelease_part_when_creating_forgejo_releases_then_only_those_are_prereleases(self):
         # The release on the installation's own server follows the same rule as its GitHub copy.

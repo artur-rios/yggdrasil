@@ -1684,6 +1684,20 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIsNone(self.release_of(SIGNED, "v1.0.0"))
         self.assertTrue(self.pull_request(SIGNED, number)["merged"])
 
+        # A draft of the release is there already, as an earlier resume that stopped half way would leave it,
+        # with an older Windows file of the same name and size as the one this run builds: with finalize, the
+        # draft's file must be replaced, not reused because its name and size match.
+        stale = self.temp / "stale" / "shop-signed-setup.msi"
+        stale.parent.mkdir(exist_ok=True)
+        stale.write_text("stale! installer\n")
+        self.assertEqual(len(stale.read_text()), len("signed installer\n"))
+        merge = self.tag_commit(SIGNED, "v1.0.0")
+        created = self.owner_forge("create-release", SIGNED, "v1.0.0", merge, "v1.0.0", "--draft")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        draft_id = created.stdout.split("\t")[0]
+        uploaded = self.owner_forge("upload-release-file", SIGNED, draft_id, str(stale))
+        self.assertEqual(uploaded.returncode, 0, uploaded.stderr)
+
         # 3. The Windows run works again: release-resume runs windows, validate and finalize on the whole set.
         (state / "run").write_text("success\n")
         resumed = self.release_resume(SIGNED, "v1.0.0")
@@ -1691,12 +1705,53 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIn("SIGNED-FINALIZED-2-FILES", resumed.console)
         release = self.release_of(SIGNED, "v1.0.0")
         self.assertFalse(release["draft"])
+        self.assertEqual(str(release["id"]), draft_id, "the draft that was there is the one published")
+        installer, = [a for a in release["assets"] if a["name"] == "shop-signed-setup.msi"]
+        self.assertEqual(self.download(installer["browser_download_url"]), b"signed installer\n")
         self.assertEqual(self.assets(release), {"shop-signed.tar.gz": len("signed\n"),
                                                 "shop-signed-setup.msi": len("signed installer\n"),
                                                 "shop-signed-manifest.txt": 2 * 64 + 2 * 2 + len(
                                                     "./build/dist/shop-signed.tar.gz\n"
                                                     "./windows/shop-signed-windows/shop-signed-setup.msi\n")})
         self.assertNotIn("## Missing files", release["body"])
+
+        # Run again, the published release is left as it is: nothing replaced on a public release.
+        again = self.release_resume(SIGNED, "v1.0.0")
+        self.assertEqual(again.result, "SUCCESS", again.console[-6000:])
+
+        def files(of):
+            # The same attachments (ids), names and sizes; download_count moved with the download above.
+            return sorted((a["id"], a["name"], a["size"]) for a in of["assets"])
+
+        self.assertEqual(files(self.release_of(SIGNED, "v1.0.0")), files(release))
+
+        # 4. actions-release never attaches Windows files to it: they are part of what finalize covers.
+        before = self.last_number("actions-release", None)
+        github_before = len(self.github_calls(SIGNED))
+        self.jenkins.post(job_path("actions-release") + "/buildWithParameters", {"REPOSITORY": SIGNED, "TAG": "v1.0.0"})
+        refused = self.wait_for_build("actions-release", None, after=before, timeout=900)
+        self.assertEqual(refused.result, "FAILURE", refused.console[-4000:])
+        self.assertIn(f"{SIGNED}'s yggdrasil.yml at v1.0.0 declares release.finalize, which must cover the Windows files: "
+                      f"they are never attached afterwards. Run the release-resume job (REPOSITORY={SIGNED}, TAG=v1.0.0)",
+                      refused.console)
+        self.assertEqual(len(self.github_calls(SIGNED)), github_before, "refused before anything is asked of GitHub")
+
+    def owner_forge(self, *arguments):
+        """scripts/forge.sh run here as the owner, against the run's Forgejo."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("FORGE_", "GITHUB_")) and k != "GH_TOKEN"}
+        env.update(FORGE_TYPE="forgejo", FORGE_API_URL=f"{self.url}/api/v1", FORGE_OWNER=OWNER,
+                   FORGE_TOKEN=self.tokens[OWNER], CURL_CA_BUNDLE=os.environ["SSL_CERT_FILE"])
+        return subprocess.run(["bash", str(ROOT / "scripts" / "forge.sh"), *arguments], env=env, capture_output=True,
+                              text=True, timeout=120, stdin=subprocess.DEVNULL)
+
+    def download(self, url):
+        """A release file's bytes (the repositories are private: a token is needed). Forgejo names its files at
+        its own address (FORGE_URL, on the containers' network): the test reaches it at self.url."""
+        if url.startswith(FORGE_URL):
+            url = self.url + url[len(FORGE_URL):]
+        request = urllib.request.Request(url, headers={"Authorization": f"token {self.tokens[OWNER]}"})
+        with urllib.request.urlopen(request, timeout=30) as answer:
+            return answer.read()
 
     def test_given_github_not_answering_when_released_then_the_skip_is_offered_and_recorded(self):
         # The release as this build left it (the actions-release test may have attached files since).
