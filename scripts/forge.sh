@@ -28,7 +28,11 @@
 # checked. release-tags lists the published releases (drafts left out), each with the target it was
 # released from: create-release sends the release's commit as target_commitish, so for a release the
 # pipeline made it is the commit the tag must still point to (what the tag-check job compares with
-# tag-sha); a release made by hand may name a branch there instead.
+# tag-sha); a release made by hand may name a branch there instead. create-release makes the release a
+# prerelease exactly when the version its tag names has a SemVer pre-release part (prerelease_tag):
+# 1.2.0-alpha.1, v1.2.0-rc.2, Pkg@1.2.0-beta.1 (an `@` tag's version is what follows its last `@`). Any
+# other tag is a normal release, 1.2.0+build.5 (build metadata, no pre-release part) among them. The same
+# rule on both servers, so a release and its GitHub copy agree, and GitHub never makes a prerelease latest.
 #
 # Exit 0 is success; 1 an error, explained on stderr as "forge: <what> failed: <the server's message>";
 # 3 (delete-branch only) that the server keeps the branch, which is not an error to stop a release for;
@@ -243,6 +247,23 @@ release_options() {
   [[ -z "$notes_file" || -f "$notes_file" ]] || die "create-release: no notes file $notes_file"
 }
 
+# prerelease_tag <tag>: true when the tag's version (after its last `@`, else without a leading v: the
+# pipeline's RELEASE_VERSION) is a SemVer version with a pre-release part, else false. Build metadata
+# (+...) may follow either way and is not a pre-release part, even when it has a dash in it.
+prerelease_tag() {
+  local version=$1 identifier='[0-9A-Za-z-]+'
+  if [[ "$version" == *@* ]]; then
+    version=${version##*@}
+  else
+    version=${version#v}
+  fi
+  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-$identifier(\.$identifier)*(\+$identifier(\.$identifier)*)?$ ]]; then
+    echo true
+  else
+    echo false
+  fi
+}
+
 # ---- GitHub ----
 
 github_set_status() { set_status "$@"; }
@@ -291,8 +312,9 @@ github_create_release() {
     notes=(--argjson generate false --rawfile notes "$notes_file")
   fi
   out=$(request "create-release $tag" POST "$(repo_url "$repo")/releases" --json "$(jq -n \
-    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" "${notes[@]}" \
-    '{tag_name: $tag, target_commitish: $sha, name: $title, draft: $draft, prerelease: false}
+    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" \
+    --argjson prerelease "$(prerelease_tag "$tag")" "${notes[@]}" \
+    '{tag_name: $tag, target_commitish: $sha, name: $title, draft: $draft, prerelease: $prerelease}
      + (if $generate then {generate_release_notes: true} else {body: $notes} end)')") || return 1
   if [[ "$draft" == true ]]; then
     jq -e '.draft == true' <<<"$out" >/dev/null || die "create-release failed: the server did not create an unpublished draft release for $tag"
@@ -447,8 +469,9 @@ forgejo_create_release() {
   local notes=(--arg notes "")
   [[ -z "$notes_file" ]] || notes=(--rawfile notes "$notes_file")
   out=$(request "create-release $tag" POST "$(repo_url "$repo")/releases" --json "$(jq -n \
-    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" "${notes[@]}" \
-    '{tag_name: $tag, target_commitish: $sha, name: $title, body: $notes, draft: $draft, prerelease: false}')") || return 1
+    --arg tag "$tag" --arg sha "$sha" --arg title "$title" --argjson draft "$draft" \
+    --argjson prerelease "$(prerelease_tag "$tag")" "${notes[@]}" \
+    '{tag_name: $tag, target_commitish: $sha, name: $title, body: $notes, draft: $draft, prerelease: $prerelease}')") || return 1
   if [[ "$draft" == true ]]; then
     jq -e '.draft == true' <<<"$out" >/dev/null || die "create-release failed: the server did not create an unpublished draft release for $tag"
   fi

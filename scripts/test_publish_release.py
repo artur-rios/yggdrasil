@@ -205,6 +205,18 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertEqual((self.draft("forgejo"), self.draft("github")), ("true", "true"))
         self.assertEqual([c for c in self.calls() if " publish-release " in c], [])
 
+    def test_given_a_prerelease_tag_when_published_then_both_servers_create_it_from_that_tag(self):
+        # forge.sh create-release decides prerelease from the tag it is given (test_forge.py has the rule), on
+        # the git server and on the GitHub copy alike: so both servers' drafts must be created with the
+        # release's own tag, unchanged.
+        tag = "v1.5.0-rc.1"
+        result = self.run_script("app", tag, SHA, tag, str(self.notes), str(self.files), "--mirror-releases",
+                                 env=self.mirror_env)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        created = [line for line in self.calls() if " create-release " in line]
+        self.assertEqual([line.split()[:5] for line in created],
+                         [["forgejo", "create-release", "app", tag, SHA], ["github", "create-release", "app", tag, SHA]])
+
     def test_given_a_rerun_after_a_failure_when_published_then_existing_tag_and_drafts_are_reused(self):
         failing = dict(self.mirror_env, FAKE_FAIL="github upload-release-file")
         first = self.publish("--mirror-releases", env=failing)
