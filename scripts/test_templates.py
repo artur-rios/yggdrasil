@@ -774,7 +774,9 @@ class RenovatePresetTests(unittest.TestCase):
         total = 0
         for name in CONFIGURED:
             text = (TEMPLATES / name / "yggdrasil.yml").read_text()
-            lines = [line for line in text.splitlines() if re.match(r"\s*image:", line)]
+            # The commented examples too (the application's release section): pinned like the rest, and
+            # Renovate keeps them current, since its regex does not know a comment.
+            lines = [line for line in text.splitlines() if re.match(r"\s*(#\s*)?image:", line)]
             found = [match["depName"] for match in regex.finditer(text)]
             with self.subTest(template=name):
                 self.assertEqual(len(found), len(lines), lines)
