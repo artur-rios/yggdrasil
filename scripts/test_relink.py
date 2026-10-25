@@ -212,13 +212,13 @@ class RelinkTests(unittest.TestCase):
     # -- addresses the table does not know ---------------------------------------------------------
 
     def test_given_an_unknown_pages_repository_when_relinked_then_it_is_reported_and_not_guessed(self):
-        text = f"https://{PAGES}/demo-docs/\n"
+        text = f"https://{PAGES}/some-repo/\n"
         self.track("README.md", text)
 
         done = self.relink("--check")
 
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
-        self.assertIn(f"README.md:1: unknown address {PAGES}/demo-docs/", done.stdout)
+        self.assertIn(f"README.md:1: unknown address {PAGES}/some-repo/", done.stdout)
         self.assertEqual(self.read("README.md"), text)
 
     def test_given_an_unknown_vercel_project_when_relinked_then_it_is_reported_and_not_guessed(self):
@@ -229,6 +229,67 @@ class RelinkTests(unittest.TestCase):
 
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         self.assertIn(f"README.md:1: unknown address some-project{VERCEL}/x", done.stdout)
+
+    def test_given_the_demo_docs_placeholder_when_relinked_then_it_is_kept_and_not_unknown(self):
+        # fortuna-docs and heimdall-docs use it in a plan and in scripts/test_check_site.py: not a real site.
+        text = f'BASE = "https://{PAGES}/demo-docs/"\n'
+        self.track("scripts/test_check_site.py", text)
+
+        done = self.relink("--check")
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.read("scripts/test_check_site.py"), text)
+        self.assertEqual(done.stdout.count("kept (placeholder)"), 1)
+        self.assertIn(f"scripts/test_check_site.py:1: kept (placeholder) {PAGES}/demo-docs/", done.stdout)
+        self.assertNotIn("unknown", done.stdout.replace("0 unknown", ""))
+
+    def test_given_design_documents_when_relinked_then_their_addresses_are_kept_known_or_not(self):
+        text = (f"moves https://{PAGES}/dotnet-data/ and {PAGES}/<repo> and {PAGES}\n"
+                f"and https://{PAGES}/other-repo/ and https://x-y{VERCEL}\n")
+        self.track("docs/superpowers/specs/move.md", text)
+        self.track("docs/superpowers/plans/deeper/plan.md", text)
+
+        done = self.relink("--check")
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.read("docs/superpowers/specs/move.md"), text)
+        self.assertEqual(done.stdout.count("kept (design document)"), 10)
+        self.assertIn(f"docs/superpowers/specs/move.md:1: kept (design document) {PAGES}/dotnet-data/", done.stdout)
+
+    def test_given_a_similar_directory_when_relinked_then_it_is_not_taken_for_the_design_documents(self):
+        self.track("docs/superpowers-notes/a.md", f"https://{PAGES}/dotnet-data/\n")
+
+        done = self.relink()
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.read("docs/superpowers-notes/a.md"), "https://docs.artur-rios.tech/dotnet-data/\n")
+
+    def test_given_a_docs_site_only_the_catalog_knows_when_relinked_then_the_catalog_gives_its_address(self):
+        self.catalog.write_text(textwrap.dedent("""            owner: artur-rios
+            environments:
+              - id: production
+                name: Production
+            systems:
+              - id: sites
+                name: Sites
+                description: The sites.
+                applications:
+                  - id: new-lib-docs
+                    name: new-lib docs
+                    kind: web
+                    health: http://new-lib-docs:8080/healthz
+                    repository: new-lib
+                    domain: docs.artur-rios.tech
+                    apex: true
+                    path: /new-lib
+                    environments: {production: {}}
+            """), encoding="utf-8")
+        self.track("README.md", f"https://{PAGES}/new-lib/docs/\n")
+
+        done = self.relink()
+
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.read("README.md"), "https://docs.artur-rios.tech/new-lib/docs/\n")
 
     def test_given_the_bare_pages_host_when_relinked_then_it_is_left_for_the_owner_to_decide(self):
         text = f"The profile page: https://{PAGES}\nand again {PAGES}/\n"
@@ -251,12 +312,12 @@ class RelinkTests(unittest.TestCase):
         self.assertIn(f"plan.md:1: unknown address {PAGES}/ (a placeholder in prose, not an address)", done.stdout)
 
     def test_given_unknown_addresses_in_write_mode_when_run_then_the_known_ones_are_still_written(self):
-        self.track("README.md", f"https://{PAGES}/demo-docs/ and https://{PAGES}/dotnet-util/\n")
+        self.track("README.md", f"https://{PAGES}/some-repo/ and https://{PAGES}/dotnet-util/\n")
 
         done = self.relink()
 
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
-        self.assertEqual(self.read("README.md"), f"https://{PAGES}/demo-docs/ and https://docs.artur-rios.tech/dotnet-util/\n")
+        self.assertEqual(self.read("README.md"), f"https://{PAGES}/some-repo/ and https://docs.artur-rios.tech/dotnet-util/\n")
 
     # -- what is never touched ---------------------------------------------------------------------
 

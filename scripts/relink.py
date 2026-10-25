@@ -27,7 +27,8 @@ Never touched: `github.com/artur-rios/...` links (they resolve through the mirro
 <name>` path), other people's `*.github.io`, binary files, lock files (package-lock.json, pnpm-lock.yaml,
 packages.lock.json, *.lock), anything git does not track (node_modules, .git), and the released sections of a
 CHANGELOG.md: they are history, so only an `## [Unreleased]` section changes and the rest are reported as
-`kept (released section)`. A line containing `relink:keep` is left as it is.
+`kept (released section)`; the files under docs/superpowers/ (specs and plans, which describe the move itself:
+`kept (design document)`); and the placeholder `artur-rios.github.io/demo-docs` (`kept (placeholder)`). A line containing `relink:keep` is left as it is.
 
 Files are handled as bytes, so each keeps its line endings, byte order mark and encoding.
 """
@@ -51,6 +52,9 @@ ENVIRONMENT = "production"
 
 # The docs sites, as the spec's "Sites" table lists them: GitHub Pages repositories that become
 # docs.artur-rios.tech/<repository>. The names are the repositories (and so the old Pages paths).
+# This list is the fallback. Once Task 6 puts the docs sites in catalog.yaml, the catalog is the source: a
+# docs application's `path` (/<repository>) says where its site is, and the catalog wins whenever both it
+# and this list have an entry (a docs site only the catalog knows is found too).
 DOCS_REPOSITORIES = [
     "heimdall-docs", "fortuna-docs", "alexandria-docs", "orpheus", "heimdall-api", "dotnet-libraries",
     "dotnet-configuration", "dotnet-data", "dotnet-extensions", "dotnet-jwt", "dotnet-logging",
@@ -69,6 +73,15 @@ VERCEL_SITES = {
     "github-readme-stats-six-tau-89.vercel.app": ("github-readme-stats", "readme-stats.techcraftsmen.net"),
     "website-placeholder-artur-rios.vercel.app": ("under-construction-template", "placeholder.artur-rios.tech"),
 }
+
+# Pages paths that were never a site: examples used by the docs repositories' own plan and test
+# (fortuna-docs and heimdall-docs: scripts/test_check_site.py), so there is nothing to move them to. They are
+# left as they are and reported once each as `kept (placeholder)`, not as unknown.
+PLACEHOLDERS = {"demo-docs"}
+
+# Files here describe the move itself (specs, plans), so the old addresses in them are history, as in a
+# released CHANGELOG section: kept and reported, whether the address is known or not.
+HISTORY_DIRECTORY = "docs/superpowers/"
 
 LOCK_NAMES = {"package-lock.json", "pnpm-lock.yaml", "packages.lock.json", "yarn.lock"}
 
@@ -114,12 +127,12 @@ class Targets:
 
     def pages(self, segment):
         """New prefix (host + path) for `artur-rios.github.io/<segment>`, or None when unknown."""
+        for app in self.apps:  # the catalog first: a docs application with path /<segment>
+            if app.get("path") == "/" + segment:
+                found = self._from_catalog(app)
+                if found:
+                    return found[0] + found[1]
         if segment in DOCS_REPOSITORIES:
-            for app in self.apps:
-                if app.get("path") == "/" + segment:
-                    found = self._from_catalog(app)
-                    if found:
-                        return found[0] + found[1]
             return f"{DOCS_HOST}/{segment}"
         if segment in PAGES_ROOT_SITES:
             app_id, host = PAGES_ROOT_SITES[segment]
@@ -183,11 +196,14 @@ def clean(rest):
 
 def relink_file(name, data, targets):
     """(new data, changes, unknown, kept) for one file's bytes. changes are (line, old, new); unknown are
-    (line, address, note); kept are (line, address): addresses in a released CHANGELOG section."""
+    (line, address, note); kept are (line, address, reason): addresses left on purpose (a released CHANGELOG
+    section, a design document, a placeholder)."""
     changes, unknown, kept, edits = [], [], [], []  # edits: (start, end, replacement) of the prefix replaced
     allowed = unreleased_lines(data) if name.rsplit("/", 1)[-1].lower() == "changelog.md" else None
 
-    def handle(start, prefix_end, tail_end, new_prefix, note=None):
+    history = name.startswith(HISTORY_DIRECTORY)
+
+    def handle(start, prefix_end, tail_end, new_prefix, note=None, placeholder=False):
         """The address is data[start:tail_end]; data[start:prefix_end] is what is replaced by new_prefix (None:
         unknown), the rest of the address follows unchanged."""
         line = line_of(data, start)
@@ -195,10 +211,14 @@ def relink_file(name, data, targets):
         if KEEP_MARKER in data[line_start:line_end]:
             return
         address = data[start:tail_end]
-        if new_prefix is None:
+        if placeholder:
+            kept.append((line, address.decode(), "placeholder"))
+        elif history:
+            kept.append((line, address.decode(), "design document"))
+        elif new_prefix is None:
             unknown.append((line, address.decode(), note))
         elif allowed is not None and line not in allowed:
-            kept.append((line, address.decode()))
+            kept.append((line, address.decode(), "released section"))
         else:
             edits.append((start, prefix_end, new_prefix.encode()))
             changes.append((line, address.decode(), new_prefix + data[prefix_end:tail_end].decode()))
@@ -214,7 +234,8 @@ def relink_file(name, data, targets):
             continue
         prefix_end = match.end("segment")
         tail_end = prefix_end + len(clean(match.group("tail")))
-        handle(match.start(), prefix_end, tail_end, targets.pages(segment.decode()))
+        handle(match.start(), prefix_end, tail_end, targets.pages(segment.decode()),
+               placeholder=segment.decode() in PLACEHOLDERS)
 
     for match in VERCEL_PATTERN.finditer(data):
         prefix_end = match.end("host")
@@ -251,8 +272,8 @@ def run(root, check, catalog_module):
             print(f"{name}:{line}: {old} → {new}")
         for line, address, note in unknown:
             print(f"{name}:{line}: unknown address {address}" + (f" ({note})" if note else ""))
-        for line, address in kept:
-            print(f"{name}:{line}: kept (released section) {address}")
+        for line, address, reason in kept:
+            print(f"{name}:{line}: kept ({reason}) {address}")
         changed += len(changes)
         unknown_total += len(unknown)
         kept_total += len(kept)
@@ -262,7 +283,7 @@ def run(root, check, catalog_module):
                 path.write_bytes(new_data)
     verb = "would change" if check else "changed"
     print(f"{verb} {changed} address(es) in {changed_files} file(s); {unknown_total} unknown; "
-          f"{kept_total} kept in released CHANGELOG sections")
+          f"{kept_total} kept")
     return 1 if (check and changed) or unknown_total else 0
 
 
