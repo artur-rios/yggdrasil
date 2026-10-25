@@ -580,8 +580,8 @@ python3 scripts/migrate.py verify --only <small repository>
 
 **Success looks like:** `<small repository>: imported`, exit `0`, and on Forgejo the issues, pull requests and
 releases are there (compare their counts with GitHub's by eye). `verify` prints `on Forgejo ok`, `visibility ok`
-and `default branch ok` (for a catalog repository whose GitHub default branch is not `develop`, that row is a
-`FAIL` until `rules.py` sets `develop` in 5.15); the other rows `FAIL` (`no push mirror`, `issues are on`, ...)
+and `default branch ok` (for a release-model catalog repository whose GitHub default branch is not `develop`,
+that row is a `FAIL` until `rules.py` sets `develop` in 5.15; a `rules: basic` one keeps GitHub's); the other rows `FAIL` (`no push mirror`, `issues are on`, ...)
 because the rest of the move has not run: that is expected here, and it is what the window fixes. Note how long
 the import took: the window imports the others one after the other.
 **If it fails:** `import failed: ...` is Forgejo's own message. A client timeout (`timed out`) does not stop the
@@ -1170,13 +1170,16 @@ python3 scripts/rules.py --dry-run | tee ~/cutover-log/rules-dry-run.txt
 python3 scripts/rules.py | tee ~/cutover-log/rules.txt
 ```
 
-[setup.md step 12](setup.md#12-apply-the-branch-rules): per catalog repository, the settings, the protections of
-`develop`, `main`, `release/*` and the version tags, the Jenkins webhook
+[setup.md step 12](setup.md#12-apply-the-branch-rules): per catalog repository, the settings (`develop` as the
+default branch for the release model; a basic repository, such as a site deployed on `main` or a fork on `master`,
+keeps the default branch it was imported with), the protections of `develop`, `main`, `release/*` and the version
+tags, the Jenkins webhook
 (`https://jenkins.techcraftsmen.net/gitea-webhook/post`, with the secret), and on its GitHub copy the ruleset
 `mirror tags`.
 
 **Success looks like:** per repository `protected branch 'develop'`, `'main'`, `'release/*'`, `protected tags
-'v*'`, `created the Jenkins webhook`, and for the copy `created ruleset 'mirror tags'`; **no line starting
+'v*'` (a basic one: `delete head branches on merge, merge settings (default branch kept)` and `develop`, `main`
+only), `created the Jenkins webhook`, and for the copy `created ruleset 'mirror tags'`; **no line starting
 `warning:`**. It exits `0`; or `1` with `the mirror tags were not applied to N GitHub copies: ...`, which is
 expected **only** for the repositories that are private and in the catalog (4.3's file) on a plan without
 rulesets: their line says `not applied: ... 403 ...`. Their tags on GitHub are not protected until the plan
@@ -1204,7 +1207,7 @@ not available here`.
 | Check | Means | Back to |
 |---|---|---|
 | `on Forgejo` | not imported | 5.11 |
-| `default branch` | a catalog repository's is not `develop` (`wants develop`); another's differs from GitHub's | a catalog repository: 5.15 (`rules.py` sets `develop`); another: its **Settings → Branches** on Forgejo |
+| `default branch` | a release-model catalog repository's is not `develop` (`wants develop`); any other's (a `rules: basic` catalog repository's included, which `rules.py` leaves alone) differs from GitHub's | a release-model catalog repository: 5.15 (`rules.py` sets `develop`); any other: set it back to GitHub's in its **Settings → Branches** on Forgejo |
 | `visibility` | `public on Forgejo, private on GitHub` (or the other way) | the copy's **Settings → Repository → Visibility** on Forgejo, to GitHub's; a private repository shown public was readable by anyone signed in since 5.11: say so in 5.22 |
 | `push mirror` | `no push mirror`, `never synced`, `last error: ...`, or `another push mirror to ...` | 5.13; for an error, read it (4.5); a sync can be asked by hand: **Settings → Repository → Mirror settings → Synchronize now**; another mirror: delete it there, unless you made it on purpose |
 | `refs` | a branch or tag differs, or is on one side only (every branch and tag is compared); `nothing compared` | wait a minute and run again (the first sync may still run); `only on GitHub` after that is a push to GitHub during the window, which the next sync deletes: get it from whoever pushed it; `nothing compared`: neither side listed a branch of a copy that has some: run again, and report it if it stays |

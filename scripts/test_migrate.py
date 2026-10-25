@@ -1939,7 +1939,8 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(self.row(run, "old-fork", "default branch")[3], "develop on Forgejo, main on GitHub")
 
     def test_given_a_catalog_repository_when_verified_then_its_default_branch_is_develop_whatever_githubs(self):
-        # rules.py (5.15) sets develop as the default branch of every catalog repository, before verify runs.
+        # rules.py (5.15) sets develop as the default branch of every release-model catalog repository, before
+        # verify runs.
         gh, forgejo = verified_world()
         gh.repos[0] = repository("toolkit", default_branch="main")
         run = self.run_verify((gh, forgejo))
@@ -1949,6 +1950,26 @@ class VerifyTests(unittest.TestCase):
         run = self.run_verify((gh, forgejo))
         self.assert_only_failing(run, "toolkit", "default branch")
         self.assertIn("main on Forgejo, wants develop", self.row(run, "toolkit", "default branch")[3])
+
+    def test_given_a_basic_catalog_repository_on_main_or_master_when_verified_then_githubs_default_is_kept(self):
+        # rules.py leaves a basic repository's default branch alone (it may have no develop: a site on main, a
+        # fork on master), so the migrated one, GitHub's, is what verify wants, as for a repository outside the
+        # catalog.
+        catalog = {**MIRROR_CATALOG, "repositories": [{"id": "toolkit", "rules": "basic"}, {"id": "other-lib"}]}
+        for branch in ("main", "master"):
+            with self.subTest(branch=branch):
+                gh, forgejo = verified_world(("toolkit", "old-fork"), catalog_names=("other-lib",))
+                gh.repos[0] = repository("toolkit", default_branch=branch)
+                forgejo.existing["toolkit"] = forgejo_repository("toolkit", default_branch=branch)
+                run = self.run_verify((gh, forgejo), catalog=catalog)
+                self.assertEqual(self.row(run, "toolkit", "default branch")[2:], ["ok", branch])
+                # A develop there would be something else's doing, not the migration's nor rules.py's.
+                gh, forgejo = verified_world(("toolkit", "old-fork"), catalog_names=("other-lib",))
+                gh.repos[0] = repository("toolkit", default_branch=branch)
+                forgejo.existing["toolkit"] = forgejo_repository("toolkit", default_branch="develop")
+                run = self.run_verify((gh, forgejo), catalog=catalog)
+                self.assertEqual(self.row(run, "toolkit", "default branch")[2:],
+                                 ["FAIL", f"develop on Forgejo, {branch} on GitHub"])
 
     def test_given_a_visibility_that_is_not_githubs_when_verified_then_it_fails(self):
         # The import asks for GitHub's visibility; a copy made public by hand, or a migration that ignored the
