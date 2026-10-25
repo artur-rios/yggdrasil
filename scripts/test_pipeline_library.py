@@ -1027,6 +1027,41 @@ class ReleaseLibraryTests(unittest.TestCase):
                 locked.chmod(0o600)
             self.assertNotEqual(done.returncode, 0, done.stdout)
 
+    def test_given_finalize_and_windows_when_the_actions_checks_do_not_finish_then_the_skip_is_never_offered(self):
+        # The skip publishes without the Windows files, which release.finalize must cover: such a release fails
+        # before anything is deployed instead of asking.
+        self.assertIn("return releaseConfig != null && releaseConfig.windows != null && releaseConfig.finalize != null",
+                      self.body("needsWindowsFiles"))
+        body = self.body("waitForReleaseActions")
+        refused = body.index("if (needsWindowsFiles(state.config?.release as Map)) {")
+        self.assertLess(body.index("didn't finish within"), refused)
+        self.assertLess(refused, body.index("askToSkip()"))
+        self.assertRegex(body[refused:], r"^if \(needsWindowsFiles\(state\.config\?\.release as Map\)\) \{\s*"
+                                         r"error \"Not releasing: yggdrasil\.yml's release\.finalize must cover the Windows files")
+        # It is asked before the deploys: nothing deployed, nothing merged.
+        body = self.body("releasePullRequest")
+        self.assertLess(body.index("waitForReleaseActions("), body.index("deployTo("))
+
+    def test_given_finalize_and_missing_windows_files_when_read_then_the_release_stops_before_publishing(self):
+        # Never a partial set: missing Windows files stop a release with release.finalize, inside releaseFiles,
+        # before the gathering, the packages and the publication -- the way a failed validation does -- and the
+        # release pull request adds the resume note to any failure after its merge.
+        body = self.body("releaseFiles")
+        missing = body.index("if (got.stashes == null) {")
+        stopped = body.index("if (needsWindowsFiles(releaseConfig)) {")
+        self.assertLess(missing, stopped)
+        self.assertLess(stopped, body.index("The release goes on without them."))
+        self.assertLess(stopped, body.index("gatherReleaseFiles("))
+        self.assertRegex(body[stopped:], r"^if \(needsWindowsFiles\(releaseConfig\)\) \{\s*error \"The Windows files are missing "
+                                         r"\(\$\{got\.reason\}\): \$\{files\.missing\.join\(', '\)\}\. release\.finalize must cover the whole set")
+        self.assertIn("nothing is published, and no draft release was made.", body[stopped:])
+        release = self.body("releaseFromTag")
+        self.assertLess(release.index("releaseFiles("), release.index("publishPackages("))
+        self.assertLess(release.index("releaseFiles("), release.index("publishRelease("))
+        self.assertRegex(self.body("releasePullRequest"),
+                         r"releaseFromTag\([^\n]*\n\s*\} catch \(FlowInterruptedException interruption\) \{\s*echo resumeNote\(ctx, tag\)"
+                         r"[\s\S]*catch \(Exception problem\) \{\s*error \"\$\{failureText\(problem\)\}\\n\$\{resumeNote\(ctx, tag\)\}\"")
+
     def test_given_a_failing_validation_when_read_then_publish_release_is_never_reached(self):
         # The drafts are made by publish-release.sh: a validation that fails before it is called leaves
         # nothing published (and no draft at all).

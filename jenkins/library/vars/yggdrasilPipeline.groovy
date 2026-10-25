@@ -1123,6 +1123,11 @@ boolean waitForReleaseActions(Map ctx, Map state, int seconds) {
       return
     }
     echo "GitHub Actions checks didn't finish within ${seconds} s (actions-status exit ${look.code}): ${names.join(', ')}."
+    // After the skip the Windows files are not built, and a release with release.finalize never goes out
+    // without them (finalize covers the whole set): no skip to offer, the release stops here.
+    if (needsWindowsFiles(state.config?.release as Map)) {
+      error "Not releasing: yggdrasil.yml's release.finalize must cover the Windows files, which are not built without the GitHub Actions checks, so there is no deploying without them. Nothing was deployed; build the pull request again once GitHub Actions answers."
+    }
     askToSkip()
     skipped = true
     echo "Deploying without GitHub Actions checks: ${names.join(', ')} did not finish. This is recorded in the deploy/<environment> statuses and the build's description; Windows files are not built."
@@ -1233,6 +1238,11 @@ Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, 
       if (got.stashes == null) {
         files.missing = windowsNames(releaseConfig.windows as Map)
         files.reason = got.reason
+        // release.finalize covers the whole set: never a partial one. The release stops before anything is
+        // published, as a failed validation does; release-resume runs windows, validate and finalize again.
+        if (needsWindowsFiles(releaseConfig)) {
+          error "The Windows files are missing (${got.reason}): ${files.missing.join(', ')}. release.finalize must cover the whole set, so the release does not go on without them: nothing is published, and no draft release was made."
+        }
         echo "The Windows files are missing (${got.reason}): ${files.missing.join(', ')}. The release goes on without them."
       } else {
         windows = got.stashes
@@ -1335,6 +1345,14 @@ Map windowsFiles(Map ctx, Map windows, String tag, int seconds) {
   } catch (Exception problem) {
     return [stashes: null, reason: "the files of ${workflow} run ${run} could not be had: ${safeText(failureText(problem), 300)}"]
   }
+}
+
+// Whether a release cannot go out without its Windows files: it declares release.windows and
+// release.finalize, which must cover the whole set. Such a release is never skipped past its GitHub Actions
+// checks (waitForReleaseActions) and stops when the Windows files are missing (releaseFiles).
+@NonCPS
+boolean needsWindowsFiles(Map releaseConfig) {
+  return releaseConfig != null && releaseConfig.windows != null && releaseConfig.finalize != null
 }
 
 // What a release lists as missing when its Windows files could not be had: release.windows.files, or

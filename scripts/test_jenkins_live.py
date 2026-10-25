@@ -120,6 +120,10 @@ RELEASE, DESKTOP, TOOLS, BROKEN = "shop-release", "shop-desktop", "shop-tools", 
 # A release that fails after its merge (its release build binds a credential Jenkins does not have yet),
 # then finished by the release-resume job.
 RESUME = "shop-resume"
+# release.finalize's two refusals: shop-signed declares release.windows too, so it is never skipped past its
+# GitHub Actions checks and stops when its Windows files are missing (then release-resume finishes it);
+# shop-tamper's finalize rewrites a file of the set, which fails the release.
+SIGNED, TAMPER = "shop-signed", "shop-tamper"
 # A release merged but never tagged (its tag was taken while it waited for approval), then tagged and
 # finished by the release-resume job given its merge commit.
 UNTAGGED = "shop-untagged"
@@ -229,6 +233,26 @@ BROKEN_PIPELINE = {"release": {
     "build": {"image": "alpine:3", "run": "mkdir -p dist && echo broken >dist/shop-broken.tar.gz",
               "files": ["dist/*.tar.gz"]},
     "validate": {"image": "alpine:3", "run": 'echo "VALIDATION-$((1 + 2))-FAILED"; exit 3'},
+}}
+SIGNED_PIPELINE = {"release": {
+    "build": {"image": "alpine:3", "run": "mkdir -p dist && echo signed >dist/shop-signed.tar.gz",
+              "files": ["dist/shop-signed.tar.gz"]},
+    "windows": {"workflow": "release-windows.yml", "files": ["*/*.msi"]},
+    "finalize": {"image": "alpine:3",
+                 "run": 'mkdir -p signed'
+                        ' && (cd "$RELEASE_FILES" && find . -type f | sort | xargs sha256sum) >signed/shop-signed-manifest.txt'
+                        ' && echo "SIGNED-FINALIZED-$(wc -l <signed/shop-signed-manifest.txt | tr -d " ")-FILES"',
+                 "files": ["signed/*"]},
+}}
+TAMPER_PIPELINE = {"release": {
+    "build": {"image": "alpine:3", "run": "mkdir -p dist && echo tamper >dist/shop-tamper.tar.gz",
+              "files": ["dist/shop-tamper.tar.gz"]},
+    # It adds its file as it should, then rewrites one of the set in place.
+    "finalize": {"image": "alpine:3",
+                 "run": 'mkdir -p signed && echo manifest >signed/shop-tamper-manifest.txt'
+                        ' && echo rewritten >"$RELEASE_FILES/build/dist/shop-tamper.tar.gz"'
+                        ' && echo "TAMPER-FINALIZED-$((1 + 1))"',
+                 "files": ["signed/*"]},
 }}
 RESUME_KEY = "a-throwaway-resume-key"
 RESUME_PIPELINE = {"release": {
@@ -344,6 +368,9 @@ def test_catalog():
             {"id": TOOLS, "name": "Tools", "kind": "web", "health": "http://shop-tools:8080/",
              "actionsChecks": ["Console (Windows)"]},
             {"id": BROKEN, "name": "Broken", "kind": "web", "health": "http://shop-broken:8080/"},
+            {"id": SIGNED, "name": "Signed", "kind": "web", "health": "http://shop-signed:8080/",
+             "actionsChecks": ["Console (Windows)"]},
+            {"id": TAMPER, "name": "Tamper", "kind": "web", "health": "http://shop-tamper:8080/"},
             {"id": RESUME, "name": "Resume", "kind": "web", "health": "http://shop-resume:8080/",
              "releaseCredentials": ["shop-resume-key"]},
             # Production asks before it deploys, which is when the test takes the release's tag.
@@ -369,7 +396,8 @@ def test_catalog():
 SHARED_PIPELINE = {"checks": {"unit": UNIT,
                               "links": {"image": "alpine:3", "run": 'echo "LINKS-$((1 + 1))-FAILED"; exit 1'}}}
 RELEASE_APPLICATIONS = {SHARED: SHARED_PIPELINE, RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
-                        BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE, UNTAGGED: {"checks": {"unit": UNIT}}}
+                        BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE, SIGNED: SIGNED_PIPELINE, TAMPER: TAMPER_PIPELINE,
+                        UNTAGGED: {"checks": {"unit": UNIT}}}
 # The owner-tagged repositories with a yggdrasil.yml on main (and develop, cut from it), and their files.
 OWNER_TAGGED = {OWNED: {"yggdrasil.yml": yaml.safe_dump(OWNED_PIPELINE, sort_keys=False)},
                 LIBRARY: {"yggdrasil.yml": yaml.safe_dump(LIBRARY_PIPELINE, sort_keys=False), **LIBRARY_FILES},
@@ -853,7 +881,8 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         (state / "calls.log").write_text("")
         (state / "calls.log").chmod(0o666)
         for repo, files in ((DESKTOP, {"shop-desktop-setup.msi": "desktop installer\n", "debug.pdb": "symbols\n"}),
-                            (TOOLS, {"shop-tools-setup.msi": "tools installer\n"})):
+                            (TOOLS, {"shop-tools-setup.msi": "tools installer\n"}),
+                            (SIGNED, {"shop-signed-setup.msi": "signed installer\n"})):
             artifact = state / repo / "artifacts" / f"{repo}-windows"
             artifact.mkdir(parents=True)
             for name, text in files.items():
@@ -1610,6 +1639,64 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIsNone(self.release_of(BROKEN, "v1.0.0"))
         self.assertTrue(self.pull_request(BROKEN, number)["merged"])
         self.assertIsNotNone(self.tag_commit(BROKEN, "v1.0.0"))
+
+    def test_given_a_finalize_that_rewrites_a_release_file_when_released_then_nothing_is_published(self):
+        # release.finalize may only add: it ran (TAMPER-FINALIZED-2), rewrote a file of the set, and the
+        # checksums before and after name it; the release stops before any draft, with the resume note.
+        number, build, _, _ = self.release_run(TAMPER)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn("TAMPER-FINALIZED-2", build.console)
+        self.assertIn("release.finalize changed the release files, which it may only add to: "
+                      "./build/dist/shop-tamper.tar.gz. Nothing is published, and no draft release was made.", build.console)
+        self.assertIn(f"Not released: the pull request is merged and tagged v1.0.0; finish the release with the "
+                      f"release-resume job (REPOSITORY={TAMPER}, TAG=v1.0.0).", build.console)
+        self.assertNotIn("(Publish the release)", build.console)
+        self.assertIsNone(self.release_of(TAMPER, "v1.0.0"))
+        self.assertTrue(self.pull_request(TAMPER, number)["merged"])
+
+    def test_given_finalize_and_windows_files_when_they_are_missing_then_it_never_publishes_a_partial_set(self):
+        state = self.github_double / "state" / SIGNED
+        # 1. GitHub Actions never answers: no skip is offered (it would publish without the Windows files), the
+        #    release fails before anything is deployed or merged.
+        number, build, _, _ = self.release_run(SIGNED)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        self.assertIn("GitHub Actions checks didn't finish within 20 s (actions-status exit 2): Console (Windows).",
+                      build.console)
+        self.assertIn("Not releasing: yggdrasil.yml's release.finalize must cover the Windows files", build.console)
+        self.assertNotIn(SKIP_QUESTION, build.console)
+        head = self.pull_request(SIGNED, number)["head"]["sha"]
+        self.assertEqual([s for s in self.statuses(SIGNED, head) if s[0].startswith("deploy/")], [])
+        self.assertFalse(self.pull_request(SIGNED, number)["merged"])
+        self.assertIsNone(self.tag_commit(SIGNED, "v1.0.0"))
+
+        # 2. The checks pass now, but the Windows run fails: deployed, merged and tagged, then stopped before
+        #    finalize and before any draft, with the resume note.
+        (state / "actions").write_text("0\n")
+        (state / "run").write_text("failure\n")
+        second = self.rebuild(SIGNED, f"PR-{number}")
+        self.assertEqual(second.result, "FAILURE", second.console[-6000:])
+        self.assertIn("The Windows files are missing (release-windows.yml run 4242 failed): */*.msi. release.finalize "
+                      "must cover the whole set, so the release does not go on without them: nothing is published, and "
+                      "no draft release was made.", second.console)
+        self.assertIn(f"Not released: the pull request is merged and tagged v1.0.0; finish the release with the "
+                      f"release-resume job (REPOSITORY={SIGNED}, TAG=v1.0.0).", second.console)
+        self.assertNotIn("SIGNED-FINALIZED", second.console)
+        self.assertIsNone(self.release_of(SIGNED, "v1.0.0"))
+        self.assertTrue(self.pull_request(SIGNED, number)["merged"])
+
+        # 3. The Windows run works again: release-resume runs windows, validate and finalize on the whole set.
+        (state / "run").write_text("success\n")
+        resumed = self.release_resume(SIGNED, "v1.0.0")
+        self.assertEqual(resumed.result, "SUCCESS", resumed.console[-8000:])
+        self.assertIn("SIGNED-FINALIZED-2-FILES", resumed.console)
+        release = self.release_of(SIGNED, "v1.0.0")
+        self.assertFalse(release["draft"])
+        self.assertEqual(self.assets(release), {"shop-signed.tar.gz": len("signed\n"),
+                                                "shop-signed-setup.msi": len("signed installer\n"),
+                                                "shop-signed-manifest.txt": 2 * 64 + 2 * 2 + len(
+                                                    "./build/dist/shop-signed.tar.gz\n"
+                                                    "./windows/shop-signed-windows/shop-signed-setup.msi\n")})
+        self.assertNotIn("## Missing files", release["body"])
 
     def test_given_github_not_answering_when_released_then_the_skip_is_offered_and_recorded(self):
         # The release as this build left it (the actions-release test may have attached files since).
