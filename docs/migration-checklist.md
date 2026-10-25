@@ -103,12 +103,12 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
   makes a check name (lowercase letters, digits, `.`, `_`, `-`); otherwise a short one says what it runs.
 - `actionsCheck <name>`: stays on GitHub Actions, required on `develop` under that name.
 - `release.build` / `release.windows`: the release files (`release` in `yggdrasil.yml`), not a check.
-- `not required` / `dropped`: no catalog check, with the reason; *escalated* ones wait for the owner.
+- `not required` / `dropped`: no catalog check, with the reason (`not required` jobs stay on GitHub Actions).
 
 | Repository | Job | Becomes |
 |---|---|---|
 | alexandria-api | `ci.yml/check on ubuntu-latest` | check `lint-and-test` (GitHub: `fmt, clippy, test`) |
-| alexandria-api | `ci.yml/performance on ubuntu-latest` | dropped (escalated): `performance (non-gating)` ran on pushes only and never gated; a catalog check is required on every pull request |
+| alexandria-api | `ci.yml/performance on ubuntu-latest` | not required: `performance (non-gating)` stays a GitHub Actions workflow, run on the GitHub copy (pushes only, never gating); neither a catalog check nor an actionsCheck |
 | alexandria-ui | `ci.yml/analyze on ubuntu-latest` | check `analyze` |
 | alexandria-ui | `ci.yml/test on windows-latest` | actionsCheck `Unit and widget tests (windows)` |
 | alexandria-ui | `ci.yml/test on ubuntu-latest` | check `test` |
@@ -119,11 +119,11 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | alexandria-ui | `release.yml/windows on windows-latest` | release.windows |
 | cerberus-api | `tests.yml/test on ubuntu-latest` | check `test` |
 | cerberus-api | `tests.yml/docker on ubuntu-latest` | check `docker` |
-| cerberus-ui | `build.yml/gate on ubuntu-latest` | dropped (escalated): a v* tag build that only kept Actions artifacts; cerberus-ui releases nothing in the spec, so no job runs it (an owner-tag release, as alexandria-ui has, would) |
-| cerberus-ui | `build.yml/web on ubuntu-latest` | dropped (escalated): a v* tag build that only kept Actions artifacts; cerberus-ui releases nothing in the spec, so no job runs it (an owner-tag release, as alexandria-ui has, would) |
-| cerberus-ui | `build.yml/android on ubuntu-latest` | dropped (escalated): a v* tag build that only kept Actions artifacts; cerberus-ui releases nothing in the spec, so no job runs it (an owner-tag release, as alexandria-ui has, would) |
-| cerberus-ui | `build.yml/windows on windows-latest` | dropped (escalated): a v* tag build that only kept Actions artifacts; cerberus-ui releases nothing in the spec, so no job runs it (an owner-tag release, as alexandria-ui has, would) |
-| cerberus-ui | `build.yml/linux on ubuntu-latest` | dropped (escalated): a v* tag build that only kept Actions artifacts; cerberus-ui releases nothing in the spec, so no job runs it (an owner-tag release, as alexandria-ui has, would) |
+| cerberus-ui | `build.yml/gate on ubuntu-latest` | release.build: its v* tag build becomes the release files, built on the release agent (cerberus-ui is released by its owner's v* tags) |
+| cerberus-ui | `build.yml/web on ubuntu-latest` | release.build: its v* tag build becomes the release files, built on the release agent (cerberus-ui is released by its owner's v* tags) |
+| cerberus-ui | `build.yml/android on ubuntu-latest` | release.build: its v* tag build becomes the release files, built on the release agent (cerberus-ui is released by its owner's v* tags) |
+| cerberus-ui | `build.yml/windows on windows-latest` | release.windows: the release's Windows build, on GitHub Actions (as alexandria-ui's) |
+| cerberus-ui | `build.yml/linux on ubuntu-latest` | release.build: its v* tag build becomes the release files, built on the release agent (cerberus-ui is released by its owner's v* tags) |
 | cerberus-ui | `check-generated.yml/drift on ubuntu-latest` | check `generated-drift` |
 | cerberus-ui | `ci.yml/analyze-and-test on ubuntu-latest` | check `analyze-and-test` |
 | cerberus-ui | `ci.yml/web-bundle on ubuntu-latest` | check `web-bundle` |
@@ -228,7 +228,7 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | yggdrasil | `ci.yml/console on ubuntu-latest` | check `console` (GitHub: `Console`) |
 | yggdrasil | `ci.yml/console-windows on windows-latest` | actionsCheck `Console (Windows)` |
 | yggdrasil | `ci.yml/platform on ubuntu-latest` | check `platform` (GitHub: `Platform`) |
-| yggdrasil | `ci.yml/pipeline-live on ubuntu-latest` | dropped (escalated): `Pipeline (live Jenkins)` ran only by hand (workflow_dispatch); as a catalog check it would be required, and run against a live Jenkins, on every pull request |
+| yggdrasil | `ci.yml/pipeline-live on ubuntu-latest` | not required: `Pipeline (live Jenkins)` stays a GitHub Actions workflow, run by hand (workflow_dispatch) on the GitHub copy; neither a catalog check nor an actionsCheck, and yggdrasil.yml must not define it |
 | yggdrasil | `release.yml/windows on windows-latest` | release.windows |
 
 ## Credentials
@@ -300,3 +300,13 @@ decision above.
 - **dotnet-data** (Task 9): its tags stay `<package>@<version>` (`tags: "*@*"` in the catalog). The pipeline sets
   `RELEASE_TAG` to the whole tag and `RELEASE_VERSION` to what follows its last `@`, so its `ci/pack.sh` must read
   `RELEASE_TAG` and pack only that package, not every package of the solution at that version.
+- **yggdrasil** (Task 8): `ci.yml/pipeline-live` stays a GitHub Actions workflow (manual, on the GitHub copy).
+  `yggdrasil.yml` must not define a `pipeline-live` check: no catalog entry names it, so describe would warn that
+  it never runs and mark every build unstable.
+- **alexandria-api** (Task 10): `ci.yml/performance` stays a GitHub Actions workflow (pushes only, non-gating), not
+  a check: keep its workflow when trimming `.github/workflows`.
+- **cerberus-ui** (Task 11): released by the owner's `v*` tags like alexandria-ui. Its `build.yml` Linux jobs
+  (gate, web, android, linux) become `release.build` in `yggdrasil.yml`, and its Windows job the release's
+  `release.windows` workflow.
+- **heimdall-api** (Task 8): the docs site's image is `docs.Dockerfile` (`stacks/heimdall-api-docs.yml`), since the
+  repository's `Dockerfile` is the API's.

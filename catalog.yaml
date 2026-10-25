@@ -139,9 +139,6 @@ repositories:
     checks: [test, docker]
     credentials: [reportgenerator-license]
     rules: release
-  - id: cerberus-ui
-    checks: [analyze-and-test, generated-drift, web-bundle]
-    rules: release
   - id: coding-challenge-library
     checks: [test, docker]
     rules: basic
@@ -161,6 +158,11 @@ repositories:
       - Integration (windows)
       - Release build (windows)
     release: owner-tag
+    rules: release
+  - id: cerberus-ui               # its v* tag build (web, Android, Linux; Windows on Actions) is the release
+    checks: [analyze-and-test, generated-drift, web-bundle]
+    release: owner-tag
+    tags: "v*"
     rules: release
   - id: maestro
     checks: [analyze-test, linux-platform]
