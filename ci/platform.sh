@@ -36,8 +36,8 @@ echo "== Test the Docker socket proxies against Traefik and Alloy"
 # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API. The suite hands each proxy
 # container its fake socket by path, a path the engine must see: on the CI agent the engine is the host's, which
 # sees the checkout at this same path (it is mounted at it) but not this container's /tmp. So the suite's scratch
-# directory is in the checkout here. discover, as below: the suite imports traefik_config flat, and as
-# `-m unittest scripts.test_socket_proxies` (ci.yml's form) that import failed and every test was skipped.
+# directory is in the checkout here. discover, as below: the suite imports traefik_config flat, which
+# `-m unittest scripts.test_socket_proxies` cannot (every test was skipped).
 mkdir -p "$root/.ci-tmp"
 TMPDIR="$root/.ci-tmp" YGG_DOCKER_TESTS=1 python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
 rm -rf "$root/.ci-tmp"
@@ -100,8 +100,9 @@ YGG_AGENT_WORKDIR=/home/ci/agent
 ENV
 docker compose -p yggdrasil-agent-ci --env-file "$secrets/agent.env" -f platform/build-agent.yml config --quiet
 echo "platform/build-agent.yml ok"
-# Every stack that has its service here, in both modes, with a dummy value for each variable it requires.
-# (Stacks based on the application's own docker-compose.yml are validated by deploy.sh on the first deploy.)
+# Every stack that has its service here, in both modes, with a dummy value for each variable it requires: a port
+# for *PORT, an empty file for *_FILE (an env_file, such as APP_ENV_FILE, must exist), x for the rest. (Stacks
+# based on the application's own docker-compose.yml are validated by deploy.sh on the first deploy.)
 for stack in $(python3 scripts/catalog.py applications --deployable); do
   [[ -f "stacks/$stack.yml" ]] || continue
   for mode in proxy ports; do
@@ -109,7 +110,7 @@ for stack in $(python3 scripts/catalog.py applications --deployable); do
     paths=("stacks/$stack.yml" "stacks/$stack.$mode.yml")
     # `|| true`: a stack with no variable is fine (the job's shell had no pipefail).
     { grep -ohE '[$][{][A-Z_]+' "${paths[@]}" || true; } | cut -c3- | sort -u \
-      | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s/$/=x/' > "$secrets/$stack.env"
+      | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s#^(.*_FILE)$#\1=/dev/null#; t; s/$/=x/' > "$secrets/$stack.env"
     APP_DIR=. docker compose --env-file "$secrets/$stack.env" -f "${paths[0]}" -f "${paths[1]}" config --quiet
     echo "stacks/$stack.$mode.yml ok"
   done
