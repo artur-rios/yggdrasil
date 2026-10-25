@@ -1,0 +1,39 @@
+# What Jenkins checks and releases for yggdrasil itself, read by the pipeline of the installation (yggdrasil's own
+# docs/catalog.md, "Repository pipeline file", has every field). It is data: images, commands and globs. The
+# commands are scripts under ci/ that run from the repository's root, so they can be run by hand too. On Forgejo
+# only the owner merges a change to this file into develop.
+#
+# Check it:
+#   python3 scripts/pipeline_config.py describe yggdrasil .
+#
+# The Windows console ("Console (Windows)", ci.yml) and the manual live pipeline suite (pipeline-live.yml) stay
+# GitHub Actions workflows on the GitHub copy: the first is the catalog's actionsCheck, the second is run by hand
+# and is not a check.
+
+checks:
+  status:                                # the status API's tests and image (ci.yml: "Status API")
+    image: mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2
+    run: ci/status.sh
+    docker: true                         # docker build of status/
+  console:                               # the console's format, analysis, tests, web and APK builds (ci.yml: "Console")
+    image: ghcr.io/cirruslabs/flutter:3.44.0@sha256:46691e311715845de03a3ba4753a475476936805b29431b1f00f1816981033f8
+    run: ci/console.sh
+    archive: "console/build/app/outputs/flutter-apk/app-release.apk"   # as the job uploaded it
+  platform:                              # ShellCheck, the unit suite, the live Docker and Forgejo suites, Compose (ci.yml: "Platform")
+    image: python:3.12.15-bookworm@sha256:14a4933e6cef421424f7a66d89a3f4eafcbd0d90e0a822251f298e05132dc735
+    run: ci/platform.sh
+    docker: true                         # the socket proxies and Forgejo containers
+
+release:
+  # release.yml's "Android APK" job, on the release agent from the release's tag. (Its "Tag is on main" job is the
+  # pipeline's own: a tag build stops when the tag is not on main.)
+  build:
+    image: ghcr.io/cirruslabs/flutter:3.44.0@sha256:46691e311715845de03a3ba4753a475476936805b29431b1f00f1816981033f8
+    run: ci/release-build.sh
+    files:
+      - "dist/*.apk"
+  # release.yml's "Windows installer" job, on GitHub Actions: dispatched on the tag, with tag=<tag>.
+  windows:
+    workflow: release-windows.yml
+    files:
+      - "yggdrasil-console-windows/*.exe"

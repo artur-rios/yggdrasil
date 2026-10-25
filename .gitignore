@@ -19,3 +19,7 @@ vars-*.key
 # Python bytecode is regenerated on every run.
 __pycache__/
 *.pyc
+
+# What the release build (ci/release-build.sh) and the platform check (ci/platform.sh) leave in the checkout.
+dist/
+.ci-tmp/
