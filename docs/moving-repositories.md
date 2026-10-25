@@ -189,24 +189,33 @@ For a repository with a site on GitHub Pages or Vercel, once the new address ser
   heimdall-api and personal-lab): on the GitHub copy, **Settings → Pages**, set the source to **None**.
 - **Vercel** (the five projects: personal-page, personal-blog, tech-craftsmen-company-page, under-construction-template,
   github-readme-stats): in Vercel, delete the project.
-- **Then the DNS.** In Cloudflare's **DNS → Records**, delete the records that pointed at Vercel
-  (`cname.vercel-dns.com`): the `CNAME`s of `www` and `blog` in `artur-rios.tech`, and the zone's bare-domain record if
-  it points there. The wildcard record then sends the name to the apps machine.
+- **Then the DNS.** In Cloudflare's **DNS → Records**, delete the site's records that pointed at Vercel
+  (`cname.vercel-dns.com`, or an `A` to `76.76.21.21`), the ones the cutover kept ([5.8](cutover.md#58-dns-the-domains-point-at-the-new-apps-machine);
+  1.5's zone exports list them), in both zones:
+  - `artur-rios.tech`: the `CNAME`s of `www` (personal-page) and `blog` (personal-blog), and the bare domain's record
+    if it points there;
+  - `techcraftsmen.net`: the company page's `www` and the bare domain's record (tech-craftsmen-company-page), and any
+    other name of the zone the export shows on Vercel, with its site.
 
-  `www.` and `blog.` keep their names, so the new site is served only once their `CNAME` is gone, and you cannot try it
-  first: the apps machine refuses anything that does not come through Cloudflare ([cutover.md, 8](cutover.md#8-what-you-check-by-hand)).
-  For these two, delete the `CNAME` first, look at the site at once (`curl -sI https://www.artur-rios.tech/`), and delete
-  the Vercel project only when it is right. To go back, put the `CNAME` back from 1.5's zone export, DNS only.
-- **Then the CAA record.** Once both `www.` and `blog.` have moved, drop `--skip-caa artur-rios.tech` (plan 4's ruling,
-  [hosts.md, DNS records](hosts.md#dns-records)); the next run makes the zone's `CAA`, which allows Let's Encrypt only through DNS-01:
+  The wildcard record then sends a subdomain to the apps machine. A bare domain has no record left: run
+  `cloudflare_dns.py` (below) right after deleting it, with the `--skip-caa` flags still needed, and it makes the bare
+  domain's `A`. These names stay the same, so the new site is served only once their Vercel record
+  is gone, and you cannot try it first: the apps machine refuses anything that does not come through Cloudflare
+  ([cutover.md, 8](cutover.md#8-what-you-check-by-hand)). For each, delete the record first, look at the site at once
+  (`curl -sI https://www.artur-rios.tech/`, `curl -sI https://www.techcraftsmen.net/`), and delete the Vercel project
+  only when it is right. To go back, put the record back from 1.5's zone export, DNS only.
+- **Then the CAA records.** Once a zone's Vercel names have all moved (`artur-rios.tech`: `www.` and `blog.`;
+  `techcraftsmen.net`: the company page and any other), drop that zone's `--skip-caa` (plan 4's ruling,
+  [hosts.md, DNS records](hosts.md#dns-records)); the next run makes the zone's `CAA`, which allows Let's Encrypt only
+  through DNS-01. Keep the flag of a zone that still has a name on Vercel:
 
   ```bash
-  python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip>
-  python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip>
+  python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip> [--skip-caa <the zone still on Vercel>]
+  python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip> [--skip-caa <the zone still on Vercel>]
   ```
 
 **Success looks like:** the site answers at its new address; the old one is gone (a Pages address answers `404`); the
-dry run prints `would create CAA artur-rios.tech: ...` and the real run creates it.
+dry run prints `would create CAA <zone>: ...` for the zone whose flag you dropped, and the real run creates it.
 **If it fails:** the site is down after you deleted a record: put the record back from 1.5's zone export
 ([cutover.md](cutover.md#15-the-records)).
 

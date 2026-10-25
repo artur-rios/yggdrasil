@@ -144,9 +144,10 @@ ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-po
 covers what that can't.
 
 Something that gets its certificates over HTTP-01 is refused by that record too. `artur-rios.tech`'s `www.` and
-`blog.` are served by Vercel until their sites move, and Vercel renews their certificates through Let's Encrypt over
-HTTP-01, so that zone's `CAA` waits: `--skip-caa artur-rios.tech` leaves it out ("CAA skipped on artur-rios.tech
-(--skip-caa)"): neither created, updated nor reported. Drop the flag once those sites have moved
+`blog.`, and `techcraftsmen.net`'s company page (`www.` and the bare domain), are served by Vercel until their sites
+move, and Vercel renews their certificates through Let's Encrypt over HTTP-01, so those zones' `CAA` waits:
+`--skip-caa artur-rios.tech --skip-caa techcraftsmen.net` leaves it out ("CAA skipped on <zone> (--skip-caa)"):
+neither created, updated nor reported. Drop each zone's flag once its Vercel sites have moved
 ([cutover.md, 1.5](cutover.md#15-the-records)).
 
 Why the dev machine is not proxied:

@@ -236,27 +236,33 @@ changed, and the run exits `1`. That is what keeps this step from touching what 
 
 For `--apps`, give the address the bare domains and `*` should have **until the window**: `<old ip>` if the
 old VPS serves names under these zones (0.1), else `<apps ip>`. First export each zone as it is (**DNS →
-Records → Import and Export → Export**): it is the record of what was there, for 5.8 and a rollback. Then, on
-your machine, with the token of 1.2:
+Records → Import and Export → Export**): it is the record of what was there, for 5.8 and a rollback. In each
+export, find the records that point at Vercel (a `CNAME` to `cname.vercel-dns.com`, an `A` to `76.76.21.21`):
+`artur-rios.tech`'s `www` and `blog` (and its bare domain if it points there), and in `techcraftsmen.net` the
+company page's `www` and bare domain, with any other name of that zone still on Vercel. Note them: they stay as they
+are until their sites move (plan 5), and 5.8 keeps them. Then, on your machine, with the token of 1.2:
 
 ```bash
-python3 scripts/cloudflare_dns.py --dry-run --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech
+python3 scripts/cloudflare_dns.py --dry-run --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
 ```
 
-`--skip-caa artur-rios.tech` leaves that zone's `CAA` out (`CAA skipped on artur-rios.tech (--skip-caa)`): the
-record allows Let's Encrypt only through DNS-01, and Vercel renews the certificates of `www.` and `blog.` through
-Let's Encrypt over HTTP-01, so it would break them at their next renewal, weeks later, where no check made today
-would see it. Every `cloudflare_dns.py` command of this page passes the flag. Drop it once `www.` and `blog.` have
-moved off Vercel (plan 5); the next run then makes the record.
+`--skip-caa <zone>` leaves that zone's `CAA` out (`CAA skipped on <zone> (--skip-caa)`): the record allows Let's
+Encrypt only through DNS-01, and Vercel renews the certificates of its names (`www.` and `blog.` of
+`artur-rios.tech`, the company page's in `techcraftsmen.net`) through Let's Encrypt over HTTP-01, so it would break
+them at their next renewal, weeks later, where no check made today would see it. Every `cloudflare_dns.py` command
+of this page passes both flags. Drop each once that zone's Vercel names have moved (plan 5,
+[moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)); the next run then
+makes the record. The flag does not remove a `CAA` that is already there: if `techcraftsmen.net` has one, made by
+an earlier run of this step, while the company page is still on Vercel, delete it by hand (**DNS → Records**, type
+`CAA`).
 
 Read every line. The run is not trusted until you have: the wildcard's name filter and the format of the
 `CAA` value were never checked against Cloudflare itself.
 
 - `would create A git.techcraftsmen.net: <dev ip> (DNS only)`, the same for `jenkins.`, `traefik-dev.` and
-  `grafana-dev.`, and `would create CAA techcraftsmen.net: 0 issue "letsencrypt.org; validationmethods=dns-01"`:
-  expected.
+  `grafana-dev.`, and `CAA skipped on artur-rios.tech (--skip-caa)` and the same for `techcraftsmen.net`: expected.
 - `... made by hand; change it or delete it yourself` for today's records (the bare domain and `*` of a zone
-  the old VPS serves, the Vercel record at `artur-rios.tech`): expected now. Leave them; 5.8 deals with the
+  the old VPS serves, a Vercel record at a bare domain, noted above): expected now. Leave them; 5.8 deals with the
   ones that move.
 - `a CNAME to ... is at this name`: expected for the Vercel names. At the bare domain or `*` of a zone that
   must reach the new apps machine, note it for 5.8.
@@ -275,11 +281,11 @@ Read every line. The run is not trusted until you have: the wildcard's name filt
 Then the same without `--dry-run`:
 
 ```bash
-python3 scripts/cloudflare_dns.py --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech
+python3 scripts/cloudflare_dns.py --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
 ```
 
-**Success looks like:** `CAA skipped on artur-rios.tech (--skip-caa)`, `create` lines for what was missing (at
-least the dev names and the `CAA` of `techcraftsmen.net`), `N of 9 records already right`, and an exit status
+**Success looks like:** `CAA skipped on artur-rios.tech (--skip-caa)` and the same for `techcraftsmen.net`, `create`
+lines for what was missing (at least the dev names), `N of 8 records already right`, and an exit status
 (`echo $?`) of `0`, or of `1` with a `to see to:` list that holds **only** the hand-made records above. From any
 machine, `nslookup git.techcraftsmen.net 1.1.1.1` prints `<dev ip>`. In `techcraftsmen.net`, **SSL/TLS → Edge
 Certificates** still shows the Universal certificate **Active**. That proves only today: the edge certificate,
@@ -289,8 +295,8 @@ thing to look at (Back out).
 **If it fails:** `zone ... not found: does the token have access to it?` is the token's *Zone Resources*
 (1.2); a `CAA` that Cloudflare refuses names its value: report it before going on.
 **Back out:** delete the records with the comment `yggdrasil` in the dashboard (**DNS → Records**, the
-*Comment* column); nothing else was changed. A `CAA` that turns out to block a certificate: delete it and pass
-`--skip-caa techcraftsmen.net` too until the cause is gone.
+*Comment* column); nothing else was changed. A `CAA` that turns out to block a certificate (once a flag is
+dropped, later): delete it and pass that zone's `--skip-caa` again until the cause is gone.
 
 ## 2. The dev machine
 
@@ -949,29 +955,34 @@ and run 0.4's loop over your clones once more: it must find nothing that 0.4 did
 First, by hand in each zone's **DNS → Records**, the records the script leaves alone but that would keep
 sending visitors to the old VPS:
 
+- first, in 1.5's zone exports, the records that point at Vercel, which you noted there, in both zones: they stay
+  (the last bullet), and nothing else of this list applies to them;
 - a hand-made `A` at the bare domain or `*` (1.5 reported it): **Edit**, set its *Comment* to `yggdrasil`, so the
-  script updates it in place; a hand-made `CNAME` there: delete it, **except** at `artur-rios.tech`'s bare domain
-  when it points at Vercel (`cname.vercel-dns.com`), which stays until that site moves (plan 5), like the other
-  Vercel records;
+  script updates it in place; a hand-made `CNAME` there: delete it, **except** at a bare domain that points at
+  Vercel (`artur-rios.tech`'s, or `techcraftsmen.net`'s, the company page's), which stays until that site moves
+  (plan 5), like the other Vercel records;
 - a hand-made `A` at `jenkins.`, `git.`, `traefik-dev.` or `grafana-dev.` (1.5's last bullet, if it was not dealt
   with then): delete it, or give it the comment;
 - a hand-made `AAAA` at the bare domain or `*` (the old VPS's IPv6, noted in 1.5): delete it, or pass the new
   machine's IPv6 as `--apps6` and give it the comment;
 - a hand-made record at a name of an application or of the platform (`heimdall`, `yggdrasil`, ...): a specific
   record wins over the wildcard: delete it;
-- the Vercel records of `artur-rios.tech` (`www`, `blog`, and the bare domain's if it points there) stay as they
-  are.
+- the Vercel records stay as they are: `artur-rios.tech`'s (`www`, `blog`, and the bare domain's if it points
+  there) and `techcraftsmen.net`'s (the company page's `www` and bare domain, and any other name of the zone that 1.5's
+  export shows on Vercel), until their sites move
+  ([moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)). Each zone's `CAA`
+  stays out with them (`--skip-caa` for both, below): Vercel renews their certificates over HTTP-01.
 
 Then, on your machine:
 
 ```bash
-python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech
-python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech
+python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
+python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
 ```
 
-**Success looks like:** the dry run's `would update A techcraftsmen.net: address <old ip> -> <apps ip>` (and
-`proxied on` for a record that was DNS only) for the bare domains and `*`, nothing for the dev names; the real
-run the same without `would`. It exits `0`, or `1` with only the Vercel records of `artur-rios.tech` under
+**Success looks like:** the dry run's `would update A *.techcraftsmen.net: address <old ip> -> <apps ip>` (and
+`proxied on` for a record that was DNS only) for each zone's `*` and each bare domain that is not on Vercel, nothing
+for the dev names; the real run the same without `would`. It exits `0`, or `1` with only the Vercel records of the two zones under
 `to see to:`. Proxied records change at Cloudflare's edge within seconds: from your machine,
 `curl -sI https://yggdrasil.techcraftsmen.net | grep -iE '^(HTTP|server)'` answers `server: cloudflare` with the
 new machine's console behind it (a `200`, or Traefik's `404` for an application not deployed yet), and
@@ -1536,10 +1547,10 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    Before 5.13 there is no mirror: `platform.sh down` alone.
 2. **DNS back** (5.8 reached), on your machine:
    ```bash
-   python3 scripts/cloudflare_dns.py --apps <old ip> --dev <dev ip> --skip-caa artur-rios.tech
+   python3 scripts/cloudflare_dns.py --apps <old ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
    ```
-   Success: `update A techcraftsmen.net: address <apps ip> -> <old ip>` and the same for `*` and
-   `artur-rios.tech`. Then put back, from 1.5's zone export, the records you deleted by hand in 5.8, and turn the
+   Success: `update A *.techcraftsmen.net: address <apps ip> -> <old ip>` and the same for `artur-rios.tech`'s `*`
+   and each bare domain that is not on Vercel. Then put back, from 1.5's zone export, the records you deleted by hand in 5.8, and turn the
    proxy off where it was off. If the old controller's name was `jenkins.techcraftsmen.net`, set that record back
    to `<old ip>` by hand, and remove its comment so the script leaves it alone.
 3. **The repositories on GitHub** (5.9 reached). The rulesets were deleted, so these pushes go through:
