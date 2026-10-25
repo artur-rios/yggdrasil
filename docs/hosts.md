@@ -363,7 +363,9 @@ without this, a check in `ci`'s engine could publish `-p 80:80 -p 443:443`, take
 restarts, and pass Let's Encrypt's HTTP-01 check for `git.` or `jenkins.`. The rule is on the user's slice, so it
 covers the user's engine and every container in it, a container binding port 80 inside its own network
 included: such a check must listen on 1024 or above. `ygg check` shows a "low ports" row per user. The
-[`CAA` record](#dns-records) closes the same door at the certificate authority.
+[`CAA` record](#dns-records) closes the same door at the certificate authority, once it exists: while the company
+page is still on Vercel, techcraftsmen.net carries no CAA record (`--skip-caa techcraftsmen.net`), and this rule is
+the only guard for `git.` and `jenkins.`.
 
 > **To verify on the real host:** that the rule takes effect on a running slice after `systemctl daemon-reload`
 > (or only once the user's manager restarts: `sudo systemctl restart user@<uid>`), and that it refuses the

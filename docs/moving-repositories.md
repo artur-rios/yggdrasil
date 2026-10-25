@@ -397,8 +397,9 @@ What the plan left for later or for you:
   not Docsy's `/edit/`, so every Docsy site needs a change in its configuration.
 - **`relink.py` can rewrite test fixtures** that deliberately use old addresses: it did in heimdall-docs and fortuna-docs,
   both fixed. The other branches were not checked for it. Before a branch's pull request, read what it changed under
-  test and fixture paths, against the table's *Base* (`develop`, `main` or `master`):
-  `git -C D:/Repositories/<repo> diff <base>...feature/move-to-forgejo -- '*test*' '*fixture*'`. An address rewritten
+  test and fixture paths, against the table's *Base* (`develop`, `main` or `master`) as the remote has it:
+  `git -C D:/Repositories/<repo> diff origin/<base>...feature/move-to-forgejo -- '*test*' '*fixture*'`
+  (`origin/main` for tech-craftsmen-company-page, whose `develop` exists only on the server). An address rewritten
   there that a test meant to keep old is put back on the branch.
 - **A 0.x prerelease option** in the pipeline, only if you want one (alexandria-ui's 0.x releases were prereleases).
 - **Rotate the GitHub CLI token now**, not after the moves: it was exposed in a subagent's transcript during Task 1 of

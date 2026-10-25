@@ -1008,18 +1008,12 @@ library at a release tag, and the `scripts/` it runs at the same tag, so it need
 pipeline. Until now that plan sat on `feature/plan-5-repositories`, and yggdrasil's own move branch,
 `feature/move-to-forgejo` in the worktree `D:\Repositories\yggdrasil-move`, on top of it. The old controller is
 stopped (5.3), so nothing reads `develop` or `main` while you do this, and pushes still go to GitHub. On your
-machine, in your clone of yggdrasil. It holds 4.2's catalog change, uncommitted: put it aside first (`git stash`),
-and bring it back at the end of 3, on `main` (`git stash pop`).
-
-**Expect that pop to conflict** in `catalog.yaml`: the plan wrote its own lines where 4.2 put the blocks (the
-comment on the git server, and the `repositories` list after it). Resolve it with the plan's side of every hunk,
-and the two blocks of [2.2](#22-the-catalog-the-dev-machine-reads) (`forge:` and `mirror:`) right after the
-`repository:` line, nothing else of the stash's side. Then check it before 5.9 commits it:
+machine, in your clone of yggdrasil. It holds 4.2's catalog change, uncommitted: put it aside first, and bring it
+back at the end of 3 (step 3's last block):
 
 ```bash
-python3 scripts/catalog.py validate     # passes; `catalog.py forge type` prints forgejo
-git add catalog.yaml                    # marks the conflict resolved; 5.9 commits it
-git stash drop                          # a pop that conflicted keeps the stash
+git stash push -m "cutover 4.2 catalog" -- catalog.yaml
+git stash list | head -1                # stash@{0}: On ...: cutover 4.2 catalog
 ```
 
 1. **The plan, onto `develop`.** As the repository's administrator (the rulesets let you push; a refused push names
@@ -1069,6 +1063,24 @@ git stash drop                          # a pop that conflicted keeps the stash
    git tag -a v<x.y.z> -m v<x.y.z> && git push origin v<x.y.z>
    ```
 
+   Now bring 4.2's change back, on `main`:
+
+   ```bash
+   git stash pop
+   ```
+
+   **Expect that pop to conflict** in `catalog.yaml`: the plan wrote its own lines where 4.2 put the blocks (the
+   comment on the git server, and the `repositories` list after it). Resolve it with the plan's side of every hunk,
+   and the two blocks of [2.2](#22-the-catalog-the-dev-machine-reads) (`forge:` and `mirror:`) right after the
+   `repository:` line, nothing else of the stash's side. Then check it before 5.9 commits it:
+
+   ```bash
+   python3 scripts/catalog.py validate     # passes; `catalog.py forge type` prints forgejo
+   git add catalog.yaml                    # marks the conflict resolved; 5.9 commits it
+   git stash list | head -1                # still "cutover 4.2 catalog"? only then:
+   git stash drop                          # a pop that conflicted keeps the stash; one that applied cleanly dropped it
+   ```
+
    GitHub Actions may start workflows for these pushes: let them run or cancel them, they change nothing here. The
    tag is what the controller loads. Its release files are not built now (Jenkins builds a tag it finds within a day
    of its creation, which may be 5.18's scan: then this is yggdrasil's first release on Forgejo, and its end-to-end
@@ -1099,8 +1111,8 @@ delete the tag.
 ### 5.9 The catalog goes to `main`
 
 Now the forge and mirror blocks go into your fork's `main`, on GitHub, so that the import carries them to Forgejo.
-`main` is the release of 5.8a: the `git pull` below brings the repositories' plan in, and your catalog change of 4.2
-goes on top of it. The old controller is stopped (5.3), so nothing reads them yet. First keep what `prepare-github` will change on
+`main` is the release of 5.8a, with your catalog change of 4.2 already back on it and staged (5.8a, the end of
+3): the `git pull` below finds nothing new, and the commit below is that change. The old controller is stopped (5.3), so nothing reads them yet. First keep what `prepare-github` will change on
 GitHub, to put it back in a rollback. On your machine:
 
 ```bash
@@ -1443,7 +1455,7 @@ cd /opt/yggdrasil && git checkout -- catalog.yaml && git pull
 docker restart yggdrasil-jenkins-1
 ```
 
-Then in Jenkins, for each job: **Scan Repository Now**. Jenkins finds `develop` and `main` (and any `release/*`)
+Then in Jenkins, for each job: **Scan Repository Now**. Jenkins finds `develop` and `main` (and any `release/*`, and `master` for a `rules: basic` repository)
 and builds each branch it finds for the first time: `develop` deploys to development and `release/*` to
 homologation, each left stopped since they are on demand; `main`'s build deploys nothing (production deploys on
 a release, and was deployed by hand in 5.17). That is why the env files and the volumes came first.
