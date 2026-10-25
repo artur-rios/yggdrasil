@@ -204,7 +204,22 @@ DESKTOP_PIPELINE = {"release": {
                         ' && echo extra >../release-files/build/dist/extra-direct.txt'
                         ' && echo tampered >../release-files/build/dist/shop-desktop.sha256'
                         ' && echo "TAMPERED-$((1 + 1))"'},
+    # After the validation, over a fresh copy of the gathered set: a manifest of every file (printed, so the
+    # test sees which bytes it covered) and its "signature" with the allow-listed credential, both added to
+    # the release by its files glob.
+    "finalize": {"image": "alpine:3",
+                 "run": 'mkdir -p signed'
+                        ' && (cd "$RELEASE_FILES" && find . -type f | sort | xargs sha256sum) >signed/shop-desktop-manifest.txt'
+                        ' && sed "s/^/MANIFEST /" signed/shop-desktop-manifest.txt'
+                        ' && printf %s "$SIGNING_KEY" | sha256sum | cut -c1-64 >signed/shop-desktop-manifest.sig'
+                        ' && echo "FINALIZE-KEY $(cat signed/shop-desktop-manifest.sig)"'
+                        ' && echo "FINALIZED-$(wc -l <signed/shop-desktop-manifest.txt | tr -d " ")-FILES"',
+                 "files": ["signed/*"],
+                 "credentials": {"SIGNING_KEY": "shop-db-password"}},
 }}
+# What shop-desktop's release is made of, under RELEASE_FILES: the manifest finalize writes lists these.
+DESKTOP_SET = ("build/dist/shop-desktop-1.0.0.tar.gz", "build/dist/shop-desktop.sha256",
+               "windows/shop-desktop-windows/shop-desktop-setup.msi")
 TOOLS_PIPELINE = {"release": {
     "build": {"image": "alpine:3", "run": "mkdir -p dist && echo tools >dist/shop-tools.tar.gz",
               "files": ["dist/shop-tools.tar.gz"]},
@@ -1546,8 +1561,10 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIsNotNone(release)
         self.assertFalse(release["draft"])
         assets = {asset["name"]: asset["size"] for asset in release["assets"]}
-        # The declared globs' files only: not dist/notes.txt, not the artifact's debug.pdb.
-        self.assertEqual(set(assets), {"shop-desktop-1.0.0.tar.gz", "shop-desktop.sha256", "shop-desktop-setup.msi"})
+        # The declared globs' files only: not dist/notes.txt, not the artifact's debug.pdb; and the two files
+        # release.finalize added.
+        self.assertEqual(set(assets), {"shop-desktop-1.0.0.tar.gz", "shop-desktop.sha256", "shop-desktop-setup.msi",
+                                       "shop-desktop-manifest.txt", "shop-desktop-manifest.sig"})
         self.assertEqual(assets["shop-desktop-1.0.0.tar.gz"], len("shop-desktop 1.0.0\n"))
         self.assertEqual(assets["shop-desktop-setup.msi"], len("desktop installer\n"))
         # The validation is pass or fail only: what it added or rewrote after the files were gathered
@@ -1559,6 +1576,15 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # The allow-listed credential reached the release build (its digest; the log masks the value).
         self.assertIn(f"BUILD-KEY {hashlib.sha256(DB_PASSWORD.encode()).hexdigest()}", build.console)
         self.assertNotIn(DB_PASSWORD, build.console)
+        # release.finalize ran after the validation passed, over the gathered set as it was before the
+        # validation tampered with its copy (the built file's own bytes, three files), with its allow-listed
+        # credential; what it wrote is in the release, its manifest one line per file of the set.
+        self.assertLess(build.console.index("VALIDATED-3-FILES"), build.console.index("FINALIZED-3-FILES"))
+        built = hashlib.sha256(b"shop-desktop 1.0.0\n").hexdigest()
+        self.assertIn(f"MANIFEST {built}  ./build/dist/shop-desktop-1.0.0.tar.gz", build.console)
+        self.assertIn(f"FINALIZE-KEY {hashlib.sha256(DB_PASSWORD.encode()).hexdigest()}", build.console)
+        self.assertEqual(assets["shop-desktop-manifest.txt"], sum(64 + 2 + len(f"./{path}\n") for path in DESKTOP_SET))
+        self.assertEqual(assets["shop-desktop-manifest.sig"], 64 + 1)
         # GitHub: the tag waited for, the workflow dispatched on it, its run watched and its files
         # downloaded -- every call on the publish agent (vps), with the App's token; none on release.
         mine = [line for line in calls if f" args={DESKTOP} " in f"{line} "]

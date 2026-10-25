@@ -35,14 +35,15 @@
 //                               deploy/<environment> (required on main) after each; then, on the publish
 //                               agent, merge the pull request and tag vx.y.z; build the release files on
 //                               the release agent (and the Windows ones on GitHub), validate them there
-//                               (pass or fail only: validation cannot change what is uploaded), and
-//                               publish the release with publish-release.sh -- drafts on the git server
-//                               and, with a mirror, GitHub, the files uploaded and checked, then the git
-//                               server's published and GitHub's last (see releasePullRequest). A failure
-//                               after the merge says how to finish: the release-resume job. On GitHub, a
-//                               repository without yggdrasil.yml keeps the path it always had (release():
-//                               every GitHub Actions check waited for, releaseArtifacts: true's artifact
-//                               workflow)
+//                               (pass or fail only: validation cannot change what is uploaded), run
+//                               release.finalize over them (it only adds files: a manifest, a
+//                               signature), and publish the release with publish-release.sh -- drafts
+//                               on the git server and, with a mirror, GitHub, the files uploaded and
+//                               checked, then the git server's published and GitHub's last (see
+//                               releasePullRequest). A failure after the merge says how to finish: the
+//                               release-resume job. On GitHub, a repository without yggdrasil.yml keeps
+//                               the path it always had (release(): every GitHub Actions check waited
+//                               for, releaseArtifacts: true's artifact workflow)
 //   the actions-release job  -> the Windows files of a release published without them (actionsRelease)
 //   the tag-check job        -> daily: every published release's tag still on the commit it was
 //                               released from, else the build fails naming it MOVED or DELETED
@@ -93,9 +94,9 @@
 //     node(), and by onPublishAgent(), on the publish agent (forge.publishAgent: merges, tags, releases,
 //     uploads), the one agent that also gets the GitHub App for a release. Neither the ci nor the
 //     release agent ever holds either: checkouts and reads there use the read credential, and the
-//     release agent's builds only the ids release.build.credentials names (allow-listed against the
-//     entry's `releaseCredentials`, never its checks' `credentials`). Files cross between the agents
-//     as stashes;
+//     release agent's builds and finalize steps only the ids release.build.credentials and
+//     release.finalize.credentials name (allow-listed against the entry's `releaseCredentials`, never its
+//     checks' `credentials`). Files cross between the agents as stashes;
 //   - nothing waits on an agent: GitHub Actions, a Windows run, a tag reaching GitHub and the skip are
 //     waited for outside node(), each look a short call on the publish agent (pollGithub);
 //   - a check binds only the ids its plan names, each one checked against the catalog entry's
@@ -139,9 +140,9 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 // what of this repository is the owner's data, always taken from main (checkoutTools).
 @Field static final String LIBRARY_VERSION = '[A-Za-z0-9][A-Za-z0-9._/-]{0,99}'
 @Field static final List OWNER_DATA = ['catalog.yaml', 'stacks']
-// A release file glob (release.build.files, release.windows.files) as the stash step takes it: Ant
-// patterns (*, **, ?), relative, with no comma or whitespace (stash splits its includes on them); a
-// `.` or `..` segment is refused separately (releaseProblem).
+// A release file glob (release.build.files, release.windows.files, release.finalize.files) as the stash
+// step takes it: Ant patterns (*, **, ?), relative, with no comma or whitespace (stash splits its includes
+// on them); a `.` or `..` segment is refused separately (releaseProblem).
 @Field static final String RELEASE_GLOB = '[A-Za-z0-9_.*?+@=][A-Za-z0-9_.*?/+@=-]{0,199}'
 // A GitHub workflow file (release.windows.workflow).
 @Field static final String WORKFLOW = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}\\.ya?ml'
@@ -188,6 +189,18 @@ if [ -n "$outside" ]; then
   echo "$outside" | head -n 20 >&2
   exit 3
 fi
+'''
+
+// Run from a directory: every path under it with its type (`f ./a`, `d ./b`, `l ./c`...), sorted, then
+// every regular file's SHA-256 (sha256sum's lines). Two runs print the same only when nothing was changed,
+// added, removed or replaced by a link there: what release.finalize may not do to the release's files
+// (finalizeReleaseFiles). A file that cannot be read fails it.
+@Field static final String RELEASE_SUMS = '''
+set -eu
+(set -o pipefail) 2>/dev/null && set -o pipefail
+export LC_ALL=C
+find . -mindepth 1 -printf '%y %p\n' | sort
+find . -type f -print0 | sort -z | xargs -0 -r sha256sum --
 '''
 
 // Runs one of this repository's scripts, yggdrasil/scripts/<YGG_TOOL>, from the workspace's root with
@@ -940,7 +953,7 @@ def onPublishAgent(Map ctx, boolean write, boolean github, Closure body) {
 //      leaves out of the notes) and the tag v<version> on the merge commit;
 //   4. releaseFromTag, shared with the tag builds and the release-resume job: with yggdrasil.yml's
 //      release, the release files (releaseFiles: built on the release agent, the Windows ones from
-//      GitHub, validated on the release agent); then, on the publish agent, the notes and
+//      GitHub, validated and finalized on the release agent); then, on the publish agent, the notes and
 //      publish-release.sh (publishRelease), which makes the drafts, uploads and checks the files and
 //      publishes the release (Forgejo, then GitHub last; after a skip Forgejo only, "GitHub copy
 //      pending"). A failure here says the pull request is merged and tagged, and to finish the release
@@ -1050,7 +1063,7 @@ String resumeNote(Map ctx, String tag) {
 //   seconds  how long a Windows run may take (default 3600)
 //   nuget    publish.nuget of an owner-tagged library: its packages packed and pushed (publishPackages;
 //            a version the feed has already is skipped, so a rerun goes on) -- after the release files are
-//            built and validated, before anything is published: a push cannot be taken back, so a release
+//            built, validated and finalized, before anything is published: a push cannot be taken back, so a release
 //            whose files fail pushes nothing
 //   release  false: no release on the git server (a library that only publishes packages); default true
 // Returns [urls: the releases' addresses, missing: the Windows files left out, reason: why,
@@ -1206,9 +1219,10 @@ void deleteReleaseBranch(Map ctx) {
 //   - release.windows: the workflow dispatched on the tag, its files from GitHub (windowsFiles); after
 //     a skip, or when that fails, they are missing;
 //   - everything gathered on the release agent, release.validate run over it, and the validated set
-//     stashed as release-files (gatherReleaseFiles).
-// Returns [stash: 'release-files', missing: the missing Windows files (globs, or the workflow's name),
-// reason: why they are missing].
+//     stashed as release-files (gatherReleaseFiles); then release.finalize, whose files join the set
+//     (finalizeReleaseFiles: the stash release-upload).
+// Returns [stash: the upload set's stash, missing: the missing Windows files (globs, or the workflow's
+// name), reason: why they are missing].
 Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, boolean skipped, int seconds) {
   Map files = [stash: null, missing: [], reason: '']
   stage('Release files') {
@@ -1224,7 +1238,7 @@ Map releaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, 
         windows = got.stashes
       }
     }
-    files.stash = gatherReleaseFiles(ctx, releaseConfig, tag, sha, built, windows)
+    files.stash = gatherReleaseFiles(ctx, entry, releaseConfig, tag, sha, built, windows)
   }
   return files
 }
@@ -1338,12 +1352,15 @@ List windowsNames(Map windows) {
 // whole workspace mounted, with RELEASE_TAG and RELEASE_VERSION; it runs as root and can write anywhere
 // there, but the stash is taken, so nothing it adds or changes reaches the release. A validation that fails
 // stops the release here: publish-release.sh, which is what creates the drafts, is never called, so there
-// is nothing to publish (and no draft at all). Returns the stash's name.
-String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, List built, List windows) {
+// is nothing to publish (and no draft at all). Then release.finalize, when declared (finalizeReleaseFiles),
+// and the upload set is release-files plus what it adds. Returns the upload set's stash.
+String gatherReleaseFiles(Map ctx, Map entry, Map releaseConfig, String tag, String sha, List built, List windows) {
   Map validate = releaseConfig.validate as Map
+  Map finalize = releaseConfig.finalize as Map
+  String upload = 'release-files'
   node('release') {
     try {
-      if (validate) {
+      if (validate || finalize) {
         checkoutTag(ctx, tag, sha)
       }
       for (String directory : ['release-files', 'release-check']) {
@@ -1388,12 +1405,113 @@ String gatherReleaseFiles(Map ctx, Map releaseConfig, String tag, String sha, Li
           }
         }
       }
+      if (finalize) {
+        upload = finalizeReleaseFiles(entry, finalize, tag)
+      }
     } finally {
       cleanScratch()
       cleanWs()
     }
   }
-  return 'release-files'
+  return upload
+}
+
+// On the release agent, inside gatherReleaseFiles' node (the tag checked out in app/, release-files
+// stashed, and validated): release.finalize, the step that makes what must cover the whole set -- a
+// manifest of every file, its signature. It sees the set as release.validate does: RELEASE_FILES is
+// release-check/ (made again from the release-files stash, so nothing the validation did to its copy is
+// left), and it runs in its image, from the application's root, the whole workspace mounted, with
+// RELEASE_TAG, RELEASE_VERSION and the credentials release.finalize.credentials names (allow-listed
+// against the entry's releaseCredentials, as release.build's are). It adds files and changes none: the set
+// is checksummed before and after (RELEASE_SUMS: every path with its type, every file's SHA-256), and a
+// path changed, added or removed there fails the release, naming it. Its own files are its `files` globs,
+// matched in the checkout like release.build's (a glob matching no file fails, a link leading out of the
+// checkout refuses them all), and go into the upload set under finalize/. Any failure stops the release
+// before anything is published, as a failed validation does. Returns the upload set's stash,
+// release-upload: release-files and finalize/.
+String finalizeReleaseFiles(Map entry, Map finalize, String tag) {
+  List globs = (finalize.files ?: []) as List
+  dir('release-check') {
+    deleteDir()
+  }
+  dir('release-check') {
+    unstash 'release-files'
+  }
+  String before = releaseSums()
+  withCheckCredentials([name: 'release-finalize', credentials: finalize.credentials], entry, 'releaseCredentials') { String envFile ->
+    withEnv(["YGG_IMAGE=${finalize.image}", "YGG_RUN=${finalize.run}", "YGG_ENV_FILE=${envFile ?: "${scratch()}/release-finalize.env"}",
+             "YGG_TAG=${tag}", "YGG_VERSION=${tagVersion(tag)}"]) {
+      int code = sh(script: '''
+        umask 077
+        mkdir -p "$(dirname "$YGG_ENV_FILE")"
+        {
+          printf 'RELEASE_FILES=%s\\n' "$WORKSPACE/release-check"
+          printf 'RELEASE_TAG=%s\\n' "$YGG_TAG"
+          printf 'RELEASE_VERSION=%s\\n' "$YGG_VERSION"
+        } >>"$YGG_ENV_FILE"
+        bash yggdrasil/scripts/run-check.sh release-finalize "$YGG_IMAGE" "$WORKSPACE" --env-file "$YGG_ENV_FILE" \\
+          -- sh -c 'cd app && exec sh -c "$1"' sh "$YGG_RUN"
+      ''', returnStatus: true)
+      if (code != 0) {
+        error "release.finalize failed (exit ${code}): nothing is published, and no draft release was made."
+      }
+    }
+  }
+  String after = releaseSums()
+  if (after != before) {
+    error "release.finalize changed the release files, which it may only add to: ${sumsChanged(before, after).join(', ')}. Nothing is published, and no draft release was made."
+  }
+  List stashes = []
+  dir('app') {
+    refuseLinks(false, 'the release finalize step')
+    for (int i = 0; i < globs.size(); i++) {
+      String name = "release-finalize-${i}"
+      stashGlob(name, globs[i] as String, 'release.finalize.files')
+      stashes << name
+    }
+  }
+  dir('release-upload') {
+    deleteDir()
+  }
+  sh(script: 'mkdir -p release-upload/finalize')
+  dir('release-upload') {
+    unstash 'release-files'
+  }
+  dir('release-upload/finalize') {
+    for (String name : stashes) {
+      unstash name
+    }
+  }
+  dir('release-upload') {
+    refuseLinks(true, 'the release files')
+    stash name: 'release-upload', includes: '**', allowEmpty: true
+  }
+  return 'release-upload'
+}
+
+// RELEASE_SUMS run in release-check/: the list finalizeReleaseFiles compares before and after the step.
+// A checksum that cannot be taken (a file the step made unreadable) fails the release too.
+String releaseSums() {
+  String sums = ''
+  dir('release-check') {
+    sums = sh(script: RELEASE_SUMS, returnStdout: true)
+  }
+  return sums
+}
+
+// The paths whose line in RELEASE_SUMS differs between `before` and `after` (changed, removed or added),
+// each once and at most 20: what the failure names.
+@NonCPS
+List sumsChanged(String before, String after) {
+  Set was = new LinkedHashSet(before.readLines())
+  Set now = new LinkedHashSet(after.readLines())
+  Set paths = new LinkedHashSet()
+  for (String line : ((was - now) + (now - was))) {
+    // "<type> <path>" or "<sha256>  <path>".
+    paths << printable(line.replaceFirst('^(?:[a-z] |[0-9a-f]{64}  )', ''))
+  }
+  List named = new ArrayList(paths)
+  return named ? named.take(20) : ['the checksums differ']
 }
 
 // Stage Publish the release, on the publish agent: the notes (release_notes.py: the version's CHANGELOG.md
@@ -1502,7 +1620,7 @@ void stashGlob(String name, String glob, String field) {
 // fields; this is the library's own look at what reaches a shell, a stash or GitHub). null when fine.
 @NonCPS
 String releaseProblem(Map releaseConfig) {
-  for (String part : ['build', 'validate']) {
+  for (String part : ['build', 'validate', 'finalize']) {
     Map section = releaseConfig[part] as Map
     if (section == null) {
       continue
@@ -1516,10 +1634,12 @@ String releaseProblem(Map releaseConfig) {
   }
   Map build = releaseConfig.build as Map
   Map windows = releaseConfig.windows as Map
+  Map finalize = releaseConfig.finalize as Map
   if (windows != null && !(windows.workflow instanceof String && windows.workflow ==~ WORKFLOW)) {
     return "release.windows.workflow: '${printable(windows?.workflow)}' is not a workflow file (name.yml)"
   }
-  for (Map files : [[field: 'release.build.files', globs: build?.files], [field: 'release.windows.files', globs: windows?.files]]) {
+  for (Map files : [[field: 'release.build.files', globs: build?.files], [field: 'release.windows.files', globs: windows?.files],
+                    [field: 'release.finalize.files', globs: finalize?.files]]) {
     for (Object glob : (files.globs ?: []) as List) {
       if (!usableGlob(glob)) {
         return "${files.field}: '${printable(glob)}' is not a relative glob (letters, digits, . _ * ? + @ = - and /, no . or .. part)"
