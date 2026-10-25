@@ -158,15 +158,16 @@ jobs:
           docker compose -p yggdrasil-agent-ci --env-file "$secrets/agent.env" -f platform/build-agent.yml config --quiet
           echo "platform/build-agent.yml ok"
           # Every stack that has its service here, in both modes, with a dummy value for each
-          # variable it requires. (Stacks based on the application's own docker-compose.yml are
-          # validated by deploy.sh on the first deploy.)
+          # variable it requires: a port for *PORT, an empty file for *_FILE (an env_file, such as
+          # APP_ENV_FILE, must exist), x for the rest. (Stacks based on the application's own
+          # docker-compose.yml are validated by deploy.sh on the first deploy.)
           for stack in $(python3 scripts/catalog.py applications --deployable); do
             [[ -f "stacks/$stack.yml" ]] || continue
             for mode in proxy ports; do
               [[ -f "stacks/$stack.$mode.yml" ]] || continue
               paths=("stacks/$stack.yml" "stacks/$stack.$mode.yml")
               grep -ohE '[$][{][A-Z_]+' "${paths[@]}" | cut -c3- | sort -u \
-                | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s/$/=x/' > "$secrets/$stack.env"
+                | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s#^(.*_FILE)$#\1=/dev/null#; t; s/$/=x/' > "$secrets/$stack.env"
               APP_DIR=. docker compose --env-file "$secrets/$stack.env" -f "${paths[0]}" -f "${paths[1]}" config --quiet
               echo "stacks/$stack.$mode.yml ok"
             done
