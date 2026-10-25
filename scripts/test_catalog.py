@@ -875,6 +875,24 @@ class PublicHostTests(unittest.TestCase):
         self.assertEqual((status, out), (1, ""))
         self.assertIn("does not deploy to 'nope'", err)
 
+    def test_given_an_apex_site_with_a_host_when_its_apex_host_is_asked_then_production_gets_the_bare_domain(self):
+        # Production has no hostSuffix in BASE: the bare domain. dev (-dev) shares it, so it gets a name of its
+        # own under the domain, which its redirect router answers on instead.
+        value = self.site(apex=True, host="www")
+        self.assertEqual(self.ask(value, "apex-host", "site", "prod", "example.com"), (0, "example.com\n", ""))
+        self.assertEqual(self.ask(value, "apex-host", "site", "dev", "example.com"), (0, "apex-dev.example.com\n", ""))
+        value = self.site(apex=True, host="www", domain="artur-rios.tech")
+        self.assertEqual(self.ask(value, "apex-host", "site", "dev", "example.com")[1], "apex-dev.artur-rios.tech\n")
+
+    def test_given_a_site_that_is_not_an_apex_one_with_a_host_when_its_apex_host_is_asked_then_it_is_empty(self):
+        # Nothing at all, like public-host: deploy.sh's $(...) is then empty. An apex site without a host is the
+        # bare domain itself (public-host): it has nothing to redirect from.
+        for fields in ({"host": "docs"}, {"apex": True}, {}):
+            with self.subTest(fields=fields):
+                self.assertEqual(self.ask(self.site(**fields), "apex-host", "site", "prod", "example.com"), (0, "", ""))
+        self.assertEqual(self.ask(self.site(apex=True, host="www"), "apex-host", "site", "prod", ""), (0, "", ""))
+        self.assertEqual(self.ask(self.site(apex=True, host="www"), "apex-host", "site", "nope", "x")[0], 1)
+
     def test_given_the_wrong_number_of_arguments_when_asked_then_it_is_a_usage_error(self):
         self.assertEqual(self.ask(self.site(), "public-host", "site", "dev")[0], 2)
         self.assertEqual(self.ask(self.site(), "public-path")[0], 2)
@@ -1124,8 +1142,7 @@ class RealCatalogTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("docker"), "needs docker")
     def test_given_every_site_when_its_stack_is_rendered_then_compose_accepts_it_in_each_environment(self):
-        # As deploy.sh runs it: the values it exports, the host and path the catalog gives, and APEX_HOST from
-        # the application's variables.
+        # As deploy.sh runs it: the values it exports, the host, path and apex host the catalog gives.
         for _, app in c.applications(self.catalog, deployable=True):
             if not app.get("domain"):
                 continue
@@ -1138,7 +1155,7 @@ class RealCatalogTests(unittest.TestCase):
                     values = dict(os.environ, APP_DIR=app_dir, APP_ENV_FILE=str(env_file), YGG_ENVIRONMENT=env["id"],
                                   YGG_PUBLIC_HOST=host, YGG_PUBLIC_PATH=app.get("path", ""),
                                   GIT_COMMIT="0" * 40, IMAGE_TAG=f"{env['id']}-1.0.0-0000000",
-                                  APEX_HOST=app["domain"])
+                                  YGG_APEX_HOST=c.apex_host(self.catalog, app["id"], env["id"], "techcraftsmen.net"))
                     result = subprocess.run(
                         ["docker", "compose", "--project-name", f"{app['id']}-{env['id']}", "--env-file", os.devnull,
                          "-f", str(ROOT / "stacks" / f"{app['id']}.yml"),
@@ -1150,6 +1167,18 @@ class RealCatalogTests(unittest.TestCase):
                     self.assertIn(f"Host(`{host}`)", rule)
                     if app.get("path"):
                         self.assertIn(f"PathPrefix(`{app['path']}/`)", rule)
+                    if app.get("apex"):
+                        apex = labels[f"traefik.http.routers.{app['id']}-{env['id']}-apex.rule"]
+                        self.assertEqual(apex, f"Host(`{values['YGG_APEX_HOST']}`)")
+                        self.assertNotEqual(values["YGG_APEX_HOST"], host)
+
+    def test_given_the_apex_sites_when_their_apex_host_is_asked_then_only_production_has_the_bare_domain(self):
+        # Every environment of the host shares one bare domain: production (no hostSuffix) claims it, the others
+        # get apex<hostSuffix>.<domain>, so their redirect routers never collide.
+        self.assertEqual(c.apex_host(self.catalog, "personal-page", "production", "x"), "artur-rios.tech")
+        self.assertEqual(c.apex_host(self.catalog, "personal-page", "development", "x"), "apex-dev.artur-rios.tech")
+        self.assertEqual(c.apex_host(self.catalog, "tech-craftsmen-company-page", "homologation", "x"),
+                         "apex-hml.techcraftsmen.net")
 
 
 if __name__ == "__main__":

@@ -226,7 +226,8 @@ Rules to keep:
   `<environment>-<version>`, and rolls back and prunes only those.
 - In `proxy` mode, nothing publishes a host port: only Traefik does.
 - Host names come from the env file (`PUBLIC_HOST`, `UI_HOST`), not hard-coded. For a site, `deploy.sh`
-  also exports `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH` from the catalog's `host`, `domain`, `path` and `apex`
+  also exports `YGG_PUBLIC_HOST`, `YGG_PUBLIC_PATH` and, for an `apex` site with a `host`, `YGG_APEX_HOST` (the name its
+  bare-domain redirect answers on) from the catalog's `host`, `domain`, `path` and `apex`
   ([catalog.md](catalog.md#application-fields)), which a stack file may use instead. An `apex` site without a
   `host` is on the bare domain in every environment: deploy it to one environment only.
 - To give a build the commit and the environment (what Vercel's `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV` were),

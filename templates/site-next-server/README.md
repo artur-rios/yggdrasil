@@ -17,7 +17,7 @@ The application's stack files are made in yggdrasil, not in the repository: copy
 
 - `site.proxy.yml`: the site has its own host;
 - `site-apex-redirect.proxy.yml`: the site is on `www.` and the bare domain redirects to it (`www.artur-rios.tech`;
-  `apex: true` in the catalog, and `APEX_HOST` in the application's variables).
+  `apex: true` in the catalog, which gives the bare domain's name, `YGG_APEX_HOST`).
 
 A server-rendered site does not live under a path (`site-path.proxy.yml`): `basePath` would also move `/healthz`.
 Hand the application's env file to the container with `env_file: ${APP_ENV_FILE}` in the stack file when the server

@@ -1,7 +1,5 @@
 # Company page, tech-craftsmen-company-page in catalog.yaml: templates/stacks/site-apex-redirect.proxy.yml
 # with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
-# APEX_HOST, the bare domain, is the application's variable (docs/hosts.md): every environment
-# it deploys to needs one, since the file stops without it.
 
 services:
   web:
@@ -15,7 +13,7 @@ services:
       - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.entrypoints=websecure
       - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
       - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.service=tech-craftsmen-company-page-${YGG_ENVIRONMENT}
-      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.rule=Host(`${APEX_HOST:?set APEX_HOST in the application's variables to the bare domain}`)
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.rule=Host(`${YGG_APEX_HOST:?YGG_APEX_HOST is set by scripts/deploy.sh from the catalog; give the application a host, a domain and apex true}`)
       - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.entrypoints=websecure
       - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.middlewares=secure-headers@file,tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex
       - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.service=tech-craftsmen-company-page-${YGG_ENVIRONMENT}

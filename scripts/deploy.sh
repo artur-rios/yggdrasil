@@ -59,6 +59,9 @@
 # instead of a PUBLIC_HOST in the env file. The domain is the application's `domain`, else
 # YGG_DOMAIN, which the deploy agent gets from the platform's DOMAIN; both are empty when the
 # application is not public or no domain is known (stacks that don't use them are unaffected).
+# YGG_APEX_HOST is the name an apex site's bare-domain router answers on (catalog.py apex-host): the
+# bare domain in an environment without a hostSuffix, apex<hostSuffix>.<domain> in the others, empty
+# for every other application. site-apex-redirect.proxy.yml redirects it to YGG_PUBLIC_HOST.
 #
 # Build arguments: a stack passes YGG_ENVIRONMENT (the environment being deployed to) and GIT_COMMIT (the whole
 # SHA of the checkout) in its build.args, both exported here; a site's Dockerfile takes them as the build
@@ -171,7 +174,8 @@ export YGG_ENVIRONMENT="$environment"
 # Empty (not an error) for an application without a host, or when no domain is known.
 YGG_PUBLIC_HOST=$(python3 "$root/scripts/catalog.py" public-host "$stack" "$environment" "${YGG_DOMAIN:-}") || exit 1
 YGG_PUBLIC_PATH=$(python3 "$root/scripts/catalog.py" public-path "$stack") || exit 1
-export YGG_PUBLIC_HOST YGG_PUBLIC_PATH
+YGG_APEX_HOST=$(python3 "$root/scripts/catalog.py" apex-host "$stack" "$environment" "${YGG_DOMAIN:-}") || exit 1
+export YGG_PUBLIC_HOST YGG_PUBLIC_PATH YGG_APEX_HOST
 # The whole SHA of the checkout being deployed, for stacks to pass in build.args as GIT_COMMIT (what a site's
 # build read as VERCEL_GIT_COMMIT_SHA). Set here, never taken from the caller's environment; empty when the
 # directory is not a git checkout (a deploy by hand), which is not an error.

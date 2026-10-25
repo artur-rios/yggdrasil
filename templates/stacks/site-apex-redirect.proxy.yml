@@ -5,9 +5,11 @@
 # site, and one more for the bare domain.
 #
 # The site's router matches YGG_PUBLIC_HOST, which deploy.sh exports from the catalog (host: www, apex: true, so
-# it is www.<domain>). The bare domain is APEX_HOST, set in the application's variables like any host of a stack
-# (docs/variables.md), since a Compose file cannot take the first label off a host name. Give APEX_HOST to the
-# environment that serves the apex, which is production alone: a development host has no bare domain.
+# it is www.<domain>). The second router matches YGG_APEX_HOST, which deploy.sh exports too (catalog.py
+# apex-host): the bare domain in an environment without a hostSuffix (production), and apex<hostSuffix>.<domain>
+# in the others (apex-dev.<domain>, redirecting to www-dev.<domain>). The environments of one host share its bare
+# domain and only one of them may claim it; the others get a name of their own under the wildcard certificate,
+# so every environment renders the same file and tests the same redirect.
 #
 # The bare domain's router sends every request, any path and query, to the same address on www with a 301
 # (redirectregex, permanent). The regex takes the path and query after the host (${1} in the replacement; written
@@ -35,7 +37,7 @@ services:
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.entrypoints=websecure
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.service=APPLICATION_ID-${YGG_ENVIRONMENT}
-      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.rule=Host(`${APEX_HOST:?set APEX_HOST in the application's variables to the bare domain}`)
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.rule=Host(`${YGG_APEX_HOST:?YGG_APEX_HOST is set by scripts/deploy.sh from the catalog; give the application a host, a domain and apex true}`)
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.entrypoints=websecure
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.middlewares=secure-headers@file,APPLICATION_ID-${YGG_ENVIRONMENT}-apex
       - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}-apex.service=APPLICATION_ID-${YGG_ENVIRONMENT}

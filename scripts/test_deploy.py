@@ -58,7 +58,7 @@ FAKE_DOCKER = textwrap.dedent(r"""
           cp "${files[-1]}" "$state/up$count.labels"
           echo "$IMAGE_TAG" >"$state/up$count.tag"
           # What Compose would substitute into the stack files.
-          printf '%s\n%s\n' "${YGG_PUBLIC_HOST-unset}" "${YGG_PUBLIC_PATH-unset}" >"$state/up$count.public"
+          printf '%s\n%s\n%s\n' "${YGG_PUBLIC_HOST-unset}" "${YGG_PUBLIC_PATH-unset}" "${YGG_APEX_HOST-unset}" >"$state/up$count.public"
           if command -v flock >/dev/null; then
             status=0
             flock --nonblock --conflict-exit-code 75 "$YGG_SECRETS_DIR/locks/$PROJECT_UNDER_TEST.lock" true || status=$?
@@ -405,8 +405,11 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(self.read("calls"), "")
 
     def public_values(self, number=1):
-        host, path = self.read(f"up{number}.public").splitlines()
+        host, path, _ = self.read(f"up{number}.public").split(chr(10))[:3]
         return host, path
+
+    def apex_value(self, number=1):
+        return self.read(f"up{number}.public").split(chr(10))[2]
 
     def test_given_a_deploy_when_run_then_compose_gets_the_public_host_and_path(self):
         # heimdall-ui has the host "heimdall" and development the suffix "-dev"; the domain is the
@@ -436,6 +439,33 @@ class DeployTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.public_values(), ("heimdall-dev.docs.example.org", "/docs"))
+
+    def test_given_an_apex_site_when_deployed_then_compose_gets_the_name_its_bare_domain_redirect_answers_on(self):
+        # The environments of one host share its bare domain: one without a hostSuffix claims it, the others a
+        # name of their own (apex-dev.<domain>), so the apex stack renders in each. heimdall-ui is no apex site,
+        # so it gets none; a copy of the catalog that makes it one does.
+        result = self.deploy(environment=ON_DEMAND, DEPLOY_START="1", YGG_DOMAIN="example.com")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.apex_value(), "")
+
+        copy = self.temp / "copy"
+        (copy / "scripts").mkdir(parents=True)
+        (copy / "stacks").mkdir()
+        for name in ("deploy.sh", "catalog.py"):
+            shutil.copy(ROOT / "scripts" / name, copy / "scripts" / name)
+        for stack_file in (ROOT / "stacks").glob(f"{STACK}*.yml"):
+            shutil.copy(stack_file, copy / "stacks" / stack_file.name)
+        text = (ROOT / "catalog.yaml").read_text()
+        anchor = "        host: heimdall" + chr(10)
+        (copy / "catalog.yaml").write_text(text.replace(anchor, anchor + "        apex: true" + chr(10), 1))
+        self.state_reset()
+        result = subprocess.run(["bash", str(copy / "scripts" / "deploy.sh"), ON_DEMAND, STACK, str(self.app),
+                                 f"2.0.0-{self.commit}"],
+                                env=dict(self.env, PROJECT_UNDER_TEST=f"{STACK}-{ON_DEMAND}", DEPLOY_START="1",
+                                         YGG_DOMAIN="example.com"),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.apex_value(), "apex-dev.example.com")
 
     def state_reset(self):
         for name in ("calls", "ups", "up1.public", "up1.tag", "up1.labels", "up1.lock", "build.env"):

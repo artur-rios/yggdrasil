@@ -47,14 +47,14 @@ DIGEST = r"@sha256:[0-9a-f]{64}"
 # name:version@sha256:<64 hex>, the name possibly with a registry and its port (host:5000/path/name).
 PINNED = re.compile(r"^[^\s@]+:[A-Za-z0-9._-]+" + DIGEST + "$")
 
-# The values the stacks read, as scripts/deploy.sh exports them (and an env file would give APEX_HOST).
+# The values the stacks read, as scripts/deploy.sh exports them.
 SAMPLE_ENV = {
     "YGG_ENVIRONMENT": "production",
     "YGG_PUBLIC_HOST": "docs.example.com",
     "YGG_PUBLIC_PATH": "/shop-docs",
     "GIT_COMMIT": "0123456789abcdef0123456789abcdef01234567",
     "IMAGE_TAG": "production-1.2.3-0123456",
-    "APEX_HOST": "example.com",
+    "YGG_APEX_HOST": "example.com",
 }
 
 docker_available = shutil.which("docker") is not None
@@ -470,7 +470,7 @@ class StackTemplateTests(unittest.TestCase):
         self.assertIn("YGG_PUBLIC_PATH", result.stderr)
 
     def test_given_the_apex_redirect_when_rendered_then_the_bare_domain_redirects_to_www_and_www_serves_the_site(self):
-        env = dict(SAMPLE_ENV, YGG_PUBLIC_HOST="www.example.com", APEX_HOST="example.com")
+        env = dict(SAMPLE_ENV, YGG_PUBLIC_HOST="www.example.com", YGG_APEX_HOST="example.com")
         model = compose_config(["site.yml", "site-apex-redirect.proxy.yml"], env)
         labels = labels_of(model)
         site = "traefik.http.routers.APPLICATION_ID-production"
@@ -498,10 +498,10 @@ class StackTemplateTests(unittest.TestCase):
         self.assertEqual(labels[f"{site}.service"], "APPLICATION_ID-production")
 
     def test_given_the_apex_redirect_without_an_apex_host_when_rendered_then_it_stops(self):
-        env = {key: value for key, value in SAMPLE_ENV.items() if key != "APEX_HOST"}
+        env = {key: value for key, value in SAMPLE_ENV.items() if key != "YGG_APEX_HOST"}
         result = compose_config(["site.yml", "site-apex-redirect.proxy.yml"], env, expect_failure=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("APEX_HOST", result.stderr)
+        self.assertIn("YGG_APEX_HOST", result.stderr)
 
     def test_given_each_stack_template_when_rendered_without_the_deploy_values_then_it_stops_naming_them(self):
         for files in (["site.yml"], ["site.yml", "site.proxy.yml"]):

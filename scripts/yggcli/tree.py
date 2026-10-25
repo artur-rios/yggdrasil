@@ -51,6 +51,7 @@ SOURCE_OVERRIDES = {
     ("catalog", "get", "environment"): "app-environment",
     ("catalog", "get", "option"): "app-option",
     ("catalog", "public-host", "environment"): "app-environment",
+    ("catalog", "apex-host", "environment"): "app-environment",
     ("catalog", "environment", "option"): "environment-option",
     ("catalog", "repository-entry", "entry"): "repository",
 }

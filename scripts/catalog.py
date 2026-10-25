@@ -12,6 +12,9 @@
     python3 scripts/catalog.py public-host <app> <environment> <default-domain>
                                                           the site's full host name (nothing if it has none)
     python3 scripts/catalog.py public-path <app>          the site's URL path (nothing if it has none)
+    python3 scripts/catalog.py apex-host <app> <environment> <default-domain>
+                                                          the bare-domain name an apex site redirects from there
+                                                          (nothing for any other application)
     python3 scripts/catalog.py owner | repository         the GitHub owner, this repository's name
     python3 scripts/catalog.py forge [type|url|api|jenkins-user|publish-agent]  the git server (JSON without
                                                            an argument; publish-agent exits 1 without one)
@@ -727,6 +730,27 @@ def public_host(catalog, app_id, env_id, default_domain):
     return domain if app.get("apex") else ""
 
 
+def apex_host(catalog, app_id, env_id, default_domain):
+    """The name an `apex: true` site with a `host` answers on besides its host, and redirects to it, in an
+    environment: the bare domain where the environment has no hostSuffix (production: artur-rios.tech, to
+    www.artur-rios.tech), else apex<hostSuffix>.<domain> (apex-dev.artur-rios.tech, to www-dev.), since every
+    environment of one host shares the bare domain and only one may claim it; a name under the wildcard
+    certificate and DNS record instead, which redirects like the bare domain does. deploy.sh exports it as
+    YGG_APEX_HOST for site-apex-redirect.proxy.yml. "" for any other application (no apex, or apex without a
+    host, which is the bare domain itself: public_host), and when there is no domain."""
+    app = application(catalog, app_id)
+    suffix = None
+    for env in resolve(catalog, app_id):
+        if env["id"] == env_id:
+            suffix = env["hostSuffix"]
+    if suffix is None:
+        raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
+    domain = app.get("domain") or default_domain
+    if not (app.get("apex") and app.get("host") and domain):
+        return ""
+    return f"apex{suffix}.{domain}" if suffix else domain
+
+
 def _print_value(value):
     print(" ".join(value) if isinstance(value, list) else str(value).lower() if isinstance(value, bool) else value)
 
@@ -870,6 +894,11 @@ def main(argv):
         elif command == "public-host" and len(args) == 3:
             # Nothing at all (not a blank line) when there is none, so $(...) is empty.
             host = public_host(catalog, *args)
+            if host:
+                print(host)
+        elif command == "apex-host" and len(args) == 3:
+            # Nothing at all when there is none, like public-host.
+            host = apex_host(catalog, *args)
             if host:
                 print(host)
         elif command == "public-path" and len(args) == 1:

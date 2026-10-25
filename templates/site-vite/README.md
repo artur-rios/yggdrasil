@@ -17,7 +17,7 @@ The application's stack files are made in yggdrasil, not in the repository: copy
 - `site.proxy.yml`: the app has its own host (`placeholder.artur-rios.tech`);
 - `site-path.proxy.yml`: the app lives under a path of a shared host (give the application a `path` in the catalog);
 - `site-apex-redirect.proxy.yml`: the app is on `www.` and the bare domain redirects to it (`apex: true` in the
-  catalog, and `APEX_HOST` in the application's variables).
+  catalog, which gives the bare domain's name, `YGG_APEX_HOST`).
 
 ## Build arguments
 
