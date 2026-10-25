@@ -134,6 +134,9 @@ BOTH = "ygg-both"
 # application on that repository naming no check of its own that deploys from main with the coverage's
 # archive (deploy.inputs).
 DOCS_LIB, DOCS_SITE = "ygg-docs-lib", "ygg-docs-lib-docs"
+# A releasing application sharing its repository with its docs site, whose own check (links) fails: the
+# release pull request must not deploy, since main requires links too.
+SHARED, SHARED_DOCS = "shop-shared", "shop-shared-docs"
 MIRROR_OWNER = "artur-rios-mirror"
 GITHUB_TOKEN = "a-throwaway-github-token"
 SKIP_QUESTION = "GitHub Actions checks didn't finish. Deploy without them?"
@@ -331,6 +334,10 @@ def test_catalog():
             # Production asks before it deploys, which is when the test takes the release's tag.
             {"id": UNTAGGED, "name": "Untagged", "kind": "web", "health": "http://shop-untagged:8080/",
              "checks": ["unit"], "environments": {"development": {}, "production": {"approval": True}}},
+            # shop-shared releases; its docs site (development only) names links, which main requires too.
+            {"id": SHARED, "name": "Shared", "kind": "web", "health": "http://shop-shared:8080/", "checks": ["unit"]},
+            {"id": SHARED_DOCS, "name": "Shared docs", "kind": "web", "health": "http://shop-shared-docs:8080/",
+             "repository": SHARED, "checks": ["links"], "environments": {"development": {}}},
             # ygg-docs-lib's docs site: development, on main instead of develop; no check of its own.
             {"id": DOCS_SITE, "name": "Docs", "kind": "web", "health": f"http://{DOCS_SITE}:8080/",
              "repository": DOCS_LIB, "checks": [], "environments": {"development": {"branches": "main"}}},
@@ -343,7 +350,10 @@ def test_catalog():
     }
 
 
-RELEASE_APPLICATIONS = {RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
+# shop-shared's file, for it and its docs site: unit passes, links (the docs site's) fails.
+SHARED_PIPELINE = {"checks": {"unit": UNIT,
+                              "links": {"image": "alpine:3", "run": 'echo "LINKS-$((1 + 1))-FAILED"; exit 1'}}}
+RELEASE_APPLICATIONS = {SHARED: SHARED_PIPELINE, RELEASE: RELEASE_PIPELINE, DESKTOP: DESKTOP_PIPELINE, TOOLS: TOOLS_PIPELINE,
                         BROKEN: BROKEN_PIPELINE, RESUME: RESUME_PIPELINE, UNTAGGED: {"checks": {"unit": UNIT}}}
 # The owner-tagged repositories with a yggdrasil.yml on main (and develop, cut from it), and their files.
 OWNER_TAGGED = {OWNED: {"yggdrasil.yml": yaml.safe_dump(OWNED_PIPELINE, sort_keys=False)},
@@ -536,7 +546,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         cls.first_builds = {}
         cls.release_runs = {}
         cls.tag_runs = {}
-        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED, DOCS_LIB, DOCS_SITE)
+        jobs = (APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED, DOCS_LIB, DOCS_SITE, SHARED_DOCS)
         for job in jobs:
             cls.jenkins.post(job_path(job) + "/build", {"delay": "0"})
         for job in jobs:
@@ -1039,7 +1049,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         # Job DSL's giteaSCMSource and pipelineBranchDefaultsProjectFactory: one job per catalog entry,
         # each reading Forgejo and running the Jenkinsfile kept in Jenkins.
         self.assertEqual(set(boot["jobs"]), {APP, WEB, PLAIN, LIB, WORKER, *RELEASE_APPLICATIONS, *OWNER_TAGGED,
-                                             DOCS_LIB, DOCS_SITE})
+                                             DOCS_LIB, DOCS_SITE, SHARED_DOCS})
         # The actions-release, release-resume and tag-check jobs: pipeline jobs running the scripts kept in
         # Jenkins, in the sandbox; tag-check takes only FORGET and runs every day.
         parameters = {"actions-release": ["REPOSITORY", "TAG"], "release-resume": ["REPOSITORY", "TAG", "COMMIT"],
@@ -1354,8 +1364,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         sha = self.change_file(OWNER, DOCS_LIB, "docs/page.md", "a page\n", "main")
         library = self.wait_for_build(DOCS_LIB, "main", after=before[DOCS_LIB])
         docs = self.wait_for_build(DOCS_SITE, "main", after=before[DOCS_SITE])
-        self.assertEqual(library.result, "SUCCESS", library.console[-6000:])
-        self.assertEqual(docs.result, "SUCCESS", docs.console[-6000:])
+        # UNSTABLE, not SUCCESS: describe's warning (lint) marks the build; it still checks and deploys.
+        self.assertEqual(library.result, "UNSTABLE", library.console[-6000:])
+        self.assertEqual(docs.result, "UNSTABLE", docs.console[-6000:])
 
         self.assertIn(DOCS_LIB_UNIT_RAN, library.console)
         self.assertIn(DOCS_LIB_COVERAGE_RAN, library.console)
@@ -1494,6 +1505,32 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual(release["author"]["login"], JENKINS)
         self.assertEqual(self.description(RELEASE, f"PR-{number}", build.number), "v1.0.0")
         self.assert_no_secret(build.console, "the build log")
+
+    def test_given_a_sibling_check_failing_on_a_release_pull_request_when_built_then_nothing_is_deployed(self):
+        # shop-shared deploys production before it merges, and main requires every entry's checks of the
+        # repository (unit, and its docs site's links): so the releasing job runs links too, and stops.
+        number, build, _, _ = self.release_run(SHARED)
+        self.assertEqual(build.result, "FAILURE", build.console[-6000:])
+        # unit may be reused (develop's build checked the same commit); links, the docs site's, runs.
+        self.assertRegex(build.console, r"Check unit: (run|reuse)")
+        self.assertIn("Check links: run", build.console)
+        self.assertIn("LINKS-2-FAILED", build.console)
+        self.assertIn("Not releasing: links failed.", build.console)
+        self.assertNotIn("DEPLOY-STUB", build.console)
+        pull = self.pull_request(SHARED, number)
+        self.assertFalse(pull["merged"])
+        self.assertIsNone(self.tag_commit(SHARED, "v1.0.0"))
+        latest = self.latest_statuses(SHARED, pull["head"]["sha"])
+        self.assertNotIn("deploy/production", latest)
+        self.assertEqual(latest["links"][1:3], ("failure", JENKINS))
+        # The docs site's job builds the same pull request with its own check alone, and never says it is
+        # releasing: it does not release.
+        docs = self.wait_for_build(SHARED_DOCS, f"PR-{number}", after=0, timeout=1200)
+        self.assertEqual(docs.result, "FAILURE", docs.console[-6000:])
+        self.assertIn("Failed: links.", docs.console)
+        self.assertNotIn("Not releasing", docs.console)
+        self.assertNotIn("Check unit:", docs.console)
+        self.assertNotIn("DEPLOY-STUB", docs.console)
 
     def test_given_the_release_branch_when_released_then_it_is_kept_with_a_note(self):
         number, build, _, _ = self.release_run(RELEASE)

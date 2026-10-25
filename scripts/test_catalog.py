@@ -645,6 +645,35 @@ class RepositoryTests(unittest.TestCase):
                 self.assertEqual(len(errors), 1, errors)
                 self.assertTrue(errors[0].startswith(wanted), errors)
 
+    def test_given_shared_repositories_when_grouped_then_the_deciding_entry_comes_first(self):
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "checks": ["unit", "coverage"]},
+                                      {"id": "notes", "checks": ["lint"]}])
+        apps = value["systems"][0]["applications"]
+        apps.insert(0, {"id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://d:8080/",
+                        "repository": "dotnet-util", "checks": ["links", "unit"], "environments": {"staging": {}}})
+        apps.append({"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://s:8080/",
+                     "repository": "shop-api", "checks": ["links"], "environments": {"staging": {}}})
+        apps[1]["checks"] = ["test"]  # shop-api, which releases (prod: trigger release)
+        groups = c.repository_entries(value)
+        # repository_names() order; each repository's deciding entry first: the releasing one, else the
+        # repositories entry, else the first application.
+        self.assertEqual(list(groups), c.repository_names(value))
+        self.assertEqual({repo: [(e["kind"], e["id"]) for e in entries] for repo, entries in groups.items()}, {
+            "dotnet-util": [("repository", "dotnet-util"), ("application", "dotnet-util-docs")],
+            "shop-api": [("application", "shop-api"), ("application", "shop-api-docs")],
+            "shop-web": [("application", "shop-web")],
+            "notes": [("repository", "notes")]})
+        self.assertEqual([e["releases"] for e in groups["dotnet-util"]], [True, False])
+
+    def test_given_shared_repositories_when_their_checks_are_asked_then_every_entrys_count_once_deciding_first(self):
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "checks": ["unit", "coverage"]}])
+        value["systems"][0]["applications"].insert(0, {
+            "id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://d:8080/",
+            "repository": "dotnet-util", "checks": ["links", "unit"], "environments": {"staging": {}}})
+        self.assertEqual(c.repository_checks(value, "dotnet-util"), ["unit", "coverage", "links"])
+        self.assertEqual(c.repository_checks(value, "shop-api"), [])
+        self.assertEqual(c.repository_checks(value, "nowhere"), [])
+
     def test_given_one_releasing_entry_and_a_repositories_entry_without_releases_when_validated_then_it_is_valid(self):
         # release: none releases nothing: shop-web (prod, trigger release) is the one releasing entry.
         value = catalog(repositories=[{"id": "shop-frontend", "checks": ["lint"]}])

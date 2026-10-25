@@ -562,7 +562,7 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("returnStatus: true", body)
         self.assertRegex(body, r"!\(document instanceof Map\) \|\| \(code != 0 && !document\.errors\)")
         failed = body.index("code != 0 && !document.errors")
-        self.assertLess(failed, body.index("described = [entry: document.entry, config: document.config]"))
+        self.assertLess(failed, body.index("described = [entry: document.entry, config: document.config"))
         start, end = self.lib.functions["prepare"]
         body = self.lib.code[start:end]
         self.assertLess(body.index("describeCheckout(ctx)"), body.index("state.config = document.config"))
@@ -572,8 +572,9 @@ class PipelineLibraryTests(unittest.TestCase):
         # yggdrasil.yml: another entry of the same repository may name the rest.
         start, end = self.lib.functions["planChecks"]
         self.assertRegex(self.lib.code[start:end],
-                         r"planProblem\(planned, state\.entry\) \?: "
-                         r"planCoverage\(planned, neededChecks\(state\.entry, state\.config, deploying\)\)")
+                         r"List wanted = neededChecks\(state\.entry, state\.config, deploying,\s*"
+                         r"releasing \? state\.repositoryChecks as List : null\)\s*"
+                         r"String problem = planProblem\(planned, state\.entry\) \?: planCoverage\(planned, wanted\)")
         start, end = self.lib.functions["planCoverage"]
         body = self.lib.code[start:end]
         self.assertNotIn("config.checks", body)
@@ -592,14 +593,46 @@ class PipelineLibraryTests(unittest.TestCase):
         start, end = self.lib.functions["planChecks"]
         body = self.lib.code[start:end]
         self.assertIn("\"YGG_DEPLOYING=${deploying ? '1' : ''}\"", body)
-        self.assertRegex(body, r'if \[ -n "\$YGG_DEPLOYING" \]; then set -- --deploying; fi')
+        self.assertRegex(body, r'if \[ -n "\$YGG_DEPLOYING" \]; then set -- "\$@" --deploying; fi')
         self.assertRegex(body, r'--branch "\$YGG_BRANCH" "\$@"')
+
+    def test_given_a_release_pull_request_when_planned_then_the_releasing_job_runs_the_repositorys_checks(self):
+        # It deploys production before it merges: every check main requires (each entry's of the
+        # repository, describe's repositoryChecks) must pass first, not only its own entry's.
+        lib = self.lib
+        start, end = lib.functions["planChecks"]
+        body = lib.code[start:end]
+        self.assertIn("\"YGG_RELEASING=${releasing ? '1' : ''}\"", body)
+        self.assertRegex(body, r'if \[ -n "\$YGG_RELEASING" \]; then set -- "\$@" --release; fi')
+        self.assertRegex(body, r"neededChecks\(state\.entry, state\.config, deploying,\s*"
+                               r"releasing \? state\.repositoryChecks as List : null\)")
+        body = lib.code[slice(*lib.functions["neededChecks"])]
+        self.assertRegex(body, r"releaseChecks != null \? releaseChecks : \(entry\.checks \?: \[\]\)")
+        body = lib.code[slice(*lib.functions["prepare"])]
+        self.assertIn("state.repositoryChecks = document.repositoryChecks", body)
+        self.assertIn("planChecks(ctx, state, mode, deploying, releasing)", body)
+        body = lib.code[slice(*lib.functions["describeCheckout"])]
+        self.assertIn("repositoryChecks: document.repositoryChecks", body)
+
+    def test_given_a_release_pull_request_that_fails_when_the_job_does_not_release_then_it_says_failed(self):
+        code = self.lib.code
+        lock = code.index('lock(resource: "release-${app}")')
+        self.assertRegex(code[lock:], r"error releasing \? \"Not releasing: \$\{failed\.join\(', '\)\} failed\.\"\s*"
+                                      r": \"Failed: \$\{failed\.join\(', '\)\}\.\"")
+
+    def test_given_warnings_when_the_build_is_marked_unstable_then_the_last_checked_commit_still_counts(self):
+        # An UNSTABLE build (describe's warnings) passed its checks: the next push compares with it.
+        body = self.lib.code[slice(*self.lib.functions["lastCheckedCommit"])]
+        self.assertNotIn("previousSuccessfulBuild", body)
+        self.assertIn("build.result in ['SUCCESS', 'UNSTABLE']", body)
 
     def test_given_describe_warnings_when_read_then_each_is_shown_in_the_log(self):
         start, end = self.lib.functions["describeCheckout"]
         body = self.lib.code[start:end]
         self.assertRegex(body, r"for \(Object warning : \(document\.warnings \?: \[\]\)\)")
         self.assertIn('echo "Warning: ${printable(warning)}"', body)
+        # And the build is UNSTABLE: a warning seen in the build's status, not only in its log.
+        self.assertRegex(body, r"if \(document\.warnings\) \{\s*unstable\(")
 
     def test_given_collected_results_when_read_then_no_link_out_of_the_checkout_is_followed(self):
         lib = self.lib
@@ -664,8 +697,9 @@ class PipelineLibraryTests(unittest.TestCase):
         lib = self.lib
         code = lib.code
         lock = code.index('lock(resource: "release-${app}")')
-        self.assertTrue(code.startswith("Map state = prepare(ctx, 'pull-request', environments as boolean)",
+        self.assertTrue(code.startswith("Map state = prepare(ctx, 'pull-request', releasing, releasing)",
                                         code.index("Map state = prepare(", lock)))
+        self.assertIn("boolean releasing = environments as boolean", code[lock:code.index("Map state = prepare(", lock)])
         # Deploying only when a release environment exists: a library or a docs site sharing the repository
         # builds the same release pull request, and must run only its own checks.
         self.assertLess(code.index("List environments = plan.findAll { it.trigger == 'release' }", lock),

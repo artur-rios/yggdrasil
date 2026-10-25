@@ -188,10 +188,16 @@ and each entry's Jenkins job runs only:
 
 The file's other checks belong to another entry: this job neither runs them nor posts their status. A
 library's job runs `test` and `coverage`; its docs site's job (`checks: []`, `deploy.inputs: [coverage]`)
-runs only `coverage`, and only when it deploys. A check that no job of the repository ever runs (named by
-no entry's `checks`, and not a deploy input of an application on it) is a **warning** in `describe`'s
-`warnings` and the build log, not an error: `checks.<name> is not in any catalog entry of <repo>: it never
-runs`.
+runs only `coverage`, and only when it deploys. The one exception is a **release pull request** of the
+entry that releases (an application with a `trigger: release` environment): it deploys production before
+it merges, so it runs every check `main` requires of the repository, each entry's `checks` (`describe`'s
+`repositoryChecks`, the same list [`scripts/rules.py`](setup.md#12-apply-the-branch-rules) requires), then
+its `deploy.inputs`.
+
+A check that no job of the repository ever runs (named by no entry's `checks`, and not a deploy input of an
+application on it) is a **warning** in `describe`'s `warnings`, not an error: `checks.<name> is not in any
+catalog entry of <repo>: it never runs`. The build shows it in its log and is marked **unstable**; it
+checks and deploys as usual.
 
 ```yaml
 checks:                         # name -> a command run in a container; the name is the status context
@@ -240,22 +246,24 @@ The file is also checked against the catalog entry of the repository (the applic
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
 (`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,
-`{"entry", "config", "errors", "warnings"}`, where `config` is `null` when there is no file, and exits `1`
-when `errors` is not empty (`warnings` never changes the exit status). The entry has `kind` (`application`
+`{"entry", "config", "errors", "warnings", "repositoryChecks"}`, where `config` is `null` when there is no
+file, `repositoryChecks` lists every check `main` requires of the repository (each catalog entry's), and it
+exits `1` when `errors` is not empty (`warnings` never changes the exit status). The entry has `kind` (`application`
 or `repository`), `id`, `repository`, `credentials`, `releaseCredentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
 environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
 
 ### Which checks run
 
 For a build of a branch the pipeline asks `python3 scripts/pipeline_config.py plan <job-id> <repo-dir>
---statuses <file> --changed <file|-> --branch <name> [--deploying]` what to do with each check the job needs,
-and gets a JSON list: `{name, action, reason, image, run, docker, credentials, junit, archive}`. The checks
-are the entry's `checks` in catalog order, then, with `--deploying`, the `deploy.inputs` not among them;
-each once, and nothing else of the file.
+--statuses <file> --changed <file|-> --branch <name> [--deploying] [--release]` what to do with each check
+the job needs, and gets a JSON list: `{name, action, reason, image, run, docker, credentials, junit,
+archive}`. The checks are the entry's `checks` in catalog order (with `--release`, the releasing job's
+release pull request: `repositoryChecks` instead), then, with `--deploying`, the `deploy.inputs` not among
+them; each once, and nothing else of the file. `--release` for a job that does not release is an error.
 
 - `--statuses` is the output of `forge.sh get-statuses` for the commit (`<context>`, `<state>`, `<creator>`,
   tab separated); `--changed` lists the changed files, one path per line, or is `-` when they are unknown;
-  `--deploying` (last) says the build deploys afterwards.
+  `--deploying` says the build deploys afterwards; the flags come last, in any order.
 - **reuse**: the commit already has a `success` for the check created by `forge.jenkinsUser`. A success
   created by anyone else is not trusted, and neither is a failure or a pending: those checks `run`.
 - **skip**: the check has `paths`, the changed files are known and none matches. `*` stays in one directory,

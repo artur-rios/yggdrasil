@@ -1729,7 +1729,11 @@ skip:
 A release pull request (Forgejo, or a GitHub repository with a `yggdrasil.yml`) goes through these steps, under
 the repository's release lock:
 
-1. Its **branch policy and checks**, as any pull request. A failure: `Not releasing`.
+1. Its **branch policy and checks**, as any pull request, except that the checks are every one `main`
+   requires of the repository: each catalog entry's `checks` when it backs several (a docs site's too), then
+   `deploy.inputs`. Production is deployed before the merge, so a check that would block the merge must pass
+   first. A failure: `Not releasing`. The repository's other jobs build the same pull request with their own
+   checks only, and a failure there reads `Failed: <checks>.`
 2. The **`actionsChecks`**, and the skip above.
 3. Every `deploy/<environment>` is set `pending`, then each release environment is **deployed in catalog order**
    (a click on **Deploy** first where `approval: true`, waiting outside any agent), `deploy/<environment>` set

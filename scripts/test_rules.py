@@ -184,6 +184,28 @@ class DesiredRulesTests(unittest.TestCase):
         self.assertEqual((r.model, r.main_mergers, r.main_checks), ("release", ("jenkins-bot",),
                                                                     ("branch-policy", "links")))
 
+    def test_given_shared_repositories_when_modelled_then_main_requires_the_catalogs_repository_checks(self):
+        # One helper for both: what main requires (here) and what a release pull request's releasing job
+        # runs (pipeline_config.py plan --release). They cannot drift apart.
+        import catalog
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://shop-api-docs:8080/",
+             "repository": "shop-api", "checks": ["links", "test"], "actionsChecks": ["pages"],
+             "environments": {"staging": {}}})
+        value["systems"][0]["applications"].append(
+            {"id": "toolkit-docs", "name": "Docs", "kind": "web", "health": "http://toolkit-docs:8080/",
+             "repository": "toolkit", "checks": ["links"], "environments": {"staging": {}}})
+        for r in rules.desired_rules(value):
+            if r.model == "basic":
+                continue
+            with self.subTest(repo=r.repo):
+                checks = tuple(catalog.repository_checks(value, r.repo))
+                self.assertEqual(r.main_checks[:1 + len(checks)], ("branch-policy",) + checks)
+                self.assertTrue(all(name.startswith("deploy/") for name in r.main_checks[1 + len(checks):]))
+        self.assertEqual(by_repo(value)["shop-api"].main_checks,
+                         ("branch-policy", "test", "docker", "links", "deploy/production"))
+
     def test_given_the_repository_catalog_when_modelled_then_every_entry_is_valid(self):
         import catalog
         modelled = rules.desired_rules(catalog.load())

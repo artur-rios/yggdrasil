@@ -423,8 +423,8 @@ class CliTests(unittest.TestCase):
         status, out, err = run_cli("describe", "dotnet-util", str(repo("checks:\n  unit: {image: x, run: y}\n")))
         self.assertEqual((status, err), (0, ""))
         document = json.loads(out)  # one document, nothing else on stdout
-        self.assertEqual(set(document), {"entry", "config", "errors", "warnings"})
-        self.assertEqual(document["warnings"], [])
+        self.assertEqual(set(document), {"entry", "config", "errors", "warnings", "repositoryChecks"})
+        self.assertEqual((document["warnings"], document["repositoryChecks"]), ([], ["unit"]))
         self.assertEqual(document["entry"]["release"], "owner-tag")
         self.assertEqual(document["config"]["checks"]["unit"]["run"], "y")
         self.assertEqual(document["errors"], [])
@@ -698,11 +698,92 @@ class OwnChecksTests(unittest.TestCase):
         self.assertEqual((status, document["warnings"]), (1, []))
 
     def test_given_deploying_twice_or_out_of_place_when_planning_then_it_is_a_usage_error(self):
-        self.assertEqual(run_shared("plan", "ygg-lib", "/tmp", "--statuses", "a", "--changed", "-", "--branch", "b",
-                                    "--deploying", "--deploying")[0], 2)
+        for flags in (["--deploying", "--deploying"], ["--release", "--release"], ["--releasing"]):
+            with self.subTest(flags=flags):
+                self.assertEqual(run_shared("plan", "ygg-lib", "/tmp", "--statuses", "a", "--changed", "-", "--branch",
+                                            "b", *flags)[0], 2)
         self.assertEqual(run_shared("plan", "ygg-lib", "/tmp", "--deploying", "--statuses", "a", "--changed", "-",
                                     "--branch")[0], 2)
         self.assertEqual(run_shared("describe", "ygg-lib", "/tmp", "--deploying")[0], 2)
+
+    def test_given_two_entries_on_one_repository_when_described_then_the_repository_checks_are_every_entrys(self):
+        value = shared_catalog()
+        value["systems"][0]["applications"][-1]["checks"] = ["links", "unit"]
+        text = SHARED_FILE.replace("deploy:", "  links: {image: x, run: y}\ndeploy:")
+        for job in ("ygg-lib", "ygg-lib-docs"):
+            with self.subTest(job=job):
+                # The deciding entry's first (the library: it releases), then the docs site's; each once.
+                self.assertEqual(self.describe(job, text, value)[1]["repositoryChecks"], ["unit", "coverage", "links"])
+        # Without a file the document has them too: they are the catalog's.
+        self.assertEqual(self.describe("ygg-lib", None, value)[1]["repositoryChecks"], ["unit", "coverage", "links"])
+
+
+# shop-api releases (prod: trigger release) and shares its repository with its docs site, which names a
+# check of its own. One file for both.
+RELEASING_FILE = """\
+checks:
+  unit: {image: x, run: y}
+  lint: {image: x, run: y}
+  links: {image: x, run: y}
+  site: {image: x, run: y, archive: out/**}
+deploy:
+  inputs: [site]
+"""
+
+
+def releasing_catalog():
+    value = catalog()
+    value["systems"][0]["applications"].append(
+        {"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://shop-api-docs:8080/",
+         "repository": "shop-api", "checks": ["links"], "environments": {"dev": {}}})
+    return value
+
+
+class ReleasePlanTests(unittest.TestCase):
+    """A release pull request deploys to every release environment before it merges: its releasing job runs
+    every check main requires of the repository (catalog.repository_checks: each entry's), not only its own,
+    or production would go out on a commit a sibling's check failed on and the merge would then be refused."""
+
+    def plan(self, job, *flags, text=RELEASING_FILE):
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-plan-"))
+        (directory / "statuses").write_text("", encoding="utf-8")
+        return run_shared("plan", job, str(repo(text)), "--statuses", str(directory / "statuses"), "--changed", "-",
+                          "--branch", "release/1.0.0", *flags, value=releasing_catalog())
+
+    def names(self, job, *flags):
+        status, out, err = self.plan(job, *flags)
+        self.assertEqual((status, err), (0, ""))
+        return [entry["name"] for entry in json.loads(out)]
+
+    def test_given_a_release_pull_request_when_the_releasing_job_plans_then_it_runs_every_entrys_checks(self):
+        self.assertEqual(self.names("shop-api", "--deploying", "--release"), ["unit", "lint", "links", "site"])
+        # The flags in either order.
+        self.assertEqual(self.names("shop-api", "--release", "--deploying"), ["unit", "lint", "links", "site"])
+        # A push that deploys: its own checks and the inputs, as before.
+        self.assertEqual(self.names("shop-api", "--deploying"), ["unit", "lint", "site"])
+
+    def test_given_a_release_pull_request_when_a_job_that_does_not_release_plans_then_it_keeps_its_own_checks(self):
+        self.assertEqual(self.names("shop-api-docs"), ["links"])
+        # --release is the releasing job's alone: anything else asking for it is refused, not widened.
+        status, out, err = self.plan("shop-api-docs", "--release")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("shop-api-docs does not release", err)
+        status, out, err = self.plan("shop-api-docs", "--release", text=RELEASING_FILE)
+        self.assertEqual(status, 1)
+
+    def test_given_a_sibling_check_the_file_does_not_define_when_the_release_is_planned_then_it_is_an_error(self):
+        text = RELEASING_FILE.replace("  links: {image: x, run: y}\n", "")
+        status, out, err = self.plan("shop-api", "--deploying", "--release", text=text)
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("links", err)
+
+    def test_given_release_checks_when_planned_then_plan_checks_takes_them_instead_of_the_entrys(self):
+        config = {"checks": {**copy.deepcopy(CHECKS), "links": {"image": "x", "run": "y"}},
+                  "deploy": {"inputs": ["unit"]}}
+        entry = {"id": "shop-api", "checks": ["lint"]}
+        planned = pc.plan_checks(config, entry, [], None, "release/1.0.0", "jenkins", deploying=True,
+                                 release_checks=["lint", "links"])
+        self.assertEqual([e["name"] for e in planned], ["lint", "links", "unit"])
 
 
 class GlobTests(unittest.TestCase):

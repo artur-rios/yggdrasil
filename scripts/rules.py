@@ -160,32 +160,24 @@ def desired_rules(catalog):
     forge = catalog_module.forge(catalog)
     jenkins, developers = forge["jenkinsUser"], forge["developers"]
 
-    # Each entry as the rules see it, grouped by repository in repository_names() order.
-    grouped = {}
-    for _, app in catalog_module.applications(catalog, deployable=True):
-        deploys = [e["id"] for e in catalog_module.resolve(catalog, app["id"]) if e["trigger"] == "release"]
-        # Jenkins merges an application's main and creates its v* tags.
-        grouped.setdefault(app.get("repository") or app["id"], []).append({
-            "releases": bool(deploys), "checks": app.get("checks") or [], "actions": app.get("actionsChecks") or [],
-            "deploys": deploys, "model": "release", "merger": jenkins, "tags": "v*", "owner_tags": False})
-    for entry in catalog_module.repositories(catalog):
-        # The owner releases these by hand: they merge main and create the tags themselves.
-        owner_tag = entry["release"] == "owner-tag"
-        grouped.setdefault(entry["id"], []).append({
-            "releases": entry["release"] != "none", "checks": entry["checks"], "actions": entry["actionsChecks"],
-            "deploys": [], "model": entry["rules"], "merger": owner, "tags": entry["tags"] if owner_tag else "v*",
-            "owner_tags": True, "repository_entry": True})
-
     modelled = []
-    for repo, entries in grouped.items():
-        deciding = (next((e for e in entries if e["releases"]), None)
-                    or next((e for e in entries if e.get("repository_entry")), None)
-                    or entries[0])
-        ordered = [deciding] + [e for e in entries if e is not deciding]
-        modelled.append(_rules(repo, deciding["model"], owner, _unique(*(e["checks"] for e in ordered)),
-                               _unique(*(e["actions"] for e in ordered)), _unique(*(e["deploys"] for e in ordered)),
-                               deciding["merger"], deciding["tags"], deciding["merger"], developers,
-                               owner_tags=deciding["owner_tags"]))
+    # catalog.repository_entries: the grouping and the deciding entry (first), shared with
+    # pipeline_config.py, whose release pull requests run the same checks main requires here.
+    for repo, entries in catalog_module.repository_entries(catalog).items():
+        deciding = entries[0]
+        if deciding["kind"] == "application":
+            # Jenkins merges an application's main and creates its v* tags.
+            model, merger, tags, owner_tags = "release", jenkins, "v*", False
+        else:
+            # The owner releases these by hand: they merge main and create the tags themselves.
+            entry = deciding["entry"]
+            model, merger, owner_tags = entry["rules"], owner, True
+            tags = entry["tags"] if entry["release"] == "owner-tag" else "v*"
+        deploys = [env["id"] for e in entries if e["kind"] == "application"
+                   for env in catalog_module.resolve(catalog, e["id"]) if env["trigger"] == "release"]
+        modelled.append(_rules(repo, model, owner, catalog_module.entries_union(entries, "checks"),
+                               catalog_module.entries_union(entries, "actionsChecks"), _unique(deploys),
+                               merger, tags, merger, developers, owner_tags=owner_tags))
     return modelled
 
 

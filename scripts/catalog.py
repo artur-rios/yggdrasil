@@ -615,6 +615,44 @@ def repository_names(catalog):
     return list(dict.fromkeys(names))
 
 
+def repository_entries(catalog):
+    """Every repository of the catalog (repository_names() order) -> its catalog entries, one Jenkins job
+    each, the deciding entry first: the one that releases (an application with a trigger: release
+    environment, or a `repositories` entry whose release is not none; validate() allows at most one), else
+    the `repositories` entry, else the first application. The rest follow in catalog order. Each entry is
+    {kind ("application" | "repository"), id, releases, entry (the application as written, or the resolved
+    repositories() entry)}. scripts/rules.py takes a repository's rules from its deciding entry."""
+    grouped = {}
+    for _, app in applications(catalog, deployable=True):
+        releases = any(env["trigger"] == "release" for env in resolve(catalog, app["id"]))
+        grouped.setdefault(app.get("repository") or app["id"], []).append(
+            {"kind": "application", "id": app["id"], "releases": releases, "entry": app})
+    for entry in repositories(catalog):
+        grouped.setdefault(entry["id"], []).append(
+            {"kind": "repository", "id": entry["id"], "releases": entry["release"] != "none", "entry": entry})
+    ordered = {}
+    for repository, entries in grouped.items():
+        deciding = (next((e for e in entries if e["releases"]), None)
+                    or next((e for e in entries if e["kind"] == "repository"), None)
+                    or entries[0])
+        ordered[repository] = [deciding] + [e for e in entries if e is not deciding]
+    return ordered
+
+
+def entries_union(entries, field):
+    """`field` (checks, actionsChecks) of every one of `entries` (a repository_entries() list), in their
+    order, each name once."""
+    return list(dict.fromkeys(name for e in entries for name in (e["entry"].get(field) or [])))
+
+
+def repository_checks(catalog, repository):
+    """The checks main requires of `repository`, besides branch-policy and deploy/<environment>: every
+    catalog entry's `checks`, the deciding entry's first, each once ([] for a repository the catalog does
+    not have). scripts/rules.py requires exactly these, and a release pull request's releasing job runs
+    exactly these before it deploys (pipeline_config.py plan --release)."""
+    return entries_union(repository_entries(catalog).get(repository, []), "checks")
+
+
 def applications(catalog, deployable=False):
     for system in catalog.get("systems") or []:
         for app in system.get("applications") or []:

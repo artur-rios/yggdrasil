@@ -293,14 +293,17 @@ void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
     // through production or publish out of deployment order.
     lock(resource: "release-${app}") {
       List environments = plan.findAll { it.trigger == 'release' }
-      // deploying: the release deploys, so deploy.inputs' checks run and their archives are stashed. Only
-      // when something deploys: the other jobs of the repository (a library, a docs site without a release
-      // environment) build the same pull request with their own checks alone.
-      Map state = prepare(ctx, 'pull-request', environments as boolean)
+      // Only the job with a release environment releases. It deploys production before it merges, so it
+      // runs every check main requires of the repository (each catalog entry's, not only its own), then
+      // deploy.inputs, whose archives are stashed. The other jobs of the repository (a library, a docs site
+      // without a release environment) build the same pull request with their own checks alone.
+      boolean releasing = environments as boolean
+      Map state = prepare(ctx, 'pull-request', releasing, releasing)
       if (state.config != null) {
         List failed = verify(ctx, state)
         if (failed) {
-          error "Not releasing: ${failed.join(', ')} failed."
+          error releasing ? "Not releasing: ${failed.join(', ')} failed."
+                          : "Failed: ${failed.join(', ')}."
         }
       }
       if (ctx.forge.type == 'github' && state.config == null) {
@@ -392,8 +395,10 @@ void branchBuild(Map ctx, List plan) {
 //
 // mode: 'pull-request' (changes against the target branch) or 'push' (against the last commit whose
 // checks passed). deploying: the build deploys afterwards, so the checks named in deploy.inputs run
-// even when they could be reused or skipped -- their archive goes into the image.
-Map prepare(Map ctx, String mode, boolean deploying = false) {
+// even when they could be reused or skipped -- their archive goes into the image. releasing: a release
+// pull request of the job that releases, which runs every check main requires of the repository
+// (describe's repositoryChecks) instead of its own entry's.
+Map prepare(Map ctx, String mode, boolean deploying = false, boolean releasing = false) {
   // The build's commit, known before any checkout: every ci step fetches exactly this one.
   Map state = [sha: buildCommit()]
   stage('Read yggdrasil.yml') {
@@ -403,10 +408,11 @@ Map prepare(Map ctx, String mode, boolean deploying = false) {
         Map document = describeCheckout(ctx)
         state.entry = document.entry
         state.config = document.config
+        state.repositoryChecks = document.repositoryChecks
         if (state.config != null) {
           String tmp = scratch()
           withEnv(["YGG_TMP=${tmp}", "YGG_JOB=${ctx.app}", "YGG_CATALOG=${tmp}/catalog.yaml"]) {
-            state.plan = planChecks(ctx, state, mode, deploying)
+            state.plan = planChecks(ctx, state, mode, deploying, releasing)
           }
         }
       } finally {
@@ -444,11 +450,15 @@ Map describeCheckout(Map ctx) {
     if (document.errors) {
       error "yggdrasil.yml cannot be used:\n${bulleted(document.errors as List)}"
     }
-    // Allowed but likely a mistake (a check no catalog entry of the repository runs): said, never fatal.
+    // Allowed but likely a mistake (a check no catalog entry of the repository runs): said, and the build
+    // marked UNSTABLE so it shows, never fatal.
     for (Object warning : (document.warnings ?: [])) {
       echo "Warning: ${printable(warning)}"
     }
-    described = [entry: document.entry, config: document.config]
+    if (document.warnings) {
+      unstable("yggdrasil.yml: ${(document.warnings as List).size()} warning(s), above")
+    }
+    described = [entry: document.entry, config: document.config, repositoryChecks: document.repositoryChecks]
   }
   return described
 }
@@ -458,7 +468,7 @@ Map describeCheckout(Map ctx) {
 // (planProblem, planCoverage). The plan holds this job's checks only: its catalog entry's `checks`, and
 // deploy.inputs when it deploys. yggdrasil.yml serves every catalog entry of the repository (a library and
 // its docs site), so its other checks are another job's: they neither run nor report here.
-List planChecks(Map ctx, Map state, String mode, boolean deploying) {
+List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean releasing = false) {
   String diffMode = 'none'
   String diffBase = ''
   String branch
@@ -476,7 +486,7 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
     }
   }
   withEnv(["YGG_REPO=${ctx.repo}", "YGG_SHA=${state.sha}", "YGG_DIFF_MODE=${diffMode}", "YGG_DIFF_BASE=${diffBase}",
-           "YGG_BRANCH=${branch}", "YGG_DEPLOYING=${deploying ? '1' : ''}"]) {
+           "YGG_BRANCH=${branch}", "YGG_DEPLOYING=${deploying ? '1' : ''}", "YGG_RELEASING=${releasing ? '1' : ''}"]) {
     withForgeToken('read') {
       // Without the statuses nothing is reused: every check runs, which is the safe way to be wrong.
       sh(script: '''
@@ -499,7 +509,8 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
         echo "The changed files are not known: every check runs." >&2
       fi
       set --
-      if [ -n "$YGG_DEPLOYING" ]; then set -- --deploying; fi
+      if [ -n "$YGG_DEPLOYING" ]; then set -- "$@" --deploying; fi
+      if [ -n "$YGG_RELEASING" ]; then set -- "$@" --release; fi
       python3 yggdrasil/scripts/pipeline_config.py plan "$YGG_JOB" app --statuses "$YGG_TMP/statuses" \\
         --changed "$changed" --branch "$YGG_BRANCH" "$@" >"$YGG_TMP/plan.json"
     ''', returnStatus: true)
@@ -508,7 +519,9 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
     }
   }
   List planned = parseJson(readScratch(scratch(), 'plan.json')) as List
-  String problem = planProblem(planned, state.entry) ?: planCoverage(planned, neededChecks(state.entry, state.config, deploying))
+  List wanted = neededChecks(state.entry, state.config, deploying,
+                             releasing ? state.repositoryChecks as List : null)
+  String problem = planProblem(planned, state.entry) ?: planCoverage(planned, wanted)
   if (problem) {
     error "The plan of the checks is not usable: ${problem}"
   }
@@ -532,17 +545,22 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying) {
 }
 
 // The commit of the last successful build of this branch that passed its checks (it set
-// YGG_CHECKED_COMMIT), or null: a push's changes are counted from there. Looks back 20 successful
-// builds at most; a build that only deployed (DEPLOY_TO, no yggdrasil.yml yet) has no commit and is
-// passed over.
+// YGG_CHECKED_COMMIT), or null: a push's changes are counted from there. UNSTABLE counts as successful:
+// it is how describe's warnings show, after checks that passed. Looks back 20 successful builds (among
+// 100 at most); a build that only deployed (DEPLOY_TO, no yggdrasil.yml yet) has no commit and is passed
+// over.
 String lastCheckedCommit() {
-  def build = currentBuild.previousSuccessfulBuild
-  for (int looked = 0; build != null && looked < 20; looked++) {
-    String sha = build.buildVariables?.YGG_CHECKED_COMMIT
-    if (sha && sha ==~ COMMIT) {
-      return sha
+  def build = currentBuild.previousBuild
+  int looked = 0
+  for (int seen = 0; build != null && seen < 100 && looked < 20; seen++) {
+    if (build.result in ['SUCCESS', 'UNSTABLE']) {
+      looked++
+      String sha = build.buildVariables?.YGG_CHECKED_COMMIT
+      if (sha && sha ==~ COMMIT) {
+        return sha
+      }
     }
-    build = build.previousSuccessfulBuild
+    build = build.previousBuild
   }
   return null
 }
@@ -2687,11 +2705,12 @@ String planProblem(List planned, Map entry) {
   return null
 }
 
-// The checks this job needs (pipeline_config.py needed_checks): its catalog entry's `checks`, then, when the
+// The checks this job needs (pipeline_config.py needed_checks): its catalog entry's `checks` (on the
+// releasing job's release pull request, `releaseChecks`: every entry's of the repository), then, when the
 // build deploys, the deploy.inputs not among them. Each once, in that order.
 @NonCPS
-List neededChecks(Map entry, Map config, boolean deploying) {
-  List names = new ArrayList((entry.checks ?: []) as List)
+List neededChecks(Map entry, Map config, boolean deploying, List releaseChecks = null) {
+  List names = new ArrayList((releaseChecks != null ? releaseChecks : (entry.checks ?: [])) as List)
   if (deploying) {
     names.addAll(((config.deploy ?: [:]).inputs ?: []) as List)
   }
