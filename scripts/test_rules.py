@@ -504,7 +504,7 @@ class GitHubRulesetsTests(unittest.TestCase):
         catalog["systems"][0]["applications"][0]["actionsChecks"] = []
         built = {r.repo: rules.github_rulesets(r) for r in rules.desired_rules(catalog)}
         self.assertEqual(sorted(built), sorted(fixture))
-        # A third difference since: storefront releases nothing, so it is basic now (develop and main without
+        # A third difference since: storefront releases nothing, so it is basic now (develop, main and master without
         # deletion or force push), no longer the release model with a main only Jenkins could merge.
         self.assertEqual([p["name"] for p in built.pop("storefront")], ["develop", "main", "master"])
         del fixture["storefront"]
