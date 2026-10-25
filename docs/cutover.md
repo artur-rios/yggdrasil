@@ -350,7 +350,14 @@ mirror:
   `COMPOSE_PROFILES=forge` first, `YGGDRASIL_LIBRARY_VERSION` the latest release tag that exists
   (`git tag --list 'v*'` in your clone, the one the dry runs of 4 use; it is on Forgejo after 5.11), `GITHUB_APP_ID`
   the old controller's. The pipeline of the repositories' plan arrives with the release of
-  [5.8a](#58a-the-release-that-carries-the-repositories-plan), when you set the variable to its tag.
+  [5.8a](#58a-the-release-that-carries-the-repositories-plan), when you set the variable to its tag. And
+  `NUGET_API_KEY_FILE=/etc/yggdrasil/nuget-api-key`: the libraries' tags push their packages to nuget.org with it
+  (the Jenkins credential `nuget-api-key`, which the controller makes from the file; [setup.md, Owner tags and
+  NuGet](setup.md#owner-tags-and-nuget)). Make a nuget.org API key that may push the libraries' packages, then, as
+  `ygg`, before the first `platform.sh up` with the `jenkins` profile (else Docker makes a directory there):
+  `read -rs KEY && printf '%s' "$KEY" > /etc/yggdrasil/nuget-api-key && unset KEY && chmod 644
+  /etc/yggdrasil/nuget-api-key` (paste the key at the silent prompt, so it stays out of the shell's history), as
+  9.2's table says. Without it a library's tag build packs, then fails at the push.
 - **9.6**: the first account is the owner, `--username artur-rios`: the catalog's `owner` is the Forgejo owner of
   every repository.
 - **9.7**: `jenkins`, `jenkins-ci` and `renovate` with their tokens, **and a fourth account, `claude`**, made the

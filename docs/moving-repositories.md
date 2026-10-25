@@ -73,7 +73,11 @@ release yggdrasil and set the variable again ([README, Day to day](../README.md#
 credentials are in [hosts.md, section 6](hosts.md#6-credentials): `reportgenerator-license` (every library, cerberus-api,
 fortuna-api, heimdall-api), the four `heimdall-ui-android-*`, `maestro-signing-key` and `maestro-signing-public-key`,
 and the four `orpheus-android-*`, all **secret text** under exactly those ids. Without `reportgenerator-license` the
-`coverage` check falls back to the free report and says so. The secrets that go away are in the same page's
+`coverage` check falls back to the free report and says so. One more is not made in Jenkins but on the dev machine:
+the nuget.org API key the libraries' tags push with, the file `NUGET_API_KEY_FILE` names in `platform.env`, which the
+controller turns into the credential `nuget-api-key` ([cutover.md, 2.3](cutover.md#23-forgejo-the-controller-and-the-agents);
+[setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget)). Without it a library's tag build packs, then fails
+at the push. The secrets that go away are in the same page's
 [Secrets that go away](hosts.md#secrets-that-go-away).
 
 **The agents can reach what the checks download.** Outbound from the CI and deploy agents: `github.com`, Docker Hub,
@@ -323,7 +327,9 @@ the tag. So steps 1 to 3 do not apply to it, and the head in section 2 is the on
 ### The libraries
 
 - Credential `reportgenerator-license` for all twelve (their `coverage` check; their docs sites take its report).
-  The release agent's `nuget-api-key` is created by the platform ([setup.md](setup.md#owner-tags-and-nuget)), not by you.
+  The release agent's `nuget-api-key` comes from the key file you put on the dev machine and name in `NUGET_API_KEY_FILE`
+  ([section 0](#0-before-the-first-branch)): check it is there (**Manage Jenkins → Credentials** lists `nuget-api-key`)
+  before the first library's tag.
 - **The release.** `CONTRIBUTING.md`'s "Releasing" on each branch: the version and the changelog go on `develop` first,
   the release branch is a snapshot of `develop`, and the **annotated** tag has the bare version (`1.3.0`), pushed the same
   day. dotnet-data tags `<package>@<version>` and names its release branches by date (`release/YYYY.MM.DD`).
