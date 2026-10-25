@@ -15,6 +15,9 @@ version=${RELEASE_VERSION:-0.0.0}
 
 # shellcheck source=ci/flutter-env.sh
 source ci/flutter-env.sh
+# shellcheck source=ci/android-sdk.sh
+source ci/android-sdk.sh
+ensure_android_sdk
 
 rm -rf dist
 mkdir dist
