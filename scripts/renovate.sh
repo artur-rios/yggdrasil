@@ -2,7 +2,8 @@
 # Runs Renovate once against the repositories of the catalog, on Forgejo: the `renovate` service user of the
 # dev machine, in its own rootless Docker engine, from the systemd user timer yggdrasil-renovate.timer
 # (platform/systemd, installed by `ygg install`, step renovate-timer). Renovate opens pull requests from
-# renovate/* branches into develop; branch-policy accepts them there.
+# renovate/* branches into develop; branch-policy accepts them there. A repository on main or master
+# (no develop) overrides that with baseBranchPatterns in its own renovate.json.
 #
 #     scripts/renovate.sh run
 #
@@ -19,7 +20,8 @@
 #                           the applications' and the `repositories` entries), the owner being FORGE_OWNER,
 #                           else the catalog's, as forge.sh reads it. Renovate never autodiscovers: it visits
 #                           these and nothing else the token can see.
-#   RENOVATE_CONFIG         the global options: branchPrefix renovate/, baseBranches develop, and no
+#   RENOVATE_CONFIG         the global options: branchPrefix renovate/, baseBranches develop (the default
+#                           a repository's baseBranchPatterns overrides), and no
 #                           onboarding: a repository without a Renovate config of its own is skipped
 #                           (requireConfig: required) instead of getting an onboarding pull request.
 #   GITHUB_COM_TOKEN        the value of RENOVATE_GITHUB_COM_TOKEN, under the name Renovate reads, when

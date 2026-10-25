@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "yggdrasil's shared Renovate preset. A repository extends it with renovate.json: {\"extends\": [\"local>artur-rios/yggdrasil//renovate/default\"]}. It covers what each repository's dependabot.yml covered (nuget, npm, github-actions, docker), and the pinned images of yggdrasil.yml, and the tools pinned in check scripts and Dockerfiles with a `# renovate:` comment.",
+  "description": "yggdrasil's shared Renovate preset. A repository extends it with renovate.json: {\"extends\": [\"local>artur-rios/yggdrasil//renovate/default\"]}. It covers what each repository's dependabot.yml covered (nuget, npm, github-actions, docker), and the pinned images of yggdrasil.yml, and the tools pinned in check scripts and Dockerfiles with a `# renovate:` comment. It targets develop; a repository on main or master overrides baseBranchPatterns in its own renovate.json.",
   "extends": ["config:recommended"],
   "baseBranchPatterns": ["develop"],
   "enabledManagers": ["nuget", "npm", "github-actions", "dockerfile", "docker-compose", "custom.regex"],

@@ -392,11 +392,13 @@ docs application's `deploy.inputs: [coverage]`. `ci/coverage.sh` makes ReportGen
 credential).
 
 **Renovate.** `renovate/default.json` is the shared preset, which a repository's `renovate.json` extends with
-`{"extends": ["local>artur-rios/yggdrasil//renovate/default"]}`. It extends `config:recommended`, targets `develop`,
-covers nuget, npm, github-actions and docker (Dockerfiles and Compose files), groups the NuGet packages the
-way the repositories' `dependabot.yml` did, and adds a regex manager for the `image: <name>:<tag>@sha256:<digest>`
-lines of `yggdrasil.yml`. Those image bumps wait for the owner to merge them: `yggdrasil.yml` is a protected file on
-`develop` ([step 12](setup.md#12-apply-the-branch-rules)).
+`{"extends": ["local>artur-rios/yggdrasil//renovate/default"]}`. It extends `config:recommended`, targets
+`develop` (a repository on `main` or `master`, with no `develop`, overrides that with
+`"baseBranchPatterns": ["main"]` in its own `renovate.json`), covers nuget, npm, github-actions and docker
+(Dockerfiles and Compose files), groups the NuGet packages the way the repositories' `dependabot.yml` did, and
+adds a regex manager for the `image: <name>:<tag>@sha256:<digest>` lines of `yggdrasil.yml`. Those image
+bumps wait for the owner to merge them: `yggdrasil.yml` is a protected file on `develop`
+([step 12](setup.md#12-apply-the-branch-rules)).
 
 `scripts/test_templates.py` keeps all of it honest: every template's `yggdrasil.yml` validates, every image is pinned,
 the stack templates render under `docker compose config`, the library scripts run against a fake `dotnet`, and the

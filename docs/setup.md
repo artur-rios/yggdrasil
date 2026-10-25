@@ -1070,9 +1070,10 @@ Run it **once by hand first**, as above, and read what it says: the unit then ru
 visits only the repositories of the catalog and, with `requireConfig: required`, skips a repository that has no
 Renovate configuration of its own: there are no onboarding pull requests. Each repository's configuration comes
 with the move of the repositories to Forgejo. Its branches are `renovate/*` and go into `develop`, where the
-branch policy accepts them; a build of a `renovate/*` branch never gets a credential. A Renovate pull request
-that changes `yggdrasil.yml` (an image bump there) is a change to a protected file: it waits for the owner's
-**Merge anyway** ([Forgejo details](#forgejo-details-worth-knowing)).
+branch policy accepts them (a repository on `main` or `master` sets `baseBranchPatterns` in its own
+`renovate.json` and gets them there); a build of a `renovate/*` branch never gets a credential. A Renovate pull
+request that changes `yggdrasil.yml` (an image bump there) is a change to a protected file: it waits for the
+owner's **Merge anyway** ([Forgejo details](#forgejo-details-worth-knowing)).
 
 ## 10. The apps machine
 
