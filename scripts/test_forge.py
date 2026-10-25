@@ -74,7 +74,8 @@ TOKEN = "token-secret"
 
 # A tag -> whether its release is a prerelease: the version (after the last `@`, else without a leading v)
 # has a SemVer pre-release part. Build metadata (+...) is not one, even with a dash in it; a dash in the
-# package's name is not either; and a tag that is not a SemVer version at all is a normal release.
+# package's name is not either; and a tag that is not a SemVer version at all (v1.2-rc.1, 1.2.0-01) is a
+# normal release.
 PRERELEASE_TAGS = {
     "1.2.0-alpha.1": True,
     "v1.2.0-rc.2": True,
@@ -90,6 +91,16 @@ PRERELEASE_TAGS = {
     "v1.2.0-": False,
     "v1.2-rc.1": False,
     "release-2024": False,
+    # SemVer forbids leading zeros in the three numbers and in a numeric pre-release identifier: not SemVer,
+    # so normal releases. A letter makes an identifier alphanumeric, where a leading zero is fine, and build
+    # identifiers may have one.
+    "1.2.0-01": False,
+    "01.2.3-rc.1": False,
+    "1.02.3-rc.1": False,
+    "v1.2.0-rc.01": False,
+    "1.2.0-0a": True,
+    "1.2.0-rc.1+001": True,
+    "10.20.30-rc.0": True,
 }
 
 

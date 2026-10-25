@@ -249,15 +249,21 @@ release_options() {
 
 # prerelease_tag <tag>: true when the tag's version (after its last `@`, else without a leading v: the
 # pipeline's RELEASE_VERSION) is a SemVer version with a pre-release part, else false. Build metadata
-# (+...) may follow either way and is not a pre-release part, even when it has a dash in it.
+# (+...) may follow either way and is not a pre-release part, even when it has a dash in it. SemVer 2.0.0's
+# own grammar: no leading zero in the three numbers or in a numeric pre-release identifier (1.2.0-01 and
+# 01.2.3-rc.1 are not SemVer, so normal releases), while build identifiers may have one (1.2.0-rc.1+001).
 prerelease_tag() {
-  local version=$1 identifier='[0-9A-Za-z-]+'
+  local version=$1
+  local number='(0|[1-9][0-9]*)'
+  # A numeric identifier without a leading zero, or one with a letter or a dash in it.
+  local pre="(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+  local build='[0-9A-Za-z-]+'
   if [[ "$version" == *@* ]]; then
     version=${version##*@}
   else
     version=${version#v}
   fi
-  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-$identifier(\.$identifier)*(\+$identifier(\.$identifier)*)?$ ]]; then
+  if [[ "$version" =~ ^$number\.$number\.$number-$pre(\.$pre)*(\+$build(\.$build)*)?$ ]]; then
     echo true
   else
     echo false
