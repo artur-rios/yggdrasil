@@ -322,7 +322,7 @@ template's `README.md` to the repository, and the stack files from `templates/st
 | `templates/site-next-static/` | a Next.js static export | the same |
 | `templates/site-next-server/` | a server-rendered Next.js site | the same, and `app/healthz/route.js` |
 | `templates/site-node-api/` | a Node.js service (github-readme-stats) | the same |
-| `templates/library/` | a .NET library and its docs site | `ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh`, `yggdrasil.yml`, the docs site's `Dockerfile`, `README.md` |
+| `templates/library/` | a .NET library and its docs site | `ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh`, `ci/branch-policy.sh` (the release version gate, for a single-package library), `yggdrasil.yml`, the docs site's `Dockerfile`, `.dockerignore`, `.gitattributes`, `README.md` |
 | `templates/stacks/` | the site stack files, copied to `stacks/<application-id>.yml` and `.proxy.yml` | `site.yml`, `site.proxy.yml`, `site-path.proxy.yml`, `site-apex-redirect.proxy.yml` |
 
 **What every site image does.** It listens on port 8080 as a non-root user and answers `/healthz` with 200, which
