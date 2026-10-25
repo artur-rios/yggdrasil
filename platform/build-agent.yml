@@ -1,0 +1,45 @@
+# The Jenkins build agent of one service user (`ci` or `release`): an inbound agent that dials out to
+# the controller and runs that user's builds against the user's own rootless Docker engine. One
+# project per user, yggdrasil-agent-<JENKINS_AGENT_NAME>, run by scripts/agent.sh as that user, which
+# exports DOCKER_SOCKET (the user's engine, already checked to be rootless) and reads agent.env
+# (env/agent.env.example) for the rest.
+#
+# Not the deploy agent: that one is the `agent` profile of platform/compose.yml, with the host's
+# secrets mounted. This one has the user's Docker socket and its working directory, and nothing else.
+#
+#     scripts/agent.sh up
+
+name: yggdrasil-agent
+
+services:
+  agent:
+    image: yggdrasil/build-agent:local
+    build: ./jenkins/build-agent
+    restart: unless-stopped
+    init: true
+    # The image's jenkins user could not open the socket. Root here is the service user on the host
+    # (rootless Docker), so the agent can do what that user can and no more.
+    user: "0:0"
+    environment:
+      # WebSocket over 443: the agent dials out, so a host behind NAT needs no inbound port.
+      JENKINS_URL: ${JENKINS_URL}
+      JENKINS_WEB_SOCKET: "true"
+      JENKINS_AGENT_NAME: ${JENKINS_AGENT_NAME}
+      JENKINS_SECRET: ${JENKINS_AGENT_SECRET}
+      JENKINS_AGENT_WORKDIR: ${YGG_AGENT_WORKDIR}
+      # The socket's path on the host. The mount below puts it at /var/run/docker.sock in the agent, but
+      # scripts/run-check.sh starts a check's container with `docker run -v <socket>:/var/run/docker.sock`,
+      # and the host's engine resolves that source on the host: it needs this path, not the agent's.
+      YGG_DOCKER_SOCKET: ${DOCKER_SOCKET}
+    volumes:
+      - ${DOCKER_SOCKET}:/var/run/docker.sock
+      # The same path on both sides: a check's `docker run -v $WORKSPACE:...` goes to the host's
+      # engine, which must find the same directory the agent checked out into.
+      - ${YGG_AGENT_WORKDIR}:${YGG_AGENT_WORKDIR}
+    logging:
+      # The same settings as x-logging in compose.yml (an anchor cannot cross files): json-file never
+      # rotates by default, so this is what bounds the disk.
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

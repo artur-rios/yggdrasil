@@ -53,6 +53,17 @@
 # examples for the sample applications are in docs/examples/docker-desktop-and-vps/env/. Its path is
 # exported as APP_ENV_FILE, for stacks that hand the whole file to the container (env_file:, as the
 # stacks scripts/ygg.sh generates do).
+#
+# Sites: YGG_PUBLIC_HOST (<host><hostSuffix>.<domain>, or the bare domain for an apex site) and
+# YGG_PUBLIC_PATH (the application's path) are exported for the stack files, which may use them
+# instead of a PUBLIC_HOST in the env file. The domain is the application's `domain`, else
+# YGG_DOMAIN, which the deploy agent gets from the platform's DOMAIN; both are empty when the
+# application is not public or no domain is known (stacks that don't use them are unaffected).
+#
+# DEPLOY_INPUTS_DIR: a directory whose contents (the archives of the checks a site's image needs)
+# are copied into the build context's root -- the application checkout, which every stack uses as
+# its build context -- before the images build. A name that already exists there stops the deploy:
+# inputs never replace repository files.
 set -euo pipefail
 
 die() { echo "deploy: $*" >&2; exit 1; }
@@ -109,7 +120,7 @@ if [[ -f "$secrets/vars.db" ]]; then
     || die "$stack has no variables in $environment in the variables store: set them with scripts/ygg.sh config $stack $environment (or scripts/ygg.sh vars set $stack@$environment KEY=value)"
 else
   env_file="$secrets/$environment/$stack.env"
-  [[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the agent (uid 1000, or the docker group)"
+  [[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the user running the agent's engine"
   echo "deploy: reading $env_file; move to the variables store with scripts/ygg.sh vars init && scripts/ygg.sh vars import --all" >&2
 fi
 
@@ -153,6 +164,10 @@ fi
 export APP_DIR="$app_dir"
 export APP_ENV_FILE="$env_file"
 export YGG_ENVIRONMENT="$environment"
+# Empty (not an error) for an application without a host, or when no domain is known.
+YGG_PUBLIC_HOST=$(python3 "$root/scripts/catalog.py" public-host "$stack" "$environment" "${YGG_DOMAIN:-}") || exit 1
+YGG_PUBLIC_PATH=$(python3 "$root/scripts/catalog.py" public-path "$stack") || exit 1
+export YGG_PUBLIC_HOST YGG_PUBLIC_PATH
 export IMAGE_TAG="$tag"
 export API_IMAGE_TAG="$tag"
 
@@ -236,6 +251,38 @@ if [[ "$mode" == proxy ]]; then
     docker network inspect "$network" >/dev/null 2>&1 \
       || die "network '$network' is missing: run scripts/platform.sh up on this host first"
   done
+fi
+
+# Files a check produced for the image build (the pipeline puts them in DEPLOY_INPUTS_DIR). Copied into
+# the checkout, the build context of every stack, keeping their names. All names are checked first so
+# a refusal copies nothing: an input must never silently replace a file of the repository.
+if [[ -n "${DEPLOY_INPUTS_DIR:-}" ]]; then
+  [[ -d "$DEPLOY_INPUTS_DIR" ]] || die "DEPLOY_INPUTS_DIR is not a directory: $DEPLOY_INPUTS_DIR"
+  inputs=$(cd "$DEPLOY_INPUTS_DIR" && pwd)
+  clashes=()
+  while IFS= read -r -d '' entry; do
+    name=${entry#./}
+    if [[ -d "$inputs/$name" && ! -L "$inputs/$name" ]]; then
+      # A directory may merge into one that exists, but not replace a file.
+      if [[ -e "$app_dir/$name" || -L "$app_dir/$name" ]] && [[ ! -d "$app_dir/$name" || -L "$app_dir/$name" ]]; then
+        clashes+=("$name")
+      fi
+    elif [[ -e "$app_dir/$name" || -L "$app_dir/$name" ]]; then
+      clashes+=("$name")
+    fi
+  done < <(cd "$inputs" && find . -mindepth 1 -print0)
+  if ((${#clashes[@]})); then
+    die "deploy inputs would overwrite files of the repository: ${clashes[*]}"
+  fi
+  while IFS= read -r -d '' entry; do
+    name=${entry#./}
+    if [[ -d "$inputs/$name" && ! -L "$inputs/$name" ]]; then
+      mkdir -p "$app_dir/$name"
+    else
+      cp -P "$inputs/$name" "$app_dir/$name"
+    fi
+  done < <(cd "$inputs" && find . -mindepth 1 -print0)
+  echo "deploy: copied the deploy inputs from $DEPLOY_INPUTS_DIR into the build context"
 fi
 
 compose config --quiet

@@ -3,7 +3,9 @@
 `ygg` runs on an Ubuntu host (a VPS, a VM, WSL or a laptop) and does what [setup.md](setup.md)
 otherwise has you do by hand:
 
-- install the tools, or check they are there
+- install the tools, or check they are there, and set up a machine as a dev or apps machine
+  ([hosts.md](hosts.md))
+- start the Jenkins build agents of the `ci` and `release` users, and back up the machine
 - set up a new API, web front end or worker, and deploy it
 - see what runs on the host, in each of its environments
 - show, change and roll back an application's variables and secrets
@@ -22,8 +24,8 @@ A host runs one environment or several: `ENVIRONMENTS` in its `platform.env` lis
 the host has several, it takes it as an argument or asks.
 
 It runs the same pieces as the guide: `scripts/host.sh` (the host operations), `scripts/deploy.sh`,
-`scripts/platform.sh`, `scripts/vars.py`, `scripts/catalog.py`, the files in `stacks/` and the
-variables store, or the env files, in `/etc/yggdrasil`. Whatever it does, you can check, change or
+`scripts/platform.sh`, `scripts/agent.sh`, `scripts/backup.sh`, `scripts/vars.py`, `scripts/catalog.py`,
+the files in `stacks/` and the variables store, or the env files, in `/etc/yggdrasil`. Whatever it does, you can check, change or
 undo by hand.
 
 ## Install
@@ -35,8 +37,10 @@ scripts/ygg.sh self-install      # links /usr/local/bin/ygg to this checkout, in
 ygg version                      # yggdrasil 0.7.0 (1a2b3c4) at /opt/yggdrasil
 ```
 
-`ygg install` offers it too. `scripts/ygg.sh` keeps working everywhere `ygg` does, for scripts and
-docs written before 0.7; on a host without python3 it still runs `check` and `install`.
+`ygg install` offers it too (for the `workstation` role; on a dev or apps machine, run `self-install`
+yourself after the install, [setup.md 8.4](setup.md#84-the-ygg-command)). `scripts/ygg.sh` keeps working
+everywhere `ygg` does, for scripts and docs written before 0.7; on a host without python3 it still runs
+`check` and `install`, with their `--role`.
 
 ## The menu
 
@@ -80,7 +84,7 @@ The top menu groups the commands by task:
 | **Environments** | `env status`, `env start`, `env stop` |
 | **Variables and secrets** | Browse any scope (same screen as an application's), and every `vars` command |
 | **Platform** | `platform up`, `down`, `ps`, `logs`, `config` |
-| **Host** | `check`, `install`, `self-install` |
+| **Host** | `check`, `install`, `agent`, `backup`, `self-install` |
 | **Catalog** | Every `catalog` command |
 | **Help and version** | `help`, `version`, `completion` |
 
@@ -168,8 +172,8 @@ the stack files as `add` does. Then it offers:
   version doesn't become healthy, `deploy.sh` rolls back as usual. In an on-demand environment
   where the application is stopped, it asks whether to leave it running afterwards.
 
-A file keeps its owner, group and mode (`640`, group `docker`), so the Jenkins agent can still
-read it. Changes you don't apply reach the application on its next deploy, from Jenkins or by hand.
+A file keeps its owner, group and mode (owned by `ygg`, who runs `ygg config`), so the deploy agent, which
+reads it as `ygg` inside its container, can still read it. Changes you don't apply reach the application on its next deploy, from Jenkins or by hand.
 
 ## Commands
 
@@ -185,10 +189,12 @@ read it. Changes you don't apply reach the application on its next deploy, from 
 | `ygg env status \| start <environment> \| stop <environment> [--force]` | Environments | This host's environments |
 | `ygg vars <command>` | Variables and secrets | The variables store: `init`, `set`, `get`, `list`, `unset`, `edit`, `history`, `rollback`, `import`, `export`, `render`, `render-platform`, `backup`, `check` ([variables.md](variables.md#commands)) |
 | `ygg platform up \| down \| ps \| config \| logs [<service>] [--last-good]` | Platform | This host's platform stack (`scripts/platform.sh`) |
-| `ygg check` | Host › check | What is installed and what is missing |
-| `ygg install` | Host › install | Installs what is missing, asking before each part |
+| `ygg check [--role dev\|apps\|workstation]` | Host › check | What is installed and what is missing, for the machine's role |
+| `ygg install [--role dev\|apps\|workstation]` | Host › install | Installs what is missing, asking before each part. A dev or apps machine: as the admin |
+| `ygg agent up\|down\|ps\|logs --user ci\|release` | Host › agent | The Jenkins build agent of a service user (`scripts/agent.sh`), as that user. As the admin |
+| `ygg backup run\|list` | Host › backup | Back up this machine, or list the backups (`scripts/backup.sh`). As `ygg` |
 | `ygg self-install` | Host › self-install | The `ygg` command and its tab completion |
-| `ygg catalog validate \| environments \| applications \| systems \| show \| plan \| environment \| get \| owner \| repository` | Catalog | Reads `catalog.yaml` (`scripts/catalog.py`) |
+| `ygg catalog validate \| environments \| applications \| systems \| show \| public-host \| public-path \| plan \| environment \| get \| owner \| repository \| forge \| mirror \| repositories \| repository-entry \| repository-names` | Catalog | Reads `catalog.yaml` (`scripts/catalog.py`) |
 | `ygg help [<command>]`, `ygg version`, `ygg completion bash` | Help and version | |
 
 Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command, a missing argument),
@@ -213,6 +219,40 @@ as the menu. Keys need read access to the store's key; without it they are not o
 
 ## Check and install
 
+A machine has a **role**: `dev`, `apps` or `workstation`. `--role` picks it; without it the command uses
+the role `install` wrote to `/etc/yggdrasil-role`, and `workstation` when there is none. `dev` and `apps`
+are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine is rootless;
+`workstation` is the check and install that came before the roles, for a laptop or a host set up by hand.
+
+### `--role dev` and `--role apps`
+
+`check` prints one row per piece (`ok`, `warn` or `missing`) and changes nothing:
+
+| Group | Checks |
+|---|---|
+| **System** | The packages; the machine's own Docker is switched off, and disabled after a reboot, and nobody is in the `docker` group; the three system files (unprivileged ports, AppArmor, cgroup delegation); unattended upgrades |
+| **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` limits and, for `ci`, `release`, `renovate` and `dev`, no port below 1024 (dev); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
+| **Firewall** | `ufw` is on and denies incoming by default, with the role's ports, and no other rule lets everyone in (a port, a range or a profile such as `Nginx Full`). On an apps machine, 80 and 443 are open to Cloudflare only, and the rules and `cloudflare-ips` match Cloudflare's current list |
+| **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a dev machine: `ci`, `release`, `dev` and `renovate` cannot read `ygg`'s socket or secrets, and `ci` cannot read `release`'s |
+| **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled; `backup.conf` is there; the last run succeeded (or a warning: never run, failed); the newest day in `~/backups` is at most 36 hours old |
+
+Rows that ask another user's engine or read a closed directory need `sudo`. `check` runs `sudo -v` first, which asks
+for your password once; if that fails it says so and goes on, and those rows say "not checked".
+
+`install` works on Ubuntu 24.04 only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
+part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci`
+limits, the low ports, SSH, the checkout, secrets directories, the firewall, each user's engine, the backup timer and the role
+file. It refuses up front, changing nothing: when it doesn't run from `/opt/yggdrasil` (clone yggdrasil there), when
+`sudo -v` fails (a check that can't run as root would find nothing to do), and when the admin has no
+`~/.ssh/authorized_keys`. It writes the role file before the first part it does, so an install that stops halfway
+is still a dev or apps machine to the next `ygg install`. It puts its SSH file back if sshd would not run with it. Each part, and what you would type by hand, is in
+[setup.md step 8](setup.md#83-install); the files and why, in [hosts.md](hosts.md#4-system-settings).
+
+`install` does not write `backup.conf`: copy `env/backup.conf.example` yourself
+([hosts.md](hosts.md#backupconf)).
+
+### `--role workstation`
+
 `check` looks at:
 
 | Group | Checks |
@@ -229,11 +269,58 @@ as the menu. Keys need read access to the store's key; without it they are not o
    their Compose is too old for the stack overlays. Images, containers and volumes stay.
 3. **Your user in the `docker` group.** Log out and back in afterwards.
 4. **The secrets directory**, `/etc/yggdrasil`, group `docker`, mode `2750`, with `platform.env` and
-   `acme.env` copied from `env/` ([setup.md step 8.4](setup.md#8-prepare-every-host)). Fill them
-   in as in [step 9.2](setup.md#92-the-env-files-first-pass) or [step 10](setup.md#10-bring-up-the-other-environment-hosts).
+   `acme.env` copied from `env/`.
 5. **A firewall** (ufw) letting in only SSH, 80 and 443. It's for servers, so the default is no.
 
-Then bring the platform up with `scripts/platform.sh up`, as in the guide.
+The platform itself (`platform.sh`) now runs only on a **rootless** engine of the user running it, so a
+workstation-role host needs one set up by hand ([setup.md 8.6](setup.md#86-not-on-ubuntu-2404-or-not-behind-cloudflare)).
+
+## Build agents
+
+```bash
+ygg agent up --user ci          # start or update the CI agent
+ygg agent logs --user release   # follow the release agent's log
+ygg agent ps --user ci
+ygg agent down --user ci
+```
+
+On the dev machine, the `ci` and `release` users each run a Jenkins build agent on their own rootless engine
+([hosts.md](hosts.md#3-users)). `ygg agent` is run by the **admin**: it uses `sudo` to run
+`scripts/agent.sh` as the service user, which has no login. `--user` is required and is `ci` or `release`.
+
+`agent.sh` reads `/etc/yggdrasil-<user>/agent.env`, which `ygg install` copied from
+[env/agent.env.example](../env/agent.env.example). The file is `600` and belongs to the service user, which has no
+login, so edit it as the **admin** with `sudoedit`: it opens a copy in your editor and writes it back as the file's
+owner, keeping the owner and the mode.
+
+```bash
+sudoedit /etc/yggdrasil-ci/agent.env
+```
+
+Fill it in as that file says:
+
+| Variable | Value |
+|---|---|
+| `JENKINS_URL` | The controller's address (`https://jenkins.<DOMAIN>/` of the dev machine); the agent dials out to it over WebSocket. Empty in the template, like the next and the last |
+| `JENKINS_AGENT_NAME` | `ci` for the `ci` user, `release` for `release`. Left empty in the template on purpose, so an unedited copy fails instead of starting the wrong node. Lowercase letters, digits, `-` and `_` |
+| `JENKINS_AGENT_SECRET` | The node's secret, from its page in Jenkins once the node exists |
+| `YGG_AGENT_WORKDIR` | Absolute, owned by the user: `/home/ci/agent` for `ci`, `/home/release/agent` for `release`. Mounted at the same path in the agent and on the host, so a check's `docker run -v $WORKSPACE:…` finds the same directory in the engine. Also empty in the template |
+
+An empty or missing variable stops `agent.sh` before anything starts, and says which. The Compose project is
+`yggdrasil-agent-<name>` (so the two agents never share one), from
+[platform/build-agent.yml](../platform/build-agent.yml). `up` builds the agent's image and starts it, waiting
+until it runs. This agent is not the deploy agent: that one is the `agent` profile of the platform stack and runs on the
+apps machine.
+
+## Backups
+
+```bash
+ygg backup run      # dump now, prune old days, send them to the other machine
+ygg backup list     # the days and files in ~/backups, and whether the newest day is complete
+```
+
+Run as `ygg`, whose engine holds the data; the nightly timer does it at 03:30. What is backed up and where it goes
+is `backup.conf`; how to set it up and how to restore is in [hosts.md](hosts.md#7-backups-and-restore).
 
 ## Set up an application
 

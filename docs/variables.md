@@ -443,8 +443,9 @@ an env file, to use files again: delete `vars.db` and the scripts read the files
   `<secrets>/<environment>/<application>.env` with a one-line notice pointing here.
 - **The deploy lock** is a file per application and environment,
   `<secrets>/locks/<application>-<environment>.lock`, created `0664` when missing and opened
-  read-only. `platform.sh up` creates the `locks` directory (mode `2770`, group `docker`) and the
-  Jenkins agent mounts it read-write, so a hand deploy and the agent's wait for each other.
+  read-only. `platform.sh up` creates the `locks` directory (mode `700`, owned by the user running it, `ygg`)
+  and the Jenkins agent mounts it read-write (its container root is that same user), so a hand
+  deploy and the agent's wait for each other.
 - **`platform.sh up`**, when `vars.db` exists: checks the platform's values (`vars check --platform`:
   an application's broken reference does not stop the platform), renders `platform.env` and
   `acme.env` the same way and hands them to Compose (Traefik's `env_file` follows

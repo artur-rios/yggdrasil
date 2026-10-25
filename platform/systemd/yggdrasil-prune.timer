@@ -1,0 +1,13 @@
+# Starts yggdrasil-prune.service every Sunday. Persistent: a machine that was off at 03:00 prunes when it is
+# next on. The random delay spreads the two users' runs (ci and release, each with its own timer) and the
+# nightly backup's catch-up over the hour after 03:00, so they do not all meet at the same second.
+[Unit]
+Description=Prune this user's CI engine every week
+
+[Timer]
+OnCalendar=Sun 03:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

@@ -51,6 +51,10 @@ class Context:
     def applications(self, deployable=False):
         return [a["id"] for _, a in catalog_module().applications(self.catalog(), deployable=deployable)]
 
+    def repositories(self):
+        """The ids of the catalog's `repositories`, the git repositories that are not applications."""
+        return [r["id"] for r in catalog_module().repositories(self.catalog())]
+
     def app_environments(self, application):
         return [e["id"] for e in catalog_module().resolve(self.catalog(), application)]
 

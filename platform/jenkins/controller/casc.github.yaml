@@ -1,0 +1,27 @@
+# Configuration as Code for GitHub, the default when catalog.yaml has no forge block (see casc.yaml):
+# the pinned yggdrasil library retrieved from GitHub. The github-app credential is casc.github-app.yaml.
+# GitHub has no forge-read or forge-write: the library's forgeCredential() answers github-app for both.
+
+unclassified:
+  globalLibraries:
+    libraries:
+      - name: "yggdrasil"
+        # A yggdrasil release tag (YGGDRASIL_LIBRARY_VERSION is required with the jenkins profile):
+        # what runs in every pipeline is a version somebody released, not whatever main is today.
+        defaultVersion: "${YGGDRASIL_LIBRARY_VERSION}"
+        implicit: false
+        allowVersionOverride: false
+        includeInChangesets: false
+        retriever:
+          modernSCM:
+            libraryPath: "jenkins/library/"
+            scm:
+              github:
+                repoOwner: "${GITHUB_OWNER}"
+                repository: "${YGGDRASIL_REPOSITORY}"
+                credentialsId: "github-app"
+                traits:
+                  - gitHubBranchDiscovery:
+                      strategyId: 1
+                  # A version is a tag: without it the library is not found at v1.0.0.
+                  - gitHubTagDiscovery: {}

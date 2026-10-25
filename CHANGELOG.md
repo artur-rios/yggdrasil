@@ -7,6 +7,274 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **One interface to the git server, for Forgejo and GitHub.** `scripts/forge.sh` has the commands a release needs
+  (set and read statuses, merge, tag, create, upload and publish releases, delete a branch) and does them on
+  whichever server the catalog's `forge.type` names; `scripts/github.sh` now keeps only the GitHub Actions
+  commands (`wait-checks` and the release-artifacts workflow) and calls it for the rest, with the same commands
+  and arguments, and the same output on stdout, so the Jenkins pipeline is unchanged. What differs: its error
+  lines start `forge:`, `delete-branch`'s "already deleted" note goes to stderr, and `merge-pr` and `release`
+  fail when GitHub's answer has no merge commit or release address (before, they printed `null`). On Forgejo
+  `merge-pr` waits while Forgejo says "try again later", and `delete-branch` leaves a protected branch alone
+  (exit 3: every `release/x.y.z` is kept, the owner deletes them by hand). See
+  [docs/setup.md](docs/setup.md#the-git-server-commands).
+- **`scripts/rules.py`** applies the branching model to every repository of the catalog, on GitHub (rulesets) or
+  Forgejo (settings, branch and tag protections, `yggdrasil.yml` and the `Jenkinsfile` as protected files on
+  `develop`, so only the owner merges a change to what Jenkins runs (Renovate's image bumps there too), and Jenkins'
+  webhook), with `--dry-run`. `github/rulesets.py` is now a shim that says it moved and runs it. Forgejo needs
+  `FORGE_TOKEN`, and `FORGE_JENKINS_URL` with `FORGE_WEBHOOK_SECRET` for webhooks; the users it names must have
+  write access to the repository, or Forgejo drops them (the script warns). On Forgejo it deletes nothing, and on
+  GitHub only a ruleset named `default`, as `github/rulesets.py` did; a protection the model no longer has is
+  noted. [docs/setup.md](docs/setup.md#12-apply-the-branch-rules) step 12 lists what each
+  server gets. On Forgejo, the user who creates the version tags can also move and delete them: an accepted gap,
+  which the `tag-check` job detects (below). With a `mirror`, every repository's GitHub copy gets the ruleset
+  **`mirror tags`** (update and deletion, no bypass, administrators included; nothing on the copy's branches or
+  settings), so the copies keep the tags as released and are what a moved or deleted Forgejo tag is repaired
+  from; that needs a GitHub token with administration of the copies, and without one the Forgejo rules are still
+  applied and the run exits 1. A copy GitHub refuses (one the push mirror has not made yet, a private copy on a
+  free plan) is reported and skipped: the other repositories are still applied and the run exits 1 at the end. A
+  mirror push that would move or delete a version tag is refused, and Forgejo shows the mirror sync failing:
+  intended.
+- **Catalog fields for the git server:** `forge` (`type` `forgejo` or `github`, `url`, `jenkinsUser`, `developers`;
+  a catalog without it is GitHub), `mirror` (Forgejo to GitHub), `repositories` (libraries, CI-only repositories and
+  yggdrasil itself, with `release`, `tags`, `rules`, `checks`, `actionsChecks`, `credentials`) and, on applications,
+  `actionsChecks` (GitHub Actions jobs to require on `develop`), `domain`, `path` and `apex` (for the site routing
+  to come). `catalog.py` reads them with `forge`, `mirror`, `repositories` and `repository-entry`.
+  [docs/catalog.md](docs/catalog.md).
+- `scripts/test_forgejo_live.py` runs forge.sh and rules.py against the pinned Forgejo in a container
+  (`YGG_FORGEJO_TESTS=1`; CI runs it) and proves the protections hold.
+- **Two machine roles.** `ygg check` and `ygg install` take `--role dev|apps|workstation`. `dev` and `apps` set up an
+  Ubuntu 24.04 server: the service users (`ygg` on both; `ci`, `release`, `renovate` and `dev` on the dev machine),
+  a rootless Docker engine for each, the system settings they need, SSH hardening that is verified against what
+  sshd really runs (`00-yggdrasil.conf`), the firewall, unattended upgrades and the nightly backup timer. The apps
+  machine's firewall opens 80 and 443 to Cloudflare's address ranges only, and `ygg check` compares it with
+  Cloudflare's current list. `workstation`, the default on a machine with no role file, keeps the earlier behavior.
+  The firewall fails closed (SSH in, incoming denied by default, even when Cloudflare's list can't be fetched), and
+  `check` reports any rule that lets everyone in that `install` didn't make. On the dev machine `ci`, `release`,
+  `renovate` and `dev` cannot bind ports below 1024, and `check` proves that no service user reaches `ygg`'s engine or
+  secrets (nor `ci` the release agent's). `install` asks for the sudo password first, runs only from
+  `/opt/yggdrasil`, and writes the role file before its first change. `check` shows whether backups work:
+  `backup.conf`, the last run's result and the newest day's age. dns.md and hosts.md add a `CAA` record per zone
+  (Let's Encrypt, DNS-01 only).
+  [docs/hosts.md](docs/hosts.md) (new) explains the two machines, their users, every file the installer writes, the
+  credentials and the backups; [docs/setup.md](docs/setup.md) step 8 explains each part of the install and the
+  commands to do it by hand.
+- **Forgejo** as a platform service, on its own profile (`forge`): `codeberg.org/forgejo/forgejo:16.0.6-rootless`,
+  pinned by digest, at `git.<DOMAIN>`, git over SSH on port `FORGEJO_SSH_PORT` (2222), SQLite in the
+  `yggdrasil_forgejo-data` volume, registration closed and sign-in required to view anything. The first account is
+  made from the command line (setup.md 9.6).
+- **Build agents** for the `ci` and `release` users: `platform/build-agent.yml` and `ygg agent up|down|ps|logs --user
+  ci|release`, each on its user's own engine, configured by `/etc/yggdrasil-<user>/agent.env`
+  (`env/agent.env.example`).
+- **Backups**: `ygg backup run|list` and a systemd user timer (03:30) dump Forgejo, volumes and PostgreSQL databases
+  into `~/backups` and send them to the other machine over SSH with a key restricted to `rrsync`. Configured in
+  `backup.conf` (`env/backup.conf.example`); `ygg install` does not write it. Each item's newest good dump is kept
+  even beyond `BACKUP_KEEP`, and `ygg backup list` says whether the newest day is complete. Restore steps are in
+  [docs/hosts.md](docs/hosts.md#7-backups-and-restore).
+- **Several domains on one machine** (`EXTRA_DOMAINS` in `platform.env`, each with its own wildcard certificate) and
+  **Cloudflare in front** (`CLOUDFLARE_PROXIED`): Traefik trusts the forwarded client address from Cloudflare's ranges
+  only, from `<secrets>/cloudflare-ips`, which `ygg install --role apps` writes. Traefik's static configuration is now a
+  file rendered by `scripts/traefik_config.py` into `<secrets>/traefik.yml` (kept there, so Traefik starts again
+  after a reboot); the settings are the same. Only `platform.sh up` replaces it (the other commands render a
+  throwaway copy), and `platform.sh` now refuses to run as root: a root-owned `traefik.yml` is one the rootless
+  Traefik can't read at its next start. Run it as the platform's user (`ygg`).
+- **`PLATFORM_HOST_SUFFIX`** (optional, empty by default) in `platform.env`: put after `traefik` and `grafana` in
+  the names of the Traefik dashboard and Grafana (and Grafana's root URL). The dev machine sets `-dev`, so it serves
+  `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>` instead of claiming the apps machine's `traefik.` and `grafana.`
+  under the same domain; they need DNS-only records to the dev machine. Unset, nothing changes.
+- A machine without the `apps` profile (the dev machine) has Prometheus read a written-out list of the platform's own
+  targets (`platform/prometheus/prometheus-static.yml`).
+- **The pipeline in Jenkins.** A repository describes its checks and releases in a `yggdrasil.yml` (data: images,
+  commands, globs and the names of credentials; reference in [docs/catalog.md](docs/catalog.md#repository-pipeline-file)),
+  and Jenkins runs them on two build agents of their own: `ci` (4 executors) for the branch policy and the checks,
+  each reported as a commit status (`pending`, then `success` or `failure`) and reused for a commit only when
+  `forge.jenkinsUser` already set it, and `release` (1 executor) for release files. `deploy.inputs` hands a check's
+  archive to an image build. A push deploys only if its checks passed, and the commit they saw. A repository without
+  the file deploys and releases as before. How it all fits, what happens on each push, pull request and tag, and the
+  accepted risks: [docs/setup.md, The pipeline](docs/setup.md#the-pipeline).
+- **Releases from Jenkins**: after the merge and the tag, `release.build` builds the files on the release agent
+  (with only the credentials the catalog entry's new `releaseCredentials` allows: never its checks' `credentials`,
+  since a check runs any branch's code),
+  `release.windows` has GitHub Actions build the Windows ones, `release.validate` checks them (pass or fail; it cannot
+  change them), and `scripts/publish-release.sh` uploads and checks them on a draft release on Forgejo and, with
+  a `mirror`, on GitHub, then publishes Forgejo's and GitHub's last. The notes are the version's `CHANGELOG.md`
+  section, else the titles of the merged pull requests (`scripts/release_notes.py`). If the GitHub Actions
+  checks (`actionsChecks`: Windows, macOS) don't finish, Jenkins asks **Deploy without GitHub Actions checks**; after
+  it the release goes out on Forgejo only (`GitHub copy pending`, the build unstable). The jobs **`release-resume`**
+  (finishes a release from its tag: after a failure past the merge, to make the GitHub copy, for a tag never built)
+  and **`actions-release`** (attaches Windows files later) are started by hand with `REPOSITORY` and `TAG`;
+  `release-resume` also takes `COMMIT`, for a release merged but never tagged: it tags the merge commit (only when
+  it is that release's merge on `main`'s first-parent line), since only Jenkins may create an application's `v*`
+  tags.
+- **The `tag-check` job**: every day (cron `H 4 * * *`) and by hand, on the `ci` agent with the read credential
+  only, it checks that every published release of every catalog entry that releases still has its tag on the
+  commit it was released from (`forge.sh release-tags`, new: each published release's tag and target, and
+  `tag-sha`). A tag that moved or was deleted fails the build, named `MOVED` or `DELETED` at the end of the log,
+  the count in the build's description; a release that names a branch, not a commit, is logged as an unknown
+  target. A deleted tag's release becomes a draft (Forgejo, GitHub), which the read credential cannot see, so
+  each run archives the releases it knows of (`release-tags.tsv`) and the next checks those too. Its optional
+  `FORGET` parameter (`<repository> <tag>` a line, checked before anything runs) drops releases deleted on
+  purpose from that record. [docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs) says how to read it and how to repair a
+  tag from its GitHub copy. Its script, `jenkins/tag-check.groovy`, is mounted by `platform/compose.yml` like the
+  other jobs'.
+- **Owner-tagged releases and NuGet**: a `repositories` entry with `release: owner-tag` is released by the owner's
+  tag on `main` (tag with `git tag -a`: Jenkins builds only tags at most a day old and dates a lightweight tag by its
+  commit). `publish.nuget` packs a library's packages with no credential, then `scripts/nuget-push.sh` pushes them
+  (`--skip-duplicate`) with the Jenkins credential `nuget-api-key`, bound only there (`NUGET_API_KEY_FILE`).
+- **Renovate**: `scripts/renovate.sh run`, a daily systemd user timer of the `renovate` user (05:00), in its own
+  rootless engine, against the catalog's repositories only, on Forgejo. Its branches are `renovate/*`; a repository with
+  no Renovate configuration of its own is skipped. Settings in `/etc/yggdrasil-renovate/renovate.env`
+  (`env/renovate.env.example`). Run it once by hand first ([docs/setup.md, 9.9](docs/setup.md#99-renovate)).
+- **Settings for the pipeline** in `platform.env`: `YGGDRASIL_LIBRARY_VERSION` (required with the `jenkins` profile: a
+  yggdrasil release tag of your fork, the version of `jenkins/library/` every pipeline loads), `CI_AGENT_WORKDIR` and
+  `RELEASE_AGENT_WORKDIR` (required with it: each the `YGG_AGENT_WORKDIR` of that agent's `agent.env`),
+  `FORGE_WRITE_TOKEN_FILE`, `FORGE_READ_TOKEN_FILE` and `FORGE_WEBHOOK_SECRET_FILE` (required on Forgejo),
+  `GITHUB_READ_APP_ID` and `GITHUB_READ_APP_KEY_FILE` (optional, GitHub: a read-only App for the CI agent) and
+  `NUGET_API_KEY_FILE` (optional). `scripts/platform.sh` chooses the Configuration as Code files the controller
+  reads (`casc.yaml`, `casc.forgejo.yaml` or `casc.github.yaml`, and `casc.github-app.yaml`, `casc.github-read.yaml`,
+  `casc.nuget.yaml` where they apply) from the catalog's `forge` and `mirror` and these settings.
+  [docs/setup.md, 9.2 to 9.9](docs/setup.md#92-the-env-files-first-pass).
+- **Sites**: `deploy.sh` exports `YGG_PUBLIC_HOST` and `YGG_PUBLIC_PATH` from the catalog's `host`, `domain`, `path`
+  and `apex` (`catalog.py public-host` and `public-path`); the deploy agent gets the platform's `DOMAIN` as `YGG_DOMAIN`.
+  An `apex` site without a `host` is on the bare domain in every environment, so deploy it to one environment.
+- `scripts/test_jenkins_live.py` runs the pipeline against a real Jenkins controller, its agents and Forgejo
+  (`YGG_JENKINS_TESTS=1`; CI job `pipeline-live`, by hand only). The GitHub paths and rootless Docker are not proven by it.
+- **The cutover runbook**, [docs/cutover.md](docs/cutover.md): the move from one rootful VPS that deploys from GitHub
+  to the two rootless machines, with Forgejo as the git server and GitHub as a push-mirrored copy. In order, each
+  step with its commands, what success looks like and how to back out: Cloudflare (both zones, the token, SSL Full
+  (strict) and the cache rule by hand, the records), the dev and apps machines, a rehearsal (one import, one mirror,
+  the volumes compared, one database volume carried and started), the maintenance window (the volumes, the DNS switch, the repositories: `inventory`,
+  `import`, `prepare-github`, `mirrors`, `collaborators`, `rules.py`, `verify` as the gate), what can and cannot be
+  rolled back at each point, the clean-up, and the checks left to the owner. It drives the tools made for the move:
+  `scripts/migrate.py` (the repositories, idempotent, with `--dry-run`; `mirrors` refuses a repository whose first
+  `--mirror` push would delete or move a branch or tag only GitHub has, unless `--allow-prune`),
+  `scripts/cloudflare_dns.py` (the records of both zones), `scripts/volumes.sh` (Docker volumes carried from a rootful engine to a rootless one, checked by size
+  and SHA-256) and `scripts/prove-machine.sh` (the rootless setup proved on a real machine). The Forgejo token for
+  the move needs `read:user` besides `write:repository`: `migrate.py collaborators` looks the bot accounts up, and
+  Forgejo refuses that to a token without it. [docs/hosts.md](docs/hosts.md)'s restore and upgrade steps now run the
+  pinned `busybox` image that `backup.sh` and `volumes.sh` use, not whatever `busybox` is current.
+
+### Changed
+
+- **The rules are applied by `python3 scripts/rules.py`** (replaces `python3 github/rulesets.py`, which still
+  works and runs it). On a GitHub installation it changes what the rulesets require: on `develop` and `main`,
+  `branch-policy` and the `checks` stay required but are bound to no app (any status of that name satisfies
+  them; until now only GitHub Actions' could), because Jenkins is to report them (plan 3); the new
+  `actionsChecks` (applications and repositories) are required, bound to GitHub Actions, on `develop` only, so a
+  job moved there from `checks` is no longer required on `main`. **An existing GitHub installation should run the
+  rules for a repository only once it has adopted `yggdrasil.yml`**, so that Jenkins reports those contexts: until
+  then its rulesets stay as they are. GitHub cannot restrict who may merge one file, so the `Jenkinsfile`
+  protection is Forgejo's only.
+  [docs/setup.md](docs/setup.md#an-existing-github-installation).
+- **Breaking, GitHub: nobody can move or delete a version tag any more, the owner included.** The `release tags`
+  ruleset loses its administrator bypass. An owner-tagged repository's creation rule moves out of it into a new
+  ruleset, `release tag creation`, which administrators bypass, so the owner still creates those tags. To fix a
+  wrong tag, disable the ruleset first, then run `rules.py` again
+  ([docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
+- **Breaking: the platform runs on rootless Docker only.** `platform.sh`, `agent.sh` and `backup.sh` use the Docker
+  engine of the user who runs them (the socket from `DOCKER_HOST`, else `/run/user/<uid>/docker.sock`) and refuse a
+  rootful one. Run them as `ygg`. Root inside a container is that user on the host, so the socket proxies and the
+  agents run as container root. The `ufw` rules now apply to published ports, which rootful Docker bypassed.
+- **Breaking: the `apps` profile.** The status API, its socket proxy and the console moved from the base platform to
+  profile `apps`. A host that runs environments must have `apps` in `COMPOSE_PROFILES` (`apps,agent`, `apps,jenkins`,
+  ...); `ENVIRONMENTS` without it is refused with that instruction.
+- **Breaking: the secrets directories belong to the service users.** `/etc/yggdrasil` is owned by `ygg`, mode `750`,
+  files `600`, with no `docker` group; other service users have `/etc/yggdrasil-<user>`. `ygg install` never touches a
+  file that is already there, so a host moved from the earlier layout must hand its files to `ygg` (see Upgrading).
+- The Jenkins controller's GitHub App key is mounted into a container whose user is not `ygg`: keep
+  `/etc/yggdrasil/github-app.pem` at mode `644` (setup.md 9.1), not owned by uid 1000.
+- Two example env files changed: `env/agent.env.example` leaves `JENKINS_URL`, `JENKINS_AGENT_NAME` and
+  `YGG_AGENT_WORKDIR` empty on purpose (`https://jenkins.<DOMAIN>/`; `ci` and `/home/ci/agent`, or `release` and
+  `/home/release/agent`); edit the copies with `sudoedit` as the admin, and `env/backup.conf.example` names the
+  Jenkins volume `yggdrasil_jenkins`. `env/platform.env.example` gives the first-account command that finds Forgejo by
+  its labels.
+- [docs/setup.md](docs/setup.md) is organized around the two machines: step 0 plans the roles (one machine with role
+  `apps` running the `jenkins` profile too is still supported), steps 6 and 8 to 11 and Troubleshooting follow the
+  new layout, and [docs/dns.md](docs/dns.md) covers two zones, the proxy and the token's scope. [docs/cli.md](docs/cli.md)
+  documents `check`/`install --role`, `agent` and `backup`.
+- Chimera production releases now require an explicit Jenkins approval. After a successful deploy,
+  Jenkins creates an immutable tag and private draft, dispatches Chimera's release-artifact
+  workflow, and waits for its validated artifacts to publish before completing cleanup. Existing
+  installations must grant the Jenkins GitHub App **Actions: Read and write** before the first such
+  release. Release flows are serialized per application across multibranch jobs.
+- The example's PostgreSQL steps create each heimdall-api database with heimdall-api's
+  `scripts/sql/new-deployment.sql`: an owner role that migrates and a runtime login that owns nothing, with a
+  `pg_hba.conf` line for each, and `HEIMDALL_MIGRATIONS_CONNECTIONSTRING` in the store. A database the API's own
+  login owns is moved with heimdall-api's `separate-owner.sql` runbook.
+- **Breaking: Jenkins never reads a repository's `Jenkinsfile`.** Every job runs `jenkins/Jenkinsfile.default`, kept in
+  Jenkins, which calls the pinned library; a branch pushed by someone who is not the owner would otherwise run its own
+  pipeline code with every credential in reach. The library is loaded at the tag `YGGDRASIL_LIBRARY_VERSION`, and
+  the `scripts/` it calls are cloned at that same tag; only the owner's data, `catalog.yaml` and `stacks/`, still
+  comes from `main`. A `Jenkinsfile` in a repository is ignored (and the Forgejo
+  protection of it on `develop` protects nothing about the pipeline now); `templates/application/` has a
+  `yggdrasil.yml` to start from in place of its `Jenkinsfile`. Every build now starts with a step on the
+  `ci` agent that reads the commit, even for a repository without a `yggdrasil.yml`: an installation needs the CI
+  agent, `CI_AGENT_WORKDIR`/`RELEASE_AGENT_WORKDIR` and `YGGDRASIL_LIBRARY_VERSION` before its next build.
+- The branch policy accepts `renovate/...` into `develop` in place of `dependabot/...` (`scripts/branch-policy.sh`, run
+  by Jenkins; this repository's own workflow still accepts `dependabot/...`).
+- `scripts/github.sh` gains `actions-status`, `wait-ref`, `dispatch`, `run-status` and `download-artifacts`, the
+  GitHub Actions commands the pipeline uses, and `scripts/forge.sh` gains `find-release`, `release-files` and
+  `tag-sha`. `catalog.py` gains `public-host` and `public-path`.
+- `platform/build-agent.yml` passes `YGG_DOCKER_SOCKET` (the host path of the user's socket) to the agent, and
+  `platform/compose.yml` passes `YGG_DOMAIN` to the deploy agent: agents started by an earlier release need
+  `ygg agent up --user ci` (and `release`), and `scripts/platform.sh up` on each apps machine, again.
+- [docs/setup.md](docs/setup.md) adds 9.7 (the Forgejo accounts and tokens), 9.8 (the CI and release agents), 9.9
+  (Renovate) and a reference section, [The pipeline](docs/setup.md#the-pipeline); the credentials table of
+  [docs/hosts.md](docs/hosts.md#6-credentials) lists `forge-read`, `forge-write`, `forge-webhook`, `github-app`,
+  `github-read` and `nuget-api-key` and where each lives.
+
+### Removed
+
+- `DOCKER_GID` and the `docker` group setup of the platform: nothing reads them. Delete `DOCKER_GID` from
+  `platform.env`.
+- The machine's own Docker engine on a `dev` or `apps` machine: its units are disabled and masked, and the `docker`
+  group is emptied.
+
+### Upgrading an existing GitHub installation to the pipeline
+
+**First, before this reaches your fork's `main`:** pin the running controller's library to your current release
+tag (**Manage Jenkins → System → Global Trusted Pipeline Libraries → `yggdrasil` → Default version**, e.g.
+`v0.7.4`), and keep the controller host's checkout at that release until you upgrade. A controller from before
+this release loads the library at `main`, so it would run the new library at once, before `scripts/platform.sh up`
+(builds would wait for a `ci` agent that does not exist; the HTTP Request plugin is missing). The old library
+keeps working pinned: it still clones `scripts/` from `main`, and the `github.sh` commands it calls (`wait-checks`,
+`set-status`, `merge-pr`, `release`, `publish-release`, `delete-branch`) and `deploy.sh <environment> <application>
+<checkout> <version>` take the same arguments as before. **Then, before relying on it on GitHub:** run a scratch
+GitHub repository with `forge.type: github` through a pull request, its checks and a release, end to end; the
+GitHub paths have been tested against fakes only ([docs/setup.md](docs/setup.md#an-existing-github-installation)).
+
+Nothing in a repository has to change for it to keep deploying and releasing. On the dev (controller) host: set
+`YGGDRASIL_LIBRARY_VERSION` (a release tag of your fork that has this pipeline), `CI_AGENT_WORKDIR` and
+`RELEASE_AGENT_WORKDIR` in `platform.env`, fill in the `ci` and `release` agents' `agent.env` and start them
+(`ygg agent up --user ci`, `--user release`), `scripts/platform.sh up`. Then adopt `yggdrasil.yml` one repository at
+a time: move each Actions job's steps into `ci/` scripts, list them as `checks` in `yggdrasil.yml`, name them in the
+catalog's `checks` and keep the Windows and macOS jobs in `actionsChecks`, and, now that Jenkins reports them,
+run `scripts/rules.py` for that repository. Step by step: [docs/setup.md](docs/setup.md#an-existing-github-installation).
+
+**Version tags.** The first `rules.py` run for a repository removes the administrator bypass from its `release
+tags` ruleset (updated in place, by name): from then on you can no longer move or delete a version tag on GitHub
+without disabling the ruleset first. For an owner-tagged repository it also creates the ruleset `release tag
+creation` (only administrators create its tags), and `release tags` loses the creation rule it had.
+
+### Upgrading: start tag-check's record
+
+Right after `scripts/platform.sh up` has created the `tag-check` job, run it once by hand (**Build with
+Parameters**, `FORGET` empty). It remembers only the releases it has seen published, and a deleted tag's release
+turns into a draft it cannot see, so the sooner its first run, the fewer deletions can slip by
+([docs/setup.md](docs/setup.md#version-tags-tag-check-and-repairs)).
+
+### Upgrading a host from rootful Docker
+
+For a VPS set up with the earlier guide, on the same server: stop the platform and applications with the old checkout,
+back up the volumes, pull and run `ygg install --role apps`, hand `/etc/yggdrasil` to `ygg`, restore the volumes into
+`ygg`'s engine, add `apps` to `COMPOSE_PROFILES`, start. Step by step:
+[docs/hosts.md](docs/hosts.md#9-upgrading-a-host-from-rootful-docker). Plan for downtime.
+
+A last-good copy saved by an earlier release lacks `traefik.yml` (Traefik's configuration is now a rendered file),
+so `platform.sh config --last-good` and `logs --last-good` stop on it: run `platform.sh up` once from the
+variables store after upgrading, which saves a complete copy.
+
 ## [0.7.5] - 2026-10-20
 
 ### Changed

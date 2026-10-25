@@ -22,7 +22,7 @@ GROUP_SUMMARIES = {
     "Environments": "start, stop and list this host's environments",
     "Variables and secrets": "any scope of the variables store, and every vars command",
     "Platform": "the platform stack: up, down, ps, logs, config",
-    "Host": "check and install the tools, and the ygg command",
+    "Host": "check and install the tools and the machine's role; build agents, backups, the ygg command",
     "Catalog": "what catalog.yaml declares",
     "Help and version": "the commands, the version, tab completion",
 }
@@ -30,6 +30,7 @@ GROUP_SUMMARIES = {
 MENU = {("status",): "Status", ("config",): "Applications", ("deploy",): "Applications",
         ("add",): "Applications", ("env",): "Environments", ("vars",): "Variables and secrets",
         ("platform",): "Platform", ("check",): "Host", ("install",): "Host", ("self-install",): "Host",
+        ("agent",): "Host", ("backup",): "Host",
         ("catalog",): "Catalog", ("version",): "Help and version", ("help",): "Help and version",
         ("completion",): "Help and version"}
 
@@ -37,7 +38,7 @@ MENU = {("status",): "Status", ("config",): "Applications", ("deploy",): "Applic
 SOURCE_BY_DEST = {"scope": "scope", "key": "key", "keys": "key", "assignments": "assignment",
                   "application": "application", "environment": "environment", "id": "change",
                   "dir": "directory", "file": "file", "service": "service", "app_dir": "directory",
-                  "version": "version", "limit": "number", "topic": "command"}
+                  "version": "version", "limit": "number", "topic": "command", "domain": "domain"}
 SOURCE_OVERRIDES = {
     ("config", "application"): "host-application",
     ("config", "environment"): "app-host-environment",
@@ -49,7 +50,9 @@ SOURCE_OVERRIDES = {
     ("vars", "check", "environment"): "app-environment",
     ("catalog", "get", "environment"): "app-environment",
     ("catalog", "get", "option"): "app-option",
+    ("catalog", "public-host", "environment"): "app-environment",
     ("catalog", "environment", "option"): "environment-option",
+    ("catalog", "repository-entry", "entry"): "repository",
 }
 
 FLAG_ACTIONS = (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse._StoreConstAction)

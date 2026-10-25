@@ -1,0 +1,19 @@
+# Configuration as Code for the NuGet API key (see casc.yaml): the credential the owner-tagged libraries'
+# tag builds push their packages with. Optional, so a file of its own (Configuration as Code has no
+# conditionals): scripts/platform.sh adds it to YGG_CASC_CONFIG only when NUGET_API_KEY_FILE is set. Without
+# it a library's tag build packs and then fails at the push, naming the missing credential.
+#
+# The id is fixed (yggdrasil.yml's publish has no credentials field): the library binds it only on the
+# release agent, around scripts/nuget-push.sh, where no repository code runs, and never lets a check or a
+# release build bind it whatever the catalog's `credentials` say. Write the file without a trailing
+# newline (printf '%s'), see env/platform.env.example.
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "nuget-api-key"
+              description: "nuget.org API key (the libraries' packages; bound only to push them)"
+              secret: "${readFile:/run/secrets/nuget-api-key}"

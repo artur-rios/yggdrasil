@@ -98,7 +98,8 @@ python3 scripts/catalog.py validate
 ```
 
 CI also validates `platform/compose.yml` and every stack in `stacks/` with `docker compose config`, using dummy values
-for each variable they require.
+for each variable they require. Traefik's configuration is rendered first, as `platform.sh` does
+(`scripts/traefik_config.py`), because `compose.yml` requires that file.
 
 `scripts/test_socket_proxies.py` checks the Docker socket proxies' allowlists in `platform/compose.yml`. With Docker,
 CI also runs the proxies, then Traefik and Alloy through them, against a fake Docker API; locally:
@@ -110,6 +111,70 @@ YGG_DOCKER_TESTS=1 python3 -m unittest scripts.test_socket_proxies -v
 It creates an internal network and a few `ygg-sp-test-*` containers, removes them, and never mounts the real Docker
 socket. When Traefik or Alloy is upgraded, run it: a request the new version makes that its proxy refuses fails it.
 
+`scripts/test_forge.py` and `scripts/test_rules.py` check `scripts/forge.sh` and `scripts/rules.py` against fake
+servers. `scripts/test_forgejo_live.py` checks that the fakes are right, against a real Forgejo: it starts the
+image `platform/compose.yml` pins in one `ygg-forgejo-test-*` container (SQLite, a free local port), makes the
+users and repositories, applies the rules and tries them (a developer cannot merge a `Jenkinsfile` change, push
+`release/*` or create, move or delete a `v*` tag; a `rules: basic` repository refuses force pushes and deletions;
+the owner can still merge past failing checks). One test pins a known gap instead: the Jenkins user, which creates
+the `v*` tags, can also move and delete them (docs/setup.md, step 12). With Docker, bash, jq and git:
+
+```bash
+YGG_FORGEJO_TESTS=1 python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
+```
+
+It takes about 20 seconds and removes its container at the end, also when it fails. CI runs it (job `platform`).
+When Forgejo is upgraded, run it: a changed answer of the API fails it.
+
+### The pipeline
+
+A repository that takes part in the pipeline writes a `yggdrasil.yml` ([docs/catalog.md](docs/catalog.md#repository-pipeline-file))
+and, usually, a `ci/` folder of scripts for its `run` lines, so that a check is the same thing in Jenkins and on
+your machine. The pieces of the pipeline in this repository are tested with the platform suite above:
+`test_pipeline_config.py` (the file and the plan of the checks), `test_pipeline_library.py` (static, and it pins
+the library's security rules: which agent may bind which credential, that no value reaches a shell through
+Groovy interpolation), `test_jenkins_config.py` (the Configuration as Code files, the Job DSL, `agents.groovy`),
+`test_branch_policy.py`, `test_run_check.py`, `test_publish_release.py`, `test_release_notes.py`,
+`test_nuget_push.py` and `test_renovate.py`.
+
+To run what Jenkins runs, from a checkout of the repository in question and of this one:
+
+```bash
+# The file read and checked against the catalog (YGG_CATALOG points it at another catalog.yaml); exits 1 on errors
+python3 scripts/pipeline_config.py describe <job-id> <repository-checkout>
+# One check, in its image, as the CI agent runs it (the workspace is an absolute path)
+bash scripts/run-check.sh unit mcr.microsoft.com/dotnet/sdk:10.0 "$PWD" -- sh -c 'ci/test.sh'
+# The branching model, on a branch of the checkout (needs origin/develop, origin/main and the tags fetched)
+bash scripts/branch-policy.sh feature/x develop "$(git rev-parse HEAD)"
+```
+
+`run-check.sh` runs the command as root in the container, as in Jenkins, so files it writes into the checkout
+may belong to root. Add `--docker` (and `YGG_DOCKER_SOCKET`, the host path of your engine's socket) for a check
+that starts containers.
+
+The library, `jenkins/library/vars/yggdrasilPipeline.groovy`, runs on Jenkins only; its header describes the
+flow it implements. A change to it reaches an installation by a release of this repository and a new
+`YGGDRASIL_LIBRARY_VERSION` ([docs/setup.md](docs/setup.md#how-a-build-runs)).
+
+### Live suites
+
+Two suites run the real thing in containers. Both are skipped unless their variable is set, need Docker, and are
+not part of the platform suite:
+
+```bash
+YGG_FORGEJO_TESTS=1 python3 -m unittest discover -s scripts -p test_forgejo_live.py -v   # forge.sh and rules.py against Forgejo, ~20 s (above)
+YGG_JENKINS_TESTS=1 python3 -m unittest discover -s scripts -p test_jenkins_live.py -v   # the pipeline against Jenkins and Forgejo, minutes
+```
+
+`test_jenkins_live.py` builds the Jenkins controller and the build agent from `platform/jenkins`, starts Forgejo,
+the controller, the `ci`, `release` and deploy agents and a local NuGet feed, and runs pull requests, pushes,
+releases (with the skip and `release-resume`), owner tags and a NuGet push through the library. It needs the
+engine to see this machine's paths as they are (a native Linux engine, or WSL's own, not a VM that translates
+them for its CLI) and takes many minutes: CI runs it as the job `pipeline-live`, only when the workflow is started
+by hand (`workflow_dispatch`). GitHub is replaced by a test double there, and the engine is not rootless: **the
+GitHub paths and rootless Docker are not proven by it**. When Jenkins, a plugin or the Forgejo image is
+upgraded, run it.
+
 ## Branching and pull requests
 
 This repository follows the same branching model it enforces on application repositories (see
@@ -119,15 +184,16 @@ new work; `main` only holds released code.
 The **Branch Policy** workflow (`.github/workflows/branch-policy.yml`, check `branch-policy`) runs on every pull
 request into `develop` or `main`:
 
-- Into `develop` go only `feature/<name>` and `fix/<name>` branches (`dependabot/...` is also accepted) cut from
-  `develop`. `<name>` starts with a lowercase letter or digit, then lowercase letters, digits, `.`, `_` or `-`. A branch
+- Into `develop` go only `feature/<name>` and `fix/<name>` branches (`dependabot/...` is also accepted by this
+  repository's workflow; the branch policy Jenkins runs for repositories with a `yggdrasil.yml`,
+  `scripts/branch-policy.sh`, accepts `renovate/...` instead) cut from `develop`. `<name>` starts with a lowercase letter or digit, then lowercase letters, digits, `.`, `_` or `-`. A branch
   that contains a release merge commit from `main` was cut from `main` and is rejected.
 - Into `main` go only `release/<major>.<minor>.<patch>` branches that are snapshots of `develop`: every commit on them
   is already on `develop`, and the version has no `v<version>` tag yet. A release carries no changes of its own; a fix
   goes to `develop` through a `fix/` branch and a new release is cut.
 
-Repository rulesets, the same ones [`github/rulesets.py`](github/rulesets.py) applies to application repositories,
-hold this in place:
+Repository rulesets, the same ones [`scripts/rules.py`](scripts/rules.py) applies to application repositories on
+GitHub (on Forgejo it applies equivalent branch and tag protections), hold this in place:
 
 | Ruleset | Rules |
 |---|---|
@@ -135,8 +201,8 @@ hold this in place:
 | `main` | The same, merge commit only. No `deploy/<environment>` status: Jenkins does not deploy or merge this repository |
 | `release tags` | `v*` tags can't be created, moved or deleted, except by the repository owner |
 
-The owner (repository admin role) can bypass all three, for emergencies. `develop` is the default branch, and head
-branches are deleted when their pull request merges.
+The owner (repository admin role) can bypass all three, for emergencies (on Forgejo, with a forced merge).
+`develop` is the default branch, and head branches are deleted when their pull request merges.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) with a lowercase subject, e.g.
 `feat: add a host helper menu for ubuntu hosts` or `fix: accept a release branch github already deleted`.
@@ -154,7 +220,7 @@ because a host runs a checkout of one release of all of it. For yggdrasil, the p
   `catalog.yaml` field removed, renamed or given a new meaning; a new required variable in `platform.env`, `acme.env`
   or an application env file; a stack file convention that existing `stacks/` files no longer meet; a change to the
   [status API contract](docs/status-api.md) that a console of the previous release can't read; a change application
-  repositories must follow (their `Jenkinsfile`, Branch Policy or rules, `templates/application/`); data in the
+  repositories must follow (their `yggdrasil.yml`, Branch Policy or rules, `templates/application/`); data in the
   platform's volumes that has to be migrated.
 - **Minor**: something new that an existing installation can ignore: an optional catalog field or variable, a
   command, a console feature, an added status API field.

@@ -72,6 +72,26 @@ class ParityTests(unittest.TestCase):
                 continue
             self.assertTrue(any(c.path[:len(path)] == path for c in tree.commands_list()), operation)
 
+    def test_the_roles_ygg_offers_are_those_machine_sh_knows(self):
+        text = (SCRIPTS / "machine.sh").read_text()
+        known = re.search(r"^MACHINE_ROLES=\((.*)\)$", text, re.M)[1].split()
+        for path in (("check",), ("install",)):
+            role = next(a for a in tree.find(path).args if a.dest == "role")
+            self.assertEqual(sorted(role.choices), sorted(known), path)
+
+    def test_the_agent_users_and_actions_are_those_agent_sh_and_backup_sh_take(self):
+        for action in ("up", "down", "ps", "logs"):
+            user = next(a for a in tree.find(("agent", action)).args if a.dest == "user")
+            self.assertEqual(user.choices, ("ci", "release"), action)
+        self.assertIn("up | down | ps | logs", (SCRIPTS / "agent.sh").read_text())
+        self.assertEqual(sorted(c.path[1] for c in tree.commands_list() if c.path[:1] == ("backup",)),
+                         ["list", "run"])
+        self.assertIn("run | list", (SCRIPTS / "backup.sh").read_text())
+
+    def test_machine_commands_sit_in_the_host_menu(self):
+        for path in (("check",), ("install",), ("agent", "up"), ("backup", "run")):
+            self.assertEqual(tree.find(path).menu, "Host", path)
+
     def test_vars_py_secret_name_has_the_same_pattern_as_the_script_its_comment_names(self):
         text = (SCRIPTS / "vars.py").read_text()
         named = re.search(r"SECRET_NAME in scripts/(\S+?):", text)
@@ -238,6 +258,10 @@ class SourceTests(StoreFixture):
     def test_options_of_an_environment_and_of_an_application(self):
         self.assertIn("onDemand", self.values("environment-option", environment="development"))
         self.assertIn("mode", self.values("app-option", application="heimdall-api", environment="development"))
+
+    def test_repositories_are_the_catalog_s_non_application_ones(self):
+        self.ctx._catalog = {**self.ctx.catalog(), "repositories": [{"id": "dotnet-util"}, {"id": "reveal.js"}]}
+        self.assertEqual(self.values("repository"), ["dotnet-util", "reveal.js"])
 
     def test_commands_are_the_tree_s(self):
         self.assertIn("vars get", self.values("command"))

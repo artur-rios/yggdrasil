@@ -1,5 +1,15 @@
 # Example: Docker Desktop and one VPS
 
+> **Read [hosts.md](../../hosts.md) and [setup.md](../../setup.md) first.** This example was written
+> for a single VPS before hosts had roles and before the platform ran on rootless Docker. The parts
+> that name the VPS's setup are updated to the current model (the one-machine layout: role `apps`,
+> profiles `apps,jenkins` then `apps,jenkins,agent`, `ygg` as the only service user, rootless Docker,
+> `750`/`600` env files owned by `ygg`). The parts that still predate it: the **PostgreSQL on the host**
+> section (it assumes the rootful engine's `docker0` bridge; under rootless Docker containers reach
+> the host through the engine's own network, which later plans cover) and the **Windows** `local`
+> environment, which is unchanged because Docker Desktop is not a yggdrasil host. The two-machine
+> layout (a dev machine with Forgejo and Jenkins, an apps machine) is in hosts.md.
+
 A complete installation on two machines: a Windows workstation and one Ubuntu VPS. It is the
 setup this repository's [`catalog.yaml`](../../../catalog.yaml) describes: two systems, heimdall and
 fortuna, each an ASP.NET Core API with a Flutter web UI, and four environments, three of them on
@@ -10,7 +20,7 @@ the VPS.
 | `local` | Windows workstation, **Docker Desktop** | `ports` | `manual` | While you deploy it | `http://localhost:<port>` |
 | `development` | The **VPS** | `proxy` | `branch` (`develop`) | On demand | `https://<host>-dev.example.com` |
 | `homologation` | The **VPS** | `proxy` | `branch` (`release/*`) | On demand | `https://<host>-hml.example.com` |
-| `production` | The **VPS**, which also runs the Jenkins controller | `proxy` | `release` | Always | `https://<host>.example.com` |
+| `production` | The **VPS**, which also runs the Jenkins controller (the one-machine layout, [setup.md step 0](../../setup.md#0-plan-the-installation)) | `proxy` | `release` | Always | `https://<host>.example.com` |
 
 ```mermaid
 flowchart TB
@@ -62,7 +72,7 @@ environments:
     agent: vps
 ```
 
-- The three VPS environments share one Docker engine, one platform stack, one `DOMAIN` and one
+- The three VPS environments share one rootless Docker engine (`ygg`'s), one platform stack, one `DOMAIN` and one
   Jenkins agent, `vps`. Each application runs in each of them as its own Compose project
   (`heimdall-api-development`, `heimdall-api-homologation`, `heimdall-api-production`), so they
   never replace each other's containers ([catalog.md](../../catalog.md#several-environments-on-one-host)).
@@ -84,7 +94,7 @@ API token with **Zone → Zone → Read** and **Zone → DNS → Edit** on the z
 
 | Record | Points at | Proxy |
 |---|---|---|
-| `*.example.com` (name `*`) | The VPS's public IP | Either: **DNS only** to start, **Proxied** once the real certificate works ([dns.md A7](../../dns.md#a7-optional-the-cloudflare-proxy)) |
+| `*.example.com` (name `*`) | The VPS's public IP | Either: **DNS only** to start, **Proxied** once the real certificate works ([dns.md A7](../../dns.md#a7-optional-the-cloudflare-proxy)), with `CLOUDFLARE_PROXIED=true` in `platform.env` from then on |
 
 `heimdall-api-dev`, `heimdall-hml`, `fortuna`, `yggdrasil`, `jenkins` ... are all one label under
 `example.com`, so the record and Traefik's one `*.example.com` certificate cover them, and adding
@@ -93,16 +103,21 @@ it is reached at `localhost`.
 
 ## The VPS
 
-Follow [setup.md](../../setup.md) steps 6 to 9, then 11: the VPS is the controller host and the
-only host. The lines of `platform.env` this example fixes, on top of every variable of
-[setup.md 9.2](../../setup.md#92-the-env-files-first-pass):
+Follow [setup.md](../../setup.md) steps 6 and 7, prepare the VPS with `ygg install --role apps`
+([step 8](../../setup.md#8-prepare-each-machine)), then 9.1 to 9.5 (the controller's steps, which on
+one machine also run the environments) and 11: the VPS is the controller host and the only host.
+Everything is done as `ygg`. The lines of `platform.env` this example fixes, on top of every
+variable of [setup.md 9.2](../../setup.md#92-the-env-files-first-pass):
 
 ```
 ENVIRONMENTS=development,homologation,production
 DOMAIN=example.com
+# true once the proxy is on (the DNS table above)
+CLOUDFLARE_PROXIED=false
 JENKINS_URL=https://jenkins.example.com/
-# jenkins alone at step 9.2, jenkins,agent from step 9.5
-COMPOSE_PROFILES=jenkins,agent
+# apps,jenkins at step 9.2: `apps` is required, ENVIRONMENTS is refused without it.
+# apps,jenkins,agent from step 9.5
+COMPOSE_PROFILES=apps,jenkins
 JENKINS_AGENT_NAME=vps
 JENKINS_AGENT_URL=http://jenkins:8080/
 ```
@@ -120,21 +135,47 @@ production's. Stop them when you are done (below).
 
 ### PostgreSQL
 
+> **Predates rootless Docker.** The network steps below assume the rootful engine, whose `docker0`
+> bridge (`172.17.0.1`) is on the host. Under the rootless engine of `ygg` there is no such bridge:
+> containers reach the host through the engine's slirp4netns network, and how an application reaches a
+> PostgreSQL on the host that way is not documented yet. The databases, roles and `pg_hba.conf`
+> lines are still right; check the addresses before you copy the network steps, or point `DB_HOST`
+> at a PostgreSQL reachable over the network. The `sudo` commands are the admin's: `ygg` has no `sudo`.
+
 PostgreSQL runs on the VPS itself, one instance for the three environments, with **a database and a
 login per environment and application**, so development and homologation can never reach
 production's data. The env file templates of the API repositories name them:
 
 | Application | `development` | `homologation` | `production` |
 |---|---|---|---|
-| heimdall-api | `heimdall_development`, login `heimdall_development_svc` | `heimdall_homologation`, login `heimdall_homologation_svc` | `heimdall`, login `heimdall_svc` |
+| heimdall-api | `heimdall_development`, owner `heimdall_development_owner`, login `heimdall_development_svc` | `heimdall_homologation`, owner `heimdall_homologation_owner`, login `heimdall_homologation_svc` | `heimdall`, owner `heimdall_owner`, login `heimdall_svc` |
 | fortuna-api | `fortuna_development`, login `fortuna_development` | `fortuna_homologation`, login `fortuna_homologation` | `fortuna`, login `fortuna` |
 
-Production keeps the database it has: create the others. Each `createuser` asks for the login's
-password, which goes in that environment's env file (`DB_PASSWORD`):
+Production keeps the database it has: create the others. heimdall-api's database belongs to an owner
+role that applies the migrations, and the API runs as a login that owns nothing, so it cannot switch
+off the audit trail's triggers (heimdall-api's Threat Model, TH-18). Its repository's
+`scripts/sql/new-deployment.sql` creates both and the database; it holds no password, so each is set
+after it. The login's password goes in that environment's env file (`DB_PASSWORD`), the owner's in
+`HEIMDALL_MIGRATIONS_CONNECTIONSTRING`:
 
 ```bash
-sudo -u postgres createuser --pwprompt heimdall_development_svc && sudo -u postgres createdb --owner heimdall_development_svc heimdall_development
-sudo -u postgres createuser --pwprompt heimdall_homologation_svc && sudo -u postgres createdb --owner heimdall_homologation_svc heimdall_homologation
+cd ~/yggdrasil-apps/heimdall-api
+sudo -u postgres psql -X -v owner=heimdall_development_owner -v runtime=heimdall_development_svc \
+    -v database=heimdall_development -f scripts/sql/new-deployment.sql
+sudo -u postgres psql -X -v owner=heimdall_homologation_owner -v runtime=heimdall_homologation_svc \
+    -v database=heimdall_homologation -f scripts/sql/new-deployment.sql
+for role in heimdall_development_owner heimdall_development_svc heimdall_homologation_owner heimdall_homologation_svc; do
+    sudo -u postgres psql -c "\\password $role"
+done
+```
+
+Run each `new-deployment.sql` line once more after that environment's first deploy has created the
+tables: the second run takes `DELETE` on the audit trail away from the login. A heimdall-api database
+that belongs to the API's own login, as `createdb --owner` made it before, is moved to the two roles
+with `scripts/sql/separate-owner.sql`: heimdall-api's operations guide, "Separating the migration
+owner from the runtime login", has the order. Fortuna's databases keep one login each:
+
+```bash
 sudo -u postgres createuser --pwprompt fortuna_development && sudo -u postgres createdb --owner fortuna_development fortuna_development
 sudo -u postgres createuser --pwprompt fortuna_homologation && sudo -u postgres createdb --owner fortuna_homologation fortuna_homologation
 ```
@@ -147,7 +188,9 @@ the host's Docker bridge (`extra_hosts: host-gateway`). By default PostgreSQL on
    `ip -4 addr show docker0`).
 2. `pg_hba.conf`: one line per database and its login, from the Compose networks, e.g.
    `host heimdall_development heimdall_development_svc 172.16.0.0/12 scram-sha-256`, so each
-   login reaches its own database and no other.
+   login reaches its own database and no other. heimdall-api's owner role gets its own line, since
+   the container's migrations connect as it:
+   `host heimdall_development heimdall_development_owner 172.16.0.0/12 scram-sha-256`.
 3. `sudo ufw allow from 172.16.0.0/12 to any port 5432 proto tcp`, then
    `sudo systemctl restart postgresql`.
 4. Check from a container:
@@ -156,18 +199,19 @@ the host's Docker bridge (`extra_hosts: host-gateway`). By default PostgreSQL on
 
 ### The env files
 
-Twelve files, one per application and environment, in `/etc/yggdrasil/<environment>/` on the VPS
-([setup.md step 11](../../setup.md#11-application-env-files)). For the APIs, start from the
+Twelve files, one per application and environment, in `/etc/yggdrasil/<environment>/` on the VPS,
+owned by `ygg` ([setup.md step 11](../../setup.md#11-application-env-files)). For the APIs, start from the
 repository's own `docker/<environment>.env.example`, which documents every variable and has that
 environment's values; the templates in [`env/`](env) only list what yggdrasil relies on. The web
 UIs have no template of their own: [`env/`](env) has their whole files.
 
 ```bash
-install -d -m 2750 /etc/yggdrasil/development /etc/yggdrasil/homologation /etc/yggdrasil/production
+# as ygg, who owns /etc/yggdrasil
+install -d -m 750 /etc/yggdrasil/development /etc/yggdrasil/homologation /etc/yggdrasil/production
 cp ~/yggdrasil-apps/heimdall-api/docker/development.env.example /etc/yggdrasil/development/heimdall-api.env
 cp /opt/yggdrasil/docs/examples/docker-desktop-and-vps/env/development/heimdall-ui.env.example /etc/yggdrasil/development/heimdall-ui.env
 # ... and so on for each application and environment, then:
-chmod 640 /etc/yggdrasil/*/*.env
+chmod 600 /etc/yggdrasil/*/*.env
 ```
 
 `ygg config <application> <environment>` opens one of them, and redeploys after a change
@@ -182,7 +226,7 @@ ygg vars init                  # prints the key: store it in your password manag
 e=docs/examples/docker-desktop-and-vps/env
 ygg vars import heimdall-api@development ~/yggdrasil-apps/heimdall-api/docker/development.env.example
 ygg vars import heimdall-ui@development  $e/development/heimdall-ui.env.example
-ygg vars edit heimdall-api@development    # fill in DB_PASSWORD and the secrets
+ygg vars edit heimdall-api@development    # fill in DB_PASSWORD, HEIMDALL_MIGRATIONS_CONNECTIONSTRING and the secrets
 # ... and so on for each application and environment
 ```
 

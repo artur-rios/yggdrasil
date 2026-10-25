@@ -1,0 +1,65 @@
+# Configuration as Code for forge.type forgejo (see casc.yaml): the Gitea plugin's server, the
+# credentials of the forge, and the pinned yggdrasil library retrieved from Forgejo.
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # What may change the forge: statuses, merges, tags, releases and uploads. Only the agent that
+          # forge.publishAgent names ever binds it; the ci and release agents never hold it. The token
+          # file is written without a trailing newline (printf %s), see env/platform.env.example.
+          - usernamePassword:
+              scope: GLOBAL
+              id: "forge-write"
+              description: "Forgejo, write access (forge.jenkinsUser)"
+              username: "${FORGE_JENKINS_USER}"
+              password: "${readFile:/run/secrets/forge-write-token}"
+          # Read-only: repository scans and every checkout, so a build cannot push.
+          - usernamePassword:
+              scope: GLOBAL
+              id: "forge-read"
+              description: "Forgejo, read-only (the jenkins-ci user)"
+              username: "jenkins-ci"
+              password: "${readFile:/run/secrets/forge-read-token}"
+          # The secret rules.py puts on the webhooks it creates. The Gitea plugin does not verify a
+          # signature (it has no field for the secret), so nothing in Jenkins reads this yet; it is
+          # kept here as the one place the secret lives for a pipeline step that does.
+          - string:
+              scope: GLOBAL
+              id: "forge-webhook"
+              description: "Forgejo webhook secret"
+              secret: "${readFile:/run/secrets/forge-webhook-secret}"
+
+unclassified:
+  giteaServers:
+    servers:
+      - displayName: "Forgejo"
+        serverUrl: "${FORGE_URL}"
+        # rules.py creates the webhooks, so Jenkins manages none (and needs no write access to do it).
+        # The plugin keeps a credential on the server only for managing hooks, so none is given here;
+        # the jobs' sources carry forge-read.
+        manageHooks: false
+
+  globalLibraries:
+    libraries:
+      - name: "yggdrasil"
+        # A yggdrasil release tag (YGGDRASIL_LIBRARY_VERSION is required with the jenkins profile):
+        # what runs in every pipeline is a version somebody released, not whatever main is today.
+        defaultVersion: "${YGGDRASIL_LIBRARY_VERSION}"
+        implicit: false
+        allowVersionOverride: false
+        includeInChangesets: false
+        retriever:
+          modernSCM:
+            libraryPath: "jenkins/library/"
+            scm:
+              # The git plugin's source, not the Gitea plugin's: the library is only ever a clone at a
+              # tag, and the Gitea source (plugin 286.v0740a_413c1eb_) finds the tag but then fetches
+              # it as refs/heads/<tag>, so no version ever loaded (proved by
+              # scripts/test_jenkins_live.py). Read-only, as the jobs' sources are.
+              git:
+                remote: "${FORGE_URL}/${GITHUB_OWNER}/${YGGDRASIL_REPOSITORY}.git"
+                credentialsId: "forge-read"
+                traits:
+                  # A version is a tag: without it the library is not found at v1.0.0.
+                  - gitTagDiscovery: {}

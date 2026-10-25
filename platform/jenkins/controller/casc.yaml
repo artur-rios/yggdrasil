@@ -1,11 +1,24 @@
-# Jenkins Configuration as Code. ${VAR} is read from the controller's environment (platform/compose.yml)
-# and ${readFile:...} from a mounted file. Reapplied on every start; Manage Jenkins > Configuration as
-# Code > Reload applies an edit without a restart.
+# Jenkins Configuration as Code, the part every installation shares. ${VAR} is read from the
+# controller's environment (platform/compose.yml) and ${readFile:...} from a mounted file. Reapplied on
+# every start; Manage Jenkins > Configuration as Code > Reload applies an edit without a restart.
+#
+# What depends on the git server is in the files next to this one, and scripts/platform.sh picks which
+# of them the controller reads (YGG_CASC_CONFIG, from catalog.yaml's forge and mirror): this file plus
+#
+#   casc.forgejo.yaml     forge.type forgejo: the Gitea server, the forge-* credentials, the library
+#                         retrieved from Forgejo
+#   casc.github.yaml      GitHub (no forge block): the library retrieved from GitHub
+#   casc.github-app.yaml  the github-app credential: on GitHub, and on Forgejo only with a `mirror`
+#   casc.github-read.yaml the optional read-only GitHub App (github-read), on GitHub
+#   casc.nuget.yaml       the optional NuGet API key (nuget-api-key), when NUGET_API_KEY_FILE is set
+#
+# Configuration as Code merges them; no scalar is defined in two of them.
 
 jenkins:
   systemMessage: "yggdrasil deploy manager. Configured as code: edit platform/jenkins/controller/casc.yaml and catalog.yaml, not this UI."
   # The controller never builds anything; every stage runs on the agent of the environment it
-  # deploys to (one agent per host: environments that share a host share its agent).
+  # deploys to (one agent per host: environments that share a host share its agent), or on the ci
+  # and release agents.
   numExecutors: 0
   mode: EXCLUSIVE
   securityRealm:
@@ -18,101 +31,161 @@ jenkins:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: false
   # Agents are not listed here: init.groovy.d/agents.groovy creates one per distinct `agent` of the
-  # environments in catalog.yaml (one per host) on every start.
+  # environments in catalog.yaml (one per host), and the ci and release agents, on every start.
 
 security:
   globalJobDslSecurityConfiguration:
     useScriptSecurity: false
 
-credentials:
-  system:
-    domainCredentials:
-      - credentials:
-          # One GitHub App gives Jenkins everything: repository scans, webhooks, checkout, and the
-          # installation token the pipeline uses to read checks, set the deploy status, merge, tag
-          # and delete branches. The key must be PKCS#8 (see the README).
-          - gitHubApp:
-              id: "github-app"
-              description: "yggdrasil GitHub App"
-              appID: "${GITHUB_APP_ID}"
-              owner: "${GITHUB_OWNER}"
-              privateKey: "${readFile:/run/secrets/github-app.pem}"
+# The credentials are in the files of the git server (see the top): casc.forgejo.yaml,
+# casc.github-app.yaml.
 
 unclassified:
   location:
     url: "${JENKINS_URL}"
   timestamper:
     allPipelines: true
-  globalLibraries:
-    libraries:
-      - name: "yggdrasil"
-        defaultVersion: "main"
-        implicit: false
-        allowVersionOverride: false
-        includeInChangesets: false
-        retriever:
-          modernSCM:
-            libraryPath: "jenkins/library/"
-            scm:
-              github:
-                repoOwner: "${GITHUB_OWNER}"
-                repository: "${YGGDRASIL_REPOSITORY}"
-                credentialsId: "github-app"
-                traits:
-                  - gitHubBranchDiscovery:
-                      strategyId: 1
+  # The one Jenkinsfile of the installation. Jenkins never reads a repository's own Jenkinsfile: a
+  # branch pushed by someone who is not the owner would run arbitrary pipeline code with every
+  # credential in reach. Every job (see the Job DSL below) runs this script instead, which only calls
+  # the pinned yggdrasil library. The job's factory reads any type of config file the same way;
+  # `custom` is the one whose symbol Configuration as Code knows.
+  globalConfigFiles:
+    configs:
+      - custom:
+          id: "yggdrasil-default"
+          name: "yggdrasil Jenkinsfile"
+          comment: "Run by every job instead of the repository's Jenkinsfile (jenkins/Jenkinsfile.default)"
+          content: "${readFile:/etc/jenkins/Jenkinsfile.default}"
 
 jobs:
   - script: |
       // One multibranch job per application in catalog.yaml (mounted read-only from this
-      // repository), so adding an application to the catalog is all it takes to get its job: the
-      // next restart or Configuration as Code reload creates it. Platform components (kind
-      // platform) are not deployed by Jenkins and get none.
+      // repository) and per `repositories` entry (a library, a CI-only repository, yggdrasil
+      // itself), so adding either to the catalog is all it takes to get its job: the next restart or
+      // Configuration as Code reload creates it. Platform components (kind platform) are not
+      // deployed by Jenkins and get none.
       //
-      // Each job only sees the heads that can deploy something:
-      //   main, and every `branches` glob of an environment with trigger: branch (release/*, say)
-      //   PR-*  -> pull requests; the pipeline acts only on release/x.y.z -> main and is a no-op for
-      //            the rest (pull requests into develop show up here too)
+      // The branch source follows `forge.type`, read from the catalog like the applications are, with
+      // catalog.py's defaults: no forge block means GitHub. Forgejo is read through the Gitea plugin
+      // with the read-only forge-read credential, GitHub through the GitHub App.
+      //
+      // Every job runs the script kept in Jenkins (Config File Provider, id yggdrasil-default), never
+      // the repository's own Jenkinsfile: see the note on globalConfigFiles above.
+      //
+      // Each job only sees the heads that can build something:
+      //   develop, main  the long-lived branches
+      //   PR-*           pull requests from branches of the repository itself (forks are never
+      //                  discovered)
+      //   release/*      release branches
+      //   every `branches` glob of an environment with trigger: branch (applications)
+      //   the entry's `tags` pattern, for a repositories entry with release: owner-tag: the owner
+      //                  tags a version by hand and Jenkins builds the tag
       //
       // No Groovy string interpolation (dollar-brace) in this script: Configuration as Code would try
       // to resolve it as one of its own variables.
       def catalog = new org.yaml.snakeyaml.Yaml().load(new File('/etc/jenkins/catalog.yaml').getText('UTF-8'))
-      def owner = catalog.owner
-      def applications = catalog.systems
-        .collectMany { it.applications }
-        .findAll { it.kind != 'platform' }
-      applications.each { app ->
-        def repo = app.repository ?: app.id
-        def branchGlobs = catalog.environments.collectMany { environment ->
-          def override = app.environments == null ? [:] : app.environments[environment.id]
-          if (app.environments != null && !app.environments.containsKey(environment.id)) return []
-          def options = environment + (override ?: [:])
-          if (options.trigger != 'branch') return []
-          options.branches instanceof String ? [options.branches] : (options.branches ?: [])
+      def ownerName = catalog.owner
+      def forge = catalog.forge ?: [:]
+      def forgeType = forge.type ?: 'github'
+      def forgeUrl = forgeType == 'forgejo' ? forge.url.trim().replaceAll('/+\\z', '') : 'https://github.com'
+
+      // A tag pattern (a glob with * and [classes]) or a branch glob (only *) as a regular
+      // expression: the wildcard filter would take [0-9]* literally.
+      def globToRegex = { String glob ->
+        def regex = new StringBuilder()
+        boolean inClass = false
+        glob.each { String ch ->
+          if (inClass) {
+            regex.append(ch)
+            if (ch == ']') inClass = false
+          } else if (ch == '*') {
+            regex.append('.*')
+          } else if (ch == '?') {
+            regex.append('.')
+          } else if (ch == '[') {
+            regex.append(ch)
+            inClass = true
+          } else {
+            regex.append(java.util.regex.Pattern.quote(ch))
+          }
         }
-        def heads = (['main', 'PR-*'] + branchGlobs).unique().join(' ')
-        multibranchPipelineJob(app.id) {
-          displayName(repo)
+        regex.toString()
+      }
+
+      def entries = []
+      catalog.systems
+        .collectMany { it.applications ?: [] }
+        .findAll { it.kind != 'platform' }
+        .each { app ->
+          def branchGlobs = catalog.environments.collectMany { environment ->
+            def override = app.environments == null ? [:] : app.environments[environment.id]
+            if (app.environments != null && !app.environments.containsKey(environment.id)) return []
+            def options = environment + (override ?: [:])
+            if (options.trigger != 'branch') return []
+            options.branches instanceof String ? [options.branches] : (options.branches ?: [])
+          }
+          entries << [name: app.id, repository: app.repository ?: app.id, globs: branchGlobs, ownerTag: false, tags: null]
+        }
+      (catalog.repositories ?: []).each { repo ->
+        def ownerTag = (repo.release ?: 'none') == 'owner-tag'
+        entries << [name: repo.id, repository: repo.id, globs: [], ownerTag: ownerTag, tags: ownerTag ? (repo.tags ?: 'v*') : null]
+      }
+      def names = entries.collect { it.name }
+      def duplicates = names.findAll { name -> names.count(name) > 1 }.unique()
+      if (duplicates) {
+        throw new IllegalStateException('catalog.yaml has more than one job named ' + duplicates.join(', ') +
+          ' (an application id equals a repositories id): rename one of them')
+      }
+
+      entries.each { entry ->
+        def heads = (['develop', 'main', 'PR-*', 'release/*'] + entry.globs + (entry.ownerTag ? [entry.tags] : []))
+          .unique().collect { globToRegex(it) }.join('|')
+        multibranchPipelineJob(entry.name) {
+          displayName(entry.repository)
           branchSources {
             branchSource {
               source {
-                github {
-                  id(app.id)
-                  repoOwner(owner)
-                  repository(repo)
-                  repositoryUrl('https://github.com/' + owner + '/' + repo)
-                  configuredByUrl(false)
-                  credentialsId('github-app')
-                  traits {
-                    // 3 = all branches: a release branch is built as a branch (its trigger: branch
-                    // environments) even while it is the head of a pull request (trigger: release).
-                    gitHubBranchDiscovery { strategyId(3) }
-                    // 2 = the pull request's head revision, not a merge with main: the release
-                    // environments run exactly the commit the branch environments ran.
-                    gitHubPullRequestDiscovery { strategyId(2) }
-                    headWildcardFilter {
-                      includes(heads)
-                      excludes('')
+                if (forgeType == 'forgejo') {
+                  giteaSCMSource {
+                    id(entry.name)
+                    serverUrl(forgeUrl)
+                    repoOwner(ownerName)
+                    repository(entry.repository)
+                    credentialsId('forge-read')
+                    traits {
+                      // 3 = all branches: a release branch is built as a branch even while it is the
+                      // head of a pull request.
+                      giteaBranchDiscovery { strategyId(3) }
+                      // 2 = the pull request's head revision, not a merge with the target.
+                      giteaPullRequestDiscovery { strategyId(2) }
+                      // No fork discovery trait: a fork's pull request never runs here.
+                      if (entry.ownerTag) {
+                        giteaTagDiscovery()
+                      }
+                      headRegexFilter { regex(heads) }
+                    }
+                  }
+                } else {
+                  github {
+                    id(entry.name)
+                    repoOwner(ownerName)
+                    repository(entry.repository)
+                    repositoryUrl(forgeUrl + '/' + ownerName + '/' + entry.repository)
+                    configuredByUrl(false)
+                    credentialsId('github-app')
+                    traits {
+                      // 3 = all branches: a release branch is built as a branch (its trigger: branch
+                      // environments) even while it is the head of a pull request (trigger: release).
+                      gitHubBranchDiscovery { strategyId(3) }
+                      // 2 = the pull request's head revision, not a merge with main: the release
+                      // environments run exactly the commit the branch environments ran.
+                      gitHubPullRequestDiscovery { strategyId(2) }
+                      // No fork discovery trait: a fork's pull request never runs here.
+                      if (entry.ownerTag) {
+                        gitHubTagDiscovery()
+                      }
+                      headRegexFilter { regex(heads) }
                     }
                   }
                 }
@@ -123,11 +196,29 @@ jobs:
                   ignoreTargetOnlyChanges(true)
                   ignoreUntrustedChanges(true)
                 }
+                if (entry.ownerTag) {
+                  // The owner tags a version by hand and Jenkins builds the tag, but only a young
+                  // one: the first scan of a new job (a cutover, a rebuilt controller) finds every
+                  // tag the repository ever had, and without an age limit it would rebuild and
+                  // re-release all of them. A day is long enough for a webhook or the daily rescan
+                  // to see a new tag.
+                  buildTags {
+                    atLeastDays('0')
+                    atMostDays('1')
+                  }
+                }
               }
             }
           }
           factory {
-            workflowBranchProjectFactory { scriptPath('Jenkinsfile') }
+            // The script kept in Jenkins, not the repository's Jenkinsfile. In the Groovy sandbox: it only
+            // loads the yggdrasil library, which as a global library runs trusted anyway, and an
+            // unsandboxed script would need a script approval no one gives (every build failed with
+            // "script not yet approved for use", proved by scripts/test_jenkins_live.py).
+            pipelineBranchDefaultsProjectFactory {
+              scriptId('yggdrasil-default')
+              useSandbox(true)
+            }
           }
           orphanedItemStrategy {
             discardOldItems { numToKeep(20) }
@@ -135,6 +226,97 @@ jobs:
           triggers {
             // Webhooks do the real work; a daily rescan is the safety net for a missed delivery.
             periodicFolderTrigger { interval('1d') }
+          }
+        }
+      }
+  - script: |
+      // actions-release: attaches the Windows files of a release that was published without them
+      // (after "Deploy without GitHub Actions checks", or a Windows run that failed). The owner runs it
+      // with "Build with Parameters": REPOSITORY, the catalog id (its yggdrasil.yml at the tag must
+      // declare release.windows), and TAG, the release's tag. Its script is kept in Jenkins like the
+      // default Jenkinsfile (jenkins/actions-release.groovy, mounted by platform/compose.yml) and only
+      // calls the pinned library, which checks both and does the work (yggdrasilPipeline.actionsRelease).
+      //
+      // Who may run it: the authorization strategy above lets every logged-in user do anything, and
+      // the only user is the owner (the local realm, signup off), so the owner alone runs it; there is
+      // no per-job permission to set without a matrix strategy.
+      pipelineJob('actions-release') {
+        description('Attach the Windows files of a release published without them (after the skip).')
+        parameters {
+          stringParam('REPOSITORY', '', 'The catalog id (an application or a repositories entry) whose release gets its Windows files.')
+          stringParam('TAG', '', 'The release tag, e.g. v1.4.0. It must exist.')
+        }
+        definition {
+          cps {
+            // In the sandbox, like the default Jenkinsfile: it only loads the library, which runs trusted.
+            script(new File('/etc/jenkins/actions-release.groovy').getText('UTF-8'))
+            sandbox(true)
+          }
+        }
+      }
+  - script: |
+      // release-resume: releases a tag that exists already -- a release that failed after its merge (the
+      // pull request is merged and tagged), the GitHub copy of a release published after "Deploy without
+      // GitHub Actions checks", a library's packages a tag build did not push. The owner runs it with
+      // "Build with Parameters": REPOSITORY, the catalog id (an application with a trigger: release
+      // environment, or a repositories entry with release: owner-tag), and TAG, the tag (it must exist and
+      // be on main). COMMIT, optional, is for an application's release whose pull request was merged but
+      // never tagged (only Jenkins may create its v* tags): the merge commit, which the job tags TAG first
+      // when it is the release's merge on main. Its script is kept in Jenkins like the default Jenkinsfile
+      // (jenkins/release-resume.groovy, mounted by platform/compose.yml) and only calls the pinned
+      // library, which checks both and runs the steps a release runs after its merge
+      // (yggdrasilPipeline.releaseResume).
+      //
+      // Who may run it: as for actions-release, the only user is the owner.
+      pipelineJob('release-resume') {
+        description('Release a tag that exists already: finish a release, make its GitHub copy, push its packages.')
+        parameters {
+          stringParam('REPOSITORY', '', 'The catalog id (an application with a release environment, or an owner-tagged repositories entry).')
+          stringParam('TAG', '', 'The tag, e.g. v1.4.0 (1.4.0 for a library). It must exist and be on main.')
+          stringParam('COMMIT', '', 'Only for a release merged but not tagged: the merge commit the build log named. It is tagged TAG first.')
+        }
+        definition {
+          cps {
+            // In the sandbox, like the default Jenkinsfile: it only loads the library, which runs trusted.
+            script(new File('/etc/jenkins/release-resume.groovy').getText('UTF-8'))
+            sandbox(true)
+          }
+        }
+      }
+  - script: |
+      // tag-check: whether every published release's tag is still on the commit it was released from. On
+      // Forgejo whoever may create a repository's version tags may also move and delete them (the accepted
+      // gap of docs/setup.md, step 12); this job notices. It runs every day (H 4: at a time Jenkins picks
+      // within the 4 o'clock hour, the same every day) and whenever the owner runs it ("Build with
+      // Parameters"). It checks every catalog entry that releases. FORGET, empty by default (a timer build
+      // leaves it so), names releases deleted on purpose, one "<repository> <tag>" a line, for the job to
+      // stop checking (it remembers every release it has seen). A red build names each tag MOVED or
+      // DELETED, at the end of its log; docs/setup.md says how to repair one from its GitHub copy. Its
+      // script is kept in Jenkins like the default Jenkinsfile (jenkins/tag-check.groovy, mounted by
+      // platform/compose.yml) and only calls the pinned library (yggdrasilPipeline.tagCheck), which reads
+      // the releases and the tags on the ci agent with the read credential only.
+      //
+      // The trigger is set here, not by the pipeline (a properties step would replace it).
+      pipelineJob('tag-check') {
+        description('Check that every published release tag is still on the commit it was released from (daily).')
+        parameters {
+          textParam('FORGET', '', 'Releases deleted on purpose, one "<repository> <tag>" a line: dropped from what the job remembers. Repair a tag deleted by mistake instead (docs/setup.md, step 12).')
+        }
+        properties {
+          disableConcurrentBuilds()
+          pipelineTriggers {
+            triggers {
+              cron {
+                spec('H 4 * * *')
+              }
+            }
+          }
+        }
+        definition {
+          cps {
+            // In the sandbox, like the default Jenkinsfile: it only loads the library, which runs trusted.
+            script(new File('/etc/jenkins/tag-check.groovy').getText('UTF-8'))
+            sandbox(true)
           }
         }
       }

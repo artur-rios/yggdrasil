@@ -6,6 +6,11 @@ import argparse
 
 RAW = argparse.RawDescriptionHelpFormatter
 
+# The machine roles (MACHINE_ROLES of scripts/machine.sh, which a parity test compares) and the
+# service users that run a Jenkins build agent (scripts/agent.sh).
+ROLES = ("dev", "apps", "workstation")
+AGENT_USERS = ("ci", "release")
+
 DESCRIPTION = ("yggdrasil's command line app for this host. Without a command, in a terminal, it opens the\n"
                "menu, where every command below is too.")
 EPILOG = ("`ygg help` lists the commands by task; `ygg help <command>` (or `ygg <command> --help`) explains\n"
@@ -63,8 +68,30 @@ def parser():
                        help="read the settings the last successful `up` kept, not the variables store")
         if name == "logs":
             a.add_argument("service", nargs="?", help="only this service of platform/compose.yml")
-    _command(sub, "check", "which tools and host pieces are there, which are missing")
-    _command(sub, "install", "install what is missing (Ubuntu; asks before each part)")
+    s = _command(sub, "check", "which tools and host pieces are there, which are missing",
+                 "Shows which tools and host pieces are there and which are missing, for this machine's role:\n"
+                 "the one in /etc/yggdrasil-role, else workstation. --role checks another.")
+    s.add_argument("--role", choices=ROLES, help="the machine role to check (default: this machine's own)")
+    s = _command(sub, "install", "install what is missing (Ubuntu; asks before each part)",
+                 "Installs what is missing, asking before each part, for this machine's role: the one in\n"
+                 "/etc/yggdrasil-role, else workstation. --role sets up a dev or apps machine; run it as the\n"
+                 "admin, with sudo.")
+    s.add_argument("--role", choices=ROLES, help="the machine role to install (default: this machine's own)")
+    s = _command(sub, "agent", "a build agent of the ci or release user (dev machine)",
+                 "Starts, stops or shows the Jenkins build agent of a service user, which runs it on its own\n"
+                 "rootless engine (scripts/agent.sh). Run by the admin, who needs sudo.")
+    actions = s.add_subparsers(dest="action", metavar="<action>", required=True, title="actions")
+    for name, summary in (("up", "start or update the agent"), ("down", "stop the agent"),
+                          ("ps", "list the agent's containers"), ("logs", "follow the agent's logs")):
+        a = _command(actions, name, summary)
+        a.add_argument("--user", required=True, choices=AGENT_USERS, help="the service user whose agent it is")
+    s = _command(sub, "backup", "back up this machine's data, or list the backups",
+                 "Dumps this machine's data into ~/backups and sends it to the other machine, or lists the\n"
+                 "backups kept (scripts/backup.sh). Run as ygg, the user that owns the data; the nightly\n"
+                 "timer does.")
+    actions = s.add_subparsers(dest="action", metavar="<action>", required=True, title="actions")
+    _command(actions, "run", "dump everything now, prune old days and send them to the other machine")
+    _command(actions, "list", "the days and files kept in ~/backups")
     _command(sub, "self-install", "install the ygg command and its tab completion",
              "Links /usr/local/bin/ygg to this checkout's scripts/ygg and writes the bash completion to\n"
              "/etc/bash_completion.d/ygg, with sudo when needed. Safe to run again.")
@@ -79,6 +106,12 @@ def parser():
     _command(actions, "systems", "the systems: id and name")
     a = _command(actions, "show", "an application's fields and its system (JSON)")
     a.add_argument("application", help="an application id")
+    a = _command(actions, "public-host", "a site's full host name in an environment (nothing if it has none)")
+    a.add_argument("application", help="an application id")
+    a.add_argument("environment", help="an environment it deploys to")
+    a.add_argument("domain", help="the domain a host without one of its own goes under, e.g. example.com")
+    a = _command(actions, "public-path", "a site's URL path (nothing if it has none)")
+    a.add_argument("application", help="an application id")
     a = _command(actions, "plan", "an application's environments, options resolved (JSON)")
     a.add_argument("application", help="an application id")
     a = _command(actions, "environment", "an environment's options, defaults applied (JSON)")
@@ -90,6 +123,14 @@ def parser():
     a.add_argument("option", help="the option's name")
     _command(actions, "owner", "the GitHub owner of the repositories")
     _command(actions, "repository", "this repository's name")
+    a = _command(actions, "forge", "the git server: forgejo or github, its addresses (JSON)")
+    a.add_argument("field", nargs="?", choices=("type", "url", "api", "jenkins-user"), help="only this value")
+    a = _command(actions, "mirror", "the Forgejo to GitHub mirror (JSON); fails when there is none")
+    a.add_argument("field", nargs="?", choices=("github", "releases"), help="only this value")
+    _command(actions, "repositories", "the repositories that are not applications: their ids")
+    a = _command(actions, "repository-entry", "one such repository, defaults applied (JSON)")
+    a.add_argument("entry", help="a repository id from `repositories`")
+    _command(actions, "repository-names", "every git repository under the owner, once each")
     _command(sub, "version", "the yggdrasil version, commit and checkout of this ygg")
     s = _command(sub, "help", "the commands, or one command's help")
     s.add_argument("topic", nargs="*", metavar="command", help="a command, e.g. `vars get` (all of them when left out)")

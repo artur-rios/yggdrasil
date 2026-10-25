@@ -172,6 +172,13 @@ systems:
         kind: web
         health: http://chimera:8080/healthz
         host: chimera
+        releaseArtifacts: true
+        environments:
+          local: {}
+          development: {}
+          homologation: {}
+          production:
+            approval: true
         checks:
           - Analyze and test
           - Cross-platform

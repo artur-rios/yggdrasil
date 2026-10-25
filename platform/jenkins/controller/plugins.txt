@@ -3,10 +3,16 @@
 configuration-as-code
 job-dsl
 workflow-aggregator
+lockable-resources
 pipeline-stage-view
 pipeline-graph-view
 git
 github-branch-source
+gitea
+pipeline-multibranch-defaults
+config-file-provider
+http_request
+junit
 basic-branch-build-strategies
 credentials-binding
 timestamper

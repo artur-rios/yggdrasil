@@ -1,0 +1,39 @@
+# What Jenkins checks and releases for this repository, read by the pipeline of the yggdrasil installation
+# that deploys it (yggdrasil's docs/catalog.md, "Repository pipeline file", has every field). Keep it at the
+# repository's root. It is data, never code: images, commands, globs and the names of Jenkins credentials.
+# The commands are scripts under ci/ that run from the repository's root, so you can run them on your own
+# machine too. Every check the catalog lists in <application-id>'s `checks` must be defined here; an
+# unknown key is an error. On Forgejo, only the owner merges a change to this file into develop.
+#
+# Check it where the catalog is, in the yggdrasil checkout:
+#   python3 scripts/pipeline_config.py describe <application-id> <this repository's checkout>
+#
+# The commented lines below are optional: remove the "# " to use one.
+
+checks:
+  test:                                  # the check's name: its status on every pull request
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    run: ci/test.sh                      # given to sh -c, in the image, from the repository's root
+    # docker: true                       # the CI engine's socket: Testcontainers, image builds
+    # credentials:                       # ENV_VAR: Jenkins credential id, one of the catalog's `credentials`
+    #   NUGET_TOKEN: nuget-feed-token
+    # paths: ["src/**", "tests/**"]      # run only when these change; otherwise reported as skipped
+    # junit: "**/TestResults/*.xml"      # test results shown on the build
+    # archive: "out/**"                  # files kept with the build (and handed to deploy.inputs)
+
+# deploy:
+#   inputs: [test]                       # checks whose archive goes into the image build
+
+# release:                               # only with a release environment: the files of each release
+#   build:
+#     image: debian:12
+#     run: ci/release.sh                 # RELEASE_TAG and RELEASE_VERSION are set
+#     files: ["dist/*.tar.gz"]
+#     credentials:                       # one of the catalog's `releaseCredentials`, never a check's
+#       SIGN_KEY: signing-key
+#   windows:                             # built by a GitHub Actions workflow on the GitHub copy
+#     workflow: release-windows.yml
+#     files: ["*/*.msi"]
+#   validate:                            # pass or fail, over the whole set ($RELEASE_FILES)
+#     image: debian:12
+#     run: ci/validate.sh
