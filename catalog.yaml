@@ -27,9 +27,10 @@ owner: artur-rios
 # main branch. Default yggdrasil; set it if your fork has another name.
 repository: yggdrasil
 
-# The git server (forge) and its GitHub mirror are not set here yet: with no forge block this is a
-# GitHub installation, which is what the controller running today reads. The move to Forgejo adds
-# both blocks inside its window (docs/cutover.md 2.2, 4.2 and 5.9), not before.
+# The git server (forge) and its GitHub mirror: the `forge` and `mirror` blocks, right after
+# `repository:` above. Until cutover 5.9 (docs/cutover.md) neither is here: with no forge block this
+# is a GitHub installation, which is what the old controller reads. The move to Forgejo adds both
+# inside its window (2.2 and 4.2 to local copies, 5.9 on main), not before.
 
 # Repositories that are not applications: the libraries, the repositories that only run CI or
 # publish releases, and yggdrasil itself. Each gets a Jenkins job (its checks; for release: owner-tag,

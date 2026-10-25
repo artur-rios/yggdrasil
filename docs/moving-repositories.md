@@ -63,6 +63,10 @@ release yggdrasil and set the variable again ([README, Day to day](../README.md#
   controller is stopped (5.3), and the `forge` and `mirror` blocks of `catalog.yaml` are added only at
   [2.2](cutover.md#22-the-catalog-the-dev-machine-reads), [4.2](cutover.md#42-your-catalog-locally) and
   [5.9](cutover.md#59-the-catalog-goes-to-main); `python3 scripts/catalog.py forge type` prints `github` until then.
+- **Merging this plan into `develop` early freezes yggdrasil's releases until 5.8a.** A release branch is a snapshot
+  of `develop`, so any yggdrasil release cut after that merge carries the plan to `main`, which the old controller
+  reads. If the plan does reach `develop` before the window, release nothing of yggdrasil until 5.8a, whose step 1
+  then finds it merged already and goes on.
 - **No branch is pushed to Forgejo before the window has finished.** Until 5.16 passes, pushes still go to GitHub.
 
 **Create the credentials and variables a branch needs before its first check or release uses them.** The Jenkins

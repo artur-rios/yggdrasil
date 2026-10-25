@@ -1001,8 +1001,19 @@ library at a release tag, and the `scripts/` it runs at the same tag, so it need
 pipeline. Until now that plan sat on `feature/plan-5-repositories`, and yggdrasil's own move branch,
 `feature/move-to-forgejo` in the worktree `D:\Repositories\yggdrasil-move`, on top of it. The old controller is
 stopped (5.3), so nothing reads `develop` or `main` while you do this, and pushes still go to GitHub. On your
-machine, in your clone of yggdrasil. Before 5.9's catalog change (4.2) is committed, put it aside (`git stash`) and
-bring it back at the end (`git stash pop`).
+machine, in your clone of yggdrasil. It holds 4.2's catalog change, uncommitted: put it aside first (`git stash`),
+and bring it back at the end of 3, on `main` (`git stash pop`).
+
+**Expect that pop to conflict** in `catalog.yaml`: the plan wrote its own lines where 4.2 put the blocks (the
+comment on the git server, and the `repositories` list after it). Resolve it with the plan's side of every hunk,
+and the two blocks of [2.2](#22-the-catalog-the-dev-machine-reads) (`forge:` and `mirror:`) right after the
+`repository:` line, nothing else of the stash's side. Then check it before 5.9 commits it:
+
+```bash
+python3 scripts/catalog.py validate     # passes; `catalog.py forge type` prints forgejo
+git add catalog.yaml                    # marks the conflict resolved; 5.9 commits it
+git stash drop                          # a pop that conflicted keeps the stash
+```
 
 1. **The plan, onto `develop`.** As the repository's administrator (the rulesets let you push; a refused push names
    the rule):
@@ -1012,6 +1023,10 @@ bring it back at the end (`git stash pop`).
    git merge --no-ff feature/plan-5-repositories -m "chore: merge the repositories' plan"
    git push origin develop
    ```
+
+   The plan may be on `develop` already (merged before the window, which froze yggdrasil's releases until now):
+   then the merge says `Already up to date.` and there is nothing to push, and `git merge-base --is-ancestor
+   feature/plan-5-repositories develop && echo merged` prints `merged`. Go on to 2.
 
 2. **yggdrasil's move branch, rebased onto it, then onto `develop`.** The branch was cut from the plan before its last
    commits:
@@ -1056,11 +1071,11 @@ bring it back at the end (`git stash pop`).
    (`/etc/yggdrasil/platform.env`), set `YGGDRASIL_LIBRARY_VERSION=v<x.y.z>`, then:
 
    ```bash
-   cd /opt/yggdrasil && git fetch --tags && git checkout v<x.y.z>
-   scripts/platform.sh up
+   cd /opt/yggdrasil && scripts/platform.sh up
    ```
 
-   Compose recreates the controller. The tag is on GitHub only until 5.11 imports yggdrasil: no build runs before
+   Compose recreates the controller. The checkout itself is left as it is, with 2.2's local change: the library,
+   and the `scripts/` a build runs, are loaded at the tag, not from it. The tag is on GitHub only until 5.11 imports yggdrasil: no build runs before
    that, and 5.18's scan is the first to load the library.
 
 **Success looks like:** `git ls-remote --tags origin 'v<x.y.z>*'` prints the tag and its `^{}` commit (annotated);
@@ -1109,8 +1124,10 @@ git add catalog.yaml && git commit -m "chore: move the git server to forgejo" &&
 git rev-parse HEAD > ~/cutover-log/catalog-commit.txt
 ```
 
-(Your local change of 4.2 is the commit; if `git pull` refuses because of it, `git stash`, `git pull`, `git
-stash pop`.)
+(Your change of 4.2 is the commit: 5.8a brought it back on `main`, the conflict resolved and `validate` passed. If
+`git pull` refuses because of it, `git stash`, `git pull`, `git stash pop`; a conflict in `catalog.yaml` on that pop
+is resolved as in 5.8a, the `forge:` and `mirror:` blocks right after the `repository:` line, then `python3
+scripts/catalog.py validate` before the commit.)
 
 - `github-before.json`: each repository's description and whether its issues are on.
 - `github-before/<repository>.json`: each ruleset in full (every repository's, the catalog's and the others',
