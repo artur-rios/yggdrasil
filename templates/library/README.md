@@ -8,12 +8,18 @@ docs site's image. It replaces the library's `run-tests.yml`, `build-docs-and-co
 
 | From this template | To the library |
 |---|---|
-| `ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh` | the same paths (executable) |
+| `ci/test.sh`, `ci/coverage.sh`, `ci/pack.sh`, `ci/branch-policy.sh` | the same paths (executable) |
 | `yggdrasil.yml` | `yggdrasil.yml` |
-| `Dockerfile` | `Dockerfile` (the docs site's image) |
+| `Dockerfile`, `.dockerignore` | the same paths (the docs site's image, and what its build context leaves out) |
+| `.gitattributes` | `.gitattributes`, or its lines added to the one the library has (`*.sh`, `Dockerfile` and `yggdrasil.yml` are checked out with LF, on Windows too) |
 
-Replace `<Name>` in `SOLUTION=src/ArturRios.<Name>.sln` at the top of each script; a script refuses to run while the
-placeholder is there. Add `coverage/`, `coverage-report/` and `artifacts/` to `.gitignore`.
+Replace `<Name>` in `SOLUTION=src/ArturRios.<Name>.sln` at the top of `ci/test.sh`, `ci/coverage.sh` and `ci/pack.sh`; a
+script refuses to run while the placeholder is there. Add `coverage/`, `coverage-report/` and `artifacts/` to
+`.gitignore`. `ci/branch-policy.sh` has no placeholder: it reads `SOLUTION` from `ci/pack.sh`.
+
+`ci/branch-policy.sh` and the `branchPolicy` section of `yggdrasil.yml` are for a single-package library whose old
+`branch-policy.yml` had a "Validate release version" step; any other library deletes both. A pull request from
+`release/x.y.z` into `main` then fails unless every packed project's `<Version>` is `x.y.z`.
 
 ## Two catalog entries, one file
 
@@ -50,10 +56,13 @@ mounts as `static/coverage-report`). The docs application's stack files are `tem
 - **`coverage`** (`ci/coverage.sh`): the tests with coverage collected, and ReportGenerator's HTML report in
   `coverage-report/`. With `REPORTGENERATOR_LICENSE` (the Jenkins credential `reportgenerator-license`, in the catalog's
   `credentials`) it makes the PRO report. Without it, which is the case on every `renovate/*` build, it makes the free
-  report and says so in the log.
+  report and says so in the log. ReportGenerator runs with `-verbosity:Warning`: at its default verbosity it prints
+  its arguments, the license's first 6 characters among them, and Jenkins masks only the whole string.
 - **`publish.nuget`** (`ci/pack.sh`): on the owner's version tag, packs into `artifacts/`; the release agent pushes
   `artifacts/*.nupkg` with the NuGet key, which the packing never sees. With `RELEASE_VERSION` set (the tag without a
-  `v`), each package must carry that version, as the old workflow's tag-against-`<Version>` check did. A library that
+  `v`; `N.N.N` or `N.N.N-pre`, anything else stops the script), each package must be named
+  `<PackageId>.<RELEASE_VERSION>.nupkg` for a packable project of the solution, as the old workflow's
+  tag-against-`<Version>` check did. A library that
   versions each package apart tags `<package>@<version>` (catalog `tags: "*@*"`): `RELEASE_VERSION` is what follows
   the `@`, and its `ci/pack.sh` must pack only the package `RELEASE_TAG` names, since the others keep their own
   versions.

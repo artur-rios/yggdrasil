@@ -107,6 +107,9 @@ class TemplateFilesTests(unittest.TestCase):
         self.assertEqual(config["publish"]["nuget"]["run"], "ci/pack.sh")
         self.assertEqual(config["publish"]["nuget"]["packages"], "artifacts/*.nupkg")
         self.assertEqual(config["deploy"]["inputs"], ["coverage"])
+        # The release branch's version gate: a small pinned image, running the library's own script.
+        self.assertEqual(config["branchPolicy"]["run"], "sh ci/branch-policy.sh")
+        self.assertRegex(config["branchPolicy"]["image"], r"^alpine:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$")
         # One image for the checks and the packing: the SDK the libraries build with.
         images = {coverage["image"], config["checks"]["test"]["image"], config["publish"]["nuget"]["image"]}
         self.assertEqual(len(images), 1)
@@ -194,6 +197,20 @@ class TemplateFilesTests(unittest.TestCase):
         self.assertRegex(text, r"(?m)^COPY coverage-report/ ")
         self.assertIn("docs", text)
 
+    def test_given_the_library_template_when_listed_then_it_ships_the_dockerignore_and_the_gitattributes(self):
+        ignored = (TEMPLATES / "library" / ".dockerignore").read_text().split()
+        self.assertEqual(ignored, [".git", "docs/node_modules", "docs/public", "docs/resources/_gen"])
+        # The coverage report the deploy copies into the context must stay reachable by the Dockerfile.
+        self.assertFalse([line for line in ignored if "coverage" in line])
+        attributes = (TEMPLATES / "library" / ".gitattributes").read_text().splitlines()
+        self.assertEqual(attributes, ["*.sh text eol=lf", "Dockerfile text eol=lf", "yggdrasil.yml text eol=lf"])
+
+    def test_given_the_library_dockerfile_and_scripts_when_read_then_they_carry_no_note_for_the_template_reader(self):
+        dockerfile = (TEMPLATES / "library" / "Dockerfile").read_text()
+        self.assertNotIn("README.md", dockerfile)
+        coverage = (TEMPLATES / "library" / "ci" / "coverage.sh").read_text()
+        self.assertNotIn(".gitignore", coverage)
+
     def test_given_the_next_server_template_when_listed_then_it_ships_the_healthz_route(self):
         route = TEMPLATES / "site-next-server" / "app" / "healthz" / "route.js"
         self.assertIn("200", route.read_text())
@@ -210,10 +227,16 @@ def scripts_of_library():
 
 
 class LibraryScriptsTests(unittest.TestCase):
-    def test_given_the_library_scripts_when_listed_then_the_three_exist_executable_with_a_solution_placeholder(self):
+    def test_given_the_library_scripts_when_listed_then_the_four_exist_and_three_have_a_solution_placeholder(self):
         names = [path.name for path in scripts_of_library()]
-        self.assertEqual(names, ["coverage.sh", "pack.sh", "test.sh"])
+        self.assertEqual(names, ["branch-policy.sh", "coverage.sh", "pack.sh", "test.sh"])
+        # The branch policy extra runs in a small image with no bash, and reads SOLUTION from pack.sh.
+        branch_policy = (TEMPLATES / "library" / "ci" / "branch-policy.sh").read_text().splitlines()
+        self.assertEqual(branch_policy[0], "#!/bin/sh")
+        self.assertNotIn("<Name>", "".join(branch_policy))
         for path in scripts_of_library():
+            if path.name == "branch-policy.sh":
+                continue
             with self.subTest(script=path.name):
                 lines = path.read_text().splitlines()
                 self.assertEqual(lines[0], "#!/usr/bin/env bash")
@@ -272,7 +295,7 @@ FAKE_DOTNET = textwrap.dedent(r"""
           shift
         done
         mkdir -p "$output"
-        : >"$output/ArturRios.Sample.${FAKE_PACK_VERSION:-1.2.3}.nupkg"
+        : >"$output/${FAKE_PACK_NAME:-ArturRios.Sample.${FAKE_PACK_VERSION:-1.2.3}.nupkg}"
         ;;
     esac
 """).lstrip()
@@ -296,10 +319,29 @@ class LibraryScriptBehaviourTests(unittest.TestCase):
             text = path.read_text().replace("<Name>", "Sample")
             (self.repo / "ci" / path.name).write_text(text)
             (self.repo / "ci" / path.name).chmod(0o755)
+        # Its solution, as Visual Studio writes one (backslash paths, CRLF): the library, and a test project that
+        # is not packable.
+        (self.repo / "src").mkdir()
+        (self.repo / "tests" / "Sample.Tests").mkdir(parents=True)
+        (self.repo / "src" / "ArturRios.Sample.sln").write_bytes((
+            'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ArturRios.Sample", "ArturRios.Sample.csproj", "{A}"\r\n'
+            'EndProject\r\n'
+            'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sample.Tests", '
+            '"..\\tests\\Sample.Tests\\Sample.Tests.csproj", "{B}"\r\n'
+            'EndProject\r\n').encode())
+        self.write_project(self.repo / "src" / "ArturRios.Sample.csproj", "<Version>1.2.3</Version>")
+        self.write_project(self.repo / "tests" / "Sample.Tests" / "Sample.Tests.csproj",
+                           "<IsPackable>false</IsPackable>")
         self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", FAKE_DIR=str(self.state),
                         HOME=str(self.temp / "home"), TMPDIR=str(self.temp))
         self.env.pop("REPORTGENERATOR_LICENSE", None)
         self.env.pop("RELEASE_VERSION", None)
+
+    @staticmethod
+    def write_project(path, properties):
+        path.write_bytes(
+            ('<Project Sdk="Microsoft.NET.Sdk">\r\n  <PropertyGroup>\r\n    ' + properties +
+             '\r\n  </PropertyGroup>\r\n</Project>\r\n').encode())
 
     def run_script(self, name, **env):
         # From another directory than the root: the scripts find the repository's root themselves.
@@ -356,6 +398,8 @@ class LibraryScriptBehaviourTests(unittest.TestCase):
         self.assertIn("-reports:coverage/**/coverage.cobertura.xml", args)
         self.assertIn("-targetdir:coverage-report", args)
         self.assertIn("-reporttypes:Html", args)
+        # At its default verbosity ReportGenerator prints its arguments, the license's first characters included.
+        self.assertIn("-verbosity:Warning", args)
         collect = [call for call in self.calls() if call.startswith("test ")]
         self.assertEqual(len(collect), 1)
         self.assertIn("--collect:XPlat Code Coverage", collect[0])
@@ -391,6 +435,100 @@ class LibraryScriptBehaviourTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("1.2.4", result.stderr)
         self.assertIn("ArturRios.Sample.1.2.3.nupkg", result.stderr)
+
+    def test_given_a_package_whose_name_only_ends_with_the_version_when_packed_then_the_whole_name_is_compared(self):
+        # A suffix test would take this: the id is not the project's.
+        result = self.run_script("pack.sh", RELEASE_VERSION="1.2.3", FAKE_PACK_NAME="Other.Thing.1.2.3.nupkg")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Other.Thing.1.2.3.nupkg", result.stderr)
+        # ...nor does a package of a project that is not packable count as expected.
+        result = self.run_script("pack.sh", RELEASE_VERSION="1.2.3", FAKE_PACK_NAME="Sample.Tests.1.2.3.nupkg")
+        self.assertEqual(result.returncode, 1)
+
+    def test_given_a_package_id_that_is_not_the_project_name_when_packed_then_the_package_id_is_expected(self):
+        self.write_project(self.repo / "src" / "ArturRios.Sample.csproj",
+                           "<PackageId>ArturRios.Sample.Core</PackageId><Version>1.2.3</Version>")
+        result = self.run_script("pack.sh", RELEASE_VERSION="1.2.3", FAKE_PACK_NAME="ArturRios.Sample.Core.1.2.3.nupkg")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_script("pack.sh", RELEASE_VERSION="1.2.3", FAKE_PACK_NAME="ArturRios.Sample.1.2.3.nupkg")
+        self.assertEqual(result.returncode, 1)
+
+    def test_given_a_prerelease_version_when_packed_then_it_is_accepted(self):
+        result = self.run_script("pack.sh", RELEASE_VERSION="1.2.3-rc.1", FAKE_PACK_VERSION="1.2.3-rc.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_given_a_release_version_that_is_not_a_version_when_packed_then_it_stops_before_building(self):
+        for version in ("1.0", "v1.2.3", "1.2.3.4", "1.2", "latest", "1.2.3-", "1.2.3 "):
+            with self.subTest(version=version):
+                result = self.run_script("pack.sh", RELEASE_VERSION=version)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("RELEASE_VERSION", result.stderr)
+                self.assertEqual(self.calls(), [])
+
+    # ---- ci/branch-policy.sh, run by sh as the small image does ----
+
+    def policy(self, head, base):
+        env = dict(self.env, HEAD_REF=head, BASE_REF=base)
+        return subprocess.run(["sh", str(self.repo / "ci" / "branch-policy.sh")], cwd=self.temp, env=env,
+                              capture_output=True, text=True)
+
+    def test_given_a_release_branch_into_main_when_the_version_matches_then_it_passes(self):
+        result = self.policy("release/1.2.3", "main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ArturRios.Sample.csproj says 1.2.3", result.stdout)
+
+    def test_given_a_release_branch_into_main_when_the_version_differs_then_it_fails_naming_both_versions(self):
+        result = self.policy("release/1.2.4", "main")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("<Version>1.2.3</Version>", result.stderr)
+        self.assertIn("releases 1.2.4", result.stderr)
+
+    def test_given_other_branches_when_checked_then_there_is_nothing_more_to_check(self):
+        for head, base in (("feature/x", "develop"), ("feature/x", "main"), ("release/9.9.9", "develop"), ("", "")):
+            with self.subTest(head=head, base=base):
+                result = self.policy(head, base)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("nothing more to check", result.stdout)
+
+    def test_given_two_packable_projects_when_one_has_another_version_then_it_fails_and_the_test_project_is_skipped(self):
+        # The second project is reached through a backslash path, as Visual Studio writes it.
+        sln = self.repo / "src" / "ArturRios.Sample.sln"
+        sln.write_bytes(sln.read_bytes() + (
+            b'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Extra", "..\\extra\\Extra.csproj", "{C}"\r\n'
+            b'EndProject\r\n'))
+        (self.repo / "extra").mkdir()
+        self.write_project(self.repo / "extra" / "Extra.csproj", "<PackageId>Extra</PackageId><Version>1.0.0</Version>")
+        result = self.policy("release/1.2.3", "main")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("extra/Extra.csproj has <Version>1.0.0</Version>", result.stderr)
+        self.assertIn("ArturRios.Sample.csproj says 1.2.3", result.stdout)
+        self.assertNotIn("Tests", result.stderr)
+
+    def test_given_a_version_in_directory_build_props_when_checked_then_that_is_the_projects_version(self):
+        self.write_project(self.repo / "src" / "ArturRios.Sample.csproj", "<PackageId>ArturRios.Sample</PackageId>")
+        self.write_project(self.repo / "Directory.Build.props", "<Version>1.2.3</Version>")
+        self.assertEqual(self.policy("release/1.2.3", "main").returncode, 0)
+        self.assertEqual(self.policy("release/1.2.4", "main").returncode, 1)
+
+    def test_given_no_version_anywhere_when_checked_then_it_fails_saying_none(self):
+        self.write_project(self.repo / "src" / "ArturRios.Sample.csproj", "<PackageId>ArturRios.Sample</PackageId>")
+        result = self.policy("release/1.2.3", "main")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("<none>", result.stderr)
+
+    def test_given_a_test_project_with_the_test_sdk_and_no_explicit_flag_when_checked_then_it_is_not_packed(self):
+        self.write_project(self.repo / "tests" / "Sample.Tests" / "Sample.Tests.csproj",
+                           '</PropertyGroup><ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" '
+                           'Version="18.0.0" /></ItemGroup><PropertyGroup>')
+        result = self.policy("release/1.2.3", "main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Tests", result.stdout)
+
+    def test_given_no_packable_project_when_checked_then_it_fails_loudly(self):
+        self.write_project(self.repo / "src" / "ArturRios.Sample.csproj", "<IsPackable>false</IsPackable>")
+        result = self.policy("release/1.2.3", "main")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no packable project", result.stderr)
 
 
 def compose_config(files, env=None, expect_failure=False):
