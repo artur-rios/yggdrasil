@@ -217,6 +217,10 @@ DESKTOP_PIPELINE = {"release": {
                         ' && sed "s/^/MANIFEST /" signed/shop-desktop-manifest.txt'
                         ' && printf %s "$SIGNING_KEY" | sha256sum | cut -c1-64 >signed/shop-desktop-manifest.sig'
                         ' && echo "FINALIZE-KEY $(cat signed/shop-desktop-manifest.sig)"'
+                        # Files it puts in the upload set's directory instead of declaring them: never uploaded.
+                        ' && mkdir -p ../release-upload/finalize ../release-upload/build/dist'
+                        ' && echo sneaky >../release-upload/finalize/sneaky.txt'
+                        ' && echo sneaky >../release-upload/build/dist/sneaky.tar.gz'
                         ' && echo "FINALIZED-$(wc -l <signed/shop-desktop-manifest.txt | tr -d " ")-FILES"',
                  "files": ["signed/*"],
                  "credentials": {"SIGNING_KEY": "shop-db-password"}},
@@ -1591,7 +1595,7 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertFalse(release["draft"])
         assets = {asset["name"]: asset["size"] for asset in release["assets"]}
         # The declared globs' files only: not dist/notes.txt, not the artifact's debug.pdb; and the two files
-        # release.finalize added.
+        # release.finalize added -- not the two it wrote straight into release-upload/ (sneaky.*).
         self.assertEqual(set(assets), {"shop-desktop-1.0.0.tar.gz", "shop-desktop.sha256", "shop-desktop-setup.msi",
                                        "shop-desktop-manifest.txt", "shop-desktop-manifest.sig"})
         self.assertEqual(assets["shop-desktop-1.0.0.tar.gz"], len("shop-desktop 1.0.0\n"))

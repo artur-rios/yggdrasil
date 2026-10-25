@@ -1511,6 +1511,21 @@ String finalizeInWorkspace(Map entry, Map finalize, String tag) {
       }
     }
   }
+  // The container had the whole workspace as root. What the host reads from it from here on must still be
+  // the workspace's own: app/ (where finalize's files are matched) and release-check/ (what is checksummed)
+  // real directories, not links to elsewhere on the agent; release-upload/ is made anew below, whatever the
+  // step put there.
+  int layout = sh(script: '''
+    for directory in app release-check; do
+      if [ -L "$directory" ] || [ ! -d "$directory" ]; then
+        echo "$directory is no longer a directory of the workspace" >&2
+        exit 3
+      fi
+    done
+  ''', returnStatus: true)
+  if (layout != 0) {
+    error "release.finalize replaced app/ or release-check/ with something else (exit ${layout}): refused. Nothing is published, and no draft release was made."
+  }
   String after = releaseSums()
   if (after != before) {
     error "release.finalize changed the release files, which it may only add to: ${sumsChanged(before, after).join(', ')}. Nothing is published, and no draft release was made."
@@ -1524,7 +1539,9 @@ String finalizeInWorkspace(Map entry, Map finalize, String tag) {
       stashes << name
     }
   }
-  sh(script: 'mkdir -p release-upload/finalize')
+  // The upload set is built only now, after the container: anything the step wrote into release-upload/ (it
+  // could, with the whole workspace mounted) is deleted with it, and rm does not follow a link put there.
+  sh(script: 'rm -rf -- release-upload && mkdir -p release-upload/finalize')
   dir('release-upload') {
     unstash 'release-files'
   }

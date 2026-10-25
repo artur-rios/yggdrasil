@@ -977,6 +977,13 @@ class ReleaseLibraryTests(unittest.TestCase):
         # The upload set: the stash taken before validate and finalize ran, and finalize's files under
         # finalize/, no link among them -- stashed last, under its own name, which gatherReleaseFiles returns.
         upload = body[globbed:]
+        # release-upload/ is deleted and made again after the container (which had the whole workspace as
+        # root and may have written there) and before anything is put in it; rm, which never follows a link.
+        container = body.index("run-check.sh release-finalize")
+        remade = body.index("sh(script: 'rm -rf -- release-upload && mkdir -p release-upload/finalize')")
+        self.assertLess(container, remade)
+        self.assertLess(remade, body.index("dir('release-upload') {\n    unstash 'release-files'"))
+        self.assertLess(remade, body.index("stash name: 'release-upload'"))
         self.assertLess(upload.index("mkdir -p release-upload/finalize"), upload.index("unstash 'release-files'"))
         self.assertLess(upload.index("unstash 'release-files'"), upload.index("dir('release-upload/finalize')"))
         self.assertLess(upload.index("unstash name"), upload.index("refuseLinks(true, 'the release files')"))
@@ -1165,6 +1172,48 @@ class ReleaseLibraryTests(unittest.TestCase):
                 (root / "build" / f"dup-{n:02}").write_text("h")
                 (root / "windows" / f"dup-{n:02}").write_text("i")
             self.assertEqual(len(names()), 33)
+
+    def test_given_the_finalize_container_when_it_is_done_then_the_directories_the_host_reads_are_checked(self):
+        # After the container, the host reads app/ (finalize's globs) and release-check/ (the checksums): each
+        # must still be a real directory, not a link a root container left in its place pointing anywhere on the
+        # agent (a glob over a linked app/ would upload the agent's files). Checked before either is read.
+        body = self.body("finalizeInWorkspace")
+        container = body.index("run-check.sh release-finalize")
+        layout = body.index("int layout = sh(script:")
+        self.assertLess(container, layout)
+        self.assertLess(layout, body.index("String after = releaseSums()"))
+        self.assertLess(layout, body.index("dir('app')"))
+        script = body[layout:body.index("returnStatus: true)", layout)]
+        self.assertIn("for directory in app release-check; do", script)
+        self.assertIn('if [ -L "$directory" ] || [ ! -d "$directory" ]; then', script)
+        self.assertRegex(body[layout:], r"if \(layout != 0\) \{\s*error \"release\.finalize replaced app/ or release-check/")
+
+    @unittest.skipUnless(os.name == "posix", "runs the embedded script with sh")
+    def test_given_a_linked_or_missing_directory_when_the_layout_is_checked_then_it_refuses(self):
+        body = self.body("finalizeInWorkspace")
+        start = body.index("int layout = sh(script: '''") + len("int layout = sh(script: '''")
+        script = body[start:body.index("''', returnStatus: true)", start)]
+        with tempfile.TemporaryDirectory() as temp:
+            work = pathlib.Path(temp)
+            (work / "app").mkdir()
+            (work / "release-check").mkdir()
+
+            def check():
+                return subprocess.run(["sh", "-c", script], cwd=work, capture_output=True, text=True, timeout=30)
+
+            self.assertEqual(check().returncode, 0)
+            (work / "app").rename(work / "app-real")
+            (work / "app").symlink_to("/etc")
+            done = check()
+            self.assertEqual(done.returncode, 3)
+            self.assertIn("app is no longer a directory", done.stderr)
+            (work / "app").unlink()
+            (work / "app").write_text("not a directory")
+            self.assertEqual(check().returncode, 3)
+            (work / "app").unlink()
+            (work / "app-real").rename(work / "app")
+            (work / "release-check").rmdir()
+            self.assertEqual(check().returncode, 3)
 
     def test_given_release_finalize_when_published_then_a_drafts_files_are_uploaded_again(self):
         # A resumed release with finalize must not keep a draft's older file of the same name and size: the
