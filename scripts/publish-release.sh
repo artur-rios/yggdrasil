@@ -25,8 +25,9 @@
 # steps on GitHub, as the GitHub App. --missing <list> adds a "Missing files" section to the notes: the
 # files that could not be built (a skipped GitHub Actions run), separated by commas or spaces.
 # --replace-files (a release with release.finalize, whose manifest and signature describe this run's files):
-# on a draft, a file already there under the same name is deleted and uploaded again whatever its size, so
-# the draft holds exactly this run's bytes, never an older file of the same name and size. A published
+# on a draft, a file already there under the same name is deleted and uploaded again whatever its size, and
+# a file whose name is not in this run's set is deleted, so the draft holds exactly this run's files and
+# bytes: never an older file of the same name and size, nor one the new manifest does not list. A published
 # release is never changed: its files are checked by name and size as without the option.
 #
 # `attach` puts the files of <files-dir> on the releases that exist already, published or not, the same
@@ -183,10 +184,19 @@ remote_files() {
 }
 
 # upload_files <side> <release-id>: what the release does not have yet, then a check of all of it. With
-# --replace-files, on a draft, what it has under the same name is replaced.
+# --replace-files, on a draft, what it has under the same name is replaced, and what is not in the set is
+# deleted.
 upload_files() {
   local side=$1 id=$2 index name
   remote_files "$side" "$id"
+  if [[ "$replace" == true && "${release_draft[$side]:-}" == true ]]; then
+    for name in "${!remote_sizes[@]}"; do
+      [[ -z "${local_sizes[$name]+set}" ]] || continue
+      must_forge "deleting $name, not one of this release's files, from $(label "$side")" "$side" \
+        delete-release-file "$repo" "$id" "$name"
+      unset "remote_sizes[$name]"
+    done
+  fi
   for index in "${!names[@]}"; do
     name=${names[$index]}
     if [[ -n "${remote_sizes[$name]+set}" && "$replace" == true && "${release_draft[$side]:-}" == true ]]; then

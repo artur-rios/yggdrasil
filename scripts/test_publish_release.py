@@ -249,6 +249,45 @@ class PublishReleaseTests(unittest.TestCase):
             self.assertEqual(self.attached(kind), {"app.zip": "9", "my app.exe": "14"}, kind)
             self.assertEqual(self.draft(kind), "false", kind)
 
+    def test_given_replace_files_and_a_draft_with_files_this_run_does_not_have_when_published_then_they_are_deleted(self):
+        # The draft holds exactly this run's set: a file an earlier run left there under a name the set no
+        # longer has (an old signature, say) is something the new manifest does not list, and goes.
+        extra = self.files / "old.sig"
+        extra.write_bytes(b"old signature")
+        failing = dict(self.mirror_env, FAKE_FAIL="github upload-release-file")
+        self.assertEqual(self.publish("--mirror-releases", "--replace-files", env=failing).returncode, 1)
+        self.assertEqual(set(self.attached("forgejo")), {"app.zip", "my app.exe", "old.sig"})
+        extra.unlink()
+
+        second = self.publish("--mirror-releases", "--replace-files", env=self.mirror_env)
+        self.assertEqual((second.returncode, second.stderr), (0, ""))
+        self.assertIn("forgejo delete-release-file app 1 old.sig", self.calls())
+        for kind in ("forgejo", "github"):
+            self.assertEqual(self.attached(kind), {"app.zip": "9", "my app.exe": "14"}, kind)
+            self.assertEqual(self.draft(kind), "false", kind)
+
+    def test_given_files_the_set_does_not_have_on_a_published_release_when_published_with_replace_files_then_they_stay(self):
+        # A published release is public: nothing on it is deleted, an extra file included.
+        extra = self.files / "old.sig"
+        extra.write_bytes(b"old signature")
+        self.assertEqual(self.publish("--mirror-releases", env=self.mirror_env).returncode, 0)
+        extra.unlink()
+        again = self.publish("--mirror-releases", "--replace-files", env=self.mirror_env)
+        self.assertEqual((again.returncode, again.stderr), (0, ""))
+        self.assertEqual([c for c in self.calls() if " delete-release-file " in c], [])
+        self.assertIn("old.sig", self.attached("forgejo"))
+
+    def test_given_an_extra_file_on_a_draft_without_replace_files_when_published_then_it_is_left(self):
+        # Without the option (a release without release.finalize) nothing is deleted, as before.
+        extra = self.files / "old.sig"
+        extra.write_bytes(b"old signature")
+        failing = dict(self.mirror_env, FAKE_FAIL="github upload-release-file")
+        self.assertEqual(self.publish("--mirror-releases", env=failing).returncode, 1)
+        extra.unlink()
+        self.assertEqual(self.publish("--mirror-releases", env=self.mirror_env).returncode, 0)
+        self.assertEqual([c for c in self.calls() if " delete-release-file " in c], [])
+        self.assertIn("old.sig", self.attached("forgejo"))
+
     def test_given_replace_files_and_a_published_release_when_published_again_then_nothing_is_replaced(self):
         # A published release is public and complete: it is never changed, only checked by name and size.
         self.assertEqual(self.publish("--mirror-releases", env=self.mirror_env).returncode, 0)
