@@ -1,7 +1,6 @@
 # The docs site of a .NET library: its Hugo site (docs/), built in a pinned Hugo image with the library's coverage
-# report, and served by static-web-server. Copy this file to the library's root as `Dockerfile` (README.md next to
-# it says what else to do). It is the image of the library's docs application (`<library>-docs` in the catalog,
-# whose `repository` is the library and whose stack file is made from templates/stacks).
+# report, and served by static-web-server. It is the image of the library's docs application (`<library>-docs` in
+# the catalog, whose `repository` is the library and whose stack file is made from templates/stacks).
 #
 # The coverage report is not in the repository: it is the archive of the `coverage` check (`coverage-report/**`),
 # which the pipeline hands to the deploy as an input (`deploy.inputs: [coverage]` in yggdrasil.yml), and
