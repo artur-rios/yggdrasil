@@ -109,6 +109,7 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 |---|---|---|
 | alexandria-api | `ci.yml/check on ubuntu-latest` | check `lint-and-test` (GitHub: `fmt, clippy, test`) |
 | alexandria-api | `ci.yml/performance on ubuntu-latest` | not required: `performance (non-gating)` stays a GitHub Actions workflow, run on the GitHub copy (pushes only, never gating); neither a catalog check nor an actionsCheck |
+| alexandria-docs | `deploy.yml/build on ubuntu-latest` | check `build` (the site's image, as the Pages build ran on every pull request) |
 | alexandria-ui | `ci.yml/analyze on ubuntu-latest` | check `analyze` |
 | alexandria-ui | `ci.yml/test on windows-latest` | actionsCheck `Unit and widget tests (windows)` |
 | alexandria-ui | `ci.yml/test on ubuntu-latest` | check `test` |
@@ -196,6 +197,7 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | fortuna-api | `native-core.yml/build on windows-latest` | not required: path-filtered, so waited for when it runs and never required (the spec) |
 | fortuna-api | `tests.yml/test on ubuntu-latest` | check `test` |
 | fortuna-api | `tests.yml/docker on ubuntu-latest` | check `docker` |
+| fortuna-docs | `deploy.yml/build on ubuntu-latest` | check `build` (the site's image, as the Pages build ran on every pull request) |
 | fortuna-ui | `build.yml/web on ubuntu-latest` | release.build: its v* tag build becomes the release files, built on the release agent |
 | fortuna-ui | `build.yml/android on ubuntu-latest` | release.build: its v* tag build becomes the release files, built on the release agent |
 | fortuna-ui | `build.yml/windows on windows-latest` | release.windows |
@@ -207,6 +209,7 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | heimdall-api | `check-openapi.yml/check on ubuntu-latest` | check `check` (path-filtered) |
 | heimdall-api | `tests.yml/test on ubuntu-latest` | check `test` |
 | heimdall-api | `tests.yml/docker on ubuntu-latest` | check `docker` |
+| heimdall-docs | `deploy.yml/build on ubuntu-latest` | check `build` (the site's image, as the Pages build ran on every pull request) |
 | heimdall-ui | `build.yml/web on ubuntu-latest` | release.build: its build of main (every release merge) becomes the release files, built on the release agent; the weekly scheduled run goes |
 | heimdall-ui | `build.yml/linux on ubuntu-latest` | release.build: its build of main (every release merge) becomes the release files, built on the release agent; the weekly scheduled run goes |
 | heimdall-ui | `build.yml/windows on windows-latest` | release.windows |

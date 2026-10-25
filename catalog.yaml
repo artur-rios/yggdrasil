@@ -348,7 +348,7 @@ systems:
         domain: artur-rios.tech
         host: docs
         path: /heimdall-docs
-        checks: []
+        checks: [build]
         environments:
           production: { trigger: branch, branches: main }
 
@@ -380,7 +380,7 @@ systems:
         domain: artur-rios.tech
         host: docs
         path: /fortuna-docs
-        checks: []
+        checks: [build]
         environments:
           production: { trigger: branch, branches: main }
 
@@ -437,7 +437,7 @@ systems:
         domain: artur-rios.tech
         host: docs
         path: /alexandria-docs
-        checks: []
+        checks: [build]
         environments:
           production: { trigger: branch, branches: main }
 
