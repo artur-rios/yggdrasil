@@ -89,8 +89,8 @@ what the agent kept.
 **The checklist is the reference.** [migration-checklist.md](migration-checklist.md) lists every repository, with its
 GitHub workflows and what each became. Two sections of it are written by hand and are authoritative:
 [Check names](migration-checklist.md#check-names) and [Credentials](migration-checklist.md#credentials). The table's
-*Jobs* column is generated and says `→ check` for every Linux job, including the ones that became `release.build`
-(cerberus-ui, fortuna-ui, maestro, orpheus and others): read the *Check names* section, not the verdict. The
+*Jobs* column is generated and says `→ check` for some Linux jobs that became `release.build` (cerberus-ui's and
+fortuna-ui's `linux`; maestro's and orpheus's show `→ release`): read the *Check names* section, not the verdict. The
 checklist's last section, [Repositories with no prepared branch](migration-checklist.md#repositories-with-no-prepared-branch),
 says why the other 24 need nothing.
 
@@ -141,8 +141,9 @@ On the pull request, Forgejo shows a status for `branch-policy`, for each check 
 [Check names](migration-checklist.md#check-names).
 
 **Success looks like:** every check of the repository's rows is `success`, the build is green and not unstable
-(an unstable build means the catalog and `yggdrasil.yml` disagree: a check that no entry runs, or one that is
-missing), and no check is `skipped` that you expected to run.
+(an unstable build means `yggdrasil.yml` defines a check that no catalog entry of the repository runs; a check the
+catalog names that the file does not define is an error, and the build fails), and no check is `skipped` that you
+expected to run.
 
 **Then merge with the override.** The first pull request of a repository cannot satisfy the old rules and the new
 ones at once: under the release model `develop` requires `branch-policy` and the checks, and `yggdrasil.yml` is a
@@ -150,10 +151,11 @@ protected file there, so only the owner can merge a change to it, with a forced 
 use **Merge anyway** on the pull request ([setup.md](setup.md#forgejo-details-worth-knowing); through the API,
 `force_merge: true`). Merge with a merge commit. Do not use it while a check you expected is red or missing.
 
-- **A repository under the `basic` rules and with no `develop`** (the sites deployed from `main`, and
+- **A repository under the `basic` rules and with no `develop`** (the sites deployed from `main` or `master`, and
   coding-challenge-library, dotnet-libraries and reveal.js) has no required checks, so Forgejo may let you merge
   normally. Its `branch-policy` passes with `basic: nothing to check` for any pull request, so a pull request from
-  `feature/move-to-forgejo` into `main` is fine; read the other checks, and merge.
+  `feature/move-to-forgejo` into `main` (or `master`, which the basic rules treat like `main`) is fine; read the
+  other checks, and merge.
 - **A merge into `main` of such a site deploys it.** See step 4.
 - **A merge into `develop`** of an application deploys it to `development`, which is on demand: Jenkins starts it,
   checks it and stops it again.
@@ -175,7 +177,7 @@ kind:
 | **Library** (the 12 `dotnet-*`) | The release of its `CONTRIBUTING.md`, "Releasing": a `release/<version>` pull request into `main`, merged by you with a merge commit, then an **annotated** tag with the bare version, pushed the same day | The package is on nuget.org, and the docs site is rebuilt at `docs.artur-rios.tech/<repo>` by the push to `main` |
 | **Owner-tag repository with release files** (yggdrasil, alexandria-ui, cerberus-ui, maestro, orpheus, personal-lab) | The same, with a `v<version>` tag | The release has its files (and, for alexandria-ui, cerberus-ui, maestro and orpheus, their Windows ones); for maestro, `release-manifest.json` and `.sig` |
 | **CI repository with no release** (alexandria-api, cerberus-api, ai-coding-skills, coding-challenge-library, reveal.js) | Nothing to release: the pull request's green checks are the test | Step 3 |
-| **A site deployed from `main`** (the docs sites, personal-blog, under-construction-template, github-readme-stats, dotnet-libraries) | The merge of the pull request into `main` | The site answers at its address ([address](#where-the-sites-are)) with the new content |
+| **A site deployed from `main` or `master`** (the docs sites, personal-blog, dotnet-libraries; on `master`, the forks under-construction-template and github-readme-stats) | The merge of the pull request into `main` or `master` | The site answers at its address ([address](#where-the-sites-are)) with the new content |
 | **A site in the release flow** (personal-page, tech-craftsmen-company-page) | A release, as for an application, which deploys homologation, then production | Both addresses answer |
 
 **Owner tags.** `git tag -a <version> -m <version> && git push origin <version>`, on a commit of `main`, **annotated** and
@@ -394,11 +396,18 @@ What the plan left for later or for you:
 - **Docsy "edit this page" links** still point at the GitHub mirror. Forgejo's edit address is `/_edit/<branch>/<path>`,
   not Docsy's `/edit/`, so every Docsy site needs a change in its configuration.
 - **`relink.py` can rewrite test fixtures** that deliberately use old addresses: it did in heimdall-docs and fortuna-docs,
-  both fixed. The other branches were not checked for it; run `python3 scripts/relink.py D:/Repositories/<repo> --check`
-  over the branch's checkout and read what it would change.
+  both fixed. The other branches were not checked for it. Before a branch's pull request, read what it changed under
+  test and fixture paths, against the table's *Base* (`develop`, `main` or `master`):
+  `git -C D:/Repositories/<repo> diff <base>...feature/move-to-forgejo -- '*test*' '*fixture*'`. An address rewritten
+  there that a test meant to keep old is put back on the branch.
 - **A 0.x prerelease option** in the pipeline, only if you want one (alexandria-ui's 0.x releases were prereleases).
-- **Rotate the GitHub CLI token** that was exposed in a subagent's transcript during Task 1 of this plan.
+- **Rotate the GitHub CLI token now**, not after the moves: it was exposed in a subagent's transcript during Task 1 of
+  this plan. On GitHub, **Settings → Applications → Authorized OAuth Apps → GitHub CLI → Revoke** (a token you gave `gh` yourself:
+  delete it under **Developer settings → Personal access tokens**), then `gh auth login` again.
+- **A Renovate bump of a tool pin whose checksum sits beside it** (a version and its SHA-256 together in a `ci/` script
+  or a `Dockerfile`) fails its check until you update the checksum by hand, on Renovate's branch: Renovate changes the
+  version only.
 - **chimera's ReportGenerator test** skips because of `--allow-roll-forward`, before and after the move.
 - **fortuna-ui's release APK** lacks the `INTERNET` permission, and is debug-signed.
-- **The checklist's generated *Jobs* column** says `→ check` for jobs that became `release.build` (cerberus-ui,
-  fortuna-ui, maestro and others); only the *Check names* section is right, and regenerating does not change that.
+- **The checklist's generated *Jobs* column** says `→ check` for some jobs that became `release.build` (cerberus-ui's
+  and fortuna-ui's `linux`); only the *Check names* section is right, and regenerating does not change that.
