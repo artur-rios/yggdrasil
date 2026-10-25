@@ -1,0 +1,24 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "What Dependabot updated (pub in console/, NuGet in status/, the workflow actions), plus the images and tools pinned in yggdrasil.yml and ci/*.sh. The dockerfile and docker-compose managers are left out, as dependabot.yml left docker out (the platform images in platform/compose.yml are moved by hand).",
+  "extends": ["local>artur-rios/yggdrasil//renovate/default"],
+  "enabledManagers": ["pub", "nuget", "github-actions", "custom.regex"],
+  "packageRules": [
+    {
+      "description": "pub, NuGet and the workflow actions weekly, as Dependabot did (the preset has actions monthly).",
+      "matchManagers": ["pub", "nuget", "github-actions"],
+      "schedule": ["on monday"]
+    },
+    {
+      "description": "The workflow actions in one pull request, as Dependabot grouped them.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "templates/ are examples copied into other repositories: Dependabot never updated their pins, and they change by hand.",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["templates/**"],
+      "enabled": false
+    }
+  ]
+}
