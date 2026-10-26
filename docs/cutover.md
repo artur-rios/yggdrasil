@@ -676,6 +676,9 @@ and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cuto
   container with the same one, which the image has for `C`, `C.UTF-8` and `en_US.UTF-8`.
 - As cron jobs and timers, none that runs `docker` (Ubuntu's own timers, `apt-daily`, `logrotate`, `fstrim` and the
   like, are expected; open any other with `systemctl cat <unit>`): after 5.5 there is no rootful engine to run.
+  `/etc/cron.d/yggdrasil-vars` is v0.7.4's weekly backup of the variables store, as root ([variables.md, Backup and
+  recovery](variables.md#backup-and-recovery)): 5.5 part 3 hands it to `ygg`. A provider's agent (Hostinger's
+  `monarx-update`, say) and Ubuntu's `e2scrub_all` do not use `docker` and stay.
 
 **If it fails:**
 - `admin: root`: you log in as root, and the install refuses it (`run install as the admin user, not as root`); after
@@ -714,8 +717,18 @@ and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cuto
   packages (it asks, and keeps `/var/lib/docker`). The rollback then runs Docker's engine on the same data, not
   Ubuntu's: decide now whether you accept that (6 says so).
 - Another login user, or root login, password login: the install's SSH part allows only `<old admin>` and `ygg`
-  in, with keys. Move whoever uses another account first.
-- A container that is not yggdrasil's: it stops for good with the rootful engine. Move it elsewhere first.
+  in, with keys. Move whoever uses another account first. A service's own account that never logs in over SSH
+  stays as it is: `postgres` (Ubuntu gives it a shell), or `cockpit`, which a provider's Cockpit console uses.
+- A port open to everyone that v0.7.4's install did not open (`9090/tcp`, a provider's Cockpit web console, say):
+  the install leaves it, and its check warns `ports: open to everyone, and not by install: 9090/tcp`. Keep it if
+  you use it, and expect that one `warn` row from 5.5 on; Cockpit's web login goes through PAM, not SSH, so the SSH
+  part does not change it, but check that it still logs you in after 5.5. Or close it now: `sudo ufw delete allow
+  9090/tcp`. A rule that lets in only a private range (`5432/tcp` from `172.16.0.0/12`, for the old containers'
+  PostgreSQL) is no warning; 7.1 deletes that one with the host's PostgreSQL.
+- A container that is not yggdrasil's: it stops for good with the rootful engine. Move it elsewhere first. An exited
+  one with no Compose project (a made-up name such as `wizardly_feistel`, left by a one-off `docker run`): `sudo
+  docker inspect --format '{{.Config.Image}} {{.Created}}' <name>` says what it was; `sudo docker rm <name>` once
+  nothing needs it.
 **Back out:** read only; `rm ~/cutover-before.txt` if you start again.
 
 ### 3.2 What the install will change, and room for the archives
@@ -1469,7 +1482,8 @@ on, the server is the apps machine.
    ```
 
    **Success looks like:** it ends with the check, `<installer commit>`'s, which knows 26.04: every row `ok` but the
-   Backups rows (`backup.conf` and the last and newest backup, until 5.21), and the `secrets ygg` row, which part 3
+   Backups rows (`backup.conf` and the last and newest backup, until 5.21), a `ports` warning for a port 3.1 kept
+   (`9090/tcp`, Cockpit's), and the `secrets ygg` row, which part 3
    fixes: the files in `/etc/yggdrasil` are still the old owner's, and the directory may read `ygg:ygg 2750` if its
    set-group-ID bit survived the install (part 3's **If it fails**). `describe` prints `v0.8.0`. A **new** SSH session as `<old admin>` and one as `ygg` (`ssh ygg@<apps ip>`) both log in,
    with your key; in the new admin session `id -nG` no longer lists `docker`, and `systemctl is-enabled
@@ -1494,14 +1508,34 @@ on, the server is the apps machine.
    sudo -v && ygg check --role apps
    ```
 
+   Then the store's weekly backup, if 3.1 listed `/etc/cron.d/yggdrasil-vars`: v0.7.4's line runs `ygg vars backup`
+   as root, into `/root/yggdrasil-backups`. The store is `ygg`'s now, so its backup is too, the same line in `ygg`'s
+   own crontab, into `~ygg/yggdrasil-backups`; root's file is kept aside for the rollback:
+
+   ```bash
+   sudo mv /etc/cron.d/yggdrasil-vars /srv/migration/cron.d-yggdrasil-vars
+   echo '0 3 * * 0 /opt/yggdrasil/scripts/ygg vars backup /home/ygg/yggdrasil-backups' | sudo -u ygg crontab -
+   sudo -u ygg crontab -l
+   sudo -u ygg /opt/yggdrasil/scripts/ygg vars backup /home/ygg/yggdrasil-backups
+   ```
+
+   - `crontab -`: `ygg`'s crontab, which the install never writes, becomes that one line: on Sundays at 03:00, as
+     v0.7.4's. `cron` starts it as `ygg`, not as root.
+   - The last line takes the first backup now, so a broken line shows before Sunday. `ygg vars backup` makes the
+     directory and its files `ygg`'s only (`0600`).
+   - `/root/yggdrasil-backups` keeps the old copies, of the store before the conversion; 7.1 deletes them.
+   - The copies stay on the server, as before: `backup.sh` does not send the store anywhere.
+
    The old controller's GitHub App key (`github-app.pem`) stays here, `ygg`'s and `600`: this host keeps no
    controller, so nothing reads it (7.2 deletes it). The installer also put `platform.env` and `acme.env` from the
    templates beside the store, which had none: with `vars.db` there, `platform.sh` and `deploy.sh` read the store
    and never them.
 
    **Success looks like:** the check's `secrets ygg` row is `ok` (`/etc/yggdrasil (ygg:ygg 750)`), and every row
-   `ok` but the Backups rows and one `warn` row, expected until 0.9.0 (5.17's `git pull`): this is `v0.8.0`'s check
-   now, `Ubuntu 26.04.1 LTS: install knows Ubuntu 24.04 only, check works anywhere`.
+   `ok` but the Backups rows, part 2's `ports` warning for a port 3.1 kept, and one `warn` row, expected until 0.9.0
+   (5.17's `git pull`): this is `v0.8.0`'s check now, `Ubuntu 26.04.1 LTS: install knows Ubuntu 24.04 only, check
+   works anywhere`. `crontab -l` prints the one line, and the backup `Wrote /home/ygg/yggdrasil-backups/vars-<time>.db
+   and ...key`.
    **If it fails:** `secrets ygg ... is ygg:ygg 2750`: GNU `chmod` keeps a directory's set-group-ID bit under a
    numeric mode of three digits, and 26.04's Rust `chmod` may too (Conventions): `sudo chmod 00750 /etc/yggdrasil`,
    then the check again.
@@ -2798,6 +2832,8 @@ where they left them. What can be undone depends on how far the window went:
       sudo ufw allow 80,443/tcp
       sudo rm -f /etc/sysctl.d/90-yggdrasil.conf && sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024
       sudo rm -f /etc/yggdrasil-role
+      [[ ! -e /srv/migration/cron.d-yggdrasil-vars ]] || sudo mv /srv/migration/cron.d-yggdrasil-vars /etc/cron.d/yggdrasil-vars
+      ! id ygg > /dev/null 2>&1 || sudo crontab -u ygg -r
       ```
       - `ufw allow 80,443/tcp`: the rule of the old layout (3.1), which the install deleted. The Cloudflare rules
         may stay (the list above).
@@ -2805,6 +2841,9 @@ where they left them. What can be undone depends on how far the window went:
         stopped before its system settings, or its role file, left none to remove.
       - `/etc/yggdrasil-role`: `apps`; without it a later `ygg check` of this checkout (v0.7.4 knows no role)
         reads the machine as before.
+      - The store's weekly backup back to root's `/etc/cron.d/yggdrasil-vars`, as 3.1 found it, and `ygg`'s crontab
+        gone (5.5 part 3). The first line does nothing when part 3 never moved it; `crontab -r` saying `no crontab
+        for ygg` means part 3 never wrote one.
       - The SSH drop-in, only if the old setup needs something it closes (a password login, another user): `sudo rm
         /etc/ssh/sshd_config.d/00-yggdrasil.conf && sudo systemctl try-reload-or-restart ssh`, with a second session
         open, and a new login tried before you close it.
@@ -2922,6 +2961,9 @@ rm -r ~/cutover-tools ~/cutover-volumes.txt ~/cutover-platform-volumes.txt ~/cut
 sudo apt-get purge $(dpkg-query -W -f='${db:Status-Abbrev} ${Package}
 ' 'postgresql*' | awk '$1 == "ii" { print $2 }')
 sudo rm -r /var/lib/postgresql /etc/postgresql
+sudo ufw delete allow from 172.16.0.0/12 to any port 5432 proto tcp
+[[ ! -e /root/yggdrasil-backups ]] || sudo rm -r /root/yggdrasil-backups
+sudo git config --system --unset-all safe.directory /opt/yggdrasil
 df -h /
 sudo -v && ygg check --role apps
 ```
@@ -2940,11 +2982,20 @@ secrets and databases as they were.
 - `apt-get purge`: every PostgreSQL package Ubuntu installed (the server, its client, `postgresql-common`). It lists
   them and asks before it removes anything; if it asks whether to remove the PostgreSQL directories too, say yes.
   The `rm` after it removes what is left of the data and the settings either way.
+- `ufw delete allow from 172.16.0.0/12 to any port 5432`: the rule that let the old containers reach the host's
+  PostgreSQL, which is gone. `Could not delete non-existent rule`: it was written another way; `sudo ufw status
+  numbered` shows its number, and `sudo ufw delete <number>` deletes it. 3.1 lists no such rule: skip the line.
+- `/root/yggdrasil-backups`: v0.7.4's weekly copies of the store, with its key, from before the conversion (5.5 part
+  3 moved the backup to `ygg`). They hold the old secrets, and the store is not going back to them.
+- `safe.directory`: the system-wide line of 3.1's `admin: root` step, which let v0.7.4's `git`, as root, use a
+  checkout the admin owned. Nothing runs `git` there as root any more. `git config` failing with exit status 5
+  means there was none.
 - `/var/lib/docker` and `/var/lib/containerd`: the rootful engine's images, containers and volumes, which nothing
   has used since 5.3 (it is masked). `ygg`'s rootless engine keeps everything of its own in `~ygg/.local/share/docker`,
   which this does not touch. Docker's packages stay: the rootless engines run on them.
 
-**Success looks like:** `inactive` and `disabled` for the host's PostgreSQL, and heimdall and fortuna as before; `df`
+**Success looks like:** `inactive` and `disabled` for the host's PostgreSQL, and heimdall and fortuna as before; `ufw
+delete` prints `Rule deleted` (and `Rule deleted (v6)` if it had a twin), and `sudo ufw status` has no `5432` line; `df`
 shows the room back; `dpkg-query -W 'postgresql*'` lists nothing installed (or `no packages found`); `ygg check
 --role apps` has every row `ok` as before (the `rootful docker` row: off, and off after a reboot); `ygg status`, as
 `ygg`, shows production `running`.
