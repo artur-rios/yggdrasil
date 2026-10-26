@@ -1,6 +1,7 @@
 # heimdall-api in proxy environments: an overlay applied on top of the repository's own
-# docker-compose.yml by scripts/deploy.sh. It changes how the API is reached, nothing about what it
-# runs: no host port (Traefik is the only way in), the edge and telemetry networks, and the routers.
+# docker-compose.yml by scripts/deploy.sh. It changes how the API is reached: no host port (Traefik
+# is the only way in), the edge and telemetry networks, and the routers. And it adds the API's
+# database, which the repository's file leaves to the host (below, "The database").
 #
 # Several environments can run on one host, so everything shared between their containers is named
 # after the environment, from YGG_ENVIRONMENT (exported by deploy.sh; a docker compose run without it
@@ -42,11 +43,26 @@
 #
 # /metrics is on port 9464, which is on neither the router nor the host: Prometheus reaches it over
 # the telemetry network as heimdall-api.<environment>:9464.
+#
+# The database: PostgreSQL in its own container, `db`, one per environment, its data in the volume
+# heimdall-api-<environment>_db, run by the same rootless engine as the API (docs/hosts.md). The API
+# reaches it as `db` on the project's own network (DB_HOST=db in the variables store, and Host=db in
+# a whole connection string such as HEIMDALL_MIGRATIONS_CONNECTIONSTRING), which no other project
+# joins: it is on neither edge nor telemetry, and it publishes no port. The image's superuser,
+# postgres, has DB_SUPERUSER_PASSWORD. The API's own roles (the schema's owner and the role it runs
+# as, DB_USER) are made by the restore that fills the volume (docs/cutover.md 5.6), or, for a new
+# environment, by the repository's scripts/sql. The image is pinned to the major version the data was
+# written by: 19 is a dump and a restore, not an image update. backup.sh dumps it every night
+# (`postgres heimdall-api-<environment>-db-1 postgres` in backup.conf).
 
 services:
   api:
     ports: !reset []
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
+      default: {}
       edge:
         aliases: ["heimdall-api.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
       telemetry:
@@ -76,6 +92,32 @@ services:
       - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.burst=10
       - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.sourcecriterion.ipstrategy.ipv6subnet=56
       - traefik.http.services.heimdall-api-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+  db:
+    image: postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_SUPERUSER_PASSWORD:?set DB_SUPERUSER_PASSWORD in the env file}
+    # PostgreSQL 18's image keeps its data in /var/lib/postgresql/18/docker: the volume is the parent,
+    # so a later major version's directory can sit next to it.
+    volumes:
+      - db:/var/lib/postgresql
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    # Over TCP, not the socket: while the image initialises a new volume it runs a server on the
+    # socket only, and the API must not start against that one.
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "postgres", "--host", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+volumes:
+  db:
 
 networks:
   edge:

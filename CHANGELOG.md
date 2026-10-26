@@ -42,6 +42,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   install (rootful Docker unmasked, the `docker` group, the checkout at `v0.7.4`, the copy of `/etc/yggdrasil`, the
   firewall rule) and says what it cannot undo; the clean-up deletes the archives and the rootful engine's data once
   the apps machine has run a release. The window is now estimated at 4 to 8 hours.
+- **heimdall-api and fortuna-api run their own PostgreSQL.** `stacks/heimdall-api.proxy.yml` and
+  `stacks/fortuna-api.proxy.yml` add a `db` service (`postgres:18.6`, pinned by digest, its data in the volume
+  `<application>-<environment>_db`) on the project's own network only, which the API waits for and reaches as
+  `DB_HOST=db`; the image's superuser has the new variable `DB_SUPERUSER_PASSWORD`. A PostgreSQL on the host is no
+  longer assumed: a rootless engine's containers cannot reach one. The env file examples say `DB_HOST=db`.
 - **The status API reports each application's real address.** `url` is now
   `https://<host><hostSuffix>.<domain><path>`: the application's own `domain` (else `YGGDRASIL_DOMAIN`) and `path`,
   and the bare domain for an `apex` site without a `host`, as `scripts/catalog.py public-host` and `public-path`

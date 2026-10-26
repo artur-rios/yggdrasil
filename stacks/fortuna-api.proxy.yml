@@ -1,6 +1,7 @@
 # fortuna-api in proxy environments: an overlay applied on top of the repository's own
-# docker-compose.yml by scripts/deploy.sh. It changes how the API is reached, nothing about what it
-# runs: no host port (Traefik is the only way in), the edge and telemetry networks, and the routers.
+# docker-compose.yml by scripts/deploy.sh. It changes how the API is reached: no host port (Traefik
+# is the only way in), the edge and telemetry networks, and the routers. And it adds the API's
+# database, which the repository's file leaves to the host (below, "The database").
 #
 # Several environments can run on one host, so everything shared between their containers is named
 # after the environment, from YGG_ENVIRONMENT (exported by deploy.sh; a docker compose run without it
@@ -27,10 +28,21 @@
 # only to one, and follows no redirect. So Fortuna's users never share Heimdall's per-source limit
 # at the edge (stacks/heimdall-api.proxy.yml), where they would all come from one source.
 
+#
+# The database: PostgreSQL in its own container, `db`, as heimdall-api's (stacks/heimdall-api.proxy.yml
+# says why each line is there): the volume fortuna-api-<environment>_db, DB_HOST=db (Host=db in
+# FORTUNA_DATA_CONNECTIONSTRING when that is set), DB_SUPERUSER_PASSWORD, and the one role that owns
+# the database and runs the API (DB_USER), made by the restore (docs/cutover.md 5.6). backup.sh dumps
+# it every night (`postgres fortuna-api-<environment>-db-1 postgres` in backup.conf).
+
 services:
   api:
     ports: !reset []
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
+      default: {}
       edge:
         aliases: ["fortuna-api.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
       telemetry:
@@ -52,6 +64,28 @@ services:
       - traefik.http.routers.fortuna-api-${YGG_ENVIRONMENT}-same-origin.middlewares=secure-headers@file
       - traefik.http.routers.fortuna-api-${YGG_ENVIRONMENT}-same-origin.service=fortuna-api-${YGG_ENVIRONMENT}
       - traefik.http.services.fortuna-api-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+  db:
+    image: postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_SUPERUSER_PASSWORD:?set DB_SUPERUSER_PASSWORD in the env file}
+    volumes:
+      - db:/var/lib/postgresql
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "postgres", "--host", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+volumes:
+  db:
 
 networks:
   edge:

@@ -15,6 +15,7 @@ MIDDLEWARES = ROOT / "platform" / "traefik" / "dynamic" / "middlewares.yml"
 PLATFORM = ROOT / "platform" / "compose.yml"
 EXAMPLES = ROOT / "docs" / "examples" / "docker-desktop-and-vps" / "env"
 UI_STACKS = ("heimdall-ui.proxy.yml", "fortuna-ui.proxy.yml")
+API_STACKS = ("heimdall-api.proxy.yml", "fortuna-api.proxy.yml")
 
 AUTH = "traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-auth"
 AUTH_LIMIT = "traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit"
@@ -40,11 +41,11 @@ for _tag in ("!reset", "!override"):
 
 
 def labels(stack):
-    """The label list of the overlay's only service."""
+    """The label list of the overlay's routed service, the only one with labels (an API's database has none)."""
     services = yaml.load((STACKS / stack).read_text(), Loader=ComposeLoader)["services"]
-    assert len(services) == 1, f"{stack} has {len(services)} services"
-    (service,) = services.values()
-    return service["labels"]
+    labelled = [service for service in services.values() if "labels" in service]
+    assert len(labelled) == 1, f"{stack} has {len(labelled)} labelled services"
+    return labelled[0]["labels"]
 
 
 def rule(stack, router):
@@ -150,6 +151,47 @@ class EdgeTests(unittest.TestCase):
         auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")
         self.assertTrue(auth.endswith(SAFE_METHODS_EXCLUDED), auth)
         self.assertNotIn("Method(`POST`)", auth)
+
+    def test_given_an_api_overlay_when_read_then_its_database_is_private_to_the_project(self):
+        for stack in API_STACKS:
+            with self.subTest(stack=stack):
+                overlay = yaml.load((STACKS / stack).read_text(), Loader=ComposeLoader)
+                db, api = overlay["services"]["db"], overlay["services"]["api"]
+                # On the project's own network only: no shared network, no port, no router.
+                self.assertNotIn("networks", db)
+                self.assertNotIn("ports", db)
+                self.assertNotIn("labels", db)
+                self.assertIn("default", api["networks"])
+                self.assertEqual(api["depends_on"], {"db": {"condition": "service_healthy"}})
+                self.assertEqual(overlay["volumes"], {"db": None})
+                self.assertEqual(db["volumes"], ["db:/var/lib/postgresql"])
+
+    def test_given_an_api_overlay_when_read_then_its_database_image_is_pinned(self):
+        images = {yaml.load((STACKS / stack).read_text(), Loader=ComposeLoader)["services"]["db"]["image"]
+                  for stack in API_STACKS}
+        self.assertEqual(len(images), 1, images)
+        (image,) = images
+        # The major version the data was written by, pinned by digest: never a floating tag.
+        self.assertRegex(image, r"^postgres:18\.\d+@sha256:[0-9a-f]{64}$")
+
+    def test_given_an_api_overlay_when_read_then_its_database_needs_the_superuser_password(self):
+        for stack in API_STACKS:
+            with self.subTest(stack=stack):
+                db = yaml.load((STACKS / stack).read_text(), Loader=ComposeLoader)["services"]["db"]
+                self.assertEqual(db["environment"],
+                                 {"POSTGRES_PASSWORD": "${DB_SUPERUSER_PASSWORD:?set DB_SUPERUSER_PASSWORD in the env file}"})
+                # Over TCP: the socket answers during the image's first initialisation too.
+                self.assertEqual(db["healthcheck"]["test"],
+                                 ["CMD", "pg_isready", "--username", "postgres", "--host", "127.0.0.1"])
+
+    def test_given_the_api_examples_when_read_then_they_reach_the_database_container(self):
+        for env in ("development", "homologation", "production"):
+            for app in ("heimdall-api", "fortuna-api"):
+                with self.subTest(env=env, app=app):
+                    example = (EXAMPLES / env / f"{app}.env.example").read_text().splitlines()
+                    self.assertEqual([line for line in example if line.startswith("DB_HOST=")], ["DB_HOST=db"])
+                    self.assertEqual([line for line in example if line.startswith("DB_SUPERUSER_PASSWORD=")],
+                                     ["DB_SUPERUSER_PASSWORD="])
 
     def test_fortuna_examples_use_internal_heimdall(self):
         for env in ("development", "homologation", "production"):
