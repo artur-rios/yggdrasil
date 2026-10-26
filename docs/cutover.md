@@ -88,7 +88,7 @@ Fill this in first; later steps use every line.
 | The environments it runs | `ygg vars get platform ENVIRONMENTS` | e.g. `development,homologation,production` |
 | What production runs, per application | On the old VPS: `ygg status`: the `VERSION` and `COMMIT` columns of production | e.g. heimdall-api, heimdall-ui, fortuna-api and fortuna-ui, each like `heimdall-api 1.4.0 3f2a9c1` |
 | What homologation has deployed, per application | The same columns of homologation (on demand: `stopped` is expected); 5.17 deploys exactly that again | e.g. `heimdall-api 1.5.0 9b81d07`, or **nothing deployed** |
-| `<installer commit>` | On your machine, once this release's database move (the branch `fix/cutover-in-place-apps`) is merged into `develop` (4.8): `git fetch origin && git log -1 --merges --format='%H %s' --grep='fix/cutover-in-place-apps' origin/develop`. 2.1 and 5.5 run `ygg install` from it | e.g. `4c1d2e9... Merge pull request #82 from artur-rios/fix/cutover-in-place-apps` |
+| `<installer commit>` | On your machine, once the 26.04 installer is merged into `develop` (4.8): the database move and the 26.04 install (the branch `fix/cutover-in-place-apps`), then the fix for 26.04's own rootlesskit profile (`fix/apparmor-shipped-rootlesskit`), which the first install on 26.04 needed. The second's merge has both: `git fetch origin && git log -1 --merges --format='%H %s' --grep='fix/apparmor-shipped-rootlesskit' origin/develop`. 2.1 and 5.5 run `ygg install` from it | e.g. `4c1d2e9... Merge pull request #83 from artur-rios/fix/apparmor-shipped-rootlesskit` |
 | How the names reach it today | Cloudflare, **DNS → Records** of `techcraftsmen.net` | e.g. `A *` → `<apps ip>`, **DNS only** |
 | The new machine | One fresh Ubuntu 24.04 or 26.04 LTS server for the dev machine, rented now: its address is needed for DNS in section 1. Rent it on the release the old VPS runs (3.1; 26.04 here), so that 2.1 to 2.6 prove that release before the window. The apps machine is the old VPS: `<apps ip>` is its address | `<dev ip>` |
 | Whether the old VPS serves names under `techcraftsmen.net` or `artur-rios.tech` | Is its `DOMAIN` one of them? | yes / no |
@@ -460,7 +460,7 @@ sudo -u ygg git -C /opt/yggdrasil switch main
 sudo -u ygg git -C /opt/yggdrasil describe --tags
 ```
 
-**Success looks like:** `log -1` prints `<installer commit>`, the merge of `fix/cutover-in-place-apps`; the install
+**Success looks like:** `log -1` prints `<installer commit>`, the merge of `fix/apparmor-shipped-rootlesskit`; the install
 ends with its check, every row `ok` but the Backups rows (until 5.21: the other machine, the apps machine, only
 exists once the window has converted the old VPS) and `renovate github token` (a `warn` until 2.7, and for good if
 you don't set one). `describe` then prints `v0.8.0`. From then on `ygg check --role dev` (as the admin, after `sudo
@@ -1124,8 +1124,8 @@ comparison, and a superuser password that never reached a command line.
 The window starts only when all of these hold:
 
 - [ ] This release's database move (the branch `fix/cutover-in-place-apps`, with the 26.04 installer and the `db`
-  stacks) is merged into `develop`, not `main`, before 2.1, and 0.1 records `<installer commit>`: 2.1 installed from
-  it, and 5.5 does. 0.9.0 (5.8a) carries it to `main` with the rest of `develop`.
+  stacks) and the fix for 26.04's rootlesskit profile (`fix/apparmor-shipped-rootlesskit`) are merged into
+  `develop`, not `main`, before 2.1, and 0.1 records `<installer commit>`: 2.1 installed from it, and 5.5 does. 0.9.0 (5.8a) carries it to `main` with the rest of `develop`.
 - [ ] 0.1 is filled in, the databases, their extensions and the whole connection strings included, homologation's
   versions too, and every role has a SCRAM password.
 - [ ] 0.2, 0.3 and 0.4 are done, and no application's code needs a release for its host names.
@@ -1449,7 +1449,7 @@ on, the server is the apps machine.
 
    **Success looks like:** `Switched to branch 'main'`, a fast-forward, `v0.8.0` (the release with this pipeline and
    the machines' tools, but for 26.04); then `HEAD is now at <installer commit>`, and `log -1` names the merge of
-   `fix/cutover-in-place-apps`, as 2.1 did.
+   `fix/apparmor-shipped-rootlesskit`, as 2.1 did.
    **If it fails:** `invalid reference: main`: the clone has no local `main`: `git switch -c main --track
    origin/main`. A refused pull names the local change: 3.1 should have found it. `fatal: invalid reference` at the
    `switch --detach`: 0.1's commit is not on `develop` (4.8).

@@ -184,6 +184,9 @@ file_holds() { [[ -f "$1" && "$(<"$1")" == "$2" ]]; }
 
 machine_sysctl_path() { echo "${YGG_SYSROOT:-}/etc/sysctl.d/90-yggdrasil.conf"; }
 machine_apparmor_path() { echo "${YGG_SYSROOT:-}/etc/apparmor.d/usr.bin.rootlesskit"; }
+# The profile Ubuntu's own apparmor package ships for rootlesskit, from 26.04 (apparmor 5): see
+# machine_apparmor_shipped.
+machine_apparmor_shipped_path() { echo "${YGG_SYSROOT:-}/etc/apparmor.d/rootlesskit"; }
 machine_delegate_path() { echo "${YGG_SYSROOT:-}/etc/systemd/system/user@.service.d/delegate.conf"; }
 machine_upgrades_path() { echo "${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades"; }
 # sshd takes the FIRST value it finds across sshd_config.d in lexical order, and cloud images ship
@@ -303,6 +306,7 @@ machine_secret_files() {
 machine_sysctl_content() { echo "net.ipv4.ip_unprivileged_port_start=80"; }
 
 # Ubuntu 24.04 and later confine unprivileged user namespaces; this profile lets rootlesskit use them.
+# Only where the system has none of its own (24.04): see machine_apparmor_shipped.
 machine_apparmor_content() {
   cat <<'EOF'
 abi <abi/4.0>,
@@ -708,9 +712,33 @@ machine_check_file() {
   fi
 }
 
+# machine_apparmor_shipped: the system's apparmor package has a profile that lets /usr/bin/rootlesskit
+# create user namespaces, as Ubuntu 26.04's does (/etc/apparmor.d/rootlesskit). Then ours must not be
+# there too: two profiles that attach to the same path conflict ("conflicting profile attachments" in
+# the kernel log), AppArmor applies neither, and rootlesskit, unconfined, may not make its namespace
+# ("fork/exec /proc/self/exe: permission denied").
+machine_apparmor_shipped() {
+  local path
+  path=$(machine_apparmor_shipped_path)
+  [[ -f "$path" ]] && grep -q '/usr/bin/rootlesskit' "$path" && grep -q 'userns' "$path"
+}
+
+machine_check_apparmor() {
+  local ours shipped
+  ours=$(machine_apparmor_path) shipped=$(machine_apparmor_shipped_path)
+  if ! machine_apparmor_shipped; then
+    machine_check_file "apparmor rootlesskit" "$ours" "$(machine_apparmor_content)" system-settings
+  elif [[ -e "$ours" ]]; then
+    row warn "apparmor rootlesskit" "$ours clashes with the system's $shipped: install removes it"
+    machine_need system-settings
+  else
+    row ok "apparmor rootlesskit" "$shipped (the system's)"
+  fi
+}
+
 machine_check_system_settings() {
   machine_check_file "unprivileged ports" "$(machine_sysctl_path)" "$(machine_sysctl_content)" system-settings
-  machine_check_file "apparmor rootlesskit" "$(machine_apparmor_path)" "$(machine_apparmor_content)" system-settings
+  machine_check_apparmor
   machine_check_file "cgroup delegation" "$(machine_delegate_path)" "$(machine_delegate_content)" system-settings
 }
 
@@ -1378,8 +1406,17 @@ step_rootful_docker_off() {
 }
 
 step_system_settings() {
+  local apparmor
+  apparmor=$(machine_apparmor_path)
   write_system_file "$(machine_sysctl_path)" 0644 "$(machine_sysctl_content)"
-  write_system_file "$(machine_apparmor_path)" 0644 "$(machine_apparmor_content)"
+  if ! machine_apparmor_shipped; then
+    write_system_file "$apparmor" 0644 "$(machine_apparmor_content)"
+  elif [[ -e "$apparmor" ]]; then
+    # Unloaded before it goes: a restart of apparmor.service loads what is there, and leaves a profile
+    # whose file is gone in the kernel. Not loaded (nothing to remove) is fine.
+    as_root apparmor_parser -R "$apparmor" 2>/dev/null || true
+    as_root rm -f "$apparmor"
+  fi
   write_system_file "$(machine_delegate_path)" 0644 "$(machine_delegate_content)"
   as_root sysctl --system >/dev/null
   as_root systemctl restart apparmor.service

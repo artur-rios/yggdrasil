@@ -417,6 +417,18 @@ APPARMOR = textwrap.dedent("""\
       include if exists <local/usr.bin.rootlesskit>
     }
 """)
+# Ubuntu 26.04's own profile for rootlesskit (apparmor 5), in /etc/apparmor.d/rootlesskit.
+APPARMOR_SHIPPED = textwrap.dedent("""\
+    abi <abi/4.0>,
+    include <tunables/global>
+
+    profile rootlesskit /usr/bin/rootlesskit flags=(unconfined) {
+      userns,
+
+      # Site-specific additions and overrides. See local/README for details.
+      include if exists <local/rootlesskit>
+    }
+""")
 DELEGATE = "[Service]\nDelegate=cpu cpuset io memory pids\n"
 
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA admin@laptop\n"
@@ -711,6 +723,45 @@ class MachineRoleTests(unittest.TestCase):
         self.install("apps")
         self.assertEqual(self.etc("apparmor.d/usr.bin.rootlesskit").read_text(), APPARMOR)
         self.assertIn("systemctl restart apparmor.service", self.calls())
+
+    def ship_apparmor_profile(self):
+        """The system's own rootlesskit profile, as Ubuntu 26.04's apparmor package installs it."""
+        path = self.etc("apparmor.d/rootlesskit")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(APPARMOR_SHIPPED)
+
+    def test_given_a_shipped_rootlesskit_profile_when_installed_then_no_second_profile_is_written(self):
+        self.ship_apparmor_profile()
+        self.install("apps")
+        # Two profiles attaching to /usr/bin/rootlesskit conflict, and AppArmor then applies neither.
+        self.assertFalse(self.etc("apparmor.d/usr.bin.rootlesskit").exists())
+        self.assertEqual(self.etc("apparmor.d/rootlesskit").read_text(), APPARMOR_SHIPPED)
+        self.assertIn("systemctl restart apparmor.service", self.calls())
+        _, rows = self.rows("apps")
+        line = self.row(rows, "apparmor rootlesskit")
+        self.assertTrue(line.startswith("  ok "), line)
+        self.assertIn("the system's", line)
+
+    def test_given_a_shipped_profile_and_ours_when_checked_then_ours_is_flagged(self):
+        self.ship_apparmor_profile()
+        ours = self.etc("apparmor.d/usr.bin.rootlesskit")
+        ours.write_text(APPARMOR)
+        _, rows = self.rows("apps")
+        line = self.row(rows, "apparmor rootlesskit")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn("clashes", line)
+
+    def test_given_a_shipped_profile_and_ours_when_installed_then_ours_is_unloaded_and_removed(self):
+        self.ship_apparmor_profile()
+        ours = self.etc("apparmor.d/usr.bin.rootlesskit")
+        ours.write_text(APPARMOR)
+        self.install("apps")
+        self.assertFalse(ours.exists())
+        calls = self.calls()
+        unload = f"apparmor_parser -R {ours}"
+        self.assertIn(unload, calls)
+        self.assertLess(calls.index(unload), calls.index("systemctl restart apparmor.service"))
+        self.assertEqual(self.etc("apparmor.d/rootlesskit").read_text(), APPARMOR_SHIPPED)
 
     def test_given_role_apps_when_installed_then_the_user_slice_delegates_controllers(self):
         self.install("apps")
