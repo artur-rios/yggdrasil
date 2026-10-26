@@ -447,6 +447,8 @@ OVERRIDE = (
 ROOTFUL = '["name=seccomp,profile=builtin","name=cgroupns"]'
 
 UBUNTU = 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nUBUNTU_CODENAME=noble\nPRETTY_NAME="Ubuntu 24.04 LTS"\n'
+UBUNTU_26 = ('ID=ubuntu\nID_LIKE=debian\nVERSION_ID="26.04"\nVERSION_CODENAME=resolute\nUBUNTU_CODENAME=resolute\n'
+             'PRETTY_NAME="Ubuntu 26.04.1 LTS"\n')
 DEBIAN = 'ID=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\nPRETTY_NAME="Debian GNU/Linux 12"\n'
 
 
@@ -867,14 +869,31 @@ class MachineRoleTests(unittest.TestCase):
         self.etc("os-release").write_text(DEBIAN)
         result = self.host("install", "dev")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Ubuntu 24.04", result.stderr)
+        self.assertIn("Ubuntu 24.04 or 26.04 LTS only", result.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_given_ubuntu_22_when_installing_role_apps_then_it_is_refused(self):
         self.etc("os-release").write_text(UBUNTU.replace("24.04", "22.04"))
         result = self.host("install", "apps")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("24.04", result.stderr)
+        self.assertIn("Ubuntu 24.04 or 26.04 LTS only", result.stderr)
+
+    def test_given_ubuntu_26_when_installing_role_apps_then_the_release_is_accepted(self):
+        self.etc("os-release").write_text(UBUNTU_26)
+        # sshd -t failing stops the install after the role file is written, well past the preflight.
+        result = self.host("install", "apps", FAKE_SSHD_STATUS="1")
+        self.assertNotIn("installs on", result.stderr)
+        self.assertEqual(self.etc("yggdrasil-role").read_text().split(), ["apps"])
+
+    def test_given_ubuntu_26_when_checked_then_the_release_is_not_warned_about(self):
+        self.etc("os-release").write_text(UBUNTU_26)
+        result = self.host("check", "apps")
+        self.assertNotIn("install knows", result.stdout)
+
+    def test_given_ubuntu_22_when_checked_then_the_release_is_warned_about(self):
+        self.etc("os-release").write_text(UBUNTU.replace("24.04", "22.04"))
+        result = self.host("check", "apps")
+        self.assertIn("install knows Ubuntu 24.04 or 26.04 LTS only", result.stdout)
 
     def test_given_root_when_installing_role_dev_then_it_is_refused(self):
         result = self.host("install", "dev", FAKE_UID="0")

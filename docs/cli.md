@@ -221,7 +221,7 @@ as the menu. Keys need read access to the store's key; without it they are not o
 
 A machine has a **role**: `dev`, `apps` or `workstation`. `--role` picks it; without it the command uses
 the role `install` wrote to `/etc/yggdrasil-role`, and `workstation` when there is none. `dev` and `apps`
-are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine is rootless;
+are the Ubuntu 24.04 or 26.04 LTS servers of [hosts.md](hosts.md), where every Docker engine is rootless;
 `workstation` is the check and install that came before the roles, for a laptop or a host set up by hand.
 
 ### `--role dev` and `--role apps`
@@ -239,7 +239,7 @@ are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine 
 Rows that ask another user's engine or read a closed directory need `sudo`. `check` runs `sudo -v` first, which asks
 for your password once; if that fails it says so and goes on, and those rows say "not checked".
 
-`install` works on Ubuntu 24.04 only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
+`install` works on Ubuntu 24.04 or 26.04 LTS only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
 part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci`
 limits, the low ports, SSH, the checkout, secrets directories, the firewall, each user's engine, the backup timer and the role
 file. It refuses up front, changing nothing: when it doesn't run from `/opt/yggdrasil` (clone yggdrasil there), when
@@ -273,7 +273,7 @@ is still a dev or apps machine to the next `ygg install`. It puts its SSH file b
 5. **A firewall** (ufw) letting in only SSH, 80 and 443. It's for servers, so the default is no.
 
 The platform itself (`platform.sh`) now runs only on a **rootless** engine of the user running it, so a
-workstation-role host needs one set up by hand ([setup.md 8.6](setup.md#86-not-on-ubuntu-2404-or-not-behind-cloudflare)).
+workstation-role host needs one set up by hand ([setup.md 8.6](setup.md#86-not-on-ubuntu-2404-or-2604-or-not-behind-cloudflare)).
 
 ## Build agents
 

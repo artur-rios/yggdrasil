@@ -314,7 +314,7 @@ include <tunables/global>
 }
 ```
 
-Ubuntu 24.04 blocks unprivileged user namespaces by default
+Ubuntu 24.04 and 26.04 block unprivileged user namespaces by default
 (`kernel.apparmor_restrict_unprivileged_userns`). Rootless Docker's helper, `rootlesskit`, needs
 one. This profile allows it, and only it. `ygg install` reloads AppArmor after writing it.
 
@@ -397,7 +397,7 @@ Three things make this file safe:
   If the admin has no `~/.ssh/authorized_keys`, `ygg install` stops at the start, before changing
   anything, and says so. Put your public key in it first (`ssh-copy-id` from your own computer).
 
-Then it runs `systemctl try-reload-or-restart ssh` (on 24.04 SSH may be socket-activated, where a
+Then it runs `systemctl try-reload-or-restart ssh` (on 24.04 and later SSH may be socket-activated, where a
 plain reload can find nothing to reload). Keep your current SSH session open and test a new one
 before closing it.
 
@@ -928,7 +928,7 @@ you restored it before the first `up`: it uses it anyway.
 Another apps host (a second `ygg` engine for more applications, or one environment per host) is set
 up like the first apps machine:
 
-1. **Ubuntu 24.04** with an admin user that has `sudo` and your key in `~/.ssh/authorized_keys`.
+1. **Ubuntu 24.04 or 26.04 LTS** with an admin user that has `sudo` and your key in `~/.ssh/authorized_keys`.
 2. **The checkout and the install**, as in [setup.md step 8](setup.md#8-prepare-each-machine): clone into
    `/opt/yggdrasil`, then `ygg install --role apps`. It creates its own `ygg` user and engine; nothing
    is shared with the other machines.
