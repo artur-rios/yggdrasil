@@ -56,6 +56,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   refuses 26.04, the dev machine (2.1) and the window (5.5) run `ygg install` from `<installer commit>`, the merge of
   this change on `develop`, then put the checkout back on `main`; homologation is deployed by hand at its recorded
   versions, as production is.
+- **`backup.sh` backs up the variables store.** The new item `vars` takes a consistent copy of the machine's store and
+  its key (`ygg vars backup`) into `vars.tar.gz` every night, and sends it to the other machine with the other
+  backups: until now the store, with every application's secrets, had no copy off the machine.
+  [docs/hosts.md](docs/hosts.md#7-backups-and-restore) says how to restore it, and the cutover's `backup.conf`
+  (5.21) has it on both machines.
 - **`backup.sh` dumps a stopped database too.** A `postgres <container> <user>` item whose container is stopped (an
   on-demand environment's database, most nights) failed, since `docker exec` cannot reach it. The container is now
   started for the dump, alone, waited for over TCP (60 seconds, `BACKUP_POSTGRES_START_WAIT`) and stopped again;

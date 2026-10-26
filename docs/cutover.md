@@ -677,7 +677,8 @@ and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cuto
 - As cron jobs and timers, none that runs `docker` (Ubuntu's own timers, `apt-daily`, `logrotate`, `fstrim` and the
   like, are expected; open any other with `systemctl cat <unit>`): after 5.5 there is no rootful engine to run.
   `/etc/cron.d/yggdrasil-vars` is v0.7.4's weekly backup of the variables store, as root ([variables.md, Backup and
-  recovery](variables.md#backup-and-recovery)): 5.5 part 3 hands it to `ygg`. A provider's agent (Hostinger's
+  recovery](variables.md#backup-and-recovery)): 5.5 part 3 sets it aside, and 5.21's `vars` item backs the store up
+  instead, every night and to the dev machine. A provider's agent (Hostinger's
   `monarx-update`, say) and Ubuntu's `e2scrub_all` do not use `docker` and stay.
 
 **If it fails:**
@@ -1509,22 +1510,17 @@ on, the server is the apps machine.
    ```
 
    Then the store's weekly backup, if 3.1 listed `/etc/cron.d/yggdrasil-vars`: v0.7.4's line runs `ygg vars backup`
-   as root, into `/root/yggdrasil-backups`. The store is `ygg`'s now, so its backup is too, the same line in `ygg`'s
-   own crontab, into `~ygg/yggdrasil-backups`; root's file is kept aside for the rollback:
+   as root, into `/root/yggdrasil-backups`. From 5.21 on, `backup.sh`'s `vars` item backs the store up as `ygg`,
+   every night, and sends it to the dev machine, which the weekly copies never left the server for. Root's file is
+   kept aside for the rollback:
 
    ```bash
    sudo mv /etc/cron.d/yggdrasil-vars /srv/migration/cron.d-yggdrasil-vars
-   echo '0 3 * * 0 /opt/yggdrasil/scripts/ygg vars backup /home/ygg/yggdrasil-backups' | sudo -u ygg crontab -
-   sudo -u ygg crontab -l
-   sudo -u ygg /opt/yggdrasil/scripts/ygg vars backup /home/ygg/yggdrasil-backups
    ```
 
-   - `crontab -`: `ygg`'s crontab, which the install never writes, becomes that one line: on Sundays at 03:00, as
-     v0.7.4's. `cron` starts it as `ygg`, not as root.
-   - The last line takes the first backup now, so a broken line shows before Sunday. `ygg vars backup` makes the
-     directory and its files `ygg`'s only (`0600`).
-   - `/root/yggdrasil-backups` keeps the old copies, of the store before the conversion; 7.1 deletes them.
-   - The copies stay on the server, as before: `backup.sh` does not send the store anywhere.
+   Until 5.21 the store has its copy of 5.4 in `/srv/migration` and 5.4a's on the dev machine, and nothing changes
+   it but this window. `/root/yggdrasil-backups` keeps the old copies, of the store before the conversion; 7.1
+   deletes them.
 
    The old controller's GitHub App key (`github-app.pem`) stays here, `ygg`'s and `600`: this host keeps no
    controller, so nothing reads it (7.2 deletes it). The installer also put `platform.env` and `acme.env` from the
@@ -1534,8 +1530,7 @@ on, the server is the apps machine.
    **Success looks like:** the check's `secrets ygg` row is `ok` (`/etc/yggdrasil (ygg:ygg 750)`), and every row
    `ok` but the Backups rows, part 2's `ports` warning for a port 3.1 kept, and one `warn` row, expected until 0.9.0
    (5.17's `git pull`): this is `v0.8.0`'s check now, `Ubuntu 26.04.1 LTS: install knows Ubuntu 24.04 only, check
-   works anywhere`. `crontab -l` prints the one line, and the backup `Wrote /home/ygg/yggdrasil-backups/vars-<time>.db
-   and ...key`.
+   works anywhere`. `ls /etc/cron.d` no longer lists `yggdrasil-vars`.
    **If it fails:** `secrets ygg ... is ygg:ygg 2750`: GNU `chmod` keeps a directory's set-group-ID bit under a
    numeric mode of three digits, and 26.04's Rust `chmod` may too (Conventions): `sudo chmod 00750 /etc/yggdrasil`,
    then the check again.
@@ -2478,8 +2473,9 @@ want of a `backup.conf`. [hosts.md, Backups](hosts.md#7-backups-and-restore), in
    key accepted once, by hand, from the sender. Use the addresses: the apps machine's names go through Cloudflare,
    which carries no SSH.
 2. **`backup.conf` on each** ([hosts.md, backup.conf](hosts.md#backupconf)), as `ygg`: on the dev machine
-   `BACKUP_TARGET=ygg@<apps ip>:.`, with `forgejo` (it fails while Forgejo has no repository; it has them since 5.11)
-   and `volume yggdrasil_jenkins`; on the apps machine `BACKUP_TARGET=ygg@<dev ip>:.`, with each application's
+   `BACKUP_TARGET=ygg@<apps ip>:.`, with `forgejo` (it fails while Forgejo has no repository; it has them since 5.11),
+   `vars` and `volume yggdrasil_jenkins`; on the apps machine `BACKUP_TARGET=ygg@<dev ip>:.`, with `vars` (the
+   store, with every application's secrets, and its key: [hosts.md](hosts.md#backupconf) says why both), each application's
    volumes (`volume <name>`, the names of `/srv/migration/apps/manifest.tsv`'s first column), and each database
    whose container exists, one `postgres <container> <user>` item each, as
    [`env/backup.conf.example`](../env/backup.conf.example) documents the kind (`pg_dumpall` in that container as
@@ -2833,7 +2829,6 @@ where they left them. What can be undone depends on how far the window went:
       sudo rm -f /etc/sysctl.d/90-yggdrasil.conf && sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024
       sudo rm -f /etc/yggdrasil-role
       [[ ! -e /srv/migration/cron.d-yggdrasil-vars ]] || sudo mv /srv/migration/cron.d-yggdrasil-vars /etc/cron.d/yggdrasil-vars
-      ! id ygg > /dev/null 2>&1 || sudo crontab -u ygg -r
       ```
       - `ufw allow 80,443/tcp`: the rule of the old layout (3.1), which the install deleted. The Cloudflare rules
         may stay (the list above).
@@ -2841,9 +2836,8 @@ where they left them. What can be undone depends on how far the window went:
         stopped before its system settings, or its role file, left none to remove.
       - `/etc/yggdrasil-role`: `apps`; without it a later `ygg check` of this checkout (v0.7.4 knows no role)
         reads the machine as before.
-      - The store's weekly backup back to root's `/etc/cron.d/yggdrasil-vars`, as 3.1 found it, and `ygg`'s crontab
-        gone (5.5 part 3). The first line does nothing when part 3 never moved it; `crontab -r` saying `no crontab
-        for ygg` means part 3 never wrote one.
+      - The store's weekly backup back to root's `/etc/cron.d/yggdrasil-vars`, as 3.1 found it (5.5 part 3). The
+        line does nothing when part 3 never moved it.
       - The SSH drop-in, only if the old setup needs something it closes (a password login, another user): `sudo rm
         /etc/ssh/sshd_config.d/00-yggdrasil.conf && sudo systemctl try-reload-or-restart ssh`, with a second session
         open, and a new login tried before you close it.

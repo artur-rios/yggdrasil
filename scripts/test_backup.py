@@ -16,6 +16,8 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
+import tarfile
 import tempfile
 import textwrap
 import time
@@ -23,6 +25,7 @@ import unittest
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "backup.sh"
+VARS = SCRIPTS / "vars.py"
 UNITS = SCRIPTS.parent / "platform" / "systemd"
 TEMPLATE = SCRIPTS.parent / "env" / "backup.conf.example"
 
@@ -387,6 +390,54 @@ class BackupTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("rsync", result.stderr)
         self.assertEqual(len(self.today_files()), 3)
+
+    def vars_py(self, *arguments, secrets=None, stdin=None):
+        """scripts/vars.py on a store in `secrets` (default: this test's secrets directory)."""
+        env = {**self.env, "YGG_SECRETS_DIR": str(secrets or self.secrets)}
+        result = subprocess.run([sys.executable, str(VARS), *arguments], env=env, input=stdin,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def test_given_a_store_when_backed_up_then_its_archive_restores_it(self):
+        self.vars_py("init", stdin="saved\n")
+        self.vars_py("set", "platform", "DOMAIN=example.com", "--no-secret")
+        self.vars_py("set", "platform", "CF_DNS_API_TOKEN=s3cret", "--secret")
+        self.conf("vars\n")
+        result = self.backup("run")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.today_files(), ["vars.tar.gz"])
+        archive = self.backups / self.today / "vars.tar.gz"
+        self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
+        with tarfile.open(archive) as tar:
+            members = {member.name: member for member in tar.getmembers()}
+            self.assertEqual(sorted(members), ["vars.db", "vars.key"])
+            for member in members.values():
+                self.assertEqual(stat.S_IMODE(member.mode), 0o600, member.name)
+            restored = self.temp / "restored"
+            restored.mkdir()
+            tar.extractall(restored, filter="data")
+        # Unpacked into a secrets directory, it is the store: the key opens it, every value is there.
+        self.assertEqual((restored / "vars.key").read_bytes(), (self.secrets / "vars.key").read_bytes())
+        self.assertEqual(self.vars_py("get", "platform", "DOMAIN", secrets=restored).strip(), "example.com")
+        self.assertEqual(self.vars_py("get", "platform", "CF_DNS_API_TOKEN", "--reveal", secrets=restored).strip(),
+                         "s3cret")
+        # Nothing is left of the copy outside the archive.
+        self.assertEqual(sorted(path.name for path in (self.backups / self.today).iterdir()), ["vars.tar.gz"])
+
+    def test_given_no_store_when_backed_up_then_the_item_fails_and_nothing_is_left(self):
+        self.conf("vars\n")
+        result = self.backup("run")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED: vars", result.stderr)
+        self.assertEqual(self.today_files(), [])
+
+    def test_given_vars_with_an_argument_when_run_then_it_is_refused(self):
+        self.conf("vars /etc/yggdrasil\n")
+        result = self.backup("run")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("vars takes no arguments", result.stderr)
+        self.assertFalse(self.backups.exists())
 
     def test_given_an_unknown_item_kind_when_run_then_it_is_refused_naming_the_line(self):
         self.conf(items="forgejo\nvolumes oops\n")

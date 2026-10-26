@@ -71,7 +71,7 @@ read_conf() {
     fi
     read -r -a words <<<"$line"
     case ${words[0]} in
-      forgejo) ((${#words[@]} == 1)) || die "$conf line $number: forgejo takes no arguments: $line" ;;
+      forgejo | vars) ((${#words[@]} == 1)) || die "$conf line $number: ${words[0]} takes no arguments: $line" ;;
       volume)
         if ((${#words[@]} != 2)) || ! name_ok "${words[1]}"; then
           die "$conf line $number: expected 'volume <name>': $line"
@@ -82,7 +82,7 @@ read_conf() {
           die "$conf line $number: expected 'postgres <container> <user>': $line"
         fi
         ;;
-      *) die "$conf line $number: unknown item kind '${words[0]}' (forgejo, volume <name>, postgres <container> <user>): $line" ;;
+      *) die "$conf line $number: unknown item kind '${words[0]}' (forgejo, vars, volume <name>, postgres <container> <user>): $line" ;;
     esac
     items+=("${words[*]}")
   done <"$conf"
@@ -94,6 +94,7 @@ item_file() {
   read -r -a words <<<"$1"
   case ${words[0]} in
     forgejo) echo forgejo.zip ;;
+    vars) echo vars.tar.gz ;;
     volume) echo "volume-${words[1]}.tar.gz" ;;
     postgres) echo "postgres-${words[1]}.sql.gz" ;;
   esac
@@ -156,7 +157,7 @@ read_conf
 [[ "$BACKUP_KEEP" =~ ^[1-9][0-9]*$ ]] || die "BACKUP_KEEP in $conf must be a number of days, 1 or more, not '$BACKUP_KEEP'"
 # The template ships its items commented out: a copy nobody finished would otherwise "back up" nothing
 # every night and report success.
-((${#items[@]})) || die "no items in $conf: uncomment or add forgejo, volume <name> or postgres <container> <user> lines (template: env/backup.conf.example)"
+((${#items[@]})) || die "no items in $conf: uncomment or add forgejo, vars, volume <name> or postgres <container> <user> lines (template: env/backup.conf.example)"
 
 # rsync splits -e on spaces and honours quotes, not backslashes: a key path with a blank is single-quoted.
 if [[ "$BACKUP_KEY" =~ ^[A-Za-z0-9_./+@:-]+$ ]]; then
@@ -188,6 +189,23 @@ dump_forgejo() {
   docker exec "$container" forgejo dump --config "$FORGEJO_CONFIG" --type zip --file "$FORGEJO_DUMP" || status=1
   [[ $status -ne 0 ]] || docker cp "$container:$FORGEJO_DUMP" "$out.partial" || status=1
   docker exec "$container" rm -f "$FORGEJO_DUMP" || true
+  return "$status"
+}
+
+# dump_vars <file>: the variables store and its key ($secrets/vars.db and vars.key), as vars.db and
+# vars.key in one archive. vars.py's backup takes a consistent copy while the store is in use; the key
+# goes with it, since a store without its key cannot be read, and a machine that is lost takes its
+# key along. Restored by unpacking both into the secrets directory (docs/hosts.md, Restore).
+dump_vars() {
+  local out=$1 tmp status=0
+  tmp=$(mktemp -d) || return 1
+  if YGG_SECRETS_DIR=$secrets python3 "$root/scripts/vars.py" backup "$tmp" >/dev/null; then
+    mv "$tmp"/vars-*.db "$tmp/vars.db" && mv "$tmp"/vars-*.key "$tmp/vars.key" \
+      && tar -C "$tmp" -czf "$out.partial" vars.db vars.key || status=1
+  else
+    status=1
+  fi
+  rm -rf -- "$tmp"
   return "$status"
 }
 
@@ -269,6 +287,7 @@ run_item() {
   local status=0
   case ${words[0]} in
     forgejo) dump_forgejo "$out" || status=1 ;;
+    vars) dump_vars "$out" || status=1 ;;
     volume) dump_volume "${words[1]}" "$out" || status=1 ;;
     postgres) dump_postgres "${words[1]}" "${words[2]}" "$out" || status=1 ;;
   esac

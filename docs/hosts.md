@@ -765,6 +765,7 @@ lines.
 | Item | Becomes | How |
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
+| `vars` | `vars.tar.gz` | the [variables store](variables.md) of this machine and its key, `vars.db` and `vars.key` of the secrets directory: a consistent copy (`ygg vars backup`), taken while the store is in use |
 | `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running |
 | `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user. A stopped one (exited, or created) is started for it and stopped again, unless another container of its project runs by then; a restarting, paused or dead one fails the item |
 
@@ -777,6 +778,7 @@ For example, on the dev machine:
 ```text
 BACKUP_TARGET=ygg@203.0.113.20:.
 forgejo
+vars
 volume yggdrasil_jenkins
 ```
 
@@ -784,9 +786,17 @@ and on the apps machine:
 
 ```text
 BACKUP_TARGET=ygg@git.example.com:.
+vars
 volume shop-api-production_data
 postgres shop-db-1 postgres
 ```
+
+`vars` belongs on every machine with a store (`vars.db` in `/etc/yggdrasil`): it holds the platform's settings and
+every application's variables, secrets included. Its archive carries the key too, so the other machine holds both:
+a store is no use without its key, and a machine that is lost takes its key with it. That makes `~/received/` on
+each machine as sensitive as the other's `/etc/yggdrasil`: the files arrive `ygg`'s alone (`600`, as `backup.sh`
+writes them, and `rsync -a` keeps), and the key that writes them can do nothing else (`rrsync`, below). Keep the key's own copy in your password manager as well
+([variables.md](variables.md#backup-and-recovery)).
 
 An API whose stack runs its own PostgreSQL, as heimdall-api's and fortuna-api's do (`stacks/*-api.proxy.yml`,
 the `db` service), has one such item per environment: `postgres heimdall-api-production-db-1 postgres`. Not
@@ -939,6 +949,19 @@ docker run --rm -v yggdrasil_jenkins:/volume -v "$HOME/restore/2026-10-22":/back
 
 Start the platform again. Compose may warn that the volume "was not created by Docker Compose" if
 you restored it before the first `up`: it uses it anyway.
+
+**The variables store** (`vars.tar.gz`): into the secrets directory, before the platform or a deploy reads it.
+On a rebuilt machine `ygg install` has made `/etc/yggdrasil`, `ygg`'s and empty of a store:
+
+```bash
+tar -C /etc/yggdrasil -xzf ~/restore/2026-10-22/vars.tar.gz vars.db vars.key
+chmod 600 /etc/yggdrasil/vars.db /etc/yggdrasil/vars.key
+ygg vars check
+```
+
+`tar` overwrites a store that is there: on a machine that still has one, move `vars.db` and `vars.key` aside first.
+`ygg vars check` opens the store with the key, so a key of another store or a damaged copy shows here, not at the
+next deploy. Then `scripts/platform.sh up` and the deploys read it as before.
 
 **A PostgreSQL dump** (`postgres-<container>.sql.gz`): into the new, running database container,
 `gunzip -c postgres-<container>.sql.gz | docker exec -i <container> psql -U <user> -d postgres`.
