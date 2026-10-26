@@ -1,14 +1,17 @@
 name: CI
 
-# Build and test for everything in this repository. Deployment is not here: the platform is brought
-# up on each host with scripts/platform.sh, and applications are deployed by Jenkins.
+# The console's Windows build, which stays on GitHub Actions: Jenkins runs the Linux checks (status, console and
+# platform in yggdrasil.yml, from ci/) and copies this job's result ("Console (Windows)", the catalog's
+# actionsCheck) onto the Forgejo commit. The release's Windows installer is release-windows.yml, and the live
+# pipeline suite pipeline-live.yml.
+#
+# Every branch push, and nothing narrower: the pull requests are on Forgejo, the mirror only receives every branch,
+# and Jenkins copies this job's result for a pull request's head commit by its SHA (docs/setup.md, "GitHub Actions
+# and the skip"). So no pull_request (it never fires on the mirror) and no paths (a skipped commit has no result).
 
 on:
   push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
-  # By hand only: the pipeline-live job below (it builds the Jenkins images and takes many minutes).
+    branches: ['**']
   workflow_dispatch:
 
 concurrency:
@@ -16,48 +19,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  status:
-    name: Status API
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
-        with:
-          # The SDK the status image and every .NET check use. '10.0.x' resolved to 10.0.403 as soon as it was
-          # announced, before its files could be downloaded (409), and the job failed for it.
-          dotnet-version: '10.0.402'
-      - run: dotnet test status --configuration Release
-      - name: Build the container image
-        run: docker build --tag yggdrasil-status:ci status
-
-  console:
-    name: Console
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: console
-    steps:
-      - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.4
-          channel: stable
-          cache: true
-      - run: flutter pub get
-      - run: dart format --output=none --set-exit-if-changed lib test
-      - run: flutter analyze
-      - run: flutter test
-      - run: flutter build web --release --no-web-resources-cdn
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '17'
-      - run: flutter build apk --release
-      - uses: actions/upload-artifact@v7
-        with:
-          name: yggdrasil-console-android
-          path: console/build/app/outputs/flutter-apk/app-release.apk
-
   console-windows:
     name: Console (Windows)
     runs-on: windows-latest
@@ -66,6 +27,7 @@ jobs:
         working-directory: console
     steps:
       - uses: actions/checkout@v7
+      # The same Flutter as ci/flutter-env.sh pins for the Linux checks.
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.4
@@ -91,103 +53,3 @@ jobs:
         with:
           name: yggdrasil-console-windows
           path: console/build/windows/installer/*.exe
-
-  platform:
-    name: Platform
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Check shell scripts
-        run: shellcheck scripts/*.sh scripts/ygg
-      - run: pip install --quiet pyyaml cryptography
-      - name: Test the catalog tooling
-        run: python3 -m unittest discover -s scripts -v
-      - name: Test the Docker socket proxies against Traefik and Alloy
-        # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API. discover: the
-        # suite imports traefik_config flat, which `-m unittest scripts.test_socket_proxies` cannot.
-        env:
-          YGG_DOCKER_TESTS: "1"
-        run: python3 -m unittest discover -s scripts -p test_socket_proxies.py -v
-      - name: Test forge.sh and rules.py against Forgejo
-        # The pinned Forgejo image, its API answers and the protections rules.py applies, with real
-        # users and repositories (scripts/test_forgejo_live.py). discover: the tests import flat.
-        env:
-          YGG_FORGEJO_TESTS: "1"
-        run: python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
-      - name: Check the catalog
-        # The same validation deploy.sh, platform.sh and rules.py run before using it.
-        run: python3 scripts/catalog.py validate
-      - name: Validate the Compose files
-        run: |
-          secrets=$(mktemp -d)
-          cat > "$secrets/platform.env" <<ENV
-          ENVIRONMENTS=$(python3 scripts/catalog.py environments | paste -sd, -)
-          DOMAIN=example.com
-          ACME_EMAIL=ci@example.com
-          ACME_DNS_PROVIDER=cloudflare
-          TRAEFIK_DASHBOARD_USERS='admin:x'
-          GRAFANA_ADMIN_PASSWORD=x
-          YGGDRASIL_STATUS_TOKEN=0000000000000000000000000000000000000000
-          COMPOSE_PROFILES=apps
-          YGG_SECRETS_DIR=$secrets
-          ENV
-          touch "$secrets/acme.env"
-          # Traefik's configuration is a file compose.yml requires; platform.sh renders it from the
-          # same settings.
-          (set -a; . "$secrets/platform.env"; python3 scripts/traefik_config.py) > "$secrets/traefik.yml"
-          # DOCKER_SOCKET is the user's rootless socket, which platform.sh finds on a host; Compose
-          # only needs the path here, not an engine behind it.
-          export DOCKER_SOCKET=/run/user/1000/docker.sock YGG_TRAEFIK_CONFIG_FILE="$secrets/traefik.yml"
-          # platform.sh labels Traefik with the file's hash, so a changed file recreates it.
-          YGG_TRAEFIK_CONFIG_HASH=$(sha256sum "$secrets/traefik.yml" | cut -d' ' -f1)
-          export YGG_TRAEFIK_CONFIG_HASH
-          GITHUB_OWNER=$(python3 scripts/catalog.py owner)
-          export GITHUB_OWNER
-          # The platform file once for each machine's profiles: the apps machine's, with its deploy
-          # agent (the env file's own COMPOSE_PROFILES is just apps), and the dev machine's, which
-          # runs Forgejo and the Jenkins controller. A variable in the shell wins over the env file.
-          for profiles in apps,agent forge,jenkins; do
-            COMPOSE_PROFILES=$profiles docker compose --env-file "$secrets/platform.env" -f platform/compose.yml config --quiet
-            echo "platform/compose.yml ($profiles) ok"
-          done
-          # The build agent of the ci and release users, with a dummy agent.env (scripts/agent.sh checks
-          # the real one; Compose needs all four values).
-          cat > "$secrets/agent.env" <<ENV
-          JENKINS_URL=https://jenkins.example.com
-          JENKINS_AGENT_NAME=ci
-          JENKINS_AGENT_SECRET=x
-          YGG_AGENT_WORKDIR=/home/ci/agent
-          ENV
-          docker compose -p yggdrasil-agent-ci --env-file "$secrets/agent.env" -f platform/build-agent.yml config --quiet
-          echo "platform/build-agent.yml ok"
-          # Every stack that has its service here, in both modes, with a dummy value for each
-          # variable it requires: a port for *PORT, an empty file for *_FILE (an env_file, such as
-          # APP_ENV_FILE, must exist), x for the rest. (Stacks based on the application's own
-          # docker-compose.yml are validated by deploy.sh on the first deploy.)
-          for stack in $(python3 scripts/catalog.py applications --deployable); do
-            [[ -f "stacks/$stack.yml" ]] || continue
-            for mode in proxy ports; do
-              [[ -f "stacks/$stack.$mode.yml" ]] || continue
-              paths=("stacks/$stack.yml" "stacks/$stack.$mode.yml")
-              grep -ohE '[$][{][A-Z_]+' "${paths[@]}" | cut -c3- | sort -u \
-                | sed -E 's/^(.*PORT)$/\1=127.0.0.1:18080/; t; s#^(.*_FILE)$#\1=/dev/null#; t; s/$/=x/' > "$secrets/$stack.env"
-              APP_DIR=. docker compose --env-file "$secrets/$stack.env" -f "${paths[0]}" -f "${paths[1]}" config --quiet
-              echo "stacks/$stack.$mode.yml ok"
-            done
-          done
-
-  pipeline-live:
-    name: Pipeline (live Jenkins)
-    # The pipeline end to end: the Jenkins controller and build agent images built from platform/jenkins,
-    # Forgejo, pull requests and pushes through the library (scripts/test_jenkins_live.py). It builds
-    # images (the plugins come from the internet) and runs builds, so it runs only when started by hand.
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v7
-      - run: pip install --quiet pyyaml
-      - name: Run the pipeline against Jenkins and Forgejo
-        env:
-          YGG_JENKINS_TESTS: "1"
-        run: python3 -m unittest discover -s scripts -p test_jenkins_live.py -v

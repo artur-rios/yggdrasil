@@ -133,11 +133,16 @@ The [license](../LICENSE) allows this copy: you may fork or import the repositor
 run it on hosts you control to deploy your own applications. You may not redistribute it or offer
 it to others as a service.
 
-1. On GitHub, **Fork** this repository into your owner (step 0), and untick *Copy the `develop`
+This repository lives at [git.techcraftsmen.net/artur-rios/yggdrasil](https://git.techcraftsmen.net/artur-rios/yggdrasil)
+(`https://git.techcraftsmen.net/artur-rios/yggdrasil.git`); [github.com/artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil)
+is a read-only mirror of it, with the same branches, tags and releases.
+
+1. On GitHub, **Fork** the mirror into your owner (step 0), and untick *Copy the `develop`
    branch only*: this repository's default branch is `develop`, its work in progress, while
    releases are merged into `main`, the branch your installation runs. For a private copy, use
-   *Import repository* or create an empty private repository and push `main` to it: forks of
-   public repositories can't be private.
+   *Import repository* (from either address) or create an empty private repository and push `main` to it:
+   forks of public repositories can't be private. On a Forgejo of your own, **New migration** from
+   `https://git.techcraftsmen.net/artur-rios/yggdrasil.git` does the same.
 2. Clone its `main` branch:
    ```bash
    git clone -b main https://github.com/<owner>/<repository>.git
@@ -1562,8 +1567,10 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
 | Grafana | `https://grafana.<DOMAIN>` (`grafana-dev.<DOMAIN>` on the dev machine), `admin` / `GRAFANA_ADMIN_PASSWORD` | Prometheus and Loki data sources work |
 
 **Windows and Android consoles**: download them from the releases of
-[artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil/releases) (your fork has none until you
-create a GitHub release `vX.Y.Z`, which `release.yml` attaches them to). Then add each host in
+[artur-rios/yggdrasil](https://git.techcraftsmen.net/artur-rios/yggdrasil/releases) (copied to the
+[GitHub mirror](https://github.com/artur-rios/yggdrasil/releases)). Your fork has none until you release it: Jenkins
+builds them when you push a `vX.Y.Z` tag, the installer through GitHub Actions (`release.windows`), as
+[CONTRIBUTING.md](../CONTRIBUTING.md#releasing) describes. Then add each host in
 the console's **Hosts** screen with its URL (`https://yggdrasil.<DOMAIN>`) and its
 `YGGDRASIL_STATUS_TOKEN`: one entry shows every environment of the host.
 

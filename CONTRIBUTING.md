@@ -3,6 +3,15 @@
 This guide is for changing yggdrasil itself. Installing and running it is in the [README](./README.md) and
 [docs/setup.md](docs/setup.md).
 
+The repository lives at [git.techcraftsmen.net/artur-rios/yggdrasil](https://git.techcraftsmen.net/artur-rios/yggdrasil):
+clone it from there and open pull requests there.
+[github.com/artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil) is a read-only mirror: it runs the GitHub
+Actions jobs below, and takes no pushes or pull requests.
+
+```bash
+git clone https://git.techcraftsmen.net/artur-rios/yggdrasil.git
+```
+
 ## Prerequisites
 
 What CI uses for each part of the repository:
@@ -16,8 +25,15 @@ What CI uses for each part of the repository:
 
 ## Build and test
 
-CI (`.github/workflows/ci.yml`) runs all of the following on every push and pull request to `develop` and `main`. Run
-the part you changed before opening a pull request.
+Jenkins runs the following as the checks of [`yggdrasil.yml`](yggdrasil.yml), `status`, `console` and `platform`
+(`ci/status.sh`, `ci/console.sh`, `ci/platform.sh`, each in its pinned image), on every pull request and every push
+to `develop`, `main` and `release/*`. The Windows console is built by the GitHub Actions job `Console (Windows)`
+(`.github/workflows/ci.yml`) on the mirror, and Jenkins copies its result. Run the part you changed before opening a
+pull request, or its script in its image, as Jenkins does ([The pipeline](#the-pipeline)):
+
+```bash
+bash scripts/run-check.sh console <the console image in yggdrasil.yml> "$PWD" -- sh -c 'ci/console.sh'
+```
 
 ### Status API
 
@@ -123,7 +139,9 @@ the `v*` tags, can also move and delete them (docs/setup.md, step 12). With Dock
 YGG_FORGEJO_TESTS=1 python3 -m unittest discover -s scripts -p test_forgejo_live.py -v
 ```
 
-It takes about 20 seconds and removes its container at the end, also when it fails. CI runs it (job `platform`).
+It takes about 20 seconds and removes its container at the end, also when it fails. CI runs it (check `platform`;
+there Forgejo joins the check's own container's network, `YGG_FORGEJO_TEST_NETWORK`, since the engine's published
+ports are out of a check's reach).
 When Forgejo is upgraded, run it: a changed answer of the API fails it.
 
 ### The pipeline
@@ -170,8 +188,8 @@ YGG_JENKINS_TESTS=1 python3 -m unittest discover -s scripts -p test_jenkins_live
 the controller, the `ci`, `release` and deploy agents and a local NuGet feed, and runs pull requests, pushes,
 releases (with the skip and `release-resume`), owner tags and a NuGet push through the library. It needs the
 engine to see this machine's paths as they are (a native Linux engine, or WSL's own, not a VM that translates
-them for its CLI) and takes many minutes: CI runs it as the job `pipeline-live`, only when the workflow is started
-by hand (`workflow_dispatch`). GitHub is replaced by a test double there, and the engine is not rootless: **the
+them for its CLI) and takes many minutes: the GitHub Actions workflow `.github/workflows/pipeline-live.yml` runs it on
+the mirror, only when it is started by hand (`workflow_dispatch`); it is not a check. GitHub is replaced by a test double there, and the engine is not rootless: **the
 GitHub paths and rootless Docker are not proven by it**. When Jenkins, a plugin or the Forgejo image is
 upgraded, run it.
 
@@ -181,27 +199,26 @@ This repository follows the same branching model it enforces on application repo
 [Branches and releases](README.md#branches-and-releases)). `develop` is the integration branch and the base for all
 new work; `main` only holds released code.
 
-The **Branch Policy** workflow (`.github/workflows/branch-policy.yml`, check `branch-policy`) runs on every pull
-request into `develop` or `main`:
+The **branch policy** ([`scripts/branch-policy.sh`](scripts/branch-policy.sh), status `branch-policy`), which Jenkins
+runs on every pull request into `develop` or `main`, as for every repository:
 
-- Into `develop` go only `feature/<name>` and `fix/<name>` branches (`dependabot/...` is also accepted by this
-  repository's workflow; the branch policy Jenkins runs for repositories with a `yggdrasil.yml`,
-  `scripts/branch-policy.sh`, accepts `renovate/...` instead) cut from `develop`. `<name>` starts with a lowercase letter or digit, then lowercase letters, digits, `.`, `_` or `-`. A branch
+- Into `develop` go only `feature/<name>` and `fix/<name>` branches (and Renovate's `renovate/...`) cut from
+  `develop`. `<name>` starts with a lowercase letter or digit, then lowercase letters, digits, `.`, `_` or `-`. A branch
   that contains a release merge commit from `main` was cut from `main` and is rejected.
 - Into `main` go only `release/<major>.<minor>.<patch>` branches that are snapshots of `develop`: every commit on them
   is already on `develop`, and the version has no `v<version>` tag yet. A release carries no changes of its own; a fix
   goes to `develop` through a `fix/` branch and a new release is cut.
 
-Repository rulesets, the same ones [`scripts/rules.py`](scripts/rules.py) applies to application repositories on
-GitHub (on Forgejo it applies equivalent branch and tag protections), hold this in place:
+The branch and tag protections [`scripts/rules.py`](scripts/rules.py) applies to every catalog repository hold this
+in place (this one is the catalog's `yggdrasil` entry: `release: owner-tag`, `rules: release`):
 
-| Ruleset | Rules |
+| Branch or tag | Rules |
 |---|---|
-| `develop` | No deletion or force push; changes only through a pull request (squash or merge commit, no approval required) whose checks pass: `branch-policy`, `Status API`, `Console`, `Console (Windows)` and `Platform` |
-| `main` | The same, merge commit only. No `deploy/<environment>` status: Jenkins does not deploy or merge this repository |
-| `release tags` | `v*` tags can't be created, moved or deleted, except by the repository owner |
+| `develop` | No deletion or force push; changes only through a pull request (squash or merge commit, no approval required) whose checks pass: `branch-policy`, `status`, `console`, `platform` and `Console (Windows)` |
+| `main` | The same without `Console (Windows)` (GitHub Actions checks are required on `develop` only), merge commit only, merged by the owner. No `deploy/<environment>` status: Jenkins does not deploy or merge this repository |
+| `v*` tags | Created only by the owner ([docs/setup.md, step 12](docs/setup.md#12-apply-the-branch-rules) has Forgejo's accepted gap; on the GitHub mirror nobody can move or delete them) |
 
-The owner (repository admin role) can bypass all three, for emergencies (on Forgejo, with a forced merge).
+The owner (repository admin) can merge past failing checks, for emergencies (**Merge anyway** on Forgejo).
 `develop` is the default branch, and head branches are deleted when their pull request merges.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) with a lowercase subject, e.g.
@@ -220,7 +237,7 @@ because a host runs a checkout of one release of all of it. For yggdrasil, the p
   `catalog.yaml` field removed, renamed or given a new meaning; a new required variable in `platform.env`, `acme.env`
   or an application env file; a stack file convention that existing `stacks/` files no longer meet; a change to the
   [status API contract](docs/status-api.md) that a console of the previous release can't read; a change application
-  repositories must follow (their `yggdrasil.yml`, Branch Policy or rules, `templates/application/`); data in the
+  repositories must follow (their `yggdrasil.yml`, branch policy or rules, `templates/application/`); data in the
   platform's volumes that has to be migrated.
 - **Minor**: something new that an existing installation can ignore: an optional catalog field or variable, a
   command, a console feature, an added status API field.
@@ -232,9 +249,10 @@ operator has to do. 0.3.0, which replaced the fixed development, homologation an
 catalog's, was such a minor increment. Everything else increments the patch.
 
 There is no version file to bump. The version is the release branch's name (`release/<version>`) and the tag
-`v<version>` the GitHub release creates; the CHANGELOG heading records it. `release.yml` passes the tag, without its
-`v`, to `flutter build --build-name` and to the installer's `/DAppVersion`, so the released Windows installer, its
-executable and the APK carry it.
+`v<version>` the owner pushes; the CHANGELOG heading records it. The release build passes the tag, without its `v`,
+to `flutter build --build-name` (`ci/release-build.sh` for the APK, `.github/workflows/release-windows.yml` for
+Windows) and to the installer's `/DAppVersion`, so the released Windows installer, its executable and the APK carry
+it.
 
 `version: 1.0.0+1` in `console/pubspec.yaml` is not the release version, and is not bumped for a release:
 
@@ -255,19 +273,24 @@ executable and the APK carry it.
    git switch develop && git pull && git switch -c release/<version> && git push -u origin release/<version>
    ```
 
-3. Once the Branch Policy and CI checks pass, merge it with a merge commit.
-4. Create the GitHub release `v<version>` on `main`, which creates the tag:
+3. Once the branch policy and the checks pass, merge it with a merge commit.
+4. Tag the merge commit on `main`, **annotated**, and push the tag:
 
    ```bash
-   gh release create v<version> --target main --generate-notes
+   git switch main && git pull
+   git tag -a v<version> -m v<version>
+   git push origin v<version>
    ```
 
-   Only the owner can create `v*` tags (the `release tags` ruleset). Pushing the tag runs
-   `.github/workflows/release.yml`, which first checks that the tagged commit is on `main` (job `Tag is on main`),
-   then builds the console's Windows installer and Android APK and attaches them to that release. It can also be run
-   by hand for an existing tag.
+   Only the owner can create `v*` tags. Jenkins builds the tag on the release agent
+   ([Owner tags and NuGet](docs/setup.md#owner-tags-and-nuget)): it checks that the tagged commit is on `main`, builds
+   the Android APK (`release.build`, `ci/release-build.sh`), has the mirror's GitHub Actions build the Windows
+   installer (`release.windows`, `.github/workflows/release-windows.yml`, dispatched on the tag), and publishes the
+   release with both files and the version's CHANGELOG section as its notes, on Forgejo and then on the GitHub mirror.
+   A tag that was not built (a lightweight tag on an old commit, say) is finished with the `release-resume` job
+   ([docs/setup.md](docs/setup.md#finishing-a-release-that-stopped)).
 
-`main` is not merged back into `develop`: the release merge commits stay on `main`, and the Branch Policy rejects any
+`main` is not merged back into `develop`: the release merge commits stay on `main`, and the branch policy rejects any
 branch into `develop` that contains one.
 
 Hosts pick up a release as described in the README's [Day to day](README.md#day-to-day) section ("Update a host's
