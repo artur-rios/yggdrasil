@@ -200,7 +200,7 @@ For a repository with a site on GitHub Pages or Vercel, once the new address ser
 - **Vercel** (the five projects: personal-page, personal-blog, tech-craftsmen-company-page, under-construction-template,
   github-readme-stats): in Vercel, delete the project.
 - **Then the DNS.** In Cloudflare's **DNS → Records**, delete the site's records that pointed at Vercel
-  (`cname.vercel-dns.com`, or an `A` to `76.76.21.21`), the ones the cutover kept ([5.8](cutover.md#58-dns-the-domains-point-at-the-new-apps-machine);
+  (`cname.vercel-dns.com`, or an `A` to `76.76.21.21`), the ones the cutover kept ([5.8](cutover.md#58-dns-the-apps-machines-names-behind-cloudflare);
   1.5's zone exports list them), in both zones:
   - `artur-rios.tech`: the `CNAME`s of `www` (personal-page) and `blog` (personal-blog), and the bare domain's record
     if it points there;

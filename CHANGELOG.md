@@ -30,6 +30,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **The cutover converts the old VPS in place.** [docs/cutover.md](docs/cutover.md) no longer rents a fresh apps
+  machine: only the dev machine is new, and the old VPS becomes the apps machine during the window, as
+  [docs/hosts.md](docs/hosts.md#9-upgrading-a-host-from-rootful-docker) section 9 describes. Section 3 now only reads
+  the server days before (Ubuntu 24.04 or 26.04, the old VPS's being 26.04.1, which the dev machine, rented on
+  26.04 too, proves before the window; `sudo` and the admin's key, the owners, the firewall, its PostgreSQL, cron
+  jobs and timers, the room for the archives, the dumps and the backups until the clean-up) and keeps a record of it.
+  **The databases move too**: heimdall-api's and fortuna-api's six databases leave the PostgreSQL on the host, which
+  a rootless engine's containers cannot reach, for the stacks' `db` containers. Section 0 records their roles,
+  owners and whole connection strings; the rehearsal archives one volume read-only from the rootful engine and
+  restores one database, both on the dev machine's rootless engine; the window archives every volume and
+  `/etc/yggdrasil` into `/srv/migration` with `volumes.sh`, dumps the roles and each database (`pg_dump`, a custom
+  and a plain copy), checks every archive and dump against its checksum, copies them off the server, runs `ygg
+  install --role apps`, hands the settings to `ygg`, changes the platform's settings in the variables store,
+  restores the volumes into `ygg`'s engine, restores each database into a labelled `<application>-<environment>_db`
+  volume through a temporary container with only its own roles and compares it with the plain dump, sets
+  `DB_HOST=db` (and `Host=db` in a whole connection string) and a new `DB_SUPERUSER_PASSWORD`, turns Cloudflare's
+  proxy on for the names that stay on the same address and sets up the backups, the six databases' dumps included.
+  The rollback reverses each change of the install (rootful Docker unmasked, the `docker` group, the checkout at
+  `v0.7.4`, the copy of `/etc/yggdrasil`, which brings `DB_HOST=host.docker.internal` back, the firewall rule),
+  points `jenkins.` back in every rollback, carries production's writes back into the host's PostgreSQL or states
+  that they are let go, and says what it cannot undo; the clean-up switches the host's PostgreSQL off, then deletes
+  the archives, the rootful engine's data and the PostgreSQL packages once the apps machine has run a release. The
+  window is now estimated at 4 to 8 hours. Since `main` stays `v0.8.0` until the window's 0.9.0, whose installer
+  refuses 26.04, the dev machine (2.1) and the window (5.5) run `ygg install` from `<installer commit>`, the merge of
+  this change on `develop`, then put the checkout back on `main`; homologation is deployed by hand at its recorded
+  versions, as production is.
+- **`backup.sh` backs up the variables store.** The new item `vars` takes a consistent copy of the machine's store and
+  its key (`ygg vars backup`) into `vars.tar.gz` every night, and sends it to the other machine with the other
+  backups: until now the store, with every application's secrets, had no copy off the machine.
+  [docs/hosts.md](docs/hosts.md#7-backups-and-restore) says how to restore it, and the cutover's `backup.conf`
+  (5.21) has it on both machines.
+- **`backup.sh` dumps a stopped database too.** A `postgres <container> <user>` item whose container is stopped (an
+  on-demand environment's database, most nights) failed, since `docker exec` cannot reach it. The container is now
+  started for the dump, alone, waited for over TCP (60 seconds, `BACKUP_POSTGRES_START_WAIT`) and stopped again;
+  one that never accepts connections fails the item and is stopped again too. Only an exited or created container
+  is started: one that is restarting, paused or dead fails its item, since starting and stopping it would mark it
+  stopped by hand and `restart: unless-stopped` would no longer bring it back. It stays up when another container
+  of its Compose project runs by the end of the dump (a deploy or `ygg env start` meanwhile), and a run that is
+  interrupted stops it on the way out.
+- **The `dev` and `apps` roles install on Ubuntu 26.04 LTS too.** `ygg install --role dev|apps` accepted Ubuntu
+  24.04 only; it now accepts 24.04 and 26.04 (`MACHINE_UBUNTU_VERSIONS` in `scripts/machine.sh`), and `ygg check`
+  no longer warns about 26.04. Docker's apt repository was already picked by the release's codename.
+- **heimdall-api and fortuna-api run their own PostgreSQL.** `stacks/heimdall-api.proxy.yml` and
+  `stacks/fortuna-api.proxy.yml` add a `db` service (`postgres:18.6`, pinned by digest, its data in the volume
+  `<application>-<environment>_db`) on the project's own network only, which the API waits for and reaches as
+  `DB_HOST=db`; the image's superuser has the new variable `DB_SUPERUSER_PASSWORD`. A PostgreSQL on the host is no
+  longer assumed: a rootless engine's containers cannot reach one. The env file examples say `DB_HOST=db`.
+  **Upgrading:** an installation whose APIs use a PostgreSQL on the host moves each database first, into its
+  `<application>-<environment>_db` volume ([docs/cutover.md](docs/cutover.md) 5.4 and 5.6a, or the new-environment
+  steps of [the example's README](docs/examples/docker-desktop-and-vps/README.md#postgresql) with a restore in
+  place of `new-deployment.sql`), then sets `DB_SUPERUSER_PASSWORD` (the one that volume was initialised with) and
+  `DB_HOST=db`, then deploys. A deploy before the move fails on the missing `DB_SUPERUSER_PASSWORD`, and one with it
+  set but no move initialises an empty database beside the old one, which the API then migrates and runs on.
 - **The status API reports each application's real address.** `url` is now
   `https://<host><hostSuffix>.<domain><path>`: the application's own `domain` (else `YGGDRASIL_DOMAIN`) and `path`,
   and the bare domain for an `apex` site without a `host`, as `scripts/catalog.py public-host` and `public-path`

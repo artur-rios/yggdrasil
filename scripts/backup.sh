@@ -33,6 +33,8 @@ FORGEJO_PROJECT=yggdrasil
 FORGEJO_SERVICE=forgejo
 FORGEJO_CONFIG=/var/lib/gitea/custom/conf/app.ini
 FORGEJO_DUMP=/tmp/forgejo-dump.zip
+# How many seconds a stopped database container gets to accept connections once started for its dump.
+POSTGRES_START_WAIT=${BACKUP_POSTGRES_START_WAIT:-60}
 # A day of ~/backups is a directory named by its date.
 DAY_PATTERN='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 
@@ -69,7 +71,7 @@ read_conf() {
     fi
     read -r -a words <<<"$line"
     case ${words[0]} in
-      forgejo) ((${#words[@]} == 1)) || die "$conf line $number: forgejo takes no arguments: $line" ;;
+      forgejo | vars) ((${#words[@]} == 1)) || die "$conf line $number: ${words[0]} takes no arguments: $line" ;;
       volume)
         if ((${#words[@]} != 2)) || ! name_ok "${words[1]}"; then
           die "$conf line $number: expected 'volume <name>': $line"
@@ -80,7 +82,7 @@ read_conf() {
           die "$conf line $number: expected 'postgres <container> <user>': $line"
         fi
         ;;
-      *) die "$conf line $number: unknown item kind '${words[0]}' (forgejo, volume <name>, postgres <container> <user>): $line" ;;
+      *) die "$conf line $number: unknown item kind '${words[0]}' (forgejo, vars, volume <name>, postgres <container> <user>): $line" ;;
     esac
     items+=("${words[*]}")
   done <"$conf"
@@ -92,6 +94,7 @@ item_file() {
   read -r -a words <<<"$1"
   case ${words[0]} in
     forgejo) echo forgejo.zip ;;
+    vars) echo vars.tar.gz ;;
     volume) echo "volume-${words[1]}.tar.gz" ;;
     postgres) echo "postgres-${words[1]}.sql.gz" ;;
   esac
@@ -154,7 +157,7 @@ read_conf
 [[ "$BACKUP_KEEP" =~ ^[1-9][0-9]*$ ]] || die "BACKUP_KEEP in $conf must be a number of days, 1 or more, not '$BACKUP_KEEP'"
 # The template ships its items commented out: a copy nobody finished would otherwise "back up" nothing
 # every night and report success.
-((${#items[@]})) || die "no items in $conf: uncomment or add forgejo, volume <name> or postgres <container> <user> lines (template: env/backup.conf.example)"
+((${#items[@]})) || die "no items in $conf: uncomment or add forgejo, vars, volume <name> or postgres <container> <user> lines (template: env/backup.conf.example)"
 
 # rsync splits -e on spaces and honours quotes, not backslashes: a key path with a blank is single-quoted.
 if [[ "$BACKUP_KEY" =~ ^[A-Za-z0-9_./+@:-]+$ ]]; then
@@ -189,15 +192,90 @@ dump_forgejo() {
   return "$status"
 }
 
+# dump_vars <file>: the variables store and its key ($secrets/vars.db and vars.key), as vars.db and
+# vars.key in one archive. vars.py's backup takes a consistent copy while the store is in use; the key
+# goes with it, since a store without its key cannot be read, and a machine that is lost takes its
+# key along. Restored by unpacking both into the secrets directory (docs/hosts.md, Restore).
+dump_vars() {
+  local out=$1 tmp status=0
+  tmp=$(mktemp -d) || return 1
+  if YGG_SECRETS_DIR=$secrets python3 "$root/scripts/vars.py" backup "$tmp" >/dev/null; then
+    mv "$tmp"/vars-*.db "$tmp/vars.db" && mv "$tmp"/vars-*.key "$tmp/vars.key" \
+      && tar -C "$tmp" -czf "$out.partial" vars.db vars.key || status=1
+  else
+    status=1
+  fi
+  rm -rf -- "$tmp"
+  return "$status"
+}
+
 # dump_volume <name> <file>: a throwaway container of the pinned TAR_IMAGE with the volume mounted
 # read-only: the data is only read, and whatever uses the volume doesn't have to stop.
 dump_volume() {
   docker run --rm --volume "$1:/volume:ro" "$TAR_IMAGE" tar -C /volume -czf - . >"$2.partial" || return 1
 }
 
-# dump_postgres <container> <user> <file>
+# dump_postgres <container> <user> <file>. The database of an on-demand environment is stopped most
+# nights, and `docker exec` cannot reach a stopped container: it is started for the dump, alone (the
+# API that uses it stays stopped), and stopped again, so every night's file is that night's data. Only
+# a stopped one (exited, or created and never run): a restarting, paused or dead one fails the item,
+# since starting and then stopping it would mark it stopped by hand, and `restart: unless-stopped`
+# would no longer bring it back. It is not stopped again when another container of its Compose project
+# runs by then (a deploy or `ygg env start` meanwhile), and a run that is killed stops it on the way out.
 dump_postgres() {
-  docker exec "$1" pg_dumpall -U "$2" | gzip >"$3.partial" || return 1
+  local container=$1 user=$2 out=$3 state status=0 i
+  state=$(docker inspect --format '{{.State.Status}}' "$container") || return 1
+  case $state in
+    running) ;;
+    exited | created)
+      echo "backup: $container is stopped: starting it for the dump"
+      docker start "$container" >/dev/null || return 1
+      started_container=$container
+      # Over TCP, as the stacks' health check: while a new volume is initialised the socket answers too.
+      status=1
+      for ((i = 0; i < POSTGRES_START_WAIT; i++)); do
+        if docker exec "$container" pg_isready --quiet --username "$user" --host 127.0.0.1; then
+          status=0
+          break
+        fi
+        sleep 1
+      done
+      [[ $status -eq 0 ]] || echo "backup: $container did not accept connections within ${POSTGRES_START_WAIT}s" >&2
+      ;;
+    *)
+      echo "backup: $container is $state, neither running nor stopped: not dumped" >&2
+      return 1
+      ;;
+  esac
+  if [[ $status -eq 0 ]]; then
+    docker exec "$container" pg_dumpall -U "$user" | gzip >"$out.partial" || status=1
+  fi
+  if [[ -n "$started_container" ]]; then
+    stop_started || status=1
+  fi
+  return "$status"
+}
+
+# stop_started: stops the database container dump_postgres started, unless another container of its
+# Compose project runs now: then its environment was started meanwhile, and the database is in use.
+started_container=""
+stop_started() {
+  local container=$started_container project own others id
+  started_container=""
+  [[ -n "$container" ]] || return 0
+  project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container") || project=""
+  if [[ -n "$project" && "$project" != "<no value>" ]]; then
+    own=$(docker inspect --format '{{.Id}}' "$container") || own=""
+    others=$(docker ps --quiet --filter "label=com.docker.compose.project=$project") || others=""
+    while read -r id; do
+      # docker ps prints the short id, the start of the whole one; the database itself runs too.
+      if [[ -n "$id" && "$own" != "$id"* ]]; then
+        echo "backup: $project is running now: $container stays up"
+        return 0
+      fi
+    done <<<"$others"
+  fi
+  docker stop "$container" >/dev/null || { echo "backup: could not stop $container again" >&2; return 1; }
 }
 
 # run_item <item>: dumps one item into today's directory.
@@ -209,6 +287,7 @@ run_item() {
   local status=0
   case ${words[0]} in
     forgejo) dump_forgejo "$out" || status=1 ;;
+    vars) dump_vars "$out" || status=1 ;;
     volume) dump_volume "${words[1]}" "$out" || status=1 ;;
     postgres) dump_postgres "${words[1]}" "${words[2]}" "$out" || status=1 ;;
   esac
@@ -269,6 +348,10 @@ exec 9<"$backups"
 flock -n 9 || die "another backup is running"
 
 use_rootless_engine 9>&-
+# A run stopped half-way (systemd, a signal) does not leave behind a database it started.
+trap 'stop_started 9>&- || true' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 day="$backups/$(date +%F)"
 mkdir -p "$day"

@@ -57,7 +57,7 @@ order and with which answers, and adds the maintenance window that moves the dat
 |---|---|---|
 | **GitHub owner** | `acme` | The user or organisation that owns the application repositories. Your fork of yggdrasil goes there too. |
 | **Environments**, in promotion order | `local`, `development`, `homologation`, `production` | For each: its `trigger` (`manual`, `branch` or `release`), its `mode` (`proxy`, or `ports` for a workstation), and whether it runs only while used (`onDemand`). See [catalog.md](catalog.md#environments). |
-| **Machines**, their roles and the environments each runs | a **dev** machine (the Jenkins controller and Forgejo) and an **apps** machine (`development`, `homologation`, `production`); `local` on your workstation | Each machine is an Ubuntu 24.04 server with a role: `dev` or `apps` ([The two machines](hosts.md#1-two-machines)). It runs one environment or several: environments sharing a host share its platform stack, its Jenkins agent and its domain. A `ports` environment (a workstation) needs no host setup. See [Planning the hosts](#planning-the-hosts). |
+| **Machines**, their roles and the environments each runs | a **dev** machine (the Jenkins controller and Forgejo) and an **apps** machine (`development`, `homologation`, `production`); `local` on your workstation | Each machine is an Ubuntu 24.04 or 26.04 LTS server with a role: `dev` or `apps` ([The two machines](hosts.md#1-two-machines)). It runs one environment or several: environments sharing a host share its platform stack, its Jenkins agent and its domain. A `ports` environment (a workstation) needs no host setup. See [Planning the hosts](#planning-the-hosts). |
 | **The controller host** | the dev machine | The one host that runs the Jenkins controller. It must be reachable from the internet on 443, for GitHub's webhooks (Forgejo's come from the same machine), and from the other hosts' agents. |
 | **Domain per machine** | `example.com` | Every public name is one label under it: `heimdall.example.com`, and in an environment with a `hostSuffix`, `heimdall-dev.example.com`. A machine can serve more than one domain (`EXTRA_DOMAINS`). Your own domain on Cloudflare, or a free DuckDNS subdomain: [dns.md](dns.md). |
 | **Systems and applications** | `shop` = `shop-api` + `shop-web` | Each application is one repository with a Dockerfile and a `/health`-style endpoint. |
@@ -85,7 +85,7 @@ workstation would publish the same ports, though: keep one per machine.
 
 ### What each host needs
 
-- **Ubuntu 24.04 LTS** for the `dev` and `apps` roles (the installer refuses another version): a
+- **Ubuntu 24.04 or 26.04 LTS** for the `dev` and `apps` roles (the installer refuses another version): a
   VPS or a VM, with an admin user that has `sudo` and logs in with an SSH key. Docker Engine, the
   Compose plugin (v2.24 or later, for `!reset` in the overlays) and the rest come from
   `ygg install` ([step 8](#8-prepare-each-machine)).
@@ -433,7 +433,7 @@ setup. What you get, and why each piece exists, is in [hosts.md](hosts.md): read
 
 You need, before you start:
 
-- A fresh **Ubuntu 24.04 LTS** server.
+- A fresh **Ubuntu 24.04 or 26.04 LTS** server.
 - An **admin user** on it (this guide calls it `artur`) with `sudo`, which you log in as over SSH **with a
   key**. Your public key must be in the admin's `~/.ssh/authorized_keys`. Test it from your own
   computer: `ssh artur@<host>` must not ask for a password. The installer switches passwords off, and
@@ -542,7 +542,7 @@ Next to each part is what you would type to do it by hand. Every command is run 
    ```
    - `sysctl --system`: loads the new setting, which lets a non-root process bind ports 80 and 443.
    - `restart apparmor.service`: loads the profile that allows rootless Docker's user namespaces on
-     Ubuntu 24.04.
+     Ubuntu 24.04 and 26.04.
 4. **Unattended upgrades.** The file `/etc/apt/apt.conf.d/20auto-upgrades` of hosts.md: security updates
    install themselves.
 5. **Service users.** `ygg` on an apps machine; `ygg`, `ci`, `release`, `renovate` and `dev` on a dev machine:
@@ -710,7 +710,7 @@ python3 /opt/yggdrasil/scripts/catalog.py validate
 `platform.sh`, `ygg vars`, `ygg deploy`, `ygg backup`. You work as the admin (`ssh artur@<host>`) for
 `sudo`, `ygg check`, `ygg install` and `ygg agent`.
 
-### 8.6 Not on Ubuntu 24.04, or not behind Cloudflare
+### 8.6 Not on Ubuntu 24.04 or 26.04, or not behind Cloudflare
 
 `ygg install --role dev|apps` refuses another system. A host like that has to do the same by hand: a
 rootless Docker engine for the user that will run `platform.sh` (parts 1, 2, 3 and 11 above, with your

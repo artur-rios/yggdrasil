@@ -5,7 +5,7 @@
 # shellcheck disable=SC2154
 #
 # The machine roles of scripts/host.sh: what `check` and `install` do for `dev` and `apps` (Ubuntu
-# 24.04 hosts that run every engine rootless), as opposed to `workstation`, which keeps today's
+# 24.04 or 26.04 hosts that run every engine rootless), as opposed to `workstation`, which keeps today's
 # check_host / install_host. Sourced by host.sh: functions and tables only, nothing runs here, and it
 # relies on host.sh's say, warn, die, row, confirm, as_root, apt_get, installed and os_field.
 #
@@ -24,6 +24,9 @@
 # temporary directory in the tests), reads included.
 
 MACHINE_ROLES=(dev apps workstation)
+# The Ubuntu releases install knows, by VERSION_ID: the LTS releases. Docker's apt repository is picked
+# by the release's codename (host.sh), so a release is added here once that repository has it.
+MACHINE_UBUNTU_VERSIONS=(24.04 26.04)
 MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
@@ -109,11 +112,32 @@ secrets_dir_of() {
   fi
 }
 
-# machine_preflight <role>: install for dev and apps is for Ubuntu 24.04, run by the admin with sudo.
-machine_preflight() {
-  if ! is_ubuntu || [[ "$(os_field VERSION_ID)" != 24.04 ]]; then
-    die "the $1 role installs on Ubuntu 24.04 LTS only; this is $(os_field PRETTY_NAME || echo unknown)"
+# machine_ubuntu_known: this is one of the Ubuntu releases of MACHINE_UBUNTU_VERSIONS.
+machine_ubuntu_known() {
+  is_ubuntu || return 1
+  local version
+  version=$(os_field VERSION_ID)
+  [[ " ${MACHINE_UBUNTU_VERSIONS[*]} " == *" $version "* ]]
+}
+
+# The releases as a message says them: "Ubuntu 24.04 or 26.04 LTS".
+machine_ubuntu_text() {
+  local versions=("${MACHINE_UBUNTU_VERSIONS[@]}")
+  local last=${versions[-1]}
+  unset 'versions[-1]'
+  if ((${#versions[@]})); then
+    local first
+    first=$(printf '%s, ' "${versions[@]}")
+    echo "Ubuntu ${first%, } or $last LTS"
+  else
+    echo "Ubuntu $last LTS"
   fi
+}
+
+# machine_preflight <role>: install for dev and apps is for the Ubuntu releases above, run by the admin
+# with sudo.
+machine_preflight() {
+  machine_ubuntu_known || die "the $1 role installs on $(machine_ubuntu_text) only; this is $(os_field PRETTY_NAME || echo unknown)"
   [[ "$(id -u)" != 0 ]] || die "run install as the admin user, not as root: it asks sudo for what needs root, and the admin is whoever runs it"
   has sudo || die "installing needs sudo: install it first"
 }
@@ -190,7 +214,7 @@ machine_ci_limits_content() { printf '%s\n' "[Slice]" "CPUQuota=600%" "MemoryMax
 # slice, which holds their engine and every container in it. That includes a container binding 80 in
 # its own network namespace (an nginx in a check): such a check must listen on 1024 or above.
 #
-# NEEDS VERIFYING on the real host (Ubuntu 24.04, systemd 255, cgroup v2): that SocketBindDeny= takes
+# NEEDS VERIFYING on the real host (Ubuntu 24.04, systemd 255, and 26.04; cgroup v2): that SocketBindDeny= takes
 # effect on a user-<uid>.slice drop-in after `systemctl daemon-reload` (or only once the user's
 # manager restarts), and that rootlesskit's port forwarder (slirp4netns port driver) is refused the
 # bind. Syntax: systemd.resource-control(5), "[address-family:][transport-protocol:][ip-ports]".
@@ -278,7 +302,7 @@ machine_secret_files() {
 # Rootless engines publish ports below 1024 (80 and 443) without a privileged helper.
 machine_sysctl_content() { echo "net.ipv4.ip_unprivileged_port_start=80"; }
 
-# Ubuntu 24.04 confines unprivileged user namespaces; this profile lets rootlesskit use them.
+# Ubuntu 24.04 and later confine unprivileged user namespaces; this profile lets rootlesskit use them.
 machine_apparmor_content() {
   cat <<'EOF'
 abi <abi/4.0>,
@@ -613,8 +637,8 @@ check_machine() {
 
 machine_report() {
   title "System"
-  if ! is_ubuntu || [[ "$(os_field VERSION_ID)" != 24.04 ]]; then
-    row warn "Ubuntu" "$(os_field PRETTY_NAME || echo unknown): install knows Ubuntu 24.04 only, check works anywhere"
+  if ! machine_ubuntu_known; then
+    row warn "Ubuntu" "$(os_field PRETTY_NAME || echo unknown): install knows $(machine_ubuntu_text) only, check works anywhere"
   fi
   local step
   for step in "${MACHINE_STEPS[@]}"; do
@@ -1456,7 +1480,7 @@ step_ssh() {
     die "sshd would run with $conflict: another setting comes first (sshd_config or a file ahead of $path). $path is back as it was and ssh was not reloaded"
   fi
   as_root rm -f "$(machine_ssh_legacy_path)"
-  # ssh may be socket-activated (Ubuntu 24.04), where a plain reload can find nothing to reload.
+  # ssh may be socket-activated (Ubuntu 24.04 and later), where a plain reload can find nothing to reload.
   as_root systemctl try-reload-or-restart ssh
 }
 

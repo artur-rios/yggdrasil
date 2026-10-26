@@ -116,8 +116,12 @@ A specific record wins over the wildcard, so these four names reach the dev mach
 everything else reaches the apps machine.
 
 `scripts/cloudflare_dns.py` makes all of these through Cloudflare's API, with the comment `yggdrasil` on
-each. Run it once when building the machines, and again at the cutover with the new apps machine's address
-(with the old address it is the rollback):
+each. Run it once when building the machines. At a cutover to a new apps machine, run it again with that
+machine's address (with the old address it is the rollback). A cutover that converts the old server in
+place, as [cutover.md](cutover.md) does, keeps the address: there the script runs again only to turn the
+proxy on (its 5.8), and a rollback puts the records back by hand
+([cutover.md 6, step 2](cutover.md#6-rollback)), since running the script again would turn the proxy back
+on:
 
 ```bash
 read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # paste the token, then Enter
@@ -314,7 +318,7 @@ include <tunables/global>
 }
 ```
 
-Ubuntu 24.04 blocks unprivileged user namespaces by default
+Ubuntu 24.04 and 26.04 block unprivileged user namespaces by default
 (`kernel.apparmor_restrict_unprivileged_userns`). Rootless Docker's helper, `rootlesskit`, needs
 one. This profile allows it, and only it. `ygg install` reloads AppArmor after writing it.
 
@@ -397,7 +401,7 @@ Three things make this file safe:
   If the admin has no `~/.ssh/authorized_keys`, `ygg install` stops at the start, before changing
   anything, and says so. Put your public key in it first (`ssh-copy-id` from your own computer).
 
-Then it runs `systemctl try-reload-or-restart ssh` (on 24.04 SSH may be socket-activated, where a
+Then it runs `systemctl try-reload-or-restart ssh` (on 24.04 and later SSH may be socket-activated, where a
 plain reload can find nothing to reload). Keep your current SSH session open and test a new one
 before closing it.
 
@@ -761,8 +765,9 @@ lines.
 | Item | Becomes | How |
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
+| `vars` | `vars.tar.gz` | the [variables store](variables.md) of this machine and its key, `vars.db` and `vars.key` of the secrets directory: a consistent copy (`ygg vars backup`), taken while the store is in use |
 | `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running |
-| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user |
+| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user. A stopped one (exited, or created) is started for it and stopped again, unless another container of its project runs by then; a restarting, paused or dead one fails the item |
 
 A volume's name is its Compose project, an underscore and its name in the Compose file. The
 platform's are `yggdrasil_jenkins`, `yggdrasil_forgejo-data`, `yggdrasil_grafana` and so on
@@ -773,6 +778,7 @@ For example, on the dev machine:
 ```text
 BACKUP_TARGET=ygg@203.0.113.20:.
 forgejo
+vars
 volume yggdrasil_jenkins
 ```
 
@@ -780,9 +786,33 @@ and on the apps machine:
 
 ```text
 BACKUP_TARGET=ygg@git.example.com:.
+vars
 volume shop-api-production_data
 postgres shop-db-1 postgres
 ```
+
+`vars` belongs on every machine with a store (`vars.db` in `/etc/yggdrasil`): it holds the platform's settings and
+every application's variables, secrets included. Its archive carries the key too, so the other machine holds both:
+a store is no use without its key, and a machine that is lost takes its key with it. That makes `~/received/` on
+each machine as sensitive as the other's `/etc/yggdrasil`: the files arrive `ygg`'s alone (`600`, as `backup.sh`
+writes them, and `rsync -a` keeps), and the key that writes them can do nothing else (`rrsync`, below). Keep the key's own copy in your password manager as well
+([variables.md](variables.md#backup-and-recovery)).
+
+An API whose stack runs its own PostgreSQL, as heimdall-api's and fortuna-api's do (`stacks/*-api.proxy.yml`,
+the `db` service), has one such item per environment: `postgres heimdall-api-production-db-1 postgres`. Not
+`volume heimdall-api-production_db`: the files of a database that runs are no backup. An on-demand
+environment's database container is stopped when its environment is: `backup.sh` starts it for the dump,
+alone (its API stays stopped), waits for it to accept connections (60 seconds,
+`BACKUP_POSTGRES_START_WAIT`), and stops it again. Only an exited or created container is started: a
+restarting, paused or dead one fails its item, since starting and stopping it would mark it stopped by hand
+and `restart: unless-stopped` would no longer bring it back. It stays up if another container of its Compose
+project runs by the end of the dump (its environment was started meanwhile), and a run that is interrupted
+stops it on the way out.
+
+Give an item only to a container that exists (`docker ps -a --format '{{.Names}}' | grep -- '-db-1$'`): one
+for a container no deploy has made yet fails every night with `No such object`. A database restored before
+its environment's first deploy is then only in its volume and in the dump it came from: add its item right
+after that deploy.
 
 The `:.` after the host means "the directory the key is restricted to", explained next. The host is the
 other machine's address (`203.0.113.20` is a documentation address: use the real one) or a name that points
@@ -920,6 +950,19 @@ docker run --rm -v yggdrasil_jenkins:/volume -v "$HOME/restore/2026-10-22":/back
 Start the platform again. Compose may warn that the volume "was not created by Docker Compose" if
 you restored it before the first `up`: it uses it anyway.
 
+**The variables store** (`vars.tar.gz`): into the secrets directory, before the platform or a deploy reads it.
+On a rebuilt machine `ygg install` has made `/etc/yggdrasil`, `ygg`'s and empty of a store:
+
+```bash
+tar -C /etc/yggdrasil -xzf ~/restore/2026-10-22/vars.tar.gz vars.db vars.key
+chmod 600 /etc/yggdrasil/vars.db /etc/yggdrasil/vars.key
+ygg vars check
+```
+
+`tar` overwrites a store that is there: on a machine that still has one, move `vars.db` and `vars.key` aside first.
+`ygg vars check` opens the store with the key, so a key of another store or a damaged copy shows here, not at the
+next deploy. Then `scripts/platform.sh up` and the deploys read it as before.
+
 **A PostgreSQL dump** (`postgres-<container>.sql.gz`): into the new, running database container,
 `gunzip -c postgres-<container>.sql.gz | docker exec -i <container> psql -U <user> -d postgres`.
 
@@ -928,7 +971,7 @@ you restored it before the first `up`: it uses it anyway.
 Another apps host (a second `ygg` engine for more applications, or one environment per host) is set
 up like the first apps machine:
 
-1. **Ubuntu 24.04** with an admin user that has `sudo` and your key in `~/.ssh/authorized_keys`.
+1. **Ubuntu 24.04 or 26.04 LTS** with an admin user that has `sudo` and your key in `~/.ssh/authorized_keys`.
 2. **The checkout and the install**, as in [setup.md step 8](setup.md#8-prepare-each-machine): clone into
    `/opt/yggdrasil`, then `ygg install --role apps`. It creates its own `ygg` user and engine; nothing
    is shared with the other machines.
@@ -970,7 +1013,10 @@ downtime: the applications are off while you move their data.
      databases and secrets.
    - `docker run --rm … busybox tar`: a throwaway container with the volume mounted read-only writes its
      content to a `.tar.gz` in `/srv/migration`. Run it once per volume.
-   Dump a database that runs outside Docker with its own tools.
+   Dump a database that runs outside Docker with its own tools: a PostgreSQL on the host is dumped with
+   `pg_dump` and restored into the stack's own `db` container, as
+   [cutover.md 5.4 and 5.6a](cutover.md#56a-the-databases-into-their-containers) do, since a rootless engine's
+   containers cannot reach the host's.
 3. **Update and install.** `git pull` in `/opt/yggdrasil`, then `ygg install --role apps` as the admin
    (the user with `sudo`). It creates `ygg`, disables and masks the rootful Docker, gives `ygg` an
    engine, hands the checkout to `ygg`, sets the firewall and writes the other files of
