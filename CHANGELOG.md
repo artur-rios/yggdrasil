@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-26
+
 ### Added
 
 - **Templates for the sites and the libraries.** `templates/site-static/`, `site-hugo/`, `site-vite/`,
@@ -882,7 +884,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/artur-rios/yggdrasil/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/artur-rios/yggdrasil/compare/v0.7.4...v0.8.0
 [0.7.5]: https://github.com/artur-rios/yggdrasil/compare/v0.7.4...78ee46c
 [0.7.4]: https://github.com/artur-rios/yggdrasil/compare/v0.7.3...v0.7.4
