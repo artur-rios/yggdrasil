@@ -766,7 +766,7 @@ lines.
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
 | `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running |
-| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user |
+| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user; a stopped container is started for it and stopped again |
 
 A volume's name is its Compose project, an underscore and its name in the Compose file. The
 platform's are `yggdrasil_jenkins`, `yggdrasil_forgejo-data`, `yggdrasil_grafana` and so on
@@ -791,8 +791,9 @@ postgres shop-db-1 postgres
 An API whose stack runs its own PostgreSQL, as heimdall-api's and fortuna-api's do (`stacks/*-api.proxy.yml`,
 the `db` service), has one such item per environment: `postgres heimdall-api-production-db-1 postgres`. Not
 `volume heimdall-api-production_db`: the files of a database that runs are no backup. An on-demand
-environment's database container is stopped when its environment is, and a stopped container cannot be
-dumped: that night its item fails, and its newest good dump is kept.
+environment's database container is stopped when its environment is: `backup.sh` starts it for the dump,
+alone (its API stays stopped), waits for it to accept connections (60 seconds,
+`BACKUP_POSTGRES_START_WAIT`), and stops it again.
 
 The `:.` after the host means "the directory the key is restricted to", explained next. The host is the
 other machine's address (`203.0.113.20` is a documentation address: use the real one) or a name that points

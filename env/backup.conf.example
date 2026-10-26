@@ -21,7 +21,8 @@ BACKUP_TARGET=
 #   forgejo                       Forgejo's own dump (repositories, database, settings), from the
 #                                 `forgejo` service of the yggdrasil Compose project -> forgejo.zip
 #   volume <name>                 a Docker volume, read-only, as a tar -> volume-<name>.tar.gz
-#   postgres <container> <user>   pg_dumpall in that container as that database user
+#   postgres <container> <user>   pg_dumpall in that container as that database user (a stopped
+#                                 container is started for it and stopped again)
 #                                 -> postgres-<container>.sql.gz
 #
 # On the dev machine (Forgejo, Jenkins, the registry):

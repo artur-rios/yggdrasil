@@ -33,6 +33,8 @@ FORGEJO_PROJECT=yggdrasil
 FORGEJO_SERVICE=forgejo
 FORGEJO_CONFIG=/var/lib/gitea/custom/conf/app.ini
 FORGEJO_DUMP=/tmp/forgejo-dump.zip
+# How many seconds a stopped database container gets to accept connections once started for its dump.
+POSTGRES_START_WAIT=${BACKUP_POSTGRES_START_WAIT:-60}
 # A day of ~/backups is a directory named by its date.
 DAY_PATTERN='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 
@@ -195,9 +197,33 @@ dump_volume() {
   docker run --rm --volume "$1:/volume:ro" "$TAR_IMAGE" tar -C /volume -czf - . >"$2.partial" || return 1
 }
 
-# dump_postgres <container> <user> <file>
+# dump_postgres <container> <user> <file>. The database of an on-demand environment is stopped most
+# nights, and `docker exec` cannot reach a stopped container: it is started for the dump, alone (the
+# API that uses it stays stopped), and stopped again, so every night's file is that night's data.
 dump_postgres() {
-  docker exec "$1" pg_dumpall -U "$2" | gzip >"$3.partial" || return 1
+  local container=$1 user=$2 out=$3 running status=0 i
+  running=$(docker inspect --format '{{.State.Running}}' "$container") || return 1
+  if [[ "$running" != true ]]; then
+    echo "backup: $container is stopped: starting it for the dump"
+    docker start "$container" >/dev/null || return 1
+    # Over TCP, as the stacks' health check: while a new volume is initialised the socket answers too.
+    status=1
+    for ((i = 0; i < POSTGRES_START_WAIT; i++)); do
+      if docker exec "$container" pg_isready --quiet --username "$user" --host 127.0.0.1; then
+        status=0
+        break
+      fi
+      sleep 1
+    done
+    [[ $status -eq 0 ]] || echo "backup: $container did not accept connections within ${POSTGRES_START_WAIT}s" >&2
+  fi
+  if [[ $status -eq 0 ]]; then
+    docker exec "$container" pg_dumpall -U "$user" | gzip >"$out.partial" || status=1
+  fi
+  if [[ "$running" != true ]]; then
+    docker stop "$container" >/dev/null || { echo "backup: could not stop $container again" >&2; status=1; }
+  fi
+  return "$status"
 }
 
 # run_item <item>: dumps one item into today's directory.

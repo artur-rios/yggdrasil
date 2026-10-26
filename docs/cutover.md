@@ -2297,14 +2297,13 @@ want of a `backup.conf`. [hosts.md, Backups](hosts.md#7-backups-and-restore), in
    Not `volume <application>-<environment>_db`: the files of a database that runs are no backup; the dump is. With
    too little room until 7.1 (3.2), `BACKUP_KEEP=2` in both.
 
-Then, on each, as `ygg`; on the apps machine with the on-demand environments started for the run, since a stopped
-container cannot be dumped:
+Then, on each, as `ygg`. A database container of a stopped on-demand environment is started for its dump, alone,
+and stopped again (`backup.sh` says `<container> is stopped: starting it for the dump`), so nothing needs starting
+first:
 
 ```bash
-ygg env start development && ygg env start homologation      # the apps machine only
 ygg backup run && ygg backup list
 ls -l ~/backups/"$(date +%F)"/postgres-*.sql.gz
-ygg env stop development && ygg env stop homologation        # the apps machine only
 ```
 
 **Success looks like:** `Newest: <today>, complete`, and the day appears in `~/received/from-<machine>` on the other;
@@ -2312,14 +2311,10 @@ on the apps machine `ls` lists the six `postgres-<application>-<environment>-db-
 bytes only (`gunzip -c` one into `grep -c 'CREATE TABLE'` for a count); `ygg check` (as each machine's admin, after
 `sudo -v`) has its Backups rows `ok`.
 **If it fails:** `Host key verification failed` or `Permission denied (publickey)`: step 1's last part, or the
-`authorized_keys` line. A `postgres-...` item failing with `is not running`: its environment is stopped (the `env
-start` line). Otherwise [setup.md, Troubleshooting](setup.md#troubleshooting), the backup row.
-
-On a night when `development` or `homologation` is stopped, which is most nights (they run on demand), their four
-`postgres` items fail the same way: `backup.sh` keeps each one's newest good dump (it never prunes that), but the run
-reports a failure and `ygg check` shows the Backups row failing. Their newest dump is then the one of the last night
-they ran: start them for a run by hand (the block above) after work there that you want kept. And read the row's
-message before you dismiss it: a failure of production's two items looks the same.
+`authorized_keys` line. A `postgres-...` item failing with `did not accept connections`: that database container,
+started for the dump, did not come up; `docker logs` of it (it was stopped again). With `No such object`: the
+container's name, against `docker ps -a`. Otherwise [setup.md, Troubleshooting](setup.md#troubleshooting), the
+backup row.
 **Back out:** remove the items again; a key: its line in the receiver's `~/.ssh/authorized_keys`.
 
 ### 5.22 Announce the end

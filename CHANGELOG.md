@@ -53,6 +53,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   that they are let go, and says what it cannot undo; the clean-up switches the host's PostgreSQL off, then deletes
   the archives, the rootful engine's data and the PostgreSQL packages once the apps machine has run a release. The
   window is now estimated at 4 to 8 hours.
+- **`backup.sh` dumps a stopped database too.** A `postgres <container> <user>` item whose container is stopped (an
+  on-demand environment's database, most nights) failed, since `docker exec` cannot reach it. The container is now
+  started for the dump, alone, waited for over TCP (60 seconds, `BACKUP_POSTGRES_START_WAIT`) and stopped again;
+  one that never accepts connections fails the item and is stopped again too.
 - **The `dev` and `apps` roles install on Ubuntu 26.04 LTS too.** `ygg install --role dev|apps` accepted Ubuntu
   24.04 only; it now accepts 24.04 and 26.04 (`MACHINE_UBUNTU_VERSIONS` in `scripts/machine.sh`), and `ygg check`
   no longer warns about 26.04. Docker's apt repository was already picked by the release's codename.
