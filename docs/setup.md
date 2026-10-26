@@ -534,7 +534,8 @@ Next to each part is what you would type to do it by hand. Every command is run 
    - `gpasswd -d <user> docker`: removes a user from the group. Nobody should be in it.
 3. **System settings.** The sysctl, AppArmor and systemd files of
    [hosts.md](hosts.md#4-system-settings) (`/etc/sysctl.d/90-yggdrasil.conf`,
-   `/etc/apparmor.d/usr.bin.rootlesskit`, `/etc/systemd/system/user@.service.d/delegate.conf`), then:
+   `/etc/apparmor.d/usr.bin.rootlesskit`, `/etc/systemd/system/user@.service.d/delegate.conf`; the AppArmor
+   one only where the system ships none, which 26.04 does), then:
    ```bash
    sudo sysctl --system
    sudo systemctl restart apparmor.service

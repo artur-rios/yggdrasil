@@ -322,6 +322,14 @@ Ubuntu 24.04 and 26.04 block unprivileged user namespaces by default
 (`kernel.apparmor_restrict_unprivileged_userns`). Rootless Docker's helper, `rootlesskit`, needs
 one. This profile allows it, and only it. `ygg install` reloads AppArmor after writing it.
 
+**Only where the system has no such profile of its own.** Ubuntu 26.04's `apparmor` package ships one,
+`/etc/apparmor.d/rootlesskit` (`profile rootlesskit /usr/bin/rootlesskit flags=(unconfined)` with
+`userns,`). Two profiles that attach to the same program conflict: the kernel logs `conflicting profile
+attachments`, applies neither, and `rootlesskit` fails with `fork/exec /proc/self/exe: permission
+denied`. So where that file allows `userns` for `/usr/bin/rootlesskit`, `ygg install` writes no profile,
+and unloads (`apparmor_parser -R`) and deletes the one an earlier install wrote; `ygg check`'s
+`apparmor rootlesskit` row then names the system's file.
+
 ### `/etc/systemd/system/user@.service.d/delegate.conf`
 
 ```text

@@ -108,6 +108,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   extends and the controller has this pipeline. That release is 0.9.0; 2.3 starts the controller on `v0.8.0` for the
   dry runs, and rollback step 6 pins the old controller's library to `v0.7.4` again.
 
+### Fixed
+
+- **The rootless engines start on Ubuntu 26.04.** 26.04's `apparmor` package ships its own profile for
+  rootlesskit, `/etc/apparmor.d/rootlesskit`, and `ygg install` wrote a second one for the same program. AppArmor
+  applied neither (`conflicting profile attachments`), and each engine's setup failed with `fork/exec
+  /proc/self/exe: permission denied`. Where the system ships that profile, the install now writes none, and
+  unloads and deletes the one an earlier install wrote; `ygg check` reports the system's profile.
+
 ## [0.8.0] - 2026-10-25
 
 ### Added
