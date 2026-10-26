@@ -603,7 +603,8 @@ cd /opt/yggdrasil && sudo -u renovate env XDG_RUNTIME_DIR=/run/user/$(id -u reno
 token (no authentication error) and reports each catalog repository as not found: they arrive in the window,
 and 5.18 runs it again.
 **If it fails:** `renovate: ...` lines are the script's own (a setting); an authentication error from Renovate
-is the token or its scopes (9.7).
+is the token or its scopes (9.7): most often a token without `read:user`, which [setup.md 9.9](setup.md#99-renovate)
+shows how to check.
 **Back out:** nothing to undo; the timer runs it daily from now on, harmlessly.
 
 ## 3. The apps machine

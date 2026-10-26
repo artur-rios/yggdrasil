@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `renovate` token's scopes.** The docs and `env/renovate.env.example` asked for `write:repository` and
+  `write:issue` only, and Renovate stopped at once with `Authentication failure`: it asks Forgejo who it is when
+  it starts, and Forgejo answers that only to a token with `read:user`. The token now has `read:user` and
+  `read:organization` as well, as Renovate's docs for Forgejo ask, and setup.md 9.9 shows how to check a token's
+  scopes without printing it. An installation with the old token makes a new one (setup.md 9.7) and puts it in
+  `renovate.env`.
+
 ## [0.9.0] - 2026-10-26
 
 ### Added
