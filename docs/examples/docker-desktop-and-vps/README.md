@@ -4,10 +4,10 @@
 > for a single VPS before hosts had roles and before the platform ran on rootless Docker. The parts
 > that name the VPS's setup are updated to the current model (the one-machine layout: role `apps`,
 > profiles `apps,jenkins` then `apps,jenkins,agent`, `ygg` as the only service user, rootless Docker,
-> `750`/`600` env files owned by `ygg`). The parts that still predate it: the **PostgreSQL on the host**
-> section (it assumes the rootful engine's `docker0` bridge; under rootless Docker containers reach
-> the host through the engine's own network, which later plans cover) and the **Windows** `local`
-> environment, which is unchanged because Docker Desktop is not a yggdrasil host. The two-machine
+> `750`/`600` env files owned by `ygg`), the **PostgreSQL** section included: each API's database is a
+> container of its stack, on `ygg`'s rootless engine, no longer a PostgreSQL on the host. The part that
+> still predates it is the **Windows** `local` environment, which is unchanged because Docker Desktop is
+> not a yggdrasil host. The two-machine
 > layout (a dev machine with Forgejo and Jenkins, an apps machine) is in hosts.md.
 
 A complete installation on two machines: a Windows workstation and one Ubuntu VPS. It is the
@@ -37,8 +37,9 @@ flowchart TB
         traefik --> prod[production]
         jenkins[Jenkins controller] --- agent[Jenkins agent vps] --> dev & hml & prod
         status[status API · console · monitoring<br/>all three environments]
-        vpspg[(PostgreSQL<br/>a database per environment)]
-        dev & hml & prod --> vpspg
+        dev --> devpg[(PostgreSQL containers<br/>one per API)]
+        hml --> hmlpg[(PostgreSQL containers<br/>one per API)]
+        prod --> prodpg[(PostgreSQL containers<br/>one per API)]
     end
     gh([GitHub]) -- webhooks --> jenkins
     console([Console]) -- /api/status --> status
@@ -135,67 +136,91 @@ production's. Stop them when you are done (below).
 
 ### PostgreSQL
 
-> **Predates rootless Docker.** The network steps below assume the rootful engine, whose `docker0`
-> bridge (`172.17.0.1`) is on the host. Under the rootless engine of `ygg` there is no such bridge:
-> containers reach the host through the engine's slirp4netns network, and how an application reaches a
-> PostgreSQL on the host that way is not documented yet. The databases, roles and `pg_hba.conf`
-> lines are still right; check the addresses before you copy the network steps, or point `DB_HOST`
-> at a PostgreSQL reachable over the network. The `sudo` commands are the admin's: `ygg` has no `sudo`.
+Each API has its own PostgreSQL in every environment: the `db` service that
+[`stacks/heimdall-api.proxy.yml`](../../../stacks/heimdall-api.proxy.yml) and
+[`stacks/fortuna-api.proxy.yml`](../../../stacks/fortuna-api.proxy.yml) add to the repository's own Compose
+file (`postgres:18.6`, pinned by digest). It runs in `ygg`'s rootless engine like the API, with its data in
+the volume `<application>-<environment>_db`, on the project's own network only: no port and no shared
+network, so development and homologation can never reach production's data, and no other application
+reaches any of it. The API reaches it as `DB_HOST=db`. The image's superuser, `postgres`, has the
+password `DB_SUPERUSER_PASSWORD`, the one its volume was initialised with.
 
-PostgreSQL runs on the VPS itself, one instance for the three environments, with **a database and a
-login per environment and application**, so development and homologation can never reach
-production's data. The env file templates of the API repositories name them:
+There is **a database and a login per environment and application**. The env file templates of the API
+repositories name them:
 
 | Application | `development` | `homologation` | `production` |
 |---|---|---|---|
 | heimdall-api | `heimdall_development`, owner `heimdall_development_owner`, login `heimdall_development_svc` | `heimdall_homologation`, owner `heimdall_homologation_owner`, login `heimdall_homologation_svc` | `heimdall`, owner `heimdall_owner`, login `heimdall_svc` |
 | fortuna-api | `fortuna_development`, login `fortuna_development` | `fortuna_homologation`, login `fortuna_homologation` | `fortuna`, login `fortuna` |
 
-Production keeps the database it has: create the others. heimdall-api's database belongs to an owner
-role that applies the migrations, and the API runs as a login that owns nothing, so it cannot switch
-off the audit trail's triggers (heimdall-api's Threat Model, TH-18). Its repository's
-`scripts/sql/new-deployment.sql` creates both and the database; it holds no password, so each is set
-after it. The login's password goes in that environment's env file (`DB_PASSWORD`), the owner's in
-`HEIMDALL_MIGRATIONS_CONNECTIONSTRING`:
+(An installation older than these templates may use other names: this repository's own production logs
+in as `heimdall`. [cutover.md 0.1](../../cutover.md#01-write-down-todays-setup) reads them.)
+
+heimdall-api's database belongs to an owner role that applies the migrations, and the API runs as a
+login that owns nothing, so it cannot switch off the audit trail's triggers (heimdall-api's Threat
+Model, TH-18). Its repository's `scripts/sql/new-deployment.sql` creates both and the database; it holds
+no password, so each is set after it. The login's password goes in that environment's `DB_PASSWORD`, the
+owner's in `HEIMDALL_MIGRATIONS_CONNECTIONSTRING` (with `Host=db`).
+
+**A new environment's database** is made before its first deploy, which would otherwise start the API
+against an empty PostgreSQL with none of its roles. As `ygg`, for heimdall-api in development: the
+superuser's password, then the volume with the Compose labels the deploy looks for (so that Compose
+takes it for its own), then a temporary container of the same image on it, which gets the password
+through a private file, never the command line:
+
+```bash
+openssl rand -base64 32 | ygg vars set heimdall-api@development DB_SUPERUSER_PASSWORD=-
+docker volume create --label com.docker.compose.project=heimdall-api-development --label com.docker.compose.volume=db heimdall-api-development_db
+envfile=$(mktemp ~/db.XXXXXX)
+printf 'POSTGRES_PASSWORD=%s\n' "$(ygg vars get heimdall-api@development DB_SUPERUSER_PASSWORD --reveal)" > "$envfile"
+docker run -d --name ygg-new-db --env-file "$envfile" -v heimdall-api-development_db:/var/lib/postgresql postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+rm "$envfile"
+until docker exec ygg-new-db pg_isready -q -U postgres --host 127.0.0.1; do sleep 2; done
+```
+
+- `openssl rand ... | ygg vars set ... =-`: the value goes straight into the store, never on screen;
+  `KEY=-` reads it from standard input.
+- `printf`, a shell builtin, writes the password into a `600` file of `ygg`'s home, which `rm` deletes
+  once the container has it.
+- `pg_isready --host 127.0.0.1`: over TCP. While the image initialises a new volume it runs a temporary
+  server on its socket only, which answers too early.
+
+Then the roles and the database, through the container's own `psql`, and the two passwords, each asked
+for at a prompt (`\password` sends only its hash):
 
 ```bash
 cd ~/yggdrasil-apps/heimdall-api
-sudo -u postgres psql -X -v owner=heimdall_development_owner -v runtime=heimdall_development_svc \
-    -v database=heimdall_development -f scripts/sql/new-deployment.sql
-sudo -u postgres psql -X -v owner=heimdall_homologation_owner -v runtime=heimdall_homologation_svc \
-    -v database=heimdall_homologation -f scripts/sql/new-deployment.sql
-for role in heimdall_development_owner heimdall_development_svc heimdall_homologation_owner heimdall_homologation_svc; do
-    sudo -u postgres psql -c "\\password $role"
-done
+docker exec -i ygg-new-db psql -X -U postgres -d postgres -v owner=heimdall_development_owner \
+    -v runtime=heimdall_development_svc -v database=heimdall_development < scripts/sql/new-deployment.sql
+docker exec -it ygg-new-db psql -X -U postgres -c '\password heimdall_development_owner'
+docker exec -it ygg-new-db psql -X -U postgres -c '\password heimdall_development_svc'
+docker stop ygg-new-db && docker rm ygg-new-db
 ```
 
-Run each `new-deployment.sql` line once more after that environment's first deploy has created the
-tables: the second run takes `DELETE` on the audit trail away from the login. A heimdall-api database
-that belongs to the API's own login, as `createdb --owner` made it before, is moved to the two roles
-with `scripts/sql/separate-owner.sql`: heimdall-api's operations guide, "Separating the migration
-owner from the runtime login", has the order. Fortuna's databases keep one login each:
+The same for homologation with its names. fortuna-api keeps one login per database, made the same way,
+in a temporary container on `fortuna-api-<environment>_db`:
 
 ```bash
-sudo -u postgres createuser --pwprompt fortuna_development && sudo -u postgres createdb --owner fortuna_development fortuna_development
-sudo -u postgres createuser --pwprompt fortuna_homologation && sudo -u postgres createdb --owner fortuna_homologation fortuna_homologation
+docker exec -it ygg-new-db createuser -U postgres --pwprompt fortuna_development
+docker exec ygg-new-db createdb -U postgres --owner fortuna_development fortuna_development
 ```
 
-The API stacks reach PostgreSQL at `DB_HOST=host.docker.internal`, which their Compose files map to
-the host's Docker bridge (`extra_hosts: host-gateway`). By default PostgreSQL only listens on
-`localhost`, and `ufw` drops the containers' connections, so:
+Then the store: `DB_HOST=db` once per API (`ygg vars set heimdall-api DB_HOST=db`), the passwords you just
+typed (`DB_PASSWORD`, and the owner's in `HEIMDALL_MIGRATIONS_CONNECTIONSTRING`, each with `ygg vars set
+... KEY=-`), and deploy. The deploy's `db` finds the volume filled and skips its initialisation.
 
-1. `postgresql.conf`: `listen_addresses = 'localhost,172.17.0.1'` (the Docker bridge's address:
-   `ip -4 addr show docker0`).
-2. `pg_hba.conf`: one line per database and its login, from the Compose networks, e.g.
-   `host heimdall_development heimdall_development_svc 172.16.0.0/12 scram-sha-256`, so each
-   login reaches its own database and no other. heimdall-api's owner role gets its own line, since
-   the container's migrations connect as it:
-   `host heimdall_development heimdall_development_owner 172.16.0.0/12 scram-sha-256`.
-3. `sudo ufw allow from 172.16.0.0/12 to any port 5432 proto tcp`, then
-   `sudo systemctl restart postgresql`.
-4. Check from a container:
-   `docker run --rm --add-host h:host-gateway postgres:17 pg_isready -h h` prints
-   `h:5432 - accepting connections`.
+Run each `new-deployment.sql` line once more after that environment's first deploy has created the
+tables, this time in the stack's own container (`docker exec -i heimdall-api-development-db-1 psql -X -U
+postgres -d postgres -v ... < scripts/sql/new-deployment.sql`): the second run takes `DELETE` on the
+audit trail away from the login. A heimdall-api database that belongs to the API's own login, as
+`createdb --owner` made it before, is moved to the two roles with `scripts/sql/separate-owner.sql`, the
+same way: heimdall-api's operations guide, "Separating the migration owner from the runtime login", has
+the order.
+
+An existing database moves in from a PostgreSQL on the host with a dump and a restore into such a
+container: [cutover.md, 5.4 and 5.6a](../../cutover.md#56a-the-databases-into-their-containers) do it for
+this installation, and 5.21 backs them up every night (`postgres <application>-<environment>-db-1
+postgres` in `backup.conf`).
 
 ### The env files
 
@@ -230,10 +255,10 @@ ygg vars edit heimdall-api@development    # fill in DB_PASSWORD, HEIMDALL_MIGRAT
 # ... and so on for each application and environment
 ```
 
-Then give the values the environments share one home. `DB_HOST` is `host.docker.internal` in
-every application of an environment, so it moves up to `@development` (with `vars import --all` it
-is offered as a move-up; by hand: `vars set @development DB_HOST=...`, then `vars unset` it from the
-applications). No secret is shared between applications: heimdall-api signs its tokens with its
+Then give the values the environments share one home. `DB_HOST` is `db` for both APIs in every
+environment, so it moves up to each API's own scope (with `vars import --all` it is offered as a
+move-up; by hand: `vars set heimdall-api DB_HOST=db`, then `vars unset` it from
+`heimdall-api@<environment>`). No secret is shared between applications: heimdall-api signs its tokens with its
 own `HEIMDALL_AUTH_SIGNING_KEY`, and fortuna-api verifies them with the public keys at
 `FORTUNA_HEIMDALL_JWKS_URL` (`http://heimdall-api.development:8080/.well-known/jwks.json`), which
 the env file already has. Check what an application gets with:

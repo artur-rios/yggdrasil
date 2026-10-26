@@ -32,7 +32,7 @@
 # The database: PostgreSQL in its own container, `db`, as heimdall-api's (stacks/heimdall-api.proxy.yml
 # says why each line is there): the volume fortuna-api-<environment>_db, DB_HOST=db (Host=db in
 # FORTUNA_DATA_CONNECTIONSTRING when that is set), DB_SUPERUSER_PASSWORD, and the one role that owns
-# the database and runs the API (DB_USER), made by the restore (docs/cutover.md 5.6). backup.sh dumps
+# the database and runs the API (DB_USER), made by the restore (docs/cutover.md 5.6a). backup.sh dumps
 # it every night (`postgres fortuna-api-<environment>-db-1 postgres` in backup.conf).
 
 services:

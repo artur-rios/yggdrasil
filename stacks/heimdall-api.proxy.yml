@@ -50,7 +50,7 @@
 # a whole connection string such as HEIMDALL_MIGRATIONS_CONNECTIONSTRING), which no other project
 # joins: it is on neither edge nor telemetry, and it publishes no port. The image's superuser,
 # postgres, has DB_SUPERUSER_PASSWORD. The API's own roles (the schema's owner and the role it runs
-# as, DB_USER) are made by the restore that fills the volume (docs/cutover.md 5.6), or, for a new
+# as, DB_USER) are made by the restore that fills the volume (docs/cutover.md 5.6a), or, for a new
 # environment, by the repository's scripts/sql. The image is pinned to the major version the data was
 # written by: 19 is a dump and a restore, not an image update. backup.sh dumps it every night
 # (`postgres heimdall-api-<environment>-db-1 postgres` in backup.conf).

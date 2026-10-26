@@ -116,8 +116,12 @@ A specific record wins over the wildcard, so these four names reach the dev mach
 everything else reaches the apps machine.
 
 `scripts/cloudflare_dns.py` makes all of these through Cloudflare's API, with the comment `yggdrasil` on
-each. Run it once when building the machines, and again at the cutover with the new apps machine's address
-(with the old address it is the rollback):
+each. Run it once when building the machines. At a cutover to a new apps machine, run it again with that
+machine's address (with the old address it is the rollback). A cutover that converts the old server in
+place, as [cutover.md](cutover.md) does, keeps the address: there the script runs again only to turn the
+proxy on (its 5.8), and a rollback puts the records back by hand
+([cutover.md 6, step 2](cutover.md#6-rollback)), since running the script again would turn the proxy back
+on:
 
 ```bash
 read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # paste the token, then Enter
@@ -784,6 +788,12 @@ volume shop-api-production_data
 postgres shop-db-1 postgres
 ```
 
+An API whose stack runs its own PostgreSQL, as heimdall-api's and fortuna-api's do (`stacks/*-api.proxy.yml`,
+the `db` service), has one such item per environment: `postgres heimdall-api-production-db-1 postgres`. Not
+`volume heimdall-api-production_db`: the files of a database that runs are no backup. An on-demand
+environment's database container is stopped when its environment is, and a stopped container cannot be
+dumped: that night its item fails, and its newest good dump is kept.
+
 The `:.` after the host means "the directory the key is restricted to", explained next. The host is the
 other machine's address (`203.0.113.20` is a documentation address: use the real one) or a name that points
 straight at it. The apps machine's own names are proxied by Cloudflare, which carries web traffic only, so
@@ -970,7 +980,10 @@ downtime: the applications are off while you move their data.
      databases and secrets.
    - `docker run --rm … busybox tar`: a throwaway container with the volume mounted read-only writes its
      content to a `.tar.gz` in `/srv/migration`. Run it once per volume.
-   Dump a database that runs outside Docker with its own tools.
+   Dump a database that runs outside Docker with its own tools: a PostgreSQL on the host is dumped with
+   `pg_dump` and restored into the stack's own `db` container, as
+   [cutover.md 5.4 and 5.6a](cutover.md#56a-the-databases-into-their-containers) do, since a rootless engine's
+   containers cannot reach the host's.
 3. **Update and install.** `git pull` in `/opt/yggdrasil`, then `ygg install --role apps` as the admin
    (the user with `sudo`). It creates `ygg`, disables and masks the rootful Docker, gives `ygg` an
    engine, hands the checkout to `ygg`, sets the firewall and writes the other files of
