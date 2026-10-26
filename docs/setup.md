@@ -436,8 +436,17 @@ You need, before you start:
 - A fresh **Ubuntu 24.04 or 26.04 LTS** server.
 - An **admin user** on it (this guide calls it `artur`) with `sudo`, which you log in as over SSH **with a
   key**. Your public key must be in the admin's `~/.ssh/authorized_keys`. Test it from your own
-  computer: `ssh artur@<host>` must not ask for a password. The installer switches passwords off, and
-  refuses to start if there is no key to let you back in.
+  computer, with passwords refused on your side, so that a login falling back to a password cannot pass for
+  a key:
+
+  ```bash
+  ssh -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no artur@<host> true && echo key ok
+  ```
+
+  It must print `key ok`. The installer switches passwords off, and refuses to start if there is no key to let
+  you back in, but it cannot tell whether the key there is yours. An admin made by copying root's
+  `authorized_keys` gets whatever key the provider put on root, which may not be yours: add your own
+  (`ssh-copy-id artur@<host>`, or append the line of your `~/.ssh/id_ed25519.pub`) and test again.
 - A **second SSH session** open while you install, in case something locks you out.
 
 ### 8.1 Get the checkout
