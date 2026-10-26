@@ -80,7 +80,7 @@ Fill this in first; later steps use every line.
 
 | What | How to find it | Yours |
 |---|---|---|
-| The old VPS's address, name and admin | Your provider; on the old VPS, `hostname` | `<apps ip>`, e.g. `srv1937950`, `<old admin>` |
+| The old VPS's address, name and admin | Your provider; on the old VPS, `hostname`, and `whoami` as the user you log in as. `<old admin>` is a user with `sudo` that is **not root**: `ygg install` refuses root, and its SSH part lets only `<old admin>` and `ygg` log in. If you log in as root, 3.1's **If it fails** makes one | `<apps ip>`, e.g. `srv1937950`, `<old admin>` |
 | The release the old VPS runs | On the old VPS: `git -C /opt/yggdrasil describe --tags` | e.g. `v0.7.4` |
 | Where its settings are | On the old VPS: `ls /etc/yggdrasil`. `vars.db` (and `vars.key`) is the [variables store](variables.md): `platform.sh` renders `platform.env` from it on each run and keeps the last copy that worked in `/etc/yggdrasil/last-good/`, so there is no `/etc/yggdrasil/platform.env` | e.g. the store |
 | The old controller's address | On the old VPS: `ygg vars get platform JENKINS_URL` (the store's own reader, v0.7.4's `scripts/vars.py get`; a host without a store: `grep '^JENKINS_URL=' /etc/yggdrasil/platform.env`) | e.g. `https://jenkins.techcraftsmen.net/` |
@@ -128,8 +128,8 @@ which role is a member of which; then who owns each database; then each database
 
 ```bash
 cd /
-sudo -u postgres psql -XAt -c "select rolname, rolsuper, rolcanlogin, coalesce(rolpassword like 'SCRAM-SHA-256\$%', false) from pg_authid where rolname !~ '^pg_' order by 1"
-sudo -u postgres psql -XAt -c "select r.rolname || ' is in ' || g.rolname from pg_auth_members m join pg_roles r on r.oid = m.member join pg_roles g on g.oid = m.roleid where r.rolname !~ '^pg_'"
+sudo -u postgres psql -XAt -c "select rolname, rolsuper, rolcanlogin, coalesce(rolpassword like 'SCRAM-SHA-256\$%', false) from pg_authid where rolname not like 'pg\_%' order by 1"
+sudo -u postgres psql -XAt -c "select r.rolname || ' is in ' || g.rolname from pg_auth_members m join pg_roles r on r.oid = m.member join pg_roles g on g.oid = m.roleid where r.rolname not like 'pg\_%'"
 sudo -u postgres psql -XAt -c "select datname, pg_get_userbyid(datdba) from pg_database where not datistemplate order by 1"
 for db in heimdall heimdall_development heimdall_homologation fortuna fortuna_development fortuna_homologation; do
   sudo -u postgres psql -XAt -d "$db" -c "select current_database(), extname, extversion from pg_extension where extname <> 'plpgsql'"
@@ -676,6 +676,27 @@ and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cuto
   like, are expected; open any other with `systemctl cat <unit>`): after 5.5 there is no rootful engine to run.
 
 **If it fails:**
+- `admin: root`: you log in as root, and the install refuses it (`run install as the admin user, not as root`); after
+  it root cannot log in over SSH at all (no root login, `AllowUsers <old admin> ygg`), rollback included: the
+  provider's console stays. Make the admin now, days before the window, as root (`artur` is an example; any name):
+
+  ```bash
+  adduser artur
+  usermod -aG sudo,docker artur
+  install -d -m 700 -o artur -g artur /home/artur/.ssh
+  install -m 600 -o artur -g artur /root/.ssh/authorized_keys /home/artur/.ssh/authorized_keys
+  chown -R artur:artur /opt/yggdrasil
+  git config --system --add safe.directory /opt/yggdrasil
+  ```
+
+  `adduser` asks for the password `sudo` will ask for (SSH keeps taking keys only). The checkout becomes the admin's,
+  as the rest of this page expects (5.5 part 1 runs `git` in it as `<old admin>`); the `safe.directory` line keeps
+  v0.7.4's own `git` calls, as root, working on it until the window. Then, from your machine, `ssh artur@<apps ip>`,
+  `sudo -v`, and run this block again as `artur`: `admin: artur`, `groups:` with `sudo` and `docker`, `admin key:
+  there`, and the checkout's `owner:` line `artur:artur`. From then on `<old admin>` is `artur`. `/etc/yggdrasil` may
+  stay `root:docker`: the `docker` group reads it, and 5.5 part 3 gives it to `ygg`.
+  **Back out:** `deluser --remove-home artur`, `chown -R root:root /opt/yggdrasil` and `git config --system --unset
+  safe.directory /opt/yggdrasil`, as root.
 - Not Ubuntu 24.04 or 26.04: the install refuses it (`the apps role installs on Ubuntu 24.04 or 26.04 LTS only`).
   Upgrading the release (`do-release-upgrade`) is a job of its own, with production up and its own way back: do it,
   and let production run on it for a while, before you plan the window.
