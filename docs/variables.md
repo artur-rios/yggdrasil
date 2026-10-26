@@ -235,8 +235,8 @@ fortuna-api needs no change: it reads the new public key from heimdall-api's key
 **Share one value between environments or applications**
 
 ```bash
-ygg vars set @<env> DB_HOST=db                       # every application in <env>
-ygg vars set <app> DB_PORT=5432                      # <app> in every environment
+ygg vars set @<env> TZ=America/Sao_Paulo            # every application in <env>
+ygg vars set <app> DB_HOST=db                        # <app> in every environment
 ygg vars unset <app>@<env> DB_HOST                   # drop the now-redundant copy
 ```
 

@@ -52,11 +52,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   points `jenkins.` back in every rollback, carries production's writes back into the host's PostgreSQL or states
   that they are let go, and says what it cannot undo; the clean-up switches the host's PostgreSQL off, then deletes
   the archives, the rootful engine's data and the PostgreSQL packages once the apps machine has run a release. The
-  window is now estimated at 4 to 8 hours.
+  window is now estimated at 4 to 8 hours. Since `main` stays `v0.8.0` until the window's 0.9.0, whose installer
+  refuses 26.04, the dev machine (2.1) and the window (5.5) run `ygg install` from `<installer commit>`, the merge of
+  this change on `develop`, then put the checkout back on `main`; homologation is deployed by hand at its recorded
+  versions, as production is.
 - **`backup.sh` dumps a stopped database too.** A `postgres <container> <user>` item whose container is stopped (an
   on-demand environment's database, most nights) failed, since `docker exec` cannot reach it. The container is now
   started for the dump, alone, waited for over TCP (60 seconds, `BACKUP_POSTGRES_START_WAIT`) and stopped again;
-  one that never accepts connections fails the item and is stopped again too.
+  one that never accepts connections fails the item and is stopped again too. Only an exited or created container
+  is started: one that is restarting, paused or dead fails its item, since starting and stopping it would mark it
+  stopped by hand and `restart: unless-stopped` would no longer bring it back. It stays up when another container
+  of its Compose project runs by the end of the dump (a deploy or `ygg env start` meanwhile), and a run that is
+  interrupted stops it on the way out.
 - **The `dev` and `apps` roles install on Ubuntu 26.04 LTS too.** `ygg install --role dev|apps` accepted Ubuntu
   24.04 only; it now accepts 24.04 and 26.04 (`MACHINE_UBUNTU_VERSIONS` in `scripts/machine.sh`), and `ygg check`
   no longer warns about 26.04. Docker's apt repository was already picked by the release's codename.
@@ -65,6 +72,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `<application>-<environment>_db`) on the project's own network only, which the API waits for and reaches as
   `DB_HOST=db`; the image's superuser has the new variable `DB_SUPERUSER_PASSWORD`. A PostgreSQL on the host is no
   longer assumed: a rootless engine's containers cannot reach one. The env file examples say `DB_HOST=db`.
+  **Upgrading:** an installation whose APIs use a PostgreSQL on the host moves each database first, into its
+  `<application>-<environment>_db` volume ([docs/cutover.md](docs/cutover.md) 5.4 and 5.6a, or the new-environment
+  steps of [the example's README](docs/examples/docker-desktop-and-vps/README.md#postgresql) with a restore in
+  place of `new-deployment.sql`), then sets `DB_SUPERUSER_PASSWORD` (the one that volume was initialised with) and
+  `DB_HOST=db`, then deploys. A deploy before the move fails on the missing `DB_SUPERUSER_PASSWORD`, and one with it
+  set but no move initialises an empty database beside the old one, which the API then migrates and runs on.
 - **The status API reports each application's real address.** `url` is now
   `https://<host><hostSuffix>.<domain><path>`: the application's own `domain` (else `YGGDRASIL_DOMAIN`) and `path`,
   and the bare domain for an `apex` site without a `host`, as `scripts/catalog.py public-host` and `public-path`

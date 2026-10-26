@@ -766,7 +766,7 @@ lines.
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
 | `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running |
-| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user; a stopped container is started for it and stopped again |
+| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user. A stopped one (exited, or created) is started for it and stopped again, unless another container of its project runs by then; a restarting, paused or dead one fails the item |
 
 A volume's name is its Compose project, an underscore and its name in the Compose file. The
 platform's are `yggdrasil_jenkins`, `yggdrasil_forgejo-data`, `yggdrasil_grafana` and so on
@@ -793,7 +793,16 @@ the `db` service), has one such item per environment: `postgres heimdall-api-pro
 `volume heimdall-api-production_db`: the files of a database that runs are no backup. An on-demand
 environment's database container is stopped when its environment is: `backup.sh` starts it for the dump,
 alone (its API stays stopped), waits for it to accept connections (60 seconds,
-`BACKUP_POSTGRES_START_WAIT`), and stops it again.
+`BACKUP_POSTGRES_START_WAIT`), and stops it again. Only an exited or created container is started: a
+restarting, paused or dead one fails its item, since starting and stopping it would mark it stopped by hand
+and `restart: unless-stopped` would no longer bring it back. It stays up if another container of its Compose
+project runs by the end of the dump (its environment was started meanwhile), and a run that is interrupted
+stops it on the way out.
+
+Give an item only to a container that exists (`docker ps -a --format '{{.Names}}' | grep -- '-db-1$'`): one
+for a container no deploy has made yet fails every night with `No such object`. A database restored before
+its environment's first deploy is then only in its volume and in the dump it came from: add its item right
+after that deploy.
 
 The `:.` after the host means "the directory the key is restricted to", explained next. The host is the
 other machine's address (`203.0.113.20` is a documentation address: use the real one) or a name that points
