@@ -30,6 +30,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **The cutover converts the old VPS in place.** [docs/cutover.md](docs/cutover.md) no longer rents a fresh apps
+  machine: only the dev machine is new, and the old VPS becomes the apps machine during the window, as
+  [docs/hosts.md](docs/hosts.md#9-upgrading-a-host-from-rootful-docker) section 9 describes. Section 3 now only reads
+  the server days before (Ubuntu 24.04, `sudo` and the admin's key, the owners, the firewall, the room for the
+  archives) and keeps a record of it; the rehearsal archives one volume read-only from the rootful engine and
+  restores it on the dev machine's rootless engine; the window archives every volume and `/etc/yggdrasil` into
+  `/srv/migration` with `volumes.sh`, runs `ygg install --role apps`, hands the settings to `ygg`, changes the
+  platform's settings in the variables store, restores the volumes into `ygg`'s engine, turns Cloudflare's proxy on
+  for the names that stay on the same address and sets up the backups. The rollback reverses each change of the
+  install (rootful Docker unmasked, the `docker` group, the checkout at `v0.7.4`, the copy of `/etc/yggdrasil`, the
+  firewall rule) and says what it cannot undo; the clean-up deletes the archives and the rootful engine's data once
+  the apps machine has run a release. The window is now estimated at 4 to 8 hours.
 - **The status API reports each application's real address.** `url` is now
   `https://<host><hostSuffix>.<domain><path>`: the application's own `domain` (else `YGGDRASIL_DOMAIN`) and `path`,
   and the bare domain for an `apex` site without a `host`, as `scripts/catalog.py public-host` and `public-path`
