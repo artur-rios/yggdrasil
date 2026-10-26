@@ -1581,6 +1581,15 @@ class CollaboratorsTests(unittest.TestCase):
         self.assertEqual([c[1].rsplit("/", 1)[1] for c in forgejo.writes()], ["renovate", "claude"])
         self.assertIn("toolkit: jenkins: already write", run.lines)
 
+    def test_given_a_public_repository_when_collaborators_run_then_jenkins_ci_is_added_though_it_reads_for_anyone(self):
+        # The permission endpoint says `read` for anyone on a public repository: only the list tells
+        # whether jenkins-ci is a collaborator.
+        forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")}, effective_read=True)
+        run = self.run_collaborators(["collaborators", "--only", "toolkit"], forgejo=forgejo)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(forgejo.collaborators[("toolkit", "jenkins-ci")], "read")
+        self.assertIn("toolkit: jenkins-ci: read granted", run.lines)
+
     def test_given_a_collaborator_with_another_permission_when_collaborators_run_then_it_is_updated(self):
         # jenkins-ci is read-only on purpose: a bot that was given more is brought back down.
         forgejo = FakeForgejo(existing={"toolkit": forgejo_repository("toolkit")},
