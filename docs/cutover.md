@@ -3,7 +3,9 @@
 This is the runbook for moving an installation from what runs today, **one rootful VPS that deploys from
 GitHub**, to the default setup of [setup.md](setup.md): a **dev machine** (Forgejo, the Jenkins controller,
 the build agents) and an **apps machine** (every environment), both rootless, with **Forgejo** as the git
-server and **GitHub** as a push-mirrored copy. It covers rollout steps 2 to 5 and 8 of the
+server and **GitHub** as a push-mirrored copy. Only the dev machine is new: the apps machine is **the old VPS
+itself, converted in place** during the window, as [hosts.md, Upgrading a host from rootful
+Docker](hosts.md#9-upgrading-a-host-from-rootful-docker) describes. It covers rollout steps 2 to 5 and 8 of the
 [design](superpowers/specs/2026-10-22-self-hosted-git-and-ci-design.md#rollout): Cloudflare, the two machines,
 the maintenance window, and the clean-up. The work per repository afterwards (rollout steps 6 and 7: each
 repository's `yggdrasil.yml`, `ci/` scripts, Renovate configuration and first release) is not here: it is
@@ -17,9 +19,9 @@ at the first step that does not look like its success line: the steps after it a
 
 ```mermaid
 flowchart LR
-    S0[0 · Before] --> S1[1 · Cloudflare] --> S2[2 · Dev machine] --> S3[3 · Apps machine] --> S4[4 · Rehearsal]
-    S4 --> S5[5 · The window] --> S7[7 · Clean up]
-    S5 -. if needed .-> S6[6 · Rollback]
+    S0[0 · Before] --> S1[1 · Cloudflare] --> S2[2 · Dev machine] --> S3[3 · Read the old VPS] --> S4[4 · Rehearsal]
+    S4 --> S5[5 · The window:<br/>the old VPS converted] --> S7[7 · Clean up]
+    S5 -. if needed .-> S6[6 · Rollback:<br/>the conversion undone]
 ```
 
 | Section | Where | When | Time |
@@ -27,18 +29,26 @@ flowchart LR
 | [0. Before you start](#0-before-you-start) | Paper, the old VPS, GitHub | Days before | 1 hour |
 | [1. Cloudflare](#1-cloudflare) | Cloudflare, your machine | Days before | 1 hour, plus name-server propagation |
 | [2. The dev machine](#2-the-dev-machine) | Dev machine | Days before | 2 hours |
-| [3. The apps machine](#3-the-apps-machine) | Apps machine | Days before | 1 hour, plus the env files |
-| [4. Rehearse the move](#4-rehearse-the-move) | Your machine, the old VPS, the apps machine | The days before | 2 hours |
-| [5. The window](#5-the-window) | Everywhere | One evening; production is off | 3 to 6 hours |
-| [6. Rollback](#6-rollback) | Everywhere | Only if the window goes wrong | 1 hour |
-| [7. Clean up](#7-clean-up) | GitHub, the old VPS | After the new apps machine has run a release | 30 min |
+| [3. The apps machine](#3-the-apps-machine) | The old VPS, read only | Days before | 30 min |
+| [4. Rehearse the move](#4-rehearse-the-move) | Your machine, the old VPS, the dev machine | The days before | 2 hours |
+| [5. The window](#5-the-window) | Everywhere; the old VPS is converted into the apps machine | One long evening; production is off | 4 to 8 hours |
+| [6. Rollback](#6-rollback) | Everywhere; the apps machine is turned back into the old VPS | Only if the window goes wrong | 2 hours |
+| [7. Clean up](#7-clean-up) | GitHub, the apps machine | After the apps machine has run a release | 30 min |
 | [8. What you check by hand](#8-what-you-check-by-hand) | Browser, your machine | After the window | 30 min |
+
+The window is longer than it would be with a second new machine: besides the repositories (one import after the
+other, 4.4 says how long each takes), it archives every volume, converts the server (about an hour: the packages, the
+install, the platform and its certificates), restores the volumes and sets the backups up. 4.7 measures how long one
+volume's archive takes; scale it by the sizes of 4.6.
 
 **Conventions.**
 
 - Each command says where it runs: **your machine** (Git Bash on Windows; `python` if `python3` isn't on the
-  path), **the old VPS** (as its admin, `<old admin>`), **the dev machine** or **the apps machine**, as the
-  admin (`artur`) or as `ygg`. Placeholders are in angle brackets: `<old ip>`, `<dev ip>`, `<apps ip>`.
+  path), **the old VPS**, **the apps machine** or **the dev machine**, and as whom. **The old VPS and the apps
+  machine are the same server**: this page calls it the old VPS until its conversion in 5.5, and the apps machine
+  from then on. Its admin, `<old admin>`, stays its admin (the user with `sudo`); the conversion adds `ygg`. The
+  dev machine's admin is `artur`. Placeholders are in angle brackets: `<apps ip>` (the old VPS's own address, which
+  stays the apps machine's) and `<dev ip>`.
 - **No secret goes on a command line.** Tokens are read with `read -rs` into a variable of the shell and
   exported; the scripts take them from the environment, and `curl` gets them on its standard input
   (`--config -`), from `printf`, a shell builtin that starts no process. Nothing in this page needs a real
@@ -57,16 +67,27 @@ Fill this in first; later steps use every line.
 
 | What | How to find it | Yours |
 |---|---|---|
-| The old VPS's address and admin | Your provider | `<old ip>`, `<old admin>` |
+| The old VPS's address, name and admin | Your provider; on the old VPS, `hostname` | `<apps ip>`, e.g. `srv1937950`, `<old admin>` |
 | The release the old VPS runs | On the old VPS: `git -C /opt/yggdrasil describe --tags` | e.g. `v0.7.4` |
-| The old controller's address | On the old VPS: `grep '^JENKINS_URL=' /etc/yggdrasil/platform.env` | e.g. `https://jenkins.<old domain>/` |
-| Today's domain(s) | `DOMAIN` in the same file (v0.7.4 has no `EXTRA_DOMAINS`), and any other domain the applications' env files name (0.4) | `<old domains>` |
-| What production runs, per application | On the old VPS: `ygg status`: the `VERSION` and `COMMIT` columns of production | e.g. `heimdall-api 1.4.0 3f2a9c1` |
-| The new machines | Two fresh Ubuntu 24.04 servers, rented now: their addresses are needed for DNS in section 1 | `<dev ip>`, `<apps ip>` |
-| Whether the old VPS serves names under `techcraftsmen.net` or `artur-rios.tech` | Is one of them in `<old domains>`? | yes / no |
+| Where its settings are | On the old VPS: `ls /etc/yggdrasil`. `vars.db` (and `vars.key`) is the [variables store](variables.md): `platform.sh` renders `platform.env` from it on each run and keeps the last copy that worked in `/etc/yggdrasil/last-good/`, so there is no `/etc/yggdrasil/platform.env` | e.g. the store |
+| The old controller's address | On the old VPS: `ygg vars get platform JENKINS_URL` (the store's own reader, v0.7.4's `scripts/vars.py get`; a host without a store: `grep '^JENKINS_URL=' /etc/yggdrasil/platform.env`) | e.g. `https://jenkins.techcraftsmen.net/` |
+| Today's domain(s) | `ygg vars get platform DOMAIN` the same way (v0.7.4 has no `EXTRA_DOMAINS`), and any other domain the applications' variables name (0.4) | e.g. `techcraftsmen.net` |
+| The environments it runs | `ygg vars get platform ENVIRONMENTS` | e.g. `development,homologation,production` |
+| What production runs, per application | On the old VPS: `ygg status`: the `VERSION` and `COMMIT` columns of production | e.g. heimdall-api, heimdall-ui, fortuna-api and fortuna-ui, each like `heimdall-api 1.4.0 3f2a9c1` |
+| How the names reach it today | Cloudflare, **DNS → Records** of `techcraftsmen.net` | e.g. `A *` → `<apps ip>`, **DNS only** |
+| The new machine | One fresh Ubuntu 24.04 server for the dev machine, rented now: its address is needed for DNS in section 1. The apps machine is the old VPS: `<apps ip>` is its address | `<dev ip>` |
+| Whether the old VPS serves names under `techcraftsmen.net` or `artur-rios.tech` | Is its `DOMAIN` one of them? | yes / no |
+
+`ygg vars get` needs the store's key, `vars.key`, which v0.7.4 makes readable by the `docker` group, the admin's. If
+it says `cannot read the key`, read the last copy that worked instead:
+`sudo grep -E '^(JENKINS_URL|DOMAIN|ENVIRONMENTS)=' /etc/yggdrasil/last-good/platform.env` (values single-quoted:
+`DOMAIN='techcraftsmen.net'`).
 
 Write `<old domains>` as an extended regular expression for the searches below, the dots escaped:
-`old\.example\.com|other\.example\.org`.
+`old\.example\.com|other\.example\.org`: the domains of that list that are **neither** `techcraftsmen.net` nor
+`artur-rios.tech`, whose names change. Where there is none (`DOMAIN` is `techcraftsmen.net` and no variable names
+another), nothing moves to a new name: skip the searches of 0.4, 3.4 and 5.7 (an empty pattern would match every
+line).
 
 ### 0.2 The old controller's library is pinned
 
@@ -81,7 +102,7 @@ Libraries on older versions) → `yggdrasil` → **Default version**.
 checkout is at that tag too (0.1's `git describe`).
 **If it fails:** set it now, as the CHANGELOG says, and keep the checkout at that tag (`git -C /opt/yggdrasil
 checkout <tag>`).
-**Back out:** nothing to undo: the pin stays until the old VPS is switched off. A restart of the old controller drops
+**Back out:** nothing to undo: the pin stays as long as the old controller exists (5.3 stops it; 7.1 deletes it). A restart of the old controller drops
 it (Configuration as Code applies `casc.yaml`'s `defaultVersion: main` again), so set it again after any restart,
 before a build runs: `main` has 0.8.0 since before the window, and 0.9.0 after 5.8a.
 
@@ -107,7 +128,7 @@ and a rollback (section 6) goes back to them.
 
 If the applications use another domain today, their addresses move to `techcraftsmen.net`: every env file
 that names the old one (public host, API base URLs compiled into the web bundles) changes before the first
-deploy on the new machine. Find every place now. On your machine, with every application repository cloned
+deploy on the apps machine. Find every place now. On your machine, with every application repository cloned
 next to each other under `<your clones>`:
 
 ```bash
@@ -131,7 +152,7 @@ sudo grep -rnoE '<old domains>' /etc/yggdrasil
 With the variables store on the old VPS, read each scope instead: `ygg vars list <application>@<environment>
 --resolved | grep -E '<old domains>'` (secrets stay masked).
 
-**Success looks like:** a list of `file:line` places. Env files are fixed in 3.4. A place in an application's
+**Success looks like:** a list of `file:line` places. Variables are fixed in 3.4 or 5.7. A place in an application's
 code that runs (not documentation, not tests) is a release of that application with the fix, before the
 window, or it breaks on the new name.
 **If it fails:** `fatal: not a git repository` means a folder that is not a clone: ignore its line.
@@ -143,7 +164,7 @@ Five secrets are used during the move. Make the ones you can now and keep them i
 
 | Token | Make it | Used by |
 |---|---|---|
-| Cloudflare DNS token | 1.2 | `cloudflare_dns.py`, both machines' `acme.env` |
+| Cloudflare DNS token | 1.2 | `cloudflare_dns.py`, the dev machine's `acme.env`, the apps machine's store (`platform:acme`, 5.5) |
 | Forgejo owner token, scopes **`write:repository` and `read:user`** | 2.4, once Forgejo is up | `migrate.py`, `rules.py` (`FORGE_TOKEN`) |
 | GitHub token for the window: a classic token with the `repo` scope, 7 days | 4.1 | `migrate.py`, `rules.py` (`GH_TOKEN`) |
 | GitHub mirror token: fine-grained, Contents and Workflows **Read and write** on all your repositories | 4.1 | `migrate.py mirrors`, then Forgejo keeps it (`MIRROR_GITHUB_TOKEN`) |
@@ -236,8 +257,8 @@ API's names). **Cache eligibility: Bypass cache** → **Deploy**.
 with the comment `yggdrasil`. A record **without** that comment was made by hand: it is reported and never
 changed, and the run exits `1`. That is what keeps this step from touching what the old VPS serves.
 
-For `--apps`, give the address the bare domains and `*` should have **until the window**: `<old ip>` if the
-old VPS serves names under these zones (0.1), else `<apps ip>`. First export each zone as it is (**DNS →
+For `--apps`, give `<apps ip>`: the old VPS's own address, which is the apps machine's too, before the window and
+after it (the conversion keeps the server, and 5.8 changes only how the names reach it). First export each zone as it is (**DNS →
 Records → Import and Export → Export**): it is the record of what was there, for 5.8 and a rollback. In each
 export, find the records that point at Vercel (a `CNAME` to `cname.vercel-dns.com`, an `A` to `76.76.21.21`):
 `artur-rios.tech`'s `www` and `blog` (and its bare domain if it points there), and in `techcraftsmen.net` the
@@ -245,7 +266,7 @@ company page's `www` and bare domain, with any other name of that zone still on 
 are until their sites move (plan 5), and 5.8 keeps them. Then, on your machine, with the token of 1.2:
 
 ```bash
-python3 scripts/cloudflare_dns.py --dry-run --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
+python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
 ```
 
 `--skip-caa <zone>` leaves that zone's `CAA` out (`CAA skipped on <zone> (--skip-caa)`): the record allows Let's
@@ -267,7 +288,10 @@ Read every line. The run is not trusted until you have: the wildcard's name filt
   the old VPS serves, a Vercel record at a bare domain, noted above): expected now. Leave them; 5.8 deals with the
   ones that move.
 - `a CNAME to ... is at this name`: expected for the Vercel names. At the bare domain or `*` of a zone that
-  must reach the new apps machine, note it for 5.8.
+  must reach the apps machine, note it for 5.8.
+- `would create A *.artur-rios.tech: <apps ip> (proxied)` (and its bare domain, if no record is there): expected.
+  The old VPS does not serve that zone yet (0.1), so such a name answers Cloudflare's error until the window, which
+  nothing links to; `www.` and `blog.` keep their Vercel records, which win over the wildcard.
 - An `AAAA` record at a name the script wants is not looked at unless it carries the comment. Note any at the
   bare domains and `*` (**DNS → Records**, type `AAAA`): 5.8 deals with them.
 - **If `JENKINS_URL` of 0.1 is `https://jenkins.techcraftsmen.net/`**, the new `jenkins` record takes that name
@@ -283,7 +307,7 @@ Read every line. The run is not trusted until you have: the wildcard's name filt
 Then the same without `--dry-run`:
 
 ```bash
-python3 scripts/cloudflare_dns.py --apps <old ip or apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
+python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
 ```
 
 **Success looks like:** `CAA skipped on artur-rios.tech (--skip-caa)` and the same for `techcraftsmen.net`, `create`
@@ -311,7 +335,8 @@ repositories still on GitHub.
 [setup.md step 8](setup.md#8-prepare-each-machine), all of it, with `--role dev`.
 
 **Success looks like:** `ygg check --role dev` (as the admin, after `sudo -v`) has every row `ok`, but the
-Backups rows (until 3.5) and `renovate github token` (a `warn` until 2.7, and for good if you don't set one).
+Backups rows (until 5.21: the other machine, the apps machine, only exists once the window has converted the old
+VPS) and `renovate github token` (a `warn` until 2.7, and for good if you don't set one).
 **If it fails:** each row names its fix; `ygg install --role dev` is safe to run again.
 **Back out:** the machine is new: rebuild it from the provider's image.
 
@@ -373,7 +398,7 @@ mirror:
 **Success looks like:** as `ygg`, `/opt/yggdrasil/scripts/platform.sh ps` lists `forgejo`, `jenkins` and
 `traefik` `(healthy)`; `https://git.techcraftsmen.net` and `https://jenkins.techcraftsmen.net` open without a
 certificate warning; **Manage Jenkins → Nodes** shows `ci` and `release` connected and `vps` offline (it comes up
-in 3.3).
+in the window, 5.5, once the old VPS is the apps machine).
 **If it fails:** [setup.md, Troubleshooting](setup.md#troubleshooting).
 **Back out:** `platform.sh down` as `ygg`; the volumes stay.
 
@@ -448,83 +473,159 @@ is the token or its scopes (9.7).
 
 ## 3. The apps machine
 
-Rollout step 4: a new VPS with the `ygg` user and its rootless engine, the platform, checked with no
-application deployed yet.
+Rollout step 4. The apps machine is the old VPS, converted in place: `ygg` and its rootless engine, the platform,
+the data. **None of it can be done before the window**: `ygg install --role apps` disables and masks the rootful
+Docker that production runs on, and removes the admin from the `docker` group. So the conversion itself is in the
+window, after production stops ([5.4 to 5.6](#54-archive-the-volumes-and-the-settings)), and its proofs and backups
+after it (5.5, 5.21). What this section does, days before, is **read** the server, so that the window meets no
+surprise, and write down how it is today: that record is what [Rollback](#6-rollback) puts back. Everything here
+is read only, on the old VPS, as `<old admin>`.
 
-### 3.1 Prepare it
+What the conversion keeps, and what it redoes:
 
-[setup.md step 8](setup.md#8-prepare-each-machine) with `--role apps`.
+| | Kept | Redone in the window |
+|---|---|---|
+| The checkout, `/opt/yggdrasil` | The same clone and path (and the `ygg` command linked to it) | Switched from the tag `v0.7.4` to `main` (5.5); the installer gives it to `ygg` (`ygg:ygg`, `755`) |
+| `/etc/yggdrasil` | Everything in it: the variables store (`vars.db`, `vars.key`) with every application's variables and the platform's, `last-good/`, the GitHub App key of the old controller | Its owner: from `<old admin>` and group `docker` to `ygg:ygg`, directory `750`, files `600` ([hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker) step 4). The platform's settings in the store: profiles, domains, the proxy, the agent (5.5) |
+| The applications' data | The rootful engine's volumes, untouched in `/var/lib/docker` (with the images and the stopped containers), for a rollback | Archived (5.4), then restored into `ygg`'s engine (5.6) under the same names |
+| The platform's own data | The old controller's home (`yggdrasil_jenkins`), the certificates, metrics and logs, in the rootful engine and in the archive | Not carried: `ygg`'s engine starts its own, empty. The certificates are issued again (5.5); the old Jenkins' history stays with the old engine |
+| The images | | Built again by `ygg`'s engine at each deploy (5.17) |
+| Users | `<old admin>`, with `sudo` and its SSH key | `ygg` is added; `<old admin>` leaves the `docker` group: from then on it uses `sudo` for the system and `ygg` for Docker |
 
-**Success looks like:** `ygg check --role apps` has every row `ok` but the Backups rows (until 3.5).
-**If it fails:** each row names its fix; `ygg install --role apps` again.
-**Back out:** rebuild it.
+### 3.1 Read the server
 
-### 3.2 The catalog on the apps machine
-
-The apps machine runs no Jenkins and its checkout keeps your fork's `main` as it is: nothing to edit.
-
-### 3.3 The platform
-
-[setup.md step 10](setup.md#10-the-apps-machine): `ENVIRONMENTS=development,homologation,production`,
-`COMPOSE_PROFILES=apps,agent`, `DOMAIN=techcraftsmen.net`, `EXTRA_DOMAINS=artur-rios.tech`,
-`CLOUDFLARE_PROXIED=true`, `JENKINS_URL=https://jenkins.techcraftsmen.net/`, and the `vps` node's name and
-secret from the dev machine's Jenkins (**Manage Jenkins → Nodes → vps**).
-
-Until the window the domains may still point at the old VPS, and the firewall lets only Cloudflare in, so check
-the certificates **from the apps machine itself**, as `ygg`:
+As `<old admin>` on the old VPS, keeping what it prints in your home there (`sudo -v` first, so the block does not
+stop at a password prompt):
 
 ```bash
-curl -kvI --resolve yggdrasil.techcraftsmen.net:443:127.0.0.1 https://yggdrasil.techcraftsmen.net 2>&1 | grep -i issuer
+sudo -v
+{
+  . /etc/os-release && echo "system: $PRETTY_NAME"
+  echo "admin: $(id -un), groups: $(id -nG)"
+  echo "docker group: $(getent group docker)"
+  test -s ~/.ssh/authorized_keys && echo "admin key: there" || echo "admin key: MISSING"
+  stat -c 'owner: %U:%G %a %n' /opt/yggdrasil /etc/yggdrasil
+  echo "checkout: $(git -C /opt/yggdrasil describe --tags), changes: $(git -C /opt/yggdrasil status --short | wc -l)"
+  dpkg-query -W -f='package: ${Package} ${Version} ${db:Status-Abbrev}\n' docker-ce docker.io containerd.io containerd 2>/dev/null
+  sudo ufw status verbose
+  sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|allowusers) '
+  echo "login users:"; getent passwd | awk -F: '$7 !~ /(nologin|false)$/ { print "  " $1 " " $7 }'
+  echo "containers:"; sudo docker ps -a --format '  {{.Names}}  {{.Label "com.docker.compose.project"}}  {{.Status}}'
+} 2>&1 | tee ~/cutover-before.txt
 ```
 
-**Success looks like:** an issuer with `(STAGING)` first; after setup.md 10's step 4 (the real certificate),
-Let's Encrypt's without `(STAGING)`, and the same for a name under `artur-rios.tech`. `platform.sh ps` shows
-every service `Up`, `traefik`, `status` and `console` `(healthy)`. In Jenkins, the `vps` node is connected.
-**If it fails:** `docker logs yggdrasil-traefik-1 2>&1 | grep -iE 'acme|error' | tail -20`, and
-[dns.md troubleshooting](dns.md#troubleshooting). The `vps` node offline: the agent's log (`docker logs
-yggdrasil-agent-1`) says why; `nslookup jenkins.techcraftsmen.net 1.1.1.1` must print `<dev ip>` (1.5).
-**Back out:** `platform.sh down` as `ygg`.
+`~/cutover-before.txt` holds no secret: names, owners, the firewall's rules. Keep it on the server until section 7,
+and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cutover-log/`).
+
+**Success looks like:**
+- `system: Ubuntu 24.04...`: the only system `ygg install --role apps` accepts.
+- `groups:` includes `docker`, and `docker group:` lists the members that 6 gives back.
+- `admin key: there`: the installer switches SSH passwords off and refuses to start without a key for the admin.
+- `owner:` lines for the checkout (`<old admin>`) and `/etc/yggdrasil` (`<old admin>:docker 2750`, the layout of
+  [hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker)'s first lines): 6 gives them back.
+- `checkout: v0.7.4, changes: 0`: 5.5 switches it to `main`, which a local change could stop.
+- `package: docker-ce ... ii` (Docker's own packages, as v0.7.4's install made them).
+- The `ufw` rules (`80,443/tcp` and `OpenSSH` allowed, as v0.7.4's install made them), the SSH settings, and as
+  login users only `<old admin>` and `root` (besides system accounts such as `sync`).
+- As containers, only yggdrasil's and the applications' (the projects `yggdrasil` and `<application>-<environment>`).
+
+**If it fails:**
+- Not Ubuntu 24.04: the install refuses it (`the apps role installs on Ubuntu 24.04 LTS only`). Upgrading the
+  release (`do-release-upgrade`) is a job of its own, with production up and its own way back: do it, and let
+  production run on it for a while, before you plan the window.
+- `admin key: MISSING`: from your machine, `ssh-copy-id <old admin>@<apps ip>`, then a login without a password.
+- `changes:` above `0`: `git -C /opt/yggdrasil status` names them; commit them to your fork or drop them now.
+- `package: docker.io ...` (Ubuntu's own Docker) instead of `docker-ce`: the install replaces it with Docker's
+  packages (it asks, and keeps `/var/lib/docker`). The rollback then runs Docker's engine on the same data, not
+  Ubuntu's: decide now whether you accept that (6 says so).
+- Another login user, or root login, password login: the install's SSH part allows only `<old admin>` and `ygg`
+  in, with keys. Move whoever uses another account first.
+- A container that is not yggdrasil's: it stops for good with the rootful engine. Move it elsewhere first.
+**Back out:** read only; `rm ~/cutover-before.txt` if you start again.
+
+### 3.2 What the install will change, and room for the archives
+
+What `ygg install --role apps` will find, read by its own check from a throwaway clone of your fork (the checkout
+in `/opt/yggdrasil` is still at `v0.7.4`, which has no `--role`), as `<old admin>`:
+
+```bash
+git clone -q -b main https://github.com/artur-rios/yggdrasil.git ~/ygg-preview
+sudo -v && ~/ygg-preview/scripts/ygg.sh check --role apps
+rm -rf ~/ygg-preview
+```
+
+Then the room the window needs. The volumes are archived on this disk (5.4) and restored on it (5.6), so each
+application volume is there three times for a while: in the rootful engine, in its archive and in `ygg`'s engine.
+The platform's volumes are archived once. And `ygg`'s engine builds every image again (5.17):
+
+```bash
+sudo docker system df -v | sed -n '/^Local Volumes space usage:/,/^$/p'
+sudo docker system df
+df -h / /srv /home /var/lib/docker
+```
+
+**Success looks like:** the check prints its rows and changes nothing: mostly `missing` and `warn` (no `ygg`; the
+`rootful docker` and `docker group` rows, naming what the install turns off and empties; the firewall's 80 and 443
+open to everyone; and `checkout owner ... is not /opt/yggdrasil`, since it reads the clone). Read the `packages` row: it names what the install
+adds, and, with `the distribution's (...)`, what it removes (3.1). And the free space, on the filesystem that holds
+`/srv` and `/home` (usually `/`), is at least: twice the application volumes (their archives, then their copies in
+`ygg`'s engine), plus the platform's volumes (their archives), plus the `Images` row of `docker system df` (the
+builds), plus a margin of a few GB. Write the figures down for 4.8.
+**If it fails:** `ygg.sh check` refusing to run: `python3` and `python3-yaml` are there on a v0.7.4 host; `git
+clone` failing: the fork's address. Too little space: a bigger disk at the provider, before the window; or leave
+the platform's archives out of 5.4 except `yggdrasil_jenkins` (the old controller, which a rollback needs), never
+an application's. `sudo docker builder prune` frees build cache, which nothing needs.
+**Back out:** read only; the clone is deleted by the last line.
+
+### 3.3 The platform's settings, ready
+
+The platform's settings are in the store, and most of them stay: `DOMAIN`, `ENVIRONMENTS`, `JENKINS_URL` (already
+`https://jenkins.techcraftsmen.net/`, which from 1.5 on is the dev machine's controller), the ACME settings, the
+Traefik and Grafana passwords and the status token (the consoles keep working). What 5.5 changes is in
+[setup.md, step 10](setup.md#10-the-apps-machine)'s table. Look at the scope now, on the old VPS as `<old admin>`
+(secrets are masked):
+
+```bash
+ygg vars list platform
+```
+
+**Success looks like:** `KEY=value` lines; the secrets show `••••••`. Write down the values of `COMPOSE_PROFILES`,
+`DOCKER_GID` and `JENKINS_AGENT_URL` (none is a secret; 5.5 changes or deletes them, and 6 may need them back).
+There is no `ACME_CA_SERVER`: the certificates the old platform got were real ones, and 5.5 gets real ones at once,
+without setup.md 10's staging pass. Put in your password
+manager, for 5.5: the `vps` node's secret, from the dev machine's Jenkins (**Manage Jenkins → Nodes → vps**, made in
+2.3), and the Cloudflare token of 1.2 (the store's own may not reach `artur-rios.tech`, which the apps machine
+serves from now on).
+**If it fails:** `ygg vars` refusing the key: as in 0.1.
+**Back out:** read only.
 
 ### 3.4 The application env files
 
-[setup.md step 11](setup.md#11-application-env-files), one per application and environment, from the old VPS's,
-with the new host names (0.4) written in now. First, as `ygg` on the apps machine, the environment's directory as
-setup.md 11 makes it (`install -d -m 750 /etc/yggdrasil/<environment>`). Then, to carry a file without showing its
-secrets, from your machine (`scp -3` copies between the two hosts through yours, without storing it):
+On the same server there is nothing to copy: the variables store already holds every application's variables in
+every environment ([setup.md, step 11](setup.md#11-application-env-files)), and the conversion keeps it as it is.
+The database passwords and keys stay what they were, and the data stays with them (5.4 to 5.6). What changes is who
+owns them: `ygg`, after 5.5. The host names stay under `techcraftsmen.net`; the check of 5.7 proves that the store
+reads the same as `ygg`.
+
+Check now that they are complete, on the old VPS as `<old admin>`, for each application and environment:
 
 ```bash
-scp -3 <old admin>@<old ip>:/etc/yggdrasil/production/heimdall-api.env ygg@<apps ip>:/etc/yggdrasil/production/heimdall-api.env
+python3 /opt/yggdrasil/scripts/catalog.py environments <application>
+ygg vars list <application>@<environment> --resolved | grep -E '<old domains>'      # only if 0.1 found old domains
+sudo find /etc/yggdrasil -name '*.env' -not -path '*/last-good/*'
 ```
 
-then, as `ygg` on the apps machine, `chmod 600` it and edit its host names (`nano`). A file the old admin cannot
-read: on the old VPS, `sudo install -m 600 -o "$USER" <file> ~/` first, copy that one, and delete it afterwards.
-With the variables store on the old VPS, `ygg vars export <scope>` there and `ygg vars import <scope> <file>` here,
-through a file of mode `600` that you delete afterwards. The database passwords and keys stay what they were: the
-data comes with them (5.4).
-
-**Success looks like:** as `ygg`, `grep -rnoE '<old domains>' /etc/yggdrasil` prints nothing (with a store,
-`ygg vars list <application>@<environment> --resolved | grep -E '<old domains>'` for each), and
-`python3 /opt/yggdrasil/scripts/catalog.py environments <application>` lists exactly the environments you made
-files for.
-**If it fails:** a line names the file and the old name: edit it.
-**Back out:** the files are new; delete them.
+**Success looks like:** the environments of each application are the ones the store has variables for (`ygg vars
+list <application>@<environment> --keys` lists some); the `grep` prints nothing. The `find` lists files the store
+replaced, or none: with a store, `deploy.sh` reads the store and not those files.
+**If it fails:** a line names a variable with an old name. Change it now only if the new name works for the old
+platform too; otherwise in 5.7, after the conversion (`ygg vars set <application>@<environment> KEY=value`, as `ygg`).
+**Back out:** read only.
 
 ### 3.5 The proofs and the backups
 
-As the admin, `cd /opt/yggdrasil && sudo -v && scripts/prove-machine.sh apps`.
-
-**Success looks like:** `no root services` `ok`. The `client addresses` row is a `look`, and says there is no
-request yet: it is read again in 5.20, once the names point here.
-**If it fails:** as in 2.6.
-**Back out:** read only.
-
-Then the backups between the two machines: [hosts.md, Backups](hosts.md#7-backups-and-restore), the keys in both
-directions and the dev machine's `backup.conf` with `volume yggdrasil_jenkins` for now. Forgejo's item and the
-apps machine's `backup.conf` wait for the data, in 5.21.
-
-**Success looks like:** on the dev machine, as `ygg`, `ygg backup run` ends without an error and `ls
-~/received/from-dev` on the apps machine shows the day.
-**Back out:** remove the key's line from the receiver's `~/.ssh/authorized_keys`.
+Not before the window: the proofs need `ygg`'s engine and run in 5.5 (and 5.20), the backups between the two machines
+need `ygg` on both and are set up in 5.21.
 
 ## 4. Rehearse the move
 
@@ -661,65 +762,75 @@ repository's **Settings → Repository → Mirror settings** lists it with its l
 ### 4.6 The volumes, compared
 
 Each application's data is a Docker volume named `<project>_<volume>`, and the new deploys use the project
-`<application>-<environment>`. On the old VPS (its engine is rootful: `docker` there is `sudo docker`):
+`<application>-<environment>`, as v0.7.4's do. On the old VPS (its engine is rootful: `docker` there is `sudo
+docker`):
 
 ```bash
-sudo docker volume ls --filter label=com.docker.compose.project \
-  --format '{{.Name}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.volume"}}'
+sudo docker volume ls --format '{{.Name}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.volume"}}'
+sudo docker system df -v | sed -n '/^Local Volumes space usage:/,/^$/p'
 ```
 
 For each application, the names the new deploy will use are `<application>-<environment>_<name>`, one for each
 key under the top-level `volumes:` of its stack's files (`stacks/<application>.yml`, or the repository's own
 `docker-compose.yml`); a volume with a `name:` there is exactly that name.
 
-**Success looks like:** every application volume of the list has a name the new deploys will use. The
-platform's own (`yggdrasil_*`: the old Jenkins, the certificates, metrics and logs) are not carried: the new
-machines have their own, and the old Jenkins' history stays on the old VPS.
-**If it fails:** a renamed project or volume needs the volume renamed in the move, which `volumes.sh` does not
-do: after 5.5, before 5.6, rename `<old name>.tar` to `<new name>.tar` in `~/cutover` and change the first three
-columns of its line in `manifest.tsv` (`<new name>`, its project, its Compose volume) with `nano`. The size and
-the checksum columns stay: they are the file's, and the file did not change. A volume without the Compose
-labels that holds data is not carried by `volumes.sh` at all: carry it as
-[hosts.md, Upgrading](hosts.md#9-upgrading-a-host-from-rootful-docker) step 2 does.
+**Success looks like:** every application volume of the list has its two labels and a name the new deploys will
+use. The platform's own (`yggdrasil_*`: the old Jenkins, the certificates, metrics and logs) are archived in 5.4 for
+a rollback, never restored into `ygg`'s engine: it makes its own. The sizes add up to 3.2's figure.
+**If it fails:** a renamed project or volume needs the volume renamed in the move, which `volumes.sh` does not do.
+In 5.4, export that volume alone, to `/srv/migration/apps-renamed`; in 5.6, before its import, rename
+`<old name>.tar` to `<new name>.tar` there and change the first three columns of its line in `manifest.tsv`
+(`<new name>`, its project, its Compose volume) with `nano`. The size and the checksum columns stay: they are the
+file's, and the file did not change. A volume without the Compose labels (an empty second and third column) that
+holds data is not carried by `volumes.sh` at all: 5.4 and 5.6 carry it as [hosts.md,
+Upgrading](hosts.md#9-upgrading-a-host-from-rootful-docker) steps 2 and 5 do.
 **Back out:** read only.
 
-Then put the two scripts on the old VPS, from your clone (at the release with this runbook):
+Then put the two scripts on the old VPS, from your clone (at the release with this runbook): its own checkout, at
+`v0.7.4`, does not have them until 5.5.
 
 ```bash
-ssh <old admin>@<old ip> mkdir -p cutover-tools
-scp scripts/volumes.sh scripts/docker-engine.sh <old admin>@<old ip>:cutover-tools/
+ssh <old admin>@<apps ip> mkdir -p cutover-tools
+scp scripts/volumes.sh scripts/docker-engine.sh <old admin>@<apps ip>:cutover-tools/
 ```
 
 `volumes.sh` sources `docker-engine.sh` from its own folder; the old VPS needs nothing else of the repository.
 
 ### 4.7 One volume, rehearsed
 
-The volumes go once, in the window, from the old VPS's rootful engine to `ygg`'s rootless one, and a database
-whose files come out with the wrong owners only shows when production does not start. Rehearse it now with one
-volume that holds a database and that nothing needs: one of an on-demand environment (`development` or
-`homologation`) from 4.6's list, stopped. Not production's, which runs until 5.3: `volumes.sh` refuses a volume
-that a running container mounts.
+The window does on one server what used to take two: `volumes.sh export`, as root, from the rootful engine; then
+`volumes.sh import`, as `ygg`, into `ygg`'s rootless engine, on the same disk. Nothing in either refuses that (the
+export writes a directory, the import reads one), and what decides whether a database starts afterwards is the same:
+whether the owners of its files come through into a user namespace. A database whose files come out with the wrong
+owners only shows when production does not start. The old VPS has no rootless engine before the window, but the
+dev machine has one, `ygg`'s, the same kind: rehearse there, with one volume that holds a database and that nothing
+needs: one of an on-demand environment (`development` or `homologation`) from 4.6's list, stopped. Not
+production's, which runs until 5.3: `volumes.sh` refuses a volume that a running container mounts. The rootful
+engine only reads it; production is not touched.
 
 On the old VPS, check that no running container mounts it (the first command prints nothing; else `ygg env stop
-<environment>` first), then export it alone, to a directory of its own (5.4 refuses a directory that holds an
-export, so not `/srv/cutover`), and hand the files to the admin:
+<environment>` first), then archive it alone, to a directory of its own, and time it:
 
 ```bash
 sudo docker ps --filter volume=<volume> --format '{{.Names}}'
-sudo bash ~/cutover-tools/volumes.sh export /srv/cutover-rehearsal <volume>
+time sudo bash ~/cutover-tools/volumes.sh export /srv/cutover-rehearsal <volume>
+sudo cat /srv/cutover-rehearsal/manifest.tsv
+sudo tar --numeric-owner -tvf /srv/cutover-rehearsal/<volume>.tar | head -5
 sudo chown -R "$USER": /srv/cutover-rehearsal
 ```
 
-From your machine, copy it to `ygg` on the apps machine, as 5.5 does:
+The listing shows the owners the archive keeps, as numbers: a PostgreSQL volume's files are `999/999` (the image's
+`postgres` user), not root's. Then, from your machine, copy it to `ygg` on the dev machine (`scp -3` copies between
+the two hosts through yours, without storing it):
 
 ```bash
-scp -3 -r <old admin>@<old ip>:/srv/cutover-rehearsal ygg@<apps ip>:
+scp -3 -r <old admin>@<apps ip>:/srv/cutover-rehearsal ygg@<dev ip>:
 ```
 
-On the apps machine, as `ygg`, give it a scratch name first, so that it can never be taken for the volume a
-deploy will use: rename its `.tar`, and in `manifest.tsv` change the first three columns of its one line (the
-volume's name, its project, its Compose volume) to `rehearsal-scratch_data`, `rehearsal-scratch` and `data`,
-leaving the size and the checksum as they are (4.6 says why). Then import it:
+On the dev machine, as `ygg`, give it a scratch name first, so that it can never be taken for a real volume: rename
+its `.tar`, and in `manifest.tsv` change the first three columns of its one line (the volume's name, its project,
+its Compose volume) to `rehearsal-scratch_data`, `rehearsal-scratch` and `data`, leaving the size and the checksum
+as they are (4.6 says why). Then import it:
 
 ```bash
 cd ~/cutover-rehearsal && mv <volume>.tar rehearsal-scratch_data.tar && nano manifest.tsv
@@ -736,12 +847,12 @@ docker exec ygg-rehearsal-db psql -U <user> -d <database> -c '\dt'
 
 - `<image>` and `<data path>`: the database service's `image:` and the path its volume is mounted at, in the
   application's stack file (4.6): the same image, so that the same version reads the files.
-- `<user>` and `<database>`: `POSTGRES_USER` and `POSTGRES_DB` (the user's name when it is not set) in that
-  environment's env file (3.4). No password is needed: the image asks for one only to create a database, and
-  `psql` inside the container connects over its socket, which the image trusts. A database of another kind: its
-  own image and client, the same way.
+- `<user>` and `<database>`: `POSTGRES_USER` and `POSTGRES_DB` (the user's name when it is not set) of that
+  environment (`ygg vars list <application>@<environment> --resolved` on the old VPS, 3.4). No password is needed:
+  the image asks for one only to create a database, and `psql` inside the container connects over its socket, which
+  the image trusts. A database of another kind: its own image and client, the same way.
 
-Last, remove what the rehearsal made, on the apps machine as `ygg` and on the old VPS:
+Last, remove what the rehearsal made, on the dev machine as `ygg` and on the old VPS:
 
 ```bash
 docker rm -f ygg-rehearsal-db && docker volume rm rehearsal-scratch_data && rm -r ~/cutover-rehearsal
@@ -750,10 +861,12 @@ docker rm -f ygg-rehearsal-db && docker volume rm rehearsal-scratch_data && rm -
 sudo rm -r /srv/cutover-rehearsal
 ```
 
-**Success looks like:** `volumes: exported 1 volume(s) to /srv/cutover-rehearsal`; `volumes: creating
-rehearsal-scratch_data`, then `volumes: imported 1 volume(s) from /home/ygg/cutover-rehearsal`; the log ends
-with `database system is ready to accept connections` (after `Skipping initialization`: it found its data), and
-`\dt` lists the application's tables.
+**Success looks like:** `volumes: exported 1 volume(s) to /srv/cutover-rehearsal`, and `time`'s `real` line: divide
+the volume's size (its manifest's fourth column, in bytes) by it, and 4.6's total by that rate is how long 5.4 takes,
+and 5.6 about as long. The listing shows numeric owners other than `0/0` where the image runs as another user. On
+the dev machine `volumes: creating rehearsal-scratch_data`, then `volumes: imported 1 volume(s) from
+/home/ygg/cutover-rehearsal`; the log ends with `database system is ready to accept connections` (after `Skipping
+initialization`: it found its data), and `\dt` lists the application's tables.
 **If it fails:** `used by a running container, stop it first`: that environment is on; stop it. `nothing
 imported: ...` names the file or the manifest line that is wrong: a renamed `.tar` must be the manifest's first
 column with `.tar` after it. The database refuses to start (`Permission denied`, `wrong ownership`, `could not
@@ -767,19 +880,30 @@ The window starts only when all of these hold:
 
 - [ ] 0.2, 0.3 and 0.4 are done, and no application's code needs a release for its host names.
 - [ ] `inventory` exits `0`: no open pull request anywhere.
-- [ ] 2.3 to 2.7 and 3.3 to 3.5 looked like their success lines.
+- [ ] 2.3 to 2.7 and 3.1 to 3.4 looked like their success lines: the old VPS runs Ubuntu 24.04, `<old admin>` has
+  `sudo` and an SSH key, nothing else on it needs the rootful engine or another login, and `~/cutover-before.txt`
+  is kept, on the server and on your machine.
+- [ ] **The disk has room for every volume's archive** and for the restore: the free space of 3.2 is at least twice
+  the application volumes of 4.6, plus the platform's, plus the images, plus a margin.
 - [ ] 4.4 and 4.5 worked, and the mirror had no `refs/pull` error.
 - [ ] 4.4's rehearsal copy is deleted on Forgejo (and 4.5's, with its mirror): one left there reads `already
   imported` in 5.11 and misses every commit made on GitHub since (5.13 would then refuse it).
-- [ ] 4.7's volume started on the apps machine with its data readable, and the rehearsal's volume, container and
-  files are removed.
-- [ ] You know how long an import takes, and the window is long enough for 4.3's `<N>` of them.
-- [ ] The tokens of 0.5 are in your password manager.
+- [ ] 4.7's volume was archived from the rootful engine with its owners, started on a rootless engine with its data
+  readable, and the rehearsal's volume, container and files are removed on both machines.
+- [ ] `~/cutover-tools` on the old VPS holds `volumes.sh` and `docker-engine.sh`.
+- [ ] You know how long an import takes and how long the archives take (4.7), and the window is long enough for 4.3's
+  `<N>` imports, the archives and their restore, and about an hour of conversion.
+- [ ] The tokens of 0.5, the `vps` node's secret and the store's key (`vars.key`, which v0.7.4's `vars init` asked
+  you to keep) are in your password manager.
 
 ## 5. The window
 
 Rollout step 5, in one sitting. Production is off from 5.3 to 5.17. The data and the repositories move together,
-since the new deploy agent cannot use the new controller until the repositories are on Forgejo. From 5.3 on,
+since the new deploy agent cannot use the new controller until the repositories are on Forgejo. The server is
+converted early in the window, right after production stops: 5.4 archives what it holds while the rootful engine
+still runs, 5.5 converts it, 5.6 restores the data into `ygg`'s engine. From 5.5 on, going back means undoing the
+conversion ([Rollback](#6-rollback), step 6), which the archives of 5.4 and the record of 3.1 make possible: keep
+both until section 7. From 5.3 on,
 nobody merges, pushes to GitHub, or deploys: a commit pushed to GitHub after 5.11 is one Forgejo's copy lacks,
 and 5.13 refuses that repository's mirror rather than let its first push delete it (`--allow-prune` would).
 
@@ -813,7 +937,9 @@ python3 scripts/migrate.py inventory | tee ~/cutover-log/inventory.txt
 
 ### 5.3 Stop the old VPS
 
-On the old VPS, as its admin, with its own checkout (the old release):
+Production and the old platform stop; the server stays up. On the old VPS, as `<old admin>`, with its own checkout
+(the old release, `v0.7.4`, whose `platform.sh` still drives the rootful engine: the new one refuses it, so this runs
+before 5.5 touches the checkout):
 
 ```bash
 for environment in $(python3 /opt/yggdrasil/scripts/catalog.py environments); do ygg env stop "$environment" --force; done
@@ -823,8 +949,9 @@ sudo docker ps --format '{{.Names}}'
 
 - `ygg env stop <environment> --force`: every application of the environment, production included. An
   environment that is not on this host (`local`) is refused: ignore that line.
-- `platform.sh down`: Traefik, the old controller, the agent and the rest. The old controller must not run:
-  the mirror pushes of 5.13 are pushes to `develop` on GitHub, which it would deploy.
+- `platform.sh down`: Traefik, the old controller, the agent and the rest, their volumes kept. v0.7.4's renders its
+  settings from the variables store first, as every command of it does. The old controller must not run: the mirror
+  pushes of 5.13 are pushes to `develop` on GitHub, which it would deploy.
 
 Then GitHub's own automation. The first mirror push of 5.13 puts the Dependabot commit of 5.12 on the default
 branch of every repository that had the file, which is most of them: a push, so every GitHub Actions workflow
@@ -862,126 +989,300 @@ disable <repo> .github/workflows/<file>      # one line of workflows.txt, for ea
 They stay disabled after the window: what they did moves to Jenkins with each repository (rollout steps 6 and 7,
 [moving-repositories.md](moving-repositories.md)).
 
-**Success looks like:** `sudo docker ps` prints nothing (or only containers that are not yggdrasil's);
+**Success looks like:** `sudo docker ps` prints nothing (3.1 found no container that is not yggdrasil's);
 `workflows.txt` lists the workflows, and `gh workflow list -R artur-rios/<repo> --all` shows each one you disabled
 as `disabled_manually`.
-**If it fails:** `sudo docker stop <name>` for what is left. A `gh` error naming `HTTP 403`: `GH_TOKEN` lacks the
+**If it fails:** `sudo docker stop <name>` for what is left. `platform.sh` saying the store failed its check:
+`/opt/yggdrasil/scripts/platform.sh down --last-good` (the copy of 0.1). A `gh` error naming `HTTP 403`: `GH_TOKEN` lacks the
 `repo` scope (4.1). A `<repo> skipped: ...` line: that repository's workflows were not looked at; fix what it
 names, and run the loop again.
 **Back out:** `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start production` (and the on-demand
 environments that were on); the workflows: `while read -r repo file; do gh workflow enable "$(basename "$file")"
 -R "artur-rios/$repo"; done < ~/cutover-log/workflows-disabled.txt`.
 
-### 5.4 Export the volumes
+### 5.4 Archive the volumes and the settings
 
-On the old VPS, the only place this runs as root (its engine is rootful). The volumes are named on the command
-line: every volume Compose made, but the platform's own `yggdrasil_*` (4.6):
+On the old VPS, as `<old admin>`, while the rootful engine still runs: the only place in this page where
+`volumes.sh` runs as root. This is [hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker)'s step 2 done with
+`volumes.sh`, which checks each archive's size and SHA-256 at the import, keeps the volumes' Compose labels, refuses
+a volume that a running container mounts, and unpacks inside the engine that gets the data, so that the owners
+come out right (4.7). Nothing in it refuses the same host: the export writes a directory, the import of 5.6 reads it.
+
+The volumes are named on the command line, in two lists: the applications' (restored in 5.6) and the platform's own
+`yggdrasil_*` (archived for a rollback only; 4.6):
 
 ```bash
+sudo install -d -m 755 /srv/migration
 sudo docker volume ls --filter label=com.docker.compose.project --format '{{.Name}}' | grep -v '^yggdrasil_' > ~/cutover-volumes.txt
-cat ~/cutover-volumes.txt
-sudo bash ~/cutover-tools/volumes.sh export /srv/cutover $(cat ~/cutover-volumes.txt)
+sudo docker volume ls --filter label=com.docker.compose.project --format '{{.Name}}' | grep '^yggdrasil_' > ~/cutover-platform-volumes.txt
+wc -l ~/cutover-volumes.txt ~/cutover-platform-volumes.txt && cat ~/cutover-volumes.txt
+sudo bash ~/cutover-tools/volumes.sh export /srv/migration/apps $(cat ~/cutover-volumes.txt)
+sudo bash ~/cutover-tools/volumes.sh export /srv/migration/platform $(cat ~/cutover-platform-volumes.txt)
+sudo cp -a /etc/yggdrasil /srv/migration/etc-yggdrasil
+sudo stat -c '%U:%G %a %n' /etc/yggdrasil /srv/migration/etc-yggdrasil /srv/migration/apps /srv/migration/platform
 ```
 
-Look at the list before the third line: it must be 4.6's application volumes. If it is empty, stop: given no
-volume name, `volumes.sh` exports every Compose volume, the platform's too.
+- `install -d -m 755 /srv/migration`: root's, open to be walked through, so that `ygg` can reach `apps` once it is
+  its own (5.6). What is inside stays private: `volumes.sh` writes its directories and files for root alone (`700`,
+  `600`), and `cp -a` keeps `/etc/yggdrasil`'s owners and modes (`<old admin>:docker`, `2750`), which the conversion
+  is about to change: this copy is what [Rollback](#6-rollback) puts back.
+- Look at the lists before the export lines: the first must be 4.6's application volumes, the second the
+  platform's. **If either is empty, stop**: given no volume name, `volumes.sh` exports every Compose volume.
+- With too little room (3.2), leave out of the second list every volume but `yggdrasil_jenkins` (`nano
+  ~/cutover-platform-volumes.txt`): they stay in the rootful engine anyway.
+
+If 4.6 found a volume to rename: take it out of `~/cutover-volumes.txt` before the export, and export it alone
+(`sudo bash ~/cutover-tools/volumes.sh export /srv/migration/apps-renamed <volume>`). If it found one without the
+Compose labels that holds data, archive it as hosts.md 9's step 2 does, one line per volume:
+
+```bash
+sudo install -d -m 700 /srv/migration/unlabelled
+sudo docker run --rm -v <volume>:/volume:ro -v /srv/migration/unlabelled:/out busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e tar -C /volume -czf /out/volume-<volume>.tar.gz .
+```
 
 It refuses, before it writes anything, a volume that a running container mounts (a database copied while it runs
-is no backup), one without the Compose labels, and a `/srv/cutover` that already holds an export. Each volume
-becomes `/srv/cutover/<volume>.tar`, and `manifest.tsv`, written last, lists each with its labels, size and
-SHA-256. The files are root's, mode `600`.
+is no backup), one without the Compose labels, and a directory that already holds an export. Each volume becomes
+`<directory>/<volume>.tar`, and `manifest.tsv`, written last, lists each with its labels, size and SHA-256.
 
 **Success looks like:** `volumes: exporting <volume>` for each, then `volumes: exported N volume(s) to
-/srv/cutover`, with N the number of application volumes of 4.6.
+/srv/migration/apps`, with N the number of application volumes of 4.6, and the same for `/srv/migration/platform`.
+The `stat` lines show `etc-yggdrasil` with the same owner and mode as `/etc/yggdrasil` (`<old admin>:docker 2750`),
+and the two archive directories `root:root 700`. It takes about as long as 4.7 predicted.
 **If it fails:** `used by a running container, stop it first: ...`: `sudo docker stop` it (5.3 missed it), run again.
-`/srv/cutover/manifest.tsv exists`: a finished export is there; use it, or move it away. A failed run leaves no
-`manifest.tsv` and no half file: run it again.
-**Back out:** the volumes were only read. `sudo rm -r /srv/cutover` once you no longer need the copy (keep it
-until 7.1).
+`.../manifest.tsv exists`: a finished export is there; use it, or move it away. `No space left on device`: the
+half-written `.tar` is removed and no `manifest.tsv` written: make room (3.2), `sudo rm -r` the directory without a
+`manifest.tsv`, run again. A failed run leaves no `manifest.tsv` and no half file.
+**Back out:** the volumes were only read, and the rootful engine still has them. Keep `/srv/migration` until 7.1: it
+is the rollback's copy of the settings, and of the data if the rootful engine's turns out damaged.
 
-### 5.5 Copy them to the apps machine
+### 5.5 Convert the server
 
-The files are root's. Hand them to the admin, then copy them to `ygg` on the apps machine. From your machine,
-with your SSH agent forwarded for this one session (`ssh -A`: the old VPS then logs in to the apps machine with
-your key, which the install copied to `ygg`):
+[hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker)'s steps 3, 4, 6 and 7 (5.6 is its step 5), with this
+installation's answers. Keep a second SSH session to the server open until part 2's success line holds. From here
+on, the server is the apps machine.
 
-```bash
-ssh -A <old admin>@<old ip>
-sudo chown -R "$USER": /srv/cutover
-rsync -a --info=progress2 /srv/cutover/ ygg@<apps ip>:cutover/
-exit
-```
+1. **The checkout, on `main`.** It is at the tag `v0.7.4` (0.2); the apps machine runs your fork's `main`, as the
+   dev machine does. As `<old admin>`, who still owns it:
 
-`chown` keeps the modes: the directory and files stay readable by the admin alone.
+   ```bash
+   cd /opt/yggdrasil && git fetch origin && git switch main && git pull --ff-only
+   git describe --tags
+   ```
 
-The apps machine's own names go through Cloudflare, which carries no SSH: use its address. Without an agent
-(Windows: the *OpenSSH Authentication Agent* service, then `ssh-add`), copy through your machine instead:
-`scp -3 -r <old admin>@<old ip>:/srv/cutover ygg@<apps ip>:`.
+   **Success looks like:** `Switched to branch 'main'`, a fast-forward, and the tag of the release with this
+   pipeline and the machines' tools (`v0.8.0`, or a later one).
+   **If it fails:** `invalid reference: main`: the clone has no local `main`: `git switch -c main --track
+   origin/main`. A refused pull names the local change: 3.1 should have found it.
+   **Back out:** `git checkout --quiet v0.7.4`.
 
-**Success looks like:** on the apps machine, as `ygg`, `ls ~/cutover` shows every `.tar` and `manifest.tsv`.
-Whether each arrived whole is checked by the import.
-**If it fails:** run `rsync` again: it carries on. `Host key verification failed`: answer the question it asks
-the first time (`ssh ygg@<apps ip>` from the old VPS once).
-**Back out:** `rm -r ~/cutover` on the apps machine.
+2. **The install.** As `<old admin>`, from the checkout, as [setup.md 8.3](setup.md#83-install) says (not as root,
+   not with `sudo`: it asks for `sudo` itself):
+
+   ```bash
+   cd /opt/yggdrasil && scripts/ygg.sh install --role apps
+   ```
+
+   Answer `y` to each part, and to copying your key to `ygg`. In this order it installs the packages it lacks (and
+   removes Ubuntu's own Docker if 3.1 found it), **disables and masks the rootful Docker**
+   (`docker.service`, `docker.socket`, `containerd.service`) and empties the `docker` group (you included),
+   writes the system settings and unattended upgrades, creates `ygg`, writes the SSH drop-in (`AllowUsers
+   <old admin> ygg`, keys only), gives the checkout to `ygg`, makes `/etc/yggdrasil` `ygg`'s directory (`750`; the
+   files in it keep their owners until part 3), sets the firewall (SSH, and 80 and 443 only from Cloudflare's
+   ranges; the old `80,443/tcp` rule is deleted) and writes `cloudflare-ips`, gives `ygg` its rootless engine,
+   enables its backup timer and writes the role. [hosts.md, System settings](hosts.md#4-system-settings) has every
+   file. The rootful engine's data stays in `/var/lib/docker`, untouched.
+
+   From now on 80 and 443 answer only Cloudflare, and the names are still DNS only (5.8): they do not answer.
+   Production is off; nothing is lost.
+
+   **Success looks like:** it ends with the check: every row `ok` but the Backups rows (`backup.conf` and the last
+   and newest backup, until 5.21). A **new** SSH session as `<old admin>` and one as `ygg` (`ssh ygg@<apps ip>`) both log in,
+   with your key; in the new admin session `id -nG` no longer lists `docker`, and `systemctl is-enabled
+   docker.service` prints `masked`.
+   **If it fails:** each row names its fix; `scripts/ygg.sh install --role apps` again (safe to run again). The SSH
+   part stopping (`sshd -t rejects ...`, `sshd would run with ...`) puts its file back and leaves SSH as it was.
+   `could not fetch Cloudflare's ranges`: 80 and 443 stay closed; run the install again once `www.cloudflare.com`
+   answers.
+   **Back out:** [Rollback](#6-rollback), step 6.
+
+3. **The secrets to `ygg`** ([hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker) step 4). The installer
+   never touches a file that is already there, so the store and the rest keep the old owner and group. As
+   `<old admin>`:
+
+   ```bash
+   sudo chown -R ygg:ygg /etc/yggdrasil
+   sudo chmod -R u=rwX,go= /etc/yggdrasil
+   sudo chmod 750 /etc/yggdrasil
+   sudo -v && ygg check --role apps
+   ```
+
+   The old controller's GitHub App key (`github-app.pem`) stays here, `ygg`'s and `600`: this host keeps no
+   controller, so nothing reads it (7.2 deletes it). The installer also put `platform.env` and `acme.env` from the
+   templates beside the store, which had none: with `vars.db` there, `platform.sh` and `deploy.sh` read the store
+   and never them.
+
+   **Success looks like:** the check's `secrets ygg` row is `ok` (`/etc/yggdrasil (ygg:ygg 750)`), and every row
+   `ok` but the Backups rows.
+   **If it fails:** `secrets ygg ... is ygg:ygg 2750`: GNU `chmod` keeps a directory's set-group-ID bit under a
+   numeric mode of three digits: `sudo chmod 00750 /etc/yggdrasil`.
+   **Back out:** [Rollback](#6-rollback), step 6 (it puts back the copy of 5.4).
+
+4. **The platform's settings, then the platform** ([hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker)
+   steps 6 and 7, [setup.md, step 10](setup.md#10-the-apps-machine)). The settings are in the store, so they change
+   there: as `ygg` (`ssh ygg@<apps ip>`):
+
+   ```bash
+   cd /opt/yggdrasil
+   ygg vars list platform --keys
+   ygg vars set platform COMPOSE_PROFILES=apps,agent EXTRA_DOMAINS=artur-rios.tech CLOUDFLARE_PROXIED=true JENKINS_AGENT_NAME=vps
+   ygg vars set platform JENKINS_AGENT_SECRET=-      # the vps node's secret (3.3), typed hidden
+   ygg vars set platform:acme CF_DNS_API_TOKEN=-      # the token of 1.2, typed hidden
+   ygg vars unset platform DOCKER_GID                 # only if the list names it
+   ygg vars unset platform JENKINS_AGENT_URL          # only if the list names it
+   python3 scripts/vars.py check --platform
+   scripts/platform.sh config > /dev/null && echo "platform settings OK"
+   scripts/platform.sh up
+   ```
+
+   - `COMPOSE_PROFILES=apps,agent`: the status API, the console and the deploy agent; no `jenkins` any more (the
+     controller is the dev machine's). `ENVIRONMENTS` is refused without `apps`.
+   - `EXTRA_DOMAINS` and `CLOUDFLARE_PROXIED=true`: the static sites' domain, and Traefik trusting the visitors'
+     addresses from Cloudflare's ranges only (`cloudflare-ips`, part 2), which 5.8 turns on.
+   - `KEY=-`: the value is asked for without echo, never on the command line nor in the shell's history.
+   - `DOCKER_GID` is read by nothing now; `JENKINS_AGENT_URL` was the controller next door (`http://jenkins:8080/`):
+     without it the agent dials `JENKINS_URL`, which stays as it is: `https://jenkins.techcraftsmen.net/` is the
+     dev machine's controller since 1.5. `JENKINS_ADMIN_PASSWORD` and `GITHUB_APP_*` are not read without the
+     `jenkins` profile: leave them.
+   - The ACME settings stay, without `ACME_CA_SERVER` (3.3): Traefik asks Let's Encrypt for real certificates at
+     once, one per domain, through DNS-01 with the new token. No staging pass: the window cannot wait for one, and
+     1.5 proved the token on both zones.
+   - `ygg`'s engine starts with no volume of the platform's: the certificates, metrics and logs begin again. The
+     old platform's stay in the rootful engine.
+
+   Then the certificates, from the machine itself (the names are DNS only until 5.8, and the firewall lets only
+   Cloudflare in), as `ygg`:
+
+   ```bash
+   for name in yggdrasil.techcraftsmen.net test.artur-rios.tech; do
+     curl -kvI --resolve "$name:443:127.0.0.1" "https://$name" 2>&1 | grep -i issuer
+   done
+   ```
+
+   (`test.artur-rios.tech` is any name of that zone: the certificate is the zone's wildcard.)
+
+   **Success looks like:** `vars.db: ok`, `platform settings OK`, and `platform.sh up` ends with its `ps`: every
+   service `Up`, `traefik`, `status` and `console` `(healthy)`, and `agent`. Within a few minutes both issuers are
+   Let's Encrypt's, without `(STAGING)`. In the dev machine's Jenkins, **Manage Jenkins → Nodes → vps** is
+   connected.
+   **If it fails:** `ENVIRONMENTS is set but COMPOSE_PROFILES lacks apps`: the first `set` did not run.
+   `JENKINS_AGENT_SECRET must be set ...`: the second. `cannot read the key`: part 3. Traefik's own default
+   certificate for long: `docker logs yggdrasil-traefik-1 2>&1 | grep -iE 'acme|error' | tail -20`, and
+   [dns.md troubleshooting](dns.md#troubleshooting). The `vps` node offline: the agent's log (`docker logs
+   yggdrasil-agent-1`) says why; `nslookup jenkins.techcraftsmen.net 1.1.1.1` must print `<dev ip>` (1.5).
+   **Back out:** `scripts/platform.sh down` as `ygg`; the settings: `ygg vars history platform` lists each change,
+   `ygg vars rollback <id>` undoes one; all of it: [Rollback](#6-rollback), step 6.
+
+5. **The proofs.** As `<old admin>`: `cd /opt/yggdrasil && sudo -v && scripts/prove-machine.sh apps`.
+
+   **Success looks like:** `no root services` `ok`: no root `dockerd`, `containerd` or `traefik` any more. The
+   `client addresses` row is a `look`, and says there is no request yet: it is read again in 5.20, once the names
+   reach the machine through Cloudflare.
+   **If it fails:** `owned by root (pid name): ... dockerd`: the rootful engine still runs: part 2's second part,
+   `scripts/ygg.sh install --role apps` again. Otherwise as in 2.6.
+   **Back out:** read only.
 
 ### 5.6 Import them
 
-On the apps machine, as `ygg` (it refuses root here: the rootless engine is `ygg`'s). If 4.6 found a volume to
-rename, rename it first, as 4.6 says.
+[hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker)'s step 5, with `volumes.sh`. First, as `<old admin>`,
+give `ygg` the application archives (`ygg` has no `sudo`); the platform's and the settings' copy stay root's and the
+admin's:
 
 ```bash
-/opt/yggdrasil/scripts/volumes.sh import ~/cutover
+sudo chown -R ygg:ygg /srv/migration/apps
+```
+
+(and `/srv/migration/apps-renamed` and `/srv/migration/unlabelled` the same way, if 5.4 made them). Then as `ygg`
+(it refuses root here: the rootless engine is `ygg`'s). If 4.6 found a volume to rename, rename it first in
+`/srv/migration/apps-renamed`, as 4.6 says, and import that directory too.
+
+```bash
+/opt/yggdrasil/scripts/volumes.sh import /srv/migration/apps
+docker volume ls
 ```
 
 It checks the size and checksum of every file against the manifest, then that every volume it would fill is
 missing, or empty with the same labels, and only then creates each volume with its Compose labels and unpacks
-it inside a container of `ygg`'s engine, which is what gives the files the owners the containers expect.
+it inside a container of `ygg`'s engine, which is what gives the files the owners the containers expect (4.7).
+A volume without the labels (5.4's `unlabelled`) is unpacked as hosts.md 9's step 5 does, as `ygg`:
+`docker run --rm -v <volume>:/volume -v /srv/migration/unlabelled:/backup:ro busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e tar -C /volume -xzf /backup/volume-<volume>.tar.gz`.
 
 **Success looks like:** `volumes: creating <volume>` for each, then `volumes: imported N volume(s) from
-/home/ygg/cutover`, N as in 5.4; `docker volume ls` lists them.
-**If it fails:** `nothing imported: ...` lists every file or volume that is wrong, and nothing was created: a file
-that is not what was exported is copied again (5.5). An untar that fails removes the volumes this run created;
-but a volume that **existed** empty before the run may be left half filled: `docker volume rm <volume>` (nothing
-uses it yet), then import again.
-**Back out:** `docker volume rm` each volume of the manifest; the old VPS still has the originals.
+/srv/migration/apps`, N as in 5.4; `docker volume ls` lists them beside the platform's new `yggdrasil_*`.
+**If it fails:** `nothing imported: ...` lists every file or volume that is wrong, and nothing was created. A file
+that is not what was exported: the rootful engine still has the volume; export that one again to a new directory,
+which needs the engine for a moment, as `<old admin>`: `sudo systemctl unmask docker.service docker.socket
+containerd.service && sudo systemctl start docker.service`, the export of 5.4 with that one name, then `sudo
+systemctl stop docker.service docker.socket containerd.service && sudo systemctl mask docker.service docker.socket
+containerd.service` (its stopped containers stay stopped: `restart: unless-stopped`). `Permission denied` on
+`/srv/migration/apps`: the `chown` above. An untar that fails removes the volumes this run created; but a volume
+that **existed** empty before the run may be left half filled: `docker volume rm <volume>` (nothing uses it yet),
+then import again.
+**Back out:** as `ygg`, `docker volume rm $(cut -f1 /srv/migration/apps/manifest.tsv)`; the rootful engine still
+has the originals.
 
 ### 5.7 Host names
 
-The env files were written with the new names in 3.4. Check again, on the apps machine as `ygg`:
+The variables came through the conversion as they were (3.4). Check that `ygg` reads them, on the apps machine as
+`ygg`:
 
 ```bash
-grep -rnoE '<old domains>' /etc/yggdrasil
+python3 /opt/yggdrasil/scripts/vars.py check
+ygg vars list <application>@<environment> --resolved | grep -E '<old domains>'      # each; only with old domains (0.1)
 ```
 
-and run 0.4's loop over your clones once more: it must find nothing that 0.4 did not.
+and, with old domains, run 0.4's loop over your clones once more: it must find nothing that 0.4 did not.
 
-**Success looks like:** the first prints nothing; the loop finds only the places you already decided about.
-**If it fails:** edit the file it names.
-**Back out:** nothing changed.
+**Success looks like:** `vars.db: ok`: `ygg` opens the store with its key (part 3 of 5.5 worked), and every value of
+this machine's applications decrypts and its references resolve. The `grep` prints nothing; the loop finds only
+the places you already decided about.
+**If it fails:** `cannot read the key /etc/yggdrasil/vars.key`: 5.5's part 3. An `error:` line names the scope and
+the variable. A variable with an old name: `ygg vars set <application>@<environment> KEY=value`.
+**Back out:** nothing changed; a `set` is undone with `ygg vars history <scope>` and `ygg vars rollback <id>`.
 
-### 5.8 DNS: the domains point at the new apps machine
+### 5.8 DNS: the apps machine's names behind Cloudflare
 
-First, by hand in each zone's **DNS → Records**, the records the script leaves alone but that would keep
-sending visitors to the old VPS:
+The applications' names stay on the same address: the apps machine is the server they reach today (0.1). What
+changes is **how** they reach it: through Cloudflare's proxy, which they did not use (`A *` DNS only). From 5.5
+on that is the only way in: the firewall lets 80 and 443 in from Cloudflare's ranges only, and Traefik takes the
+visitor's address from Cloudflare's header (`CLOUDFLARE_PROXIED=true`), which heimdall-api's sign-in limit counts.
+So the records of the bare domains and `*` turn **proxied**. The names that move are the dev machine's: `git.`,
+`jenkins.`, `traefik-dev.` and `grafana-dev.` (the dev machine's platform services; `cloudflare_dns.py`'s dev
+names), made in 1.5 and pointing at `<dev ip>` since 2.3. Proxied, the names also get 1.3's Full (strict), which
+the certificates of 5.5 pass, and 1.4's cache rule.
+
+First, by hand in each zone's **DNS → Records**, the records the script leaves alone:
 
 - first, in 1.5's zone exports, the records that point at Vercel, which you noted there, in both zones: they stay
   (the last bullet), and nothing else of this list applies to them;
-- a hand-made `A` at the bare domain or `*` (1.5 reported it): **Edit**, set its *Comment* to `yggdrasil`, so the
-  script updates it in place; a hand-made `CNAME` there: delete it, **except** at a bare domain that points at
-  Vercel (`artur-rios.tech`'s, or `techcraftsmen.net`'s, the company page's), which stays until that site moves
-  (plan 5), like the other Vercel records;
+- the hand-made `A` at `*` (0.1: `<apps ip>`, DNS only), and at a bare domain that points at `<apps ip>`:
+  **Edit**, set its *Comment* to `yggdrasil`, so the script updates it in place: it keeps the address and turns
+  the proxy on. A hand-made `CNAME` there: delete it, **except** at a bare domain that points at Vercel
+  (`artur-rios.tech`'s, or `techcraftsmen.net`'s, the company page's), which stays until that site moves (plan 5),
+  like the other Vercel records;
 - a hand-made `A` at `jenkins.`, `git.`, `traefik-dev.` or `grafana-dev.` (1.5's last bullet, if it was not dealt
   with then): delete it, or give it the comment;
-- a hand-made `AAAA` at the bare domain or `*` (the old VPS's IPv6, noted in 1.5): delete it, or pass the new
-  machine's IPv6 as `--apps6` and give it the comment;
+- a hand-made `AAAA` at the bare domain or `*` (the server's IPv6, noted in 1.5): DNS only, it would send IPv6
+  visitors straight to a firewall that refuses them. Pass the address as `--apps6 <apps ipv6>` and give the record
+  the comment (the script then proxies it too), or delete it;
 - a hand-made record at a name of an application or of the platform (`heimdall`, `yggdrasil`, ...): a specific
-  record wins over the wildcard: delete it;
+  record wins over the wildcard, and DNS only it now reaches nothing: delete it (the wildcard covers the name);
 - the Vercel records stay as they are: `artur-rios.tech`'s (`www`, `blog`, and the bare domain's if it points
   there) and `techcraftsmen.net`'s (the company page's `www` and bare domain, and any other name of the zone that 1.5's
   export shows on Vercel), until their sites move
   ([moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)). Each zone's `CAA`
   stays out with them (`--skip-caa` for both, below): Vercel renews their certificates over HTTP-01.
 
+Write down each record you changed and how it was (DNS only, the comment it had): the rollback puts them back.
 Then, on your machine:
 
 ```bash
@@ -989,17 +1290,18 @@ python3 scripts/cloudflare_dns.py --dry-run --apps <apps ip> --dev <dev ip> --sk
 python3 scripts/cloudflare_dns.py --apps <apps ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
 ```
 
-**Success looks like:** the dry run's `would update A *.techcraftsmen.net: address <old ip> -> <apps ip>` (and
-`proxied on` for a record that was DNS only) for each zone's `*` and each bare domain that is not on Vercel, nothing
-for the dev names; the real run the same without `would`. It exits `0`, or `1` with only the Vercel records of the two zones under
-`to see to:`. Proxied records change at Cloudflare's edge within seconds: from your machine,
-`curl -sI https://yggdrasil.techcraftsmen.net | grep -iE '^(HTTP|server)'` answers `server: cloudflare` with the
-new machine's console behind it (a `200`, or Traefik's `404` for an application not deployed yet), and
-`nslookup jenkins.techcraftsmen.net 1.1.1.1` prints `<dev ip>`.
-**If it fails:** a `made by hand` line for a record that should move: its comment is not exactly `yggdrasil`.
-**Back out:** the same command with `--apps <old ip>` ([Rollback](#6-rollback)). Records it made proxied stay
-proxied: turn the proxy off by hand where it was off before, and put back what you deleted above, both from
-1.5's zone export.
+**Success looks like:** the dry run's `would update A *.techcraftsmen.net: proxied on` (no `address` change: the
+same server), the same for each bare domain that is not on Vercel and was DNS only, and nothing for the dev names,
+already right since 1.5 (`N of 8 records already right`); the real run the same without `would`. It exits `0`, or
+`1` with only the Vercel records of the two zones under `to see to:`. Proxied records change at Cloudflare's edge
+within seconds: from your machine, `curl -sI https://yggdrasil.techcraftsmen.net | grep -iE '^(HTTP|server)'`
+answers `server: cloudflare` with the apps machine's console behind it (a `200`, or Traefik's `404` for an
+application not deployed yet), and `nslookup jenkins.techcraftsmen.net 1.1.1.1` prints `<dev ip>`.
+**If it fails:** a `made by hand` line for a record that should change: its comment is not exactly `yggdrasil`.
+A `526` from Cloudflare: Traefik has no valid certificate for that name yet (5.5, part 4).
+**Back out:** by hand ([Rollback](#6-rollback), step 2): the proxy off and the comment taken off again on each
+record you changed above, and what you deleted put back, both from your notes and 1.5's zone export. Running the
+script again would turn the proxy back on.
 
 ### 5.8a The release that carries the repositories' plan
 
@@ -1421,9 +1723,11 @@ From here, pushes go to Forgejo.
 
 ### 5.17 Production, deployed by hand
 
-The images did not move: each application is built again on the apps machine, from the commit production ran on
-the old VPS (0.1), so no database migration runs. As `ygg` on the apps machine, for each application of
-production (`python3 /opt/yggdrasil/scripts/catalog.py applications --deployable`):
+The images did not move: the rootful engine's stay in `/var/lib/docker`, which `ygg`'s engine does not see, so
+each application is built again on the apps machine, from the commit production ran on the old VPS (0.1), and no
+database migration runs. As `ygg` on the apps machine, for each application of production (0.1: heimdall-api,
+heimdall-ui, fortuna-api and fortuna-ui; `python3 /opt/yggdrasil/scripts/catalog.py applications --deployable`
+lists what the catalog can deploy, chimera included, which production does not run and which is not deployed here):
 
 ```bash
 cd /opt/yggdrasil && git pull
@@ -1432,7 +1736,8 @@ git -C ~/yggdrasil-apps/<application> checkout --quiet <commit>
 ygg deploy production <application> ~/yggdrasil-apps/<application> <version>-<commit>
 ```
 
-- `git pull`: the checkout gets 5.9's commit (once; skip it for the next applications).
+- `git pull`: the checkout, on `main` since 5.5 and `ygg`'s since the install, gets 5.8a's release and 5.9's
+  commit (once; skip it for the next applications).
 - `git clone`: asks for a user name, `artur-rios`, and a password: the owner token of 2.4. Git keeps neither,
   since `ygg` has no credential helper. Nothing on Forgejo is readable signed out.
 - `<commit>` and `<version>`: 0.1's `COMMIT` and `VERSION` of that application, e.g. `3f2a9c1` and `1.4.0`:
@@ -1442,13 +1747,13 @@ ygg deploy production <application> ~/yggdrasil-apps/<application> <version>-<co
 **Success looks like:** `deploy: <application> <version>-<commit> to production as project
 <application>-production (previous: none)`, then `deploy: <application> <version>-<commit> is healthy`; `ygg
 status` shows it `running`, `healthy`, with 0.1's version and commit; its public address answers.
-**If it fails:** `deploy: missing or unreadable env file ...`: 3.4. `did not become healthy`: `docker logs` of its
-container; the usual cause is a variable or a volume name (4.6). A data volume that the deploy created empty
+**If it fails:** `deploy: missing or unreadable env file ...` or a store error: the store and its owner (5.5 part 3,
+5.7). `did not become healthy`: `docker logs` of its container; the usual cause is a variable or a volume name (4.6). A data volume that the deploy created empty
 (`docker volume ls` shows a name 4.6 did not expect) means the names did not match. Stop the application
 (`docker stop $(docker ps -q --filter label=com.docker.compose.project=<application>-production)`), then carry
-that one volume again under the right name: `mkdir ~/cutover-fix`, move its `.tar` there renamed, write a
-`manifest.tsv` there with its one line renamed (4.6), and `volumes.sh import ~/cutover-fix`. The volume the
-deploy made is empty and has the same labels, so it is filled; deploy again.
+that one volume again under the right name: `mkdir ~/cutover-fix`, copy its `.tar` there from
+`/srv/migration/apps` renamed, write a `manifest.tsv` there with its one line renamed (4.6), and `volumes.sh import
+~/cutover-fix`. The volume the deploy made is empty and has the same labels, so it is filled; deploy again.
 **Back out:** `ygg env stop production --force`.
 
 ### 5.18 The new controller sees the repositories
@@ -1524,7 +1829,7 @@ curl -s https://techcraftsmen.net/cdn-cgi/trace | grep '^ip='
 
 Open each application's address, sign in where it has users, and look at data you know. Then `ygg env start
 development` and `ygg env start homologation` on the apps machine, look at them the same way, and stop them again
-(`ygg env stop development`, `ygg env stop homologation`). Last, as the admin, `cd /opt/yggdrasil && sudo -v && scripts/prove-machine.sh apps`.
+(`ygg env stop development`, `ygg env stop homologation`). Last, as `<old admin>`, `cd /opt/yggdrasil && sudo -v && scripts/prove-machine.sh apps`.
 
 **Success looks like:** `ygg status` shows production `running`, `healthy`, at 0.1's versions; the status API's
 JSON lists the three environments; the applications show the data they had; the `client addresses` row lists, among
@@ -1536,39 +1841,85 @@ internal one for everyone.
 
 ### 5.21 Back up the new data
 
-Now that the data is there: on the dev machine add `forgejo` to `backup.conf` (it fails while Forgejo has no
-repository, which is why 3.5 left it out); on the apps machine write `backup.conf` with each application's
-volumes and databases ([hosts.md, backup.conf](hosts.md#backupconf)). On each, as `ygg`:
+The backups between the two machines start now: before the window there was no `ygg` on the old VPS to send to or
+receive from (3.5), and the apps machine's backup timer, enabled by its install, has failed every night since for
+want of a `backup.conf`. [hosts.md, Backups](hosts.md#7-backups-and-restore), in full:
+
+1. **The keys, both directions** ([hosts.md, The key](hosts.md#the-key-on-both-machines)): on each machine, as
+   `ygg`, the key `~/.ssh/yggdrasil-backup`; on the other, `~/received/from-dev` (on the apps machine) or
+   `~/received/from-apps` (on the dev machine) and the key's `restrict,command="rrsync ..."` line; then the host
+   key accepted once, by hand, from the sender. Use the addresses: the apps machine's names go through Cloudflare,
+   which carries no SSH.
+2. **`backup.conf` on each** ([hosts.md, backup.conf](hosts.md#backupconf)), as `ygg`: on the dev machine
+   `BACKUP_TARGET=ygg@<apps ip>:.`, with `forgejo` (it fails while Forgejo has no repository; it has them since 5.11)
+   and `volume yggdrasil_jenkins`; on the apps machine `BACKUP_TARGET=ygg@<dev ip>:.`, with each application's
+   volumes (`volume <name>`, the names of `/srv/migration/apps/manifest.tsv`'s first column) and databases
+   (`postgres <container> <user>`).
+
+Then, on each, as `ygg`:
 
 ```bash
 ygg backup run && ygg backup list
 ```
 
-**Success looks like:** `Newest: <today>, complete`, and the day appears in `~/received/from-<machine>` on the other.
-**If it fails:** [setup.md, Troubleshooting](setup.md#troubleshooting), the backup row.
-**Back out:** remove the items again.
+**Success looks like:** `Newest: <today>, complete`, and the day appears in `~/received/from-<machine>` on the other;
+`ygg check` (as each machine's admin, after `sudo -v`) has its Backups rows `ok`.
+**If it fails:** `Host key verification failed` or `Permission denied (publickey)`: step 1's last part, or the
+`authorized_keys` line. Otherwise [setup.md, Troubleshooting](setup.md#troubleshooting), the backup row.
+**Back out:** remove the items again; a key: its line in the receiver's `~/.ssh/authorized_keys`.
 
 ### 5.22 Announce the end
 
 Tell the users production is back, and anyone who pushes that the repositories are at
-`https://git.techcraftsmen.net` (GitHub is a read-only copy from now on). Leave the old VPS as it is, stopped,
-with `/srv/cutover`: it is the rollback until the new apps machine has run a release (7.1).
+`https://git.techcraftsmen.net` (GitHub is a read-only copy from now on). Leave the apps machine's leftovers as
+they are: `/srv/migration` (the archives and the copy of the old settings), the rootful engine's data in
+`/var/lib/docker` (masked, not running) and `~/cutover-before.txt`. With them, [Rollback](#6-rollback) can still turn
+the server back into the old VPS, until the apps machine has run a release (7.1).
 
 ## 6. Rollback
 
-The old VPS, untouched since 5.3, is the way back. What can be undone depends on how far the window went:
+The way back is the same server turned back into the old VPS: its rootful engine still holds every volume, image
+and stopped container as 5.3 left them (5.4 only read them, and nothing writes to `/var/lib/docker` once the engine
+is masked), `/srv/migration` holds an archive of each volume and the copy of `/etc/yggdrasil` with its old owners
+(5.4), and `~/cutover-before.txt` says how the server was (3.1). Keep all three until section 7: they are the
+rollback. What can be undone depends on how far the window went:
 
 | Up to | What changed | Undone by | Not undone |
 |---|---|---|---|
-| 5.3 to 5.7 | The old VPS is stopped; its volumes were read; copies on the apps machine; GitHub workflows disabled | Starting the old VPS (step 6 below); the workflows enabled again (step 3) | Nothing |
-| 5.8 | DNS points at the apps machine | `cloudflare_dns.py --apps <old ip>`, and the records deleted by hand in 5.8 put back from 1.5's zone export | A record that was DNS only before stays proxied until you switch it back by hand |
+| 5.3 | Production and the old platform stopped; GitHub workflows disabled | Starting them again (step 6's last part, without the rest); the workflows enabled again (step 3) | Nothing |
+| 5.4 | The volumes and `/etc/yggdrasil` archived in `/srv/migration` | Nothing to undo: the volumes were only read | Nothing |
+| 5.5 | The conversion: the checkout on `main` and `ygg`'s; rootful Docker disabled and masked, the `docker` group emptied; `/etc/yggdrasil` `ygg`'s, its platform settings changed in the store; `ygg` and its engine, its backup timer; the SSH drop-in, the firewall, the system settings, the role file, packages | Step 6: each change of `ygg install --role apps` reversed, then the copy of `/etc/yggdrasil` put back | See the list after the table |
+| 5.6 | The application volumes copied into `ygg`'s engine | Nothing for the old setup: the rootful engine's are untouched. `ygg`'s are deleted with `ygg` (step 6) or in 7.1 | Nothing |
+| 5.8 | The bare domains' and `*` records proxied, with the comment `yggdrasil` | By hand (step 2): the proxy off and the comment off again, the records deleted in 5.8 put back from your notes and 1.5's zone export | Nothing, once done by hand |
 | 5.9 | `catalog.yaml` on `main` names Forgejo | Reverting the commit | Nothing |
 | 5.9a | tech-craftsmen-company-page has a `develop` on GitHub, at `main`'s commit | Nothing: the old setup never reads it (5.9a's back out deletes it) | Nothing |
 | 5.11 | Copies on Forgejo | Nothing to undo on GitHub | The copies stay on Forgejo; delete them before trying the window again, or they are `already imported` and stale |
 | 5.12 | GitHub: rulesets deleted, issues off, the description, automated security fixes off. Forgejo: the Dependabot commits | 5.9's snapshot (`github-before.json`, `github-before/`): descriptions, issues, every ruleset and the security fixes that were on; a revert per repository | A ruleset 5.9 could not read (a private repository on a plan without them has none) |
 | 5.13 | GitHub has Forgejo's state: the Dependabot commits | Deleting every push mirror (step 1; stopping Forgejo only pauses them); the commits are reverted | A branch or tag that only GitHub had, only where `--allow-prune` let it go: `mirrors` refuses every other such repository. Nothing brings one back but a clone that has it |
 | 5.14, 5.15 | Forgejo collaborators and protections; `mirror tags` on the GitHub copies | Nothing to undo for the old controller: `mirror tags` only stops a version tag being moved or deleted | |
-| 5.17 on | Production ran on the apps machine | Carrying its volumes back, the same way in the other direction | **What production wrote on the new machine is lost** unless you carry it back. **Pull requests and issues opened on Forgejo stay on Forgejo.** |
+| 5.17 on | Production ran in `ygg`'s engine | Carrying its volumes back into the rootful engine (step 6) | **What production wrote in `ygg`'s engine is lost** unless you carry it back. **Pull requests and issues opened on Forgejo stay on Forgejo.** |
+
+**What this rollback cannot undo** of the conversion (5.5), all of it harmless to the old setup, and why:
+
+- **Packages.** The install adds what it lacks (`uidmap`, `slirp4netns`, `docker-ce-rootless-extras`, the Compose and
+  buildx plugins, `python3-cryptography`, `rsync`, `ufw`, `unattended-upgrades`, ...) and Docker's apt repository;
+  they stay. If 3.1 found Ubuntu's own `docker.io`, the install **removed** it and installed Docker's `docker-ce`:
+  the old setup then runs on Docker's engine, over the same `/var/lib/docker`, not on the one it had. Putting
+  `docker.io` back would remove `docker-ce` and the rootless extras: this page does not.
+- **The firewall's defaults and the Cloudflare rules.** `ufw` stays on, incoming denied by default, with SSH and one
+  rule per Cloudflare range; step 6 puts back the `80,443/tcp` rule the install deleted. The rootful engine
+  publishes its ports through its own firewall rules, around `ufw`, as it did before. A rule the install did not
+  make is left as it was; 3.1's `ufw status verbose` is the record to compare with.
+- **The system settings that only allow more**: the AppArmor profile for `rootlesskit`, the `delegate.conf` of
+  `user@.service`, the unattended upgrades file (security updates keep installing). They stay. The one that opens
+  something, `net.ipv4.ip_unprivileged_port_start=80`, is taken back in step 6.
+- **The SSH drop-in** (`00-yggdrasil.conf`: no root login, keys only, `AllowUsers <old admin> ygg`) is kept by
+  default: the old setup needs nothing it closes (3.1). Step 6 says how to remove it.
+- **`ygg`'s data.** `ygg` is stopped and its linger taken away, but the user and its home, with its engine and the
+  volumes of 5.6 (and anything production wrote there), stay until you delete them (step 6's end): they are what a
+  carry-back reads, and what a second attempt reuses.
+- **The platform's settings in the store** are undone by putting back the whole copy of `/etc/yggdrasil` (5.4): any
+  variable changed in the store after 5.4 is lost with it, which in a rollback is the point.
 
 **Going back, in order.** Skip the steps the window never reached.
 
@@ -1602,19 +1953,21 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    (or `401`) on every repository is the token (an empty one too: `read` was not answered); fix it and run again.
 
    Then as `ygg`, `/opt/yggdrasil/scripts/platform.sh down` on the dev machine (no deploy, no Jenkins) and `ygg env
-   stop production --force` on the apps machine. **Start Forgejo again only after the mirrors are gone**, or with mirroring
+   stop production --force` on the apps machine (step 6 stops the rest of it). **Start Forgejo again only after the mirrors are gone**, or with mirroring
    off: `FORGEJO__mirror__ENABLED: "false"` added to the `forgejo` service's `environment` in
    `/opt/yggdrasil/platform/compose.yml` (a local change; `git checkout -- platform/compose.yml` undoes it). Forgejo
    then refuses every mirror request with `Mirror feature is disabled`.
    Before 5.13 there is no mirror: `platform.sh down` alone.
-2. **DNS back** (5.8 reached), on your machine:
-   ```bash
-   python3 scripts/cloudflare_dns.py --apps <old ip> --dev <dev ip> --skip-caa artur-rios.tech --skip-caa techcraftsmen.net
-   ```
-   Success: `update A *.techcraftsmen.net: address <apps ip> -> <old ip>` and the same for `artur-rios.tech`'s `*`
-   and each bare domain that is not on Vercel. Then put back, from 1.5's zone export, the records you deleted by hand in 5.8, and turn the
-   proxy off where it was off. If the old controller's name was `jenkins.techcraftsmen.net`, set that record back
-   to `<old ip>` by hand, and remove its comment so the script leaves it alone.
+2. **DNS back** (5.8 reached), by hand in each zone's **DNS → Records**: the address did not change, only the proxy.
+   For each record that 5.8 changed (your notes): **Edit**, turn **Proxy status** off (DNS only), and empty its
+   *Comment*, so that a later run of `cloudflare_dns.py` leaves it alone instead of turning the proxy on again. Put
+   back, from 1.5's zone export, the records you deleted by hand in 5.8. The old platform trusts no forwarded
+   address, so behind the proxy every visitor would be one of Cloudflare's addresses to it (and to heimdall-api's
+   sign-in limit). If the old controller's name was `jenkins.techcraftsmen.net`, set that record (made in 1.5,
+   pointing at `<dev ip>`) to `<apps ip>` by hand, DNS only, and empty its comment too, so that GitHub's webhooks reach
+   the old controller again; `git.`, `traefik-dev.` and `grafana-dev.` may stay (the old setup uses none of them).
+   Success: from your machine, `nslookup jenkins.techcraftsmen.net 1.1.1.1` and `nslookup heimdall.techcraftsmen.net
+   1.1.1.1` print `<apps ip>` (a proxied name prints Cloudflare's addresses instead), within the record's TTL.
 3. **The repositories on GitHub** (5.9 reached). The rulesets were deleted, so these pushes go through:
    - the catalog: in your clone of yggdrasil, `git switch main && git pull github main` (or `origin`, if 5.19
      has not run), `git revert --no-edit "$(cat ~/cutover-log/catalog-commit.txt)"`, `git push <that remote>
@@ -1687,60 +2040,169 @@ The old VPS, untouched since 5.3, is the way back. What can be undone depends on
    ```
    Success: no error; a repository's page shows its old description and its Issues tab again, and **Settings →
    Code security** shows automated security fixes on where they were.
-6. **Carry production's data back, then start the old VPS.** The data comes first: nothing starts on the old VPS
-   until its volumes hold what they should.
+6. **Undo the conversion, then start the old VPS** (5.5 reached; before it, only the last part, the start). Each
+   part reverses what [hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker) and `ygg install --role apps`
+   did in 5.5, in the opposite order, and the data comes before the start: nothing starts on the old setup until its
+   volumes hold what they should.
 
-   **Only if production took writes on the new machine that you want to keep** (5.17 reached): carry its volumes
-   back, the way they came; else go to the start below. On the apps machine, as `ygg`, with production stopped
-   (step 1):
-   ```bash
-   /opt/yggdrasil/scripts/volumes.sh export ~/carry-back $(cut -f1 ~/cutover/manifest.tsv)
-   ```
-   If 4.6 renamed a volume, rename it back the same way in `~/carry-back` (its `.tar` and the first three columns
-   of its `manifest.tsv` line), to the old VPS's name. Copy `~/carry-back` to the old VPS as 5.5 did in the other
-   direction (`scp -3 -r ygg@<apps ip>:carry-back <old admin>@<old ip>:`). There, the old containers still exist,
-   only stopped, and `ygg env start` restarts exactly those, so the volumes cannot be removed: empty each one in
-   place, then import into it, which fills an existing empty volume whose labels match (and creates one the old VPS
-   never had):
-   ```bash
-   for volume in $(cut -f1 ~/carry-back/manifest.tsv); do
-     sudo docker volume inspect "$volume" >/dev/null 2>&1 || continue   # not there: the import creates it
-     sudo docker run --rm -v "$volume":/v busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e \
-       sh -c 'find /v -mindepth 1 -delete'
-   done
-   sudo bash ~/cutover-tools/volumes.sh import ~/carry-back
-   ```
-   Success: `volumes: <volume> exists, empty, with the same labels: filling it` for each (`creating <volume>` for one
-   the old VPS never had), then `volumes: imported N volume(s)`. The old data is still in `/srv/cutover`, if this
-   goes wrong.
+   1. **Carry production's writes out of `ygg`'s engine** (5.17 reached, and only if production took writes there
+      that you want to keep; else go to part 2). On the apps machine, as `ygg`, with production stopped (step 1):
+      ```bash
+      /opt/yggdrasil/scripts/volumes.sh export ~/carry-back $(cut -f1 /srv/migration/apps/manifest.tsv)
+      ```
+      If 4.6 renamed a volume, rename it back the same way in `~/carry-back` (its `.tar` and the first three columns
+      of its `manifest.tsv` line), to the old name. Success: `volumes: exported N volume(s) to /home/ygg/carry-back`,
+      N as in 5.4.
+   2. **`ygg`'s platform and engine off.** As `ygg`, then as `<old admin>`:
+      ```bash
+      ygg env stop production --force       # if step 1 did not; the on-demand ones are stopped already
+      /opt/yggdrasil/scripts/platform.sh down
+      systemctl --user disable --now yggdrasil-backup.timer docker.service
+      ```
+      ```bash
+      sudo loginctl disable-linger ygg
+      sudo systemctl stop "user@$(id -u ygg).service"
+      sudo ss -ltnp '( sport = :80 or sport = :443 )'
+      ```
+      `ygg`'s engine and its Traefik hold ports 80 and 443; the old Traefik needs them. Without linger `ygg`'s
+      systemd does not start at boot; `systemctl stop user@<uid>` ends it now, with every process of `ygg` (log out
+      of `ygg`'s sessions first). Success: the `ss` line prints its header and
+      nothing under it; the new controller shows the `vps` node offline.
+   3. **The rootful engine back** (the install's part `rootful-docker-off`, reversed), as `<old admin>`, with the
+      `docker group:` line of `~/cutover-before.txt`:
+      ```bash
+      sudo systemctl unmask docker.service docker.socket containerd.service
+      sudo systemctl enable --now containerd.service docker.socket docker.service
+      sudo usermod -aG docker <old admin>         # and each other member that 3.1 listed
+      sudo docker info --format '{{.SecurityOptions}}'
+      sudo docker ps --format '{{.Names}}'
+      sudo docker volume ls --format '{{.Name}}' | grep -cxFf <(sudo cut -f1 /srv/migration/apps/manifest.tsv)
+      ```
+      Then log out and in again (a new SSH session): the group counts from the next login. Success: `id -nG` in the
+      new session lists `docker`; `SecurityOptions` without `name=rootless`; `docker ps` prints nothing (the old
+      containers are there, stopped: `restart: unless-stopped` keeps a stopped one stopped); the count is 5.4's N,
+      every archived application volume still there (and `sudo docker volume ls` lists the platform's beside them).
+   4. **The checkout and `/etc/yggdrasil` back to `<old admin>`** (the install's parts `checkout` and `secrets`, and
+      5.5's part 3, reversed). The old layout ([hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker)'s
+      first lines, 3.1's `owner:` lines): the checkout `<old admin>`'s, at `v0.7.4`; `/etc/yggdrasil` `<old
+      admin>`'s with group `docker`, directory `2750`. The copy of 5.4 has exactly that, so it is put back whole:
+      ```bash
+      sudo chown -R "$USER": /opt/yggdrasil
+      git -C /opt/yggdrasil checkout --quiet v0.7.4 && git -C /opt/yggdrasil describe --tags
+      sudo mv /etc/yggdrasil /srv/migration/etc-yggdrasil-converted
+      sudo cp -a /srv/migration/etc-yggdrasil /etc/yggdrasil
+      stat -c '%U:%G %a %n' /opt/yggdrasil /etc/yggdrasil
+      ```
+      - `chown -R "$USER":`: the admin and its login group, as v0.7.4's guide cloned it (`install -d -o "$USER"`,
+        then `git clone` as the admin). The checkout must be the admin's before git works in it as the admin.
+      - `checkout v0.7.4`: the release the old controller and the old platform run (0.2); `main` and its local
+        branch stay as they are, unused.
+      - `mv`, then `cp -a`: the converted directory is kept aside (it has the platform's settings of 5.5, and
+        nothing the old setup needs), and the copy of 5.4 comes back with its owners and modes. The store in it is
+        the store as it was before the conversion.
 
-   **Then start the old VPS**, on it as its admin: `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start
-   production` (and the on-demand environments that were on).
+      Success: `v0.7.4`, and the `stat` lines match 3.1's `owner:` lines (`/etc/yggdrasil` `<old admin>:docker
+      2750`). Without the copy (it was lost), give the directory back by hand, as the old layout had it:
+      `sudo chown -R "$USER":docker /etc/yggdrasil && sudo chmod -R u=rwX,g=rX,o= /etc/yggdrasil && sudo chmod 2750
+      /etc/yggdrasil`, and put back each platform setting that 5.5 changed (`ygg vars set platform ...`, with
+      v0.7.4's `ygg`; `COMPOSE_PROFILES` and `DOCKER_GID` as 3.3's list had them; `JENKINS_AGENT_URL` too).
+   5. **The rest of the install, reversed**, as `<old admin>`:
+      ```bash
+      sudo ufw allow 80,443/tcp
+      sudo rm /etc/sysctl.d/90-yggdrasil.conf && sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024
+      sudo rm /etc/yggdrasil-role
+      ```
+      - `ufw allow 80,443/tcp`: the rule of the old layout (3.1), which the install deleted. The Cloudflare rules
+        may stay (the list above).
+      - The sysctl file let every user bind 80 and 443; `1024` is the kernel's default.
+      - `/etc/yggdrasil-role`: `apps`; without it a later `ygg check` of this checkout (v0.7.4 knows no role)
+        reads the machine as before.
+      - The SSH drop-in, only if the old setup needs something it closes (a password login, another user): `sudo rm
+        /etc/ssh/sshd_config.d/00-yggdrasil.conf && sudo systemctl try-reload-or-restart ssh`, with a second session
+        open, and a new login tried before you close it.
+
+      Success: `sudo ufw status` lists `80,443/tcp` `ALLOW` `Anywhere` beside `OpenSSH`; `sysctl
+      net.ipv4.ip_unprivileged_port_start` prints `1024`.
+   6. **The volumes.** The rootful engine's are as 5.3 left them, so nothing is needed, **unless** part 1 carried
+      production's writes out, or one of them is damaged or gone (part 3's count). Then, as `<old admin>`: the old
+      containers still exist, only stopped, and `ygg env start` restarts exactly those, so the volumes cannot be
+      removed: empty each one in place, then import into it, which fills an existing empty volume whose labels
+      match (and creates one that is missing). `<dir>` is `/home/ygg/carry-back` for production's writes, or
+      `/srv/migration/apps`, the archive of 5.4, for the data as it was at 5.3:
+      ```bash
+      dir=<dir>
+      for volume in $(sudo cut -f1 "$dir/manifest.tsv"); do
+        sudo docker volume inspect "$volume" >/dev/null 2>&1 || continue   # not there: the import creates it
+        sudo docker run --rm -v "$volume":/v busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e \
+          sh -c 'find /v -mindepth 1 -delete'
+      done
+      sudo bash ~/cutover-tools/volumes.sh import "$dir"
+      ```
+      `volumes.sh` runs as root here, on the rootful engine, as in 5.4. Success: `volumes: <volume> exists, empty,
+      with the same labels: filling it` for each (`creating <volume>` for one that was missing), then `volumes:
+      imported N volume(s)`. If the carry-back goes wrong, `/srv/migration/apps` still has the data as it was at 5.3.
+   7. **Start the old VPS**, as `<old admin>` in the new session of part 3, with its own checkout:
+      `/opt/yggdrasil/scripts/platform.sh up`, then `ygg env start production` (and the on-demand environments that
+      were on). v0.7.4's `platform.sh` renders the settings from the store that part 4 put back: the old profiles
+      (`jenkins,agent`), `DOCKER_GID`, the old controller. Success: its `ps` shows every service `Up`, `traefik`,
+      `status` and `console` `(healthy)`, and `jenkins`; `ygg status` shows production `running`, at 0.1's versions.
 
    **Then pin the old controller's library again** before anything builds: its start applied `casc.yaml`'s
-   `defaultVersion: main`, and `main` is now 0.9.0, the pipeline this controller cannot run (its builds would wait
-   for a `ci` agent it does not have). As in [0.2](#02-the-old-controllers-library-is-pinned): **Manage Jenkins →
-   System → Global Trusted Pipeline Libraries** → `yggdrasil` → **Default version** = the tag of 0.1 (`v0.7.4`);
-   **Build Now** on one application's `main` prints `yggdrasil@v0.7.4`.
-7. **Check**: the old console shows production up; a push to an application's `develop` on GitHub deploys it.
+   `defaultVersion: main`, and `main` is now 0.8.0, or 0.9.0 after 5.8a, a pipeline this controller cannot run (its
+   builds would wait for a `ci` agent it does not have). As in [0.2](#02-the-old-controllers-library-is-pinned):
+   **Manage Jenkins → System → Global Trusted Pipeline Libraries** → `yggdrasil` → **Default version** = the tag of
+   0.1 (`v0.7.4`); **Build Now** on one application's `main` prints `yggdrasil@v0.7.4`.
+
+   `ygg` stays, stopped, with its home: delete it (`sudo userdel -r ygg`, which deletes its engine's data, the
+   carry-back with it) only once you have decided not to try again soon, or once a carry-back is in. Keep
+   `/srv/migration` until then too.
+7. **Check**: the old console shows production up; a push to an application's `develop` on GitHub deploys it;
+   `ygg check` (v0.7.4's, as `<old admin>`) shows the host as before the window, against 3.1's record.
 8. **Tell the users**, and write down where it went wrong before trying again. A new attempt starts at 4.8, with
    the Forgejo copies deleted first (each one's **Settings → Danger Zone**), which needs Forgejo running: only once
-   step 1 has deleted every push mirror.
+   step 1 has deleted every push mirror. On the server, move the first attempt's archives aside first (`sudo mv
+   /srv/migration /srv/migration-1`: `volumes.sh` refuses a directory that holds an export). Then, once the new
+   attempt's 5.5 has given `ygg` its engine back, and before its 5.6, delete as `ygg` the volumes the first 5.6 made
+   (`docker volume rm $(cut -f1 /srv/migration-1/apps/manifest.tsv)`): the import refuses a volume that is not
+   empty. The install of 5.5 finds most of its parts done, and does the rest again.
 
 ## 7. Clean up
 
-Rollout step 8, once the new apps machine has run a release (rollout step 7, the first repository's).
+Rollout step 8, once the apps machine has run a release (rollout step 7, the first repository's).
 
-### 7.1 The old VPS
+### 7.1 The archives and the rootful engine's data
 
-At the provider, take a snapshot of the old VPS (or keep `/srv/cutover` somewhere safe), then power it off. Delete
-it when you no longer want the way back.
+There is no old VPS to switch off: it is the apps machine. What is left of it are the archives of 5.4, the copy
+of the old settings and the rootful engine's data, the way back of [section 6](#6-rollback). Once the apps machine
+has run a release, that way back is not wanted any more, and the disk wants the room. First, if you want the old
+Jenkins' build history, copy its archive off the server (from your machine, `scp <old admin>@<apps ip>:...` after a
+`sudo install -m 600 -o "$USER" /srv/migration/platform/yggdrasil_jenkins.tar ~/` there, deleted afterwards), or
+take a snapshot at the provider. Then, on the apps machine as `<old admin>`:
 
-**Success looks like:** the provider shows it stopped; nothing of yours answers at `<old ip>`.
-**Back out:** power it on; section 6 applies as long as 7.2 has not run. Once 7.2 has deleted the old
-controller's key and reduced the App, the old controller can no longer act on GitHub: going back then also means
-a new private key for it (setup.md 7.4, 9.1 on the old VPS) and the App's permissions and webhook as setup.md 7.2
-lists them.
+```bash
+sudo rm -r /srv/migration
+sudo rm -r /var/lib/docker /var/lib/containerd
+rm -r ~/cutover-tools ~/cutover-volumes.txt ~/cutover-platform-volumes.txt ~/cutover-before.txt
+df -h /
+sudo -v && ygg check --role apps
+```
+
+- `/srv/migration`: the archives of every volume (the application data of 5.3, the old platform's), the copy of
+  `/etc/yggdrasil` before the conversion, and the converted one a rollback set aside (`etc-yggdrasil-converted`):
+  databases and secrets. The applications' data lives in `ygg`'s engine now, and is backed up every night (5.21).
+- `/var/lib/docker` and `/var/lib/containerd`: the rootful engine's images, containers and volumes, which nothing
+  has used since 5.3 (it is masked). `ygg`'s rootless engine keeps everything of its own in `~ygg/.local/share/docker`,
+  which this does not touch. Docker's packages stay: the rootless engines run on them.
+
+**Success looks like:** `df` shows the room back; `ygg check --role apps` has every row `ok` as before (the
+`rootful docker` row: off, and off after a reboot); `ygg status`, as `ygg`, shows production `running`.
+**If it fails:** `rm: cannot remove ...: Device or resource busy`: a mount of the rootful engine is still there
+(`findmnt | grep /var/lib/docker`): reboot the server once (production comes back by itself: linger and
+`restart: unless-stopped`), then run the line again.
+**Back out:** none: from here on, section 6 cannot turn the server back into the old VPS (the old controller, the
+old platform and the data as it was at 5.3 are gone). Hence only after a release. 7.2 also ends the old controller's
+access to GitHub: going back after it would need a new private key for it (setup.md 7.4) and the App's permissions
+and webhook as setup.md 7.2 lists them.
 
 ### 7.2 The GitHub App, reduced
 
@@ -1753,7 +2215,9 @@ the App's settings (**Developer settings → GitHub Apps → Edit**):
 2. **General → Webhook**: untick **Active**, **Save changes**: no controller listens for GitHub's events now.
 3. **General → Private keys**: delete the old controller's key, keeping the dev machine's. Which one is which: on
    the dev machine, `openssl pkey -in /etc/yggdrasil/github-app.pem -pubout -outform DER | openssl dgst -sha256
-   -binary | openssl base64` prints the fingerprint GitHub shows next to the key to keep (`SHA256:...`).
+   -binary | openssl base64` prints the fingerprint GitHub shows next to the key to keep (`SHA256:...`). Then the
+   old controller's copy of the key, which the conversion left on the apps machine (5.5, part 3): as `ygg` there,
+   `rm /etc/yggdrasil/github-app.pem`.
 
 **Success looks like:** the App's permissions page lists exactly those four; the installation (**Settings →
 Applications → Installed GitHub Apps → Configure**) shows the same; the next release with a `mirror` makes its
