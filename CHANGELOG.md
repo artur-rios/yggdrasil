@@ -115,6 +115,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   applied neither (`conflicting profile attachments`), and each engine's setup failed with `fork/exec
   /proc/self/exe: permission denied`. Where the system ships that profile, the install now writes none, and
   unloads and deletes the one an earlier install wrote; `ygg check` reports the system's profile.
+- **A check's Testcontainers reaches the containers it starts.** A `docker: true` check was told
+  `TESTCONTAINERS_HOST_OVERRIDE` = its container's default gateway (`172.17.0.1`), but the rootless engines' `slirp4netns`
+  port driver opens a published port on the host only, so the gateway refused it, and `scripts/prove-machine.sh dev`
+  failed its `testcontainers` proof. `scripts/agent.sh` now hands each build agent the host's own primary IPv4
+  address (the source of its route to the internet, `host_published_address` in `scripts/docker-engine.sh`), or the
+  `TESTCONTAINERS_HOST_OVERRIDE` of the user's `agent.env` when it sets one; `platform/build-agent.yml` passes it to the
+  agent and `scripts/run-check.sh` to the check, falling back to the gateway when it is empty. The proof gives its
+  client container the same value and names the address. **An agent started before this has no value: run
+  `ygg agent up --user ci` and `ygg agent up --user release` again.**
 
 ## [0.8.0] - 2026-10-25
 

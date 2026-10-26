@@ -616,6 +616,16 @@ after a request from a machine whose address you know. What to expect differs by
 sees them. This is why the dev machine opens 2222 for Forgejo in `ufw` and why the apps machine can
 restrict 80 and 443 to Cloudflare.
 
+**Published ports, seen from a container: the host's address.** The `slirp4netns` port driver opens a published
+port in the host's network namespace only. Inside the engine's own namespace nothing listens on it, so a container
+that dials its default gateway (`172.17.0.1`) at that port is refused. It answers at the host's own address
+instead: the container goes out through `slirp4netns` to that address, and the driver's listener hands the
+connection back in (`ufw` lets it through, as the host reaches its own address over `lo`). This is what a check's
+Testcontainers needs: `scripts/agent.sh` gives each build agent `TESTCONTAINERS_HOST_OVERRIDE`, the host's primary
+IPv4 address (the source of its route to the internet, `ip -4 route get 1.1.1.1`) unless the user's `agent.env`
+sets another, and `scripts/run-check.sh` hands it to a `docker: true` check, falling back to the gateway when it is
+empty ([cli.md, Build agents](cli.md#build-agents)). `scripts/prove-machine.sh dev` proves it with the same value.
+
 **Isolation, checked.** `ygg check --role dev` proves that `ci`, `release`, `dev` and `renovate` cannot read
 `ygg`'s engine socket or `/etc/yggdrasil/platform.env`, and that `ci` cannot read `release`'s engine socket or
 `/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that

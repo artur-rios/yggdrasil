@@ -23,7 +23,8 @@
 #                          user can't read, so `docker run` failing there is the proof, not an error.
 #   testcontainers         a container on ci's engine publishes a port (random, on every interface, the way
 #                          Testcontainers does) and a second container on the same engine reaches it at the
-#                          TESTCONTAINERS_HOST_OVERRIDE that run-check.sh computes.
+#                          TESTCONTAINERS_HOST_OVERRIDE a check gets: the host's own address, as agent.sh gives
+#                          the build agent, through run-check.sh.
 # apps only:
 #   client addresses      a `look`: the last 10 distinct client addresses in Traefik's access log, to compare with
 #                         the admin's own address as Cloudflare saw it (docs/hosts.md, Client addresses).
@@ -40,7 +41,8 @@ die() { echo "prove-machine: $*" >&2; exit 1; }
 usage() { echo "usage: prove-machine.sh <apps|dev>" >&2; exit 2; }
 has() { command -v "$1" >/dev/null 2>&1; }
 
-# TAR_IMAGE (the pinned busybox every helper container uses), and machine.sh's run_as_user, passwd_field,
+# TAR_IMAGE (the pinned busybox every helper container uses), host_published_address (what agent.sh gives the
+# build agents as TESTCONTAINERS_HOST_OVERRIDE), and machine.sh's run_as_user, passwd_field,
 # user_exists, machine_engine_socket, secrets_dir_of and machine_list. machine.sh is functions and tables only.
 # shellcheck source=docker-engine.sh
 source "$root/scripts/docker-engine.sh"
@@ -257,10 +259,13 @@ prove_ci_container() {
 
 # ---- (dev) Testcontainers works rootless --------------------------------------------------------
 
-# Where Testcontainers' own tests reach a published port: the container's default gateway, which is the host.
+# Where a check's Testcontainers reaches a published port: the host's own address (host_published_address), which
+# agent.sh hands the build agent and run-check.sh the check. Not the container's default gateway: the engines'
+# slirp4netns port driver opens a published port on the host only, and the gateway refuses it.
 # The server publishes a random port on every interface (-p 0:8080); the client is a second container on the
-# same engine, and finds the address by running run-check.sh --print-host-override, run by busybox's sh (that
-# part of the script is plain sh for this) -- the same code a --docker check is told its override by. The
+# same engine, given that address as TESTCONTAINERS_HOST_OVERRIDE (-e) as the agent is, and finds the address by
+# running run-check.sh --print-host-override, run by busybox's sh (that part of the script is plain sh for this)
+# -- the same code a --docker check is told its override by, with the same fallback to the gateway. The
 # script reaches the container on its stdin (docker run -i), not as a bind mount: ci's daemon resolves a mount's
 # source itself, so a checkout under a directory ci can't traverse (the admin's home, say) would have the run
 # refused for a reason that has nothing to do with Testcontainers.
@@ -282,7 +287,7 @@ fi
 echo "body:$body"'
 
 prove_testcontainers() {
-  local name="testcontainers" ports port out status override body
+  local name="testcontainers" ports port out status override body address
   if [[ -n "$ci_problem" ]]; then
     fail "$name" "$ci_problem: nothing proven"
     return 0
@@ -300,19 +305,31 @@ prove_testcontainers() {
     return 0
   fi
 
+  # What agent.sh gives a build agent when agent.env sets none (agent.env is not read here: it holds the agent's
+  # secret). Empty when the host has no IPv4 route out, and the container then falls back to its gateway, as a
+  # check would.
+  address=$(host_published_address)
+
   status=0
   out=$(user_docker_input ci "$root/scripts/run-check.sh" run -i --rm --name ygg-prove-client \
+    -e "TESTCONTAINERS_HOST_OVERRIDE=$address" \
     "$TAR_IMAGE" sh -c "$CLIENT_SCRIPT" sh "$port" 2>&1) || status=$?
   override=$(sed -n 's/^override://p' <<<"$out" | head -n1)
   body=$(sed -n 's/^body://p' <<<"$out" | head -n1)
   if ((status != 0)) && [[ -z "$override" ]]; then
     fail "$name" "the second container could not run: $(head -n1 <<<"$out" | cut -c1-110)"
   elif [[ -z "$override" ]]; then
-    fail "$name" "run-check.sh --print-host-override found no default gateway in the container: Testcontainers would not know where to connect"
+    fail "$name" "no host address (ip -4 route get) and run-check.sh --print-host-override found no default gateway in the container: Testcontainers would not know where to connect"
   elif [[ "$body" == *ygg-prove* ]]; then
-    ok "$name" "a published port (random, on every interface) answered at $override:$port, the TESTCONTAINERS_HOST_OVERRIDE of run-check.sh"
+    if [[ -n "$address" ]]; then
+      ok "$name" "a published port (random, on every interface) answered at $override:$port, the host's address, the TESTCONTAINERS_HOST_OVERRIDE a check gets"
+    else
+      ok "$name" "a published port (random, on every interface) answered at $override:$port, the container's gateway: the host has no IPv4 route out, so a check gets that"
+    fi
+  elif [[ -n "$address" ]]; then
+    fail "$name" "$override:$port (the host's address) did not answer from a second container: a published port isn't reachable at the override a check gets"
   else
-    fail "$name" "$override:$port did not answer from a second container: a published port isn't reachable at the override"
+    fail "$name" "$override:$port (the container's gateway: the host has no IPv4 route out) did not answer from a second container: a published port isn't reachable at the override"
   fi
 }
 

@@ -1042,9 +1042,15 @@ The secret is on the node's page (**Manage Jenkins → Nodes → ci**). `YGG_AGE
 started by the user's engine with the workspace's path, so a workspace anywhere else is an empty directory in
 it. Both nodes should now show as connected.
 
+`agent.env` may also set `TESTCONTAINERS_HOST_OVERRIDE`, the address a `docker: true` check's Testcontainers reaches
+its containers at. Leave it out: `ygg agent up` uses the host's own primary IPv4 address, which is where the rootless
+engines' published ports answer from a container, and prints it
+([cli.md, Build agents](cli.md#build-agents)).
+
 An agent started by an earlier release needs `ygg agent up --user ci` (and `release`; it runs `scripts/agent.sh up`) again: `build-agent.yml`
 now hands the agent `YGG_DOCKER_SOCKET`, the host path of the user's socket, which a check that sets
-`docker: true` needs. On the apps machine, `scripts/platform.sh up` recreates the deploy agent with
+`docker: true` needs, and `TESTCONTAINERS_HOST_OVERRIDE`, the host's address, where such a check reaches the
+containers it starts. On the apps machine, `scripts/platform.sh up` recreates the deploy agent with
 `YGG_DOMAIN`, the platform's `DOMAIN`, which `deploy.sh` puts under a site's host.
 
 The `ci` and `release` engines keep every image a check pulled and every build cache it made. A weekly prune of
