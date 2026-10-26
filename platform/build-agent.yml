@@ -1,7 +1,8 @@
 # The Jenkins build agent of one service user (`ci` or `release`): an inbound agent that dials out to
 # the controller and runs that user's builds against the user's own rootless Docker engine. One
 # project per user, yggdrasil-agent-<JENKINS_AGENT_NAME>, run by scripts/agent.sh as that user, which
-# exports DOCKER_SOCKET (the user's engine, already checked to be rootless) and reads agent.env
+# exports DOCKER_SOCKET (the user's engine, already checked to be rootless) and
+# TESTCONTAINERS_HOST_OVERRIDE (agent.env's, else the host's address) and reads agent.env
 # (env/agent.env.example) for the rest.
 #
 # Not the deploy agent: that one is the `agent` profile of platform/compose.yml, with the host's
@@ -31,6 +32,11 @@ services:
       # scripts/run-check.sh starts a check's container with `docker run -v <socket>:/var/run/docker.sock`,
       # and the host's engine resolves that source on the host: it needs this path, not the agent's.
       YGG_DOCKER_SOCKET: ${DOCKER_SOCKET}
+      # Where a check's Testcontainers reaches the containers it starts: scripts/agent.sh's, which is agent.env's
+      # or else the host's own address. Not the containers' gateway: the engine's slirp4netns port driver opens
+      # a published port on the host only. scripts/run-check.sh hands it to a --docker check, and falls back to
+      # the gateway when it is empty.
+      TESTCONTAINERS_HOST_OVERRIDE: ${TESTCONTAINERS_HOST_OVERRIDE:-}
     volumes:
       - ${DOCKER_SOCKET}:/var/run/docker.sock
       # The same path on both sides: a check's `docker run -v $WORKSPACE:...` goes to the host's

@@ -24,9 +24,15 @@
 #
 # With --docker the Testcontainers settings are:
 #   TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE  the mounted socket's path inside the container
-#   TESTCONTAINERS_HOST_OVERRIDE           where a started container's published ports are reached: the
-#                                          container's default gateway, which is the host, not localhost.
-#                                          An override already in the agent's environment wins.
+#   TESTCONTAINERS_HOST_OVERRIDE           where a started container's published ports are reached, not
+#                                          localhost: the one in the agent's environment, which
+#                                          platform/build-agent.yml gives it from scripts/agent.sh (agent.env's
+#                                          TESTCONTAINERS_HOST_OVERRIDE, else the host's own primary address).
+#                                          Not the container's default gateway: the rootless engines use the
+#                                          slirp4netns port driver, which opens a published port on the host
+#                                          only, so the gateway refuses it, while the host's address is reached
+#                                          through slirp4netns. When the agent's is empty or unset (an agent
+#                                          started before it had one), the default gateway, as a fallback.
 #   TESTCONTAINERS_RYUK_DISABLED           Ryuk would need the socket mounted by its host path as well, and
 #                                          the --rm and the engine's own cleanup are enough for a CI run.
 #
@@ -67,8 +73,8 @@ default_gateway() {
   printf '%s' "$gateway"
 }
 
-# --print-host-override: prints what this script would set as TESTCONTAINERS_HOST_OVERRIDE (an override
-# already in the environment wins, else the default gateway; nothing when there is neither) and exits 0.
+# --print-host-override: prints what this script would set as TESTCONTAINERS_HOST_OVERRIDE (a non-empty
+# override already in the environment wins, else the default gateway; nothing when there is neither) and exits 0.
 if [ "${1:-}" = "--print-host-override" ]; then
   printf '%s\n' "${TESTCONTAINERS_HOST_OVERRIDE:-$(default_gateway)}"
   exit 0
@@ -126,7 +132,7 @@ if $with_docker; then
   else
     # Better a check that does not use Testcontainers running than none: only one that starts containers
     # and connects to them fails, and its error names the address it tried.
-    echo "run-check.sh: cannot find the default gateway; TESTCONTAINERS_HOST_OVERRIDE is not set for '$name'" >&2
+    echo "run-check.sh: no TESTCONTAINERS_HOST_OVERRIDE from the agent and cannot find the default gateway; it is not set for '$name'" >&2
   fi
 fi
 

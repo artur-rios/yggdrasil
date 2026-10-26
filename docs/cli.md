@@ -305,12 +305,26 @@ Fill it in as that file says:
 | `JENKINS_AGENT_NAME` | `ci` for the `ci` user, `release` for `release`. Left empty in the template on purpose, so an unedited copy fails instead of starting the wrong node. Lowercase letters, digits, `-` and `_` |
 | `JENKINS_AGENT_SECRET` | The node's secret, from its page in Jenkins once the node exists |
 | `YGG_AGENT_WORKDIR` | Absolute, owned by the user: `/home/ci/agent` for `ci`, `/home/release/agent` for `release`. Mounted at the same path in the agent and on the host, so a check's `docker run -v $WORKSPACE:…` finds the same directory in the engine. Also empty in the template |
+| `TESTCONTAINERS_HOST_OVERRIDE` | **Optional**, commented out in the template. Where a check's Testcontainers reaches the containers it starts; see below |
 
-An empty or missing variable stops `agent.sh` before anything starts, and says which. The Compose project is
+An empty or missing variable stops `agent.sh` before anything starts, and says which, except the optional one. The
+Compose project is
 `yggdrasil-agent-<name>` (so the two agents never share one), from
 [platform/build-agent.yml](../platform/build-agent.yml). `up` builds the agent's image and starts it, waiting
 until it runs. This agent is not the deploy agent: that one is the `agent` profile of the platform stack and runs on the
 apps machine.
+
+**Where a check reaches its containers.** A check with `docker: true` (Testcontainers) starts containers on the
+user's engine and connects to their published ports at `TESTCONTAINERS_HOST_OVERRIDE`, which `scripts/run-check.sh`
+gives it from the agent's environment. `agent.sh` sets it: `agent.env`'s when the file has one, else the host's own
+primary IPv4 address, the source address of its route to the internet (`ip -4 route get 1.1.1.1`); `up` prints the
+one it used. Not the containers' default gateway (`172.17.0.1`): `ygg install` gives every engine the `slirp4netns`
+port driver, so that Traefik sees real client addresses ([hosts.md](hosts.md#5-rootless-docker)), and that driver opens
+a published port on the host only, where nothing in the engine's network answers it at the gateway. A container
+that dials the host's own address goes out through `slirp4netns` and is handed back in. To use another address
+(another interface of the host, say), set `TESTCONTAINERS_HOST_OVERRIDE=<address>` in `agent.env` and run
+`ygg agent up` again. When neither is found, the value is empty and `run-check.sh` falls back to the gateway.
+An agent started before this existed has no value: run `ygg agent up --user ci` (and `release`) again.
 
 ## Backups
 

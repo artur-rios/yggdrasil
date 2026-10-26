@@ -126,6 +126,16 @@ class RunCheckTests(unittest.TestCase):
         self.assertIn("TESTCONTAINERS_HOST_OVERRIDE=10.9.8.7", arguments)
         self.assertNotIn("TESTCONTAINERS_HOST_OVERRIDE=172.17.0.1", arguments)
 
+    def test_given_an_empty_host_override_when_run_with_docker_then_the_gateway_is_passed(self):
+        # What an agent whose host has no address gets from build-agent.yml (${TESTCONTAINERS_HOST_OVERRIDE:-}):
+        # empty is no override, and the check falls back to the gateway, as before the agents had one.
+        self.fake("ip", FAKE_IP)
+        result = self.run_check("it", "img", str(self.workspace), "--docker", "--", "true",
+                                YGG_DOCKER_SOCKET="/run/docker.sock", TESTCONTAINERS_HOST_OVERRIDE="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["-e", "TESTCONTAINERS_HOST_OVERRIDE=172.17.0.1"], self.pairs())
+        self.assertNotIn("TESTCONTAINERS_HOST_OVERRIDE=", self.docker_arguments())
+
     def test_given_no_gateway_when_run_with_docker_then_the_check_runs_without_the_override(self):
         self.fake("ip", NO_ROUTE_IP)
         self.route_table.write_text("Iface\tDestination\tGateway\n")
@@ -186,6 +196,13 @@ class RunCheckTests(unittest.TestCase):
         result = self.run_check("--print-host-override", TESTCONTAINERS_HOST_OVERRIDE="10.9.8.7")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "10.9.8.7\n")
+
+    def test_given_an_empty_override_when_it_is_printed_then_it_is_the_gateway(self):
+        # prove-machine.sh passes -e TESTCONTAINERS_HOST_OVERRIDE= when the host has no address, as the agent does.
+        self.fake("ip", FAKE_IP)
+        result = self.run_check("--print-host-override", TESTCONTAINERS_HOST_OVERRIDE="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "172.17.0.1\n")
 
     def test_given_no_gateway_when_the_host_override_is_printed_then_it_is_empty_and_the_exit_is_zero(self):
         self.fake("ip", NO_ROUTE_IP)

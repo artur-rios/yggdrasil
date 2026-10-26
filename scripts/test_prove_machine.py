@@ -63,6 +63,14 @@ FAKES = {
           *) exec /usr/bin/test "$@" ;;
         esac
     """,
+    # `ip -4 route get 1.1.1.1` on the host: its route out, with the host's own address as `src`
+    # (203.0.113.10); with FAKE_NO_ROUTE, none, as on a host without an IPv4 route to the internet.
+    "ip": r"""
+        echo "ip $*" >>"$FAKE_STATE/calls"
+        if [[ -n "${FAKE_NO_ROUTE:-}" ]]; then echo "RTNETLINK answers: Network is unreachable" >&2; exit 2; fi
+        echo "1.1.1.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 1000"
+        echo "    cache"
+    """,
     # The engine of whoever it runs as, found by $DOCKER_HOST. The answers are chosen by the container's name
     # (ygg-prove-probe, -server, -client) and by switches in the environment:
     #   FAKE_ENGINE_DOWN, FAKE_ENGINE_ROOTFUL, FAKE_NO_IMAGE, FAKE_PULL_FAILS  the engine and the image
@@ -70,7 +78,8 @@ FAKES = {
     #                        (status 125, a permission message; FAKE_PROBE_STATUS and FAKE_PROBE_MESSAGE change them)
     #   FAKE_PROBE_REACHES   what the probe reports it could reach ("run-socket home etc")
     #   FAKE_PROBE_SILENT    the probe prints nothing at all
-    #   FAKE_SERVER_FAILS, FAKE_NO_PORT, FAKE_NO_ANSWER, FAKE_NO_GATEWAY   the Testcontainers proof
+    #   FAKE_SERVER_FAILS, FAKE_NO_PORT, FAKE_NO_ANSWER, FAKE_NO_GATEWAY   the Testcontainers proof (with
+    #                        FAKE_NO_ROUTE for `ip`)
     "docker": r"""
         echo "docker as=${FAKE_AS_USER:-} host=${DOCKER_HOST:-} ${*//$'
 '/ }" >>"$FAKE_STATE/calls"
@@ -104,7 +113,14 @@ FAKES = {
                 ;;
               *ygg-prove-client*)
                 cat >"$FAKE_STATE/client-stdin"
-                if [[ -n "${FAKE_NO_GATEWAY:-}" ]]; then echo "override:"
+                # What run-check.sh --print-host-override prints in the container: the -e override when it
+                # is not empty, else the gateway (172.17.0.1, none with FAKE_NO_GATEWAY).
+                given=""
+                for argument in "$@"; do
+                  [[ "$argument" != TESTCONTAINERS_HOST_OVERRIDE=* ]] || given=${argument#*=}
+                done
+                if [[ -n "$given" ]]; then echo "override:$given"
+                elif [[ -n "${FAKE_NO_GATEWAY:-}" ]]; then echo "override:"
                 else echo "override:172.17.0.1"; fi
                 if [[ -n "${FAKE_NO_ANSWER:-}" ]]; then echo "body:"; else echo "body:ygg-prove"; fi
                 ;;
@@ -385,8 +401,34 @@ class ProveMachineTests(unittest.TestCase):
         result = self.prove("dev")
         self.assertEqual(self.status_of(result, "testcontainers"), "ok")
         detail = self.rows(result)["testcontainers"][1]
-        self.assertIn("172.17.0.1:49153", detail)
+        # The host's own address, which the check gets, and not the gateway.
+        self.assertIn("203.0.113.10:49153", detail)
+        self.assertIn("host's address", detail)
+        self.assertNotIn("172.17.0.1", detail)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_given_the_host_address_when_the_client_is_started_then_it_is_passed_as_the_override(self):
+        # What agent.sh gives the build agent (host_published_address, the `src` of the host's route out):
+        # the client is told it as -e, as a check is through the agent, so the proof proves what a check gets.
+        self.prove("dev")
+        client = self.docker_runs("ygg-prove-client")
+        self.assertEqual(len(client), 1, client)
+        self.assertIn(" -e TESTCONTAINERS_HOST_OVERRIDE=203.0.113.10 ", client[0])
+        # Before the image: an option of docker run, not an argument of the container's command.
+        self.assertLess(client[0].index("TESTCONTAINERS_HOST_OVERRIDE="), client[0].index(TAR_IMAGE))
+        self.assertIn("ip -4 route get 1.1.1.1", self.calls())
+
+    def test_given_no_route_out_of_the_host_when_proved_then_the_client_falls_back_to_the_gateway(self):
+        # An empty override: run-check.sh's ${TESTCONTAINERS_HOST_OVERRIDE:-gateway} then gives the gateway, as it
+        # does for a check whose agent has no address either.
+        result = self.prove("dev", FAKE_NO_ROUTE="1")
+        client = self.docker_runs("ygg-prove-client")
+        self.assertEqual(len(client), 1, client)
+        self.assertIn(" -e TESTCONTAINERS_HOST_OVERRIDE= ", client[0])
+        self.assertEqual(self.status_of(result, "testcontainers"), "ok")
+        detail = self.rows(result)["testcontainers"][1]
+        self.assertIn("172.17.0.1:49153", detail)
+        self.assertIn("gateway", detail)
 
     def test_given_the_server_when_started_then_it_publishes_a_random_port_on_all_interfaces_in_ci_engine(self):
         self.prove("dev")
@@ -433,11 +475,11 @@ class ProveMachineTests(unittest.TestCase):
     def test_given_no_answer_from_the_published_port_when_proved_then_testcontainers_fails(self):
         result = self.prove("dev", FAKE_NO_ANSWER="1")
         self.assertEqual(self.status_of(result, "testcontainers"), "FAIL")
-        self.assertIn("172.17.0.1:49153", self.rows(result)["testcontainers"][1])
+        self.assertIn("203.0.113.10:49153", self.rows(result)["testcontainers"][1])
         self.assertEqual(result.returncode, 1)
 
     def test_given_no_gateway_in_the_container_when_proved_then_testcontainers_fails(self):
-        result = self.prove("dev", FAKE_NO_GATEWAY="1", FAKE_NO_ANSWER="1")
+        result = self.prove("dev", FAKE_NO_ROUTE="1", FAKE_NO_GATEWAY="1", FAKE_NO_ANSWER="1")
         self.assertEqual(self.status_of(result, "testcontainers"), "FAIL")
         self.assertIn("gateway", self.rows(result)["testcontainers"][1])
 
