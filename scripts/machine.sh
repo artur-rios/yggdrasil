@@ -126,8 +126,9 @@ machine_ubuntu_text() {
   local last=${versions[-1]}
   unset 'versions[-1]'
   if ((${#versions[@]})); then
-    local IFS=,
-    echo "Ubuntu ${versions[*]} or $last LTS"
+    local first
+    first=$(printf '%s, ' "${versions[@]}")
+    echo "Ubuntu ${first%, } or $last LTS"
   else
     echo "Ubuntu $last LTS"
   fi

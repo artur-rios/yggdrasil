@@ -199,31 +199,65 @@ dump_volume() {
 
 # dump_postgres <container> <user> <file>. The database of an on-demand environment is stopped most
 # nights, and `docker exec` cannot reach a stopped container: it is started for the dump, alone (the
-# API that uses it stays stopped), and stopped again, so every night's file is that night's data.
+# API that uses it stays stopped), and stopped again, so every night's file is that night's data. Only
+# a stopped one (exited, or created and never run): a restarting, paused or dead one fails the item,
+# since starting and then stopping it would mark it stopped by hand, and `restart: unless-stopped`
+# would no longer bring it back. It is not stopped again when another container of its Compose project
+# runs by then (a deploy or `ygg env start` meanwhile), and a run that is killed stops it on the way out.
 dump_postgres() {
-  local container=$1 user=$2 out=$3 running status=0 i
-  running=$(docker inspect --format '{{.State.Running}}' "$container") || return 1
-  if [[ "$running" != true ]]; then
-    echo "backup: $container is stopped: starting it for the dump"
-    docker start "$container" >/dev/null || return 1
-    # Over TCP, as the stacks' health check: while a new volume is initialised the socket answers too.
-    status=1
-    for ((i = 0; i < POSTGRES_START_WAIT; i++)); do
-      if docker exec "$container" pg_isready --quiet --username "$user" --host 127.0.0.1; then
-        status=0
-        break
-      fi
-      sleep 1
-    done
-    [[ $status -eq 0 ]] || echo "backup: $container did not accept connections within ${POSTGRES_START_WAIT}s" >&2
-  fi
+  local container=$1 user=$2 out=$3 state status=0 i
+  state=$(docker inspect --format '{{.State.Status}}' "$container") || return 1
+  case $state in
+    running) ;;
+    exited | created)
+      echo "backup: $container is stopped: starting it for the dump"
+      docker start "$container" >/dev/null || return 1
+      started_container=$container
+      # Over TCP, as the stacks' health check: while a new volume is initialised the socket answers too.
+      status=1
+      for ((i = 0; i < POSTGRES_START_WAIT; i++)); do
+        if docker exec "$container" pg_isready --quiet --username "$user" --host 127.0.0.1; then
+          status=0
+          break
+        fi
+        sleep 1
+      done
+      [[ $status -eq 0 ]] || echo "backup: $container did not accept connections within ${POSTGRES_START_WAIT}s" >&2
+      ;;
+    *)
+      echo "backup: $container is $state, neither running nor stopped: not dumped" >&2
+      return 1
+      ;;
+  esac
   if [[ $status -eq 0 ]]; then
     docker exec "$container" pg_dumpall -U "$user" | gzip >"$out.partial" || status=1
   fi
-  if [[ "$running" != true ]]; then
-    docker stop "$container" >/dev/null || { echo "backup: could not stop $container again" >&2; status=1; }
+  if [[ -n "$started_container" ]]; then
+    stop_started || status=1
   fi
   return "$status"
+}
+
+# stop_started: stops the database container dump_postgres started, unless another container of its
+# Compose project runs now: then its environment was started meanwhile, and the database is in use.
+started_container=""
+stop_started() {
+  local container=$started_container project own others id
+  started_container=""
+  [[ -n "$container" ]] || return 0
+  project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container") || project=""
+  if [[ -n "$project" && "$project" != "<no value>" ]]; then
+    own=$(docker inspect --format '{{.Id}}' "$container") || own=""
+    others=$(docker ps --quiet --filter "label=com.docker.compose.project=$project") || others=""
+    while read -r id; do
+      # docker ps prints the short id, the start of the whole one; the database itself runs too.
+      if [[ -n "$id" && "$own" != "$id"* ]]; then
+        echo "backup: $project is running now: $container stays up"
+        return 0
+      fi
+    done <<<"$others"
+  fi
+  docker stop "$container" >/dev/null || { echo "backup: could not stop $container again" >&2; return 1; }
 }
 
 # run_item <item>: dumps one item into today's directory.
@@ -295,6 +329,10 @@ exec 9<"$backups"
 flock -n 9 || die "another backup is running"
 
 use_rootless_engine 9>&-
+# A run stopped half-way (systemd, a signal) does not leave behind a database it started.
+trap 'stop_started 9>&- || true' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 day="$backups/$(date +%F)"
 mkdir -p "$day"

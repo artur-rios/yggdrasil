@@ -40,8 +40,22 @@ FAKES = {
         fi
         case "$1" in
           info) echo '["name=seccomp,profile=builtin","name=rootless"]' ;;
-          ps) [[ -z "${FAKE_NO_FORGEJO:-}" ]] && echo "${FAKE_FORGEJO:-forgejo-id}" ;;
-          inspect) echo "${FAKE_RUNNING:-true}" ;;
+          ps)
+            # The database's project: the database itself, since it runs, and FAKE_PROJECT_OTHERS.
+            if [[ "$*" == *"com.docker.compose.project=app"* ]]; then
+              echo "dbid00000000"
+              [[ -z "${FAKE_PROJECT_OTHERS:-}" ]] || echo "$FAKE_PROJECT_OTHERS"
+            else
+              [[ -z "${FAKE_NO_FORGEJO:-}" ]] && echo "${FAKE_FORGEJO:-forgejo-id}"
+            fi
+            ;;
+          inspect)
+            case "$*" in
+              *State.Status*) echo "${FAKE_STATE:-running}" ;;
+              *com.docker.compose.project*) echo "app" ;;
+              *.Id*) echo "dbid0000000000000000" ;;
+            esac
+            ;;
           exec)
             container=$2
             case "$3" in
@@ -143,17 +157,18 @@ class BackupTests(unittest.TestCase):
 
     def test_given_a_stopped_database_when_run_then_it_is_started_dumped_and_stopped_again(self):
         self.conf("postgres app-db-1 postgres\n")
-        result = self.backup("run", FAKE_RUNNING="false")
+        result = self.backup("run", FAKE_STATE="exited")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("app-db-1 is stopped", result.stdout)
         calls = [call for call in self.calls() if "app-db-1" in call]
-        self.assertEqual(calls, [
-            "docker inspect --format {{.State.Running}} app-db-1",
+        self.assertEqual(calls[:4], [
+            "docker inspect --format {{.State.Status}} app-db-1",
             "docker start app-db-1",
             "docker exec app-db-1 pg_isready --quiet --username postgres --host 127.0.0.1",
             "docker exec app-db-1 pg_dumpall -U postgres",
-            "docker stop app-db-1",
         ])
+        self.assertEqual(calls[-1], "docker stop app-db-1")
+        self.assertEqual(self.calls().count("docker stop app-db-1"), 1)
         self.assertIn("postgres-app-db-1.sql.gz", self.today_files())
 
     def test_given_a_running_database_when_run_then_it_is_neither_started_nor_stopped(self):
@@ -164,13 +179,55 @@ class BackupTests(unittest.TestCase):
 
     def test_given_a_stopped_database_that_never_gets_ready_when_run_then_it_fails_and_is_stopped_again(self):
         self.conf("postgres app-db-1 postgres\n")
-        result = self.backup("run", FAKE_RUNNING="false", FAKE_NOT_READY="1", BACKUP_POSTGRES_START_WAIT="2")
+        result = self.backup("run", FAKE_STATE="exited", FAKE_NOT_READY="1", BACKUP_POSTGRES_START_WAIT="2")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("did not accept connections within 2s", result.stderr)
         calls = self.calls()
         self.assertNotIn("docker exec app-db-1 pg_dumpall -U postgres", calls)
         self.assertIn("docker stop app-db-1", calls)
         self.assertNotIn("postgres-app-db-1.sql.gz", self.today_files())
+
+    def test_given_a_created_database_when_run_then_it_is_started_for_the_dump_too(self):
+        self.conf("postgres app-db-1 postgres\n")
+        result = self.backup("run", FAKE_STATE="created")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("docker start app-db-1", self.calls())
+        self.assertIn("docker stop app-db-1", self.calls())
+
+    def test_given_a_restarting_database_when_run_then_it_fails_and_is_neither_started_nor_stopped(self):
+        self.conf("postgres app-db-1 postgres\n")
+        result = self.backup("run", FAKE_STATE="restarting")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("app-db-1 is restarting", result.stderr)
+        self.assertFalse([call for call in self.calls() if call.startswith(("docker start", "docker stop"))])
+
+    def test_given_its_environment_started_during_the_dump_when_run_then_the_database_stays_up(self):
+        self.conf("postgres app-db-1 postgres\n")
+        result = self.backup("run", FAKE_STATE="exited", FAKE_PROJECT_OTHERS="apiid0000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("app is running now: app-db-1 stays up", result.stdout)
+        self.assertNotIn("docker stop app-db-1", self.calls())
+
+    def test_given_a_failing_dump_of_a_stopped_database_when_run_then_it_is_stopped_again(self):
+        self.conf("postgres app-db-1 postgres\n")
+        result = self.backup("run", FAKE_STATE="exited", FAKE_FAIL="pg_dumpall")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls().count("docker stop app-db-1"), 1)
+        self.assertNotIn("postgres-app-db-1.sql.gz", self.today_files())
+
+    def test_given_a_failing_start_when_run_then_the_item_fails_and_nothing_is_stopped(self):
+        self.conf("postgres app-db-1 postgres\n")
+        result = self.backup("run", FAKE_STATE="exited", FAKE_FAIL="start")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED: postgres app-db-1 postgres", result.stderr)
+        self.assertNotIn("docker stop app-db-1", self.calls())
+
+    def test_given_a_failing_stop_when_run_then_the_item_fails(self):
+        self.conf("postgres app-db-1 postgres\n")
+        result = self.backup("run", FAKE_STATE="exited", FAKE_FAIL="stop")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not stop app-db-1 again", result.stderr)
+        self.assertIn("FAILED: postgres app-db-1 postgres", result.stderr)
 
     def test_given_a_missing_database_container_when_run_then_that_item_fails(self):
         self.conf("postgres app-db-1 postgres\n")
