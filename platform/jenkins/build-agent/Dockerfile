@@ -3,7 +3,7 @@
 # with PyYAML for the repositories' own scripts. Modelled on the deploy agent's image
 # (platform/jenkins/agent/Dockerfile), without Compose's secrets tooling: a build runs a check, it does
 # not deploy.
-FROM jenkins/inbound-agent:latest-jdk21
+FROM jenkins/inbound-agent:3391.va_37fa_a_305d6d-6-jdk21@sha256:c93e68c1b1a9e5c4cb8e459dfd0f7fc63b6dc86b47f12883b8231c85d2e4ca4d
 
 USER root
 RUN apt-get update \

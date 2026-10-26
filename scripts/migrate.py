@@ -1006,16 +1006,19 @@ def _refs(api, base):
     return found
 
 
-def _check_default_branch(repo, found, in_catalog):
-    # A catalog repository's is `develop`: rules.py sets it on Forgejo (5.15, before verify). Any other keeps
-    # GitHub's: the import copies it and nothing changes it (the mirror never changes GitHub's either).
+def _check_default_branch(repo, found, model):
+    # A catalog repository with the release model has `develop`: rules.py sets it on Forgejo (5.15, before
+    # verify). Any other keeps GitHub's: the import copies it and nothing changes it (the mirror never changes
+    # GitHub's either). That includes a basic catalog repository, whose default rules.py leaves alone, since it
+    # may have no develop (a site that only ever had main, a fork on master). `model` is rules.py's ("release",
+    # "basic"), or None for a repository the catalog does not have.
     if found.get("empty"):
         return True, "empty repository: no branch yet"
     have = found.get("default_branch") or ""
-    if in_catalog:
+    if model == "release":
         if have == "develop":
             return True, have
-        return False, f"{have or 'none'} on Forgejo, wants develop (a catalog repository: rules.py sets it)"
+        return False, f"{have or 'none'} on Forgejo, wants develop (a release-model catalog repository: rules.py sets it)"
     wanted = repo["default_branch"]
     if have == wanted:
         return True, have
@@ -1170,7 +1173,8 @@ def _verify_one(ctx, repo, catalog_names, models, jenkins_url):
         return [_row(ctx, name, "on Forgejo", False, problem)]
     _row(ctx, name, "on Forgejo", True, "present")
 
-    check("default branch", lambda: _check_default_branch(repo, found, name in catalog_names))
+    check("default branch", lambda: _check_default_branch(repo, found, models.get(name) if name in catalog_names
+                                                          else None))
     check("visibility", lambda: _check_visibility(repo, found))
     if repo["archived"]:
         # Frozen on GitHub: no mirror pushes to it, nothing there changes, and it takes no setting.

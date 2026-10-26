@@ -1,0 +1,17 @@
+# The pipeline file for a Node.js service (templates/site-node-api/).
+# Copy it to the repository's root as yggdrasil.yml. The pipeline of the yggdrasil installation that deploys the
+# repository reads it (yggdrasil's docs/catalog.md, "Repository pipeline file", has every field). It is data, never
+# code: images (pinned by version and digest, which Renovate keeps up to date: the owner merges those changes),
+# commands, globs and the names of Jenkins credentials. Every check the catalog lists in the application's `checks`
+# must be defined here. Check it where the catalog is, in the yggdrasil checkout:
+#   python3 scripts/pipeline_config.py describe <application-id> <this repository's checkout>
+#
+# The deploy builds the image (the Dockerfile) with the same Node; this check runs the service's tests on a pull
+# request before it can reach develop. List it in the application's `checks` in catalog.yaml. A check that needs a
+# credential (a token for an API the tests call) binds it as `credentials: {ENV_VAR: jenkins-credential-id}`,
+# the id being one of the application's `credentials` in the catalog.
+
+checks:
+  test:
+    image: node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
+    run: npm ci && npm test

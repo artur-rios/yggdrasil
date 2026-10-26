@@ -62,8 +62,11 @@ class DesiredRulesTests(unittest.TestCase):
         r = rules.desired_rules(CATALOG)[0]
         self.assertEqual(r.main_checks, ("branch-policy", "test", "docker", "deploy/production"))
 
-    def test_given_an_application_without_release_environments_when_modelled_then_main_has_no_deploys(self):
-        self.assertEqual(by_repo()["storefront"].main_checks, ("branch-policy",))
+    def test_given_an_application_without_release_environments_when_modelled_then_it_gets_the_basic_model(self):
+        # Under the release model only Jenkins merges main, and only for a release: an application that never
+        # releases (a site deployed on pushes to main) would have a main nobody may change.
+        r = by_repo()["storefront"]
+        self.assertEqual((r.model, r.develop_checks, r.main_checks, r.main_mergers), ("basic", (), (), ()))
 
     def test_given_an_application_when_modelled_then_only_jenkins_merges_main_and_tags(self):
         r = by_repo()["shop-api"]
@@ -128,10 +131,108 @@ class DesiredRulesTests(unittest.TestCase):
         self.assertEqual(len(modelled), 1)
         self.assertEqual(modelled[0].main_checks, ("branch-policy", "test", "docker", "e2e", "deploy/production"))
 
+    def test_given_a_library_and_its_docs_application_when_modelled_then_it_is_one_owner_tag_rule_set(self):
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "toolkit-docs", "name": "Docs", "kind": "web", "health": "http://toolkit-docs:8080/",
+             "repository": "toolkit", "checks": ["links"], "actionsChecks": ["pages"],
+             "environments": {"staging": {}}})
+        modelled = [r for r in rules.desired_rules(value) if r.repo == "toolkit"]
+        self.assertEqual(len(modelled), 1)
+        r = modelled[0]
+        # The library releases (owner-tag): the owner merges main and creates its numeric tags.
+        self.assertEqual((r.model, r.owner_tags, r.tag_pattern, r.tag_creators, r.main_mergers),
+                         ("release", True, "[0-9]*", ("artur-rios",), ("artur-rios",)))
+        # Both jobs' statuses are required: the deciding entry's checks first, then the others'.
+        self.assertEqual(r.develop_checks, ("branch-policy", "build", "links", "pages"))
+        self.assertEqual(r.main_checks, ("branch-policy", "build", "links"))
+        self.assertEqual(r.actions_checks, frozenset({"pages"}))
+        # The repository keeps its place among the repositories entries.
+        self.assertEqual([r.repo for r in rules.desired_rules(value)],
+                         ["shop-api", "storefront", "toolkit", "scratch", "notes"])
+
+    def test_given_an_application_and_its_docs_application_when_modelled_then_it_is_one_release_model_rule_set(self):
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://shop-api-docs:8080/",
+             "repository": "shop-api", "checks": ["links"], "environments": {"staging": {}}})
+        modelled = [r for r in rules.desired_rules(value) if r.repo == "shop-api"]
+        self.assertEqual(len(modelled), 1)
+        r = modelled[0]
+        self.assertEqual((r.model, r.owner_tags, r.tag_pattern, r.tag_creators, r.main_mergers),
+                         ("release", False, "v*", ("jenkins-bot",), ("jenkins-bot",)))
+        self.assertEqual(r.main_checks, ("branch-policy", "test", "docker", "links", "deploy/production"))
+        self.assertEqual(r.develop_checks, ("branch-policy", "test", "docker", "links", "lint"))
+
+    def test_given_a_docs_application_on_a_repository_entry_without_releases_when_modelled_then_the_entry_decides(self):
+        # Nothing releases: the repositories entry supplies the model (basic here), not the application.
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "scratch-docs", "name": "Docs", "kind": "web", "health": "http://scratch-docs:8080/",
+             "repository": "scratch", "checks": ["links"], "environments": {"staging": {}}})
+        (r,) = [r for r in rules.desired_rules(value) if r.repo == "scratch"]
+        self.assertEqual((r.model, r.owner_tags, r.main_mergers), ("basic", True, ()))
+        # With the release model the entry's owner merges main, and both entries' checks are required.
+        value["repositories"][1]["rules"] = "release"
+        (r,) = [r for r in rules.desired_rules(value) if r.repo == "scratch"]
+        self.assertEqual((r.model, r.main_mergers, r.main_checks), ("release", ("artur-rios",),
+                                                                    ("branch-policy", "ignored", "links")))
+
+    def test_given_two_applications_without_releases_when_modelled_then_the_first_one_decides(self):
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "storefront-docs", "name": "Docs", "kind": "web", "health": "http://storefront-docs:8080/",
+             "repository": "storefront", "checks": ["links"], "environments": {"dev": {}}})
+        (r,) = [r for r in rules.desired_rules(value) if r.repo == "storefront"]
+        # Neither releases, so the first one's model is basic: no checks, no mergers.
+        self.assertEqual((r.model, r.main_mergers, r.main_checks), ("basic", (), ()))
+        # Once the second releases, it decides: the release model, Jenkins merging main.
+        value["systems"][0]["applications"][-1]["environments"] = {"production": {}}
+        (r,) = [r for r in rules.desired_rules(value) if r.repo == "storefront"]
+        self.assertEqual((r.model, r.main_mergers, r.main_checks),
+                         ("release", ("jenkins-bot",), ("branch-policy", "links", "deploy/production")))
+
+    def test_given_shared_repositories_when_modelled_then_main_requires_the_catalogs_repository_checks(self):
+        # One helper for both: what main requires (here) and what a release pull request's releasing job
+        # runs (pipeline_config.py plan --release). They cannot drift apart.
+        import catalog
+        value = copy.deepcopy(CATALOG)
+        value["systems"][0]["applications"].append(
+            {"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://shop-api-docs:8080/",
+             "repository": "shop-api", "checks": ["links", "test"], "actionsChecks": ["pages"],
+             "environments": {"staging": {}}})
+        value["systems"][0]["applications"].append(
+            {"id": "toolkit-docs", "name": "Docs", "kind": "web", "health": "http://toolkit-docs:8080/",
+             "repository": "toolkit", "checks": ["links"], "environments": {"staging": {}}})
+        for r in rules.desired_rules(value):
+            if r.model == "basic":
+                continue
+            with self.subTest(repo=r.repo):
+                checks = tuple(catalog.repository_checks(value, r.repo))
+                self.assertEqual(r.main_checks[:1 + len(checks)], ("branch-policy",) + checks)
+                self.assertTrue(all(name.startswith("deploy/") for name in r.main_checks[1 + len(checks):]))
+        self.assertEqual(by_repo(value)["shop-api"].main_checks,
+                         ("branch-policy", "test", "docker", "links", "deploy/production"))
+
     def test_given_the_repository_catalog_when_modelled_then_every_entry_is_valid(self):
         import catalog
         modelled = rules.desired_rules(catalog.load())
         self.assertTrue(all(r.model in ("release", "basic") for r in modelled))
+
+    def test_given_the_repository_catalog_when_modelled_then_the_sites_deployed_on_main_alone_are_basic(self):
+        # Sites with no branch policy on GitHub, deployed on pushes to their default branch: under the release
+        # model their main would be Jenkins' alone to merge, which it never does without a release.
+        import catalog
+        modelled = {r.repo: r for r in rules.desired_rules(catalog.load())}
+        for repo in ("heimdall-docs", "fortuna-docs", "alexandria-docs", "personal-blog",
+                     "under-construction-template", "github-readme-stats"):
+            with self.subTest(repo=repo):
+                self.assertEqual((modelled[repo].model, modelled[repo].main_mergers), ("basic", ()))
+        # A site released like an application keeps the release model, and so does an application whose
+        # docs site shares its repository (the application releases).
+        for repo in ("personal-page", "tech-craftsmen-company-page", "heimdall-api"):
+            with self.subTest(repo=repo):
+                self.assertEqual(modelled[repo].model, "release")
 
 
 def ruleset(payloads, name):
@@ -209,6 +310,12 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual(api.writes()[0],
                          ("PATCH", "/repos/artur-rios/shop-api",
                           {"default_branch": "develop", "delete_branch_on_merge": True}))
+
+    def test_given_a_basic_repository_when_applied_on_github_then_its_default_branch_is_kept(self):
+        # It may have no develop (a site that only ever had main): only the head-branch setting is sent.
+        api = FakeGitHub()
+        rules.apply_github(api, "artur-rios", by_repo()["scratch"], dry_run=False)
+        self.assertEqual(api.writes()[0], ("PATCH", "/repos/artur-rios/scratch", {"delete_branch_on_merge": True}))
 
     def test_given_the_old_default_ruleset_when_applied_then_it_is_removed(self):
         api = FakeGitHub(existing=["default", "develop"])
@@ -299,15 +406,18 @@ class GitHubRulesetsTests(unittest.TestCase):
                          rules.github_rulesets(by_repo()["shop-api"]))
 
     def test_given_a_basic_repository_when_built_then_only_deletion_and_force_push_are_blocked(self):
+        # master too: a fork's default branch, which the basic model treats like main.
         payloads = rules.github_rulesets(by_repo()["scratch"])
-        self.assertEqual([p["name"] for p in payloads], ["develop", "main"])
+        self.assertEqual([p["name"] for p in payloads], ["develop", "main", "master"])
+        self.assertEqual([p["conditions"]["ref_name"]["include"] for p in payloads],
+                         [["refs/heads/develop"], ["refs/heads/main"], ["refs/heads/master"]])
         for payload in payloads:
             self.assertEqual([r["type"] for r in payload["rules"]], ["deletion", "non_fast_forward"])
 
     def test_given_a_basic_repository_when_applied_then_no_tags_ruleset_is_sent(self):
         api = FakeGitHub()
         rules.apply_github(api, "artur-rios", by_repo()["scratch"], dry_run=False)
-        self.assertEqual([b["name"] for m, _, b in api.writes() if m == "POST"], ["develop", "main"])
+        self.assertEqual([b["name"] for m, _, b in api.writes() if m == "POST"], ["develop", "main", "master"])
 
     def test_given_a_basic_repository_with_a_release_tags_ruleset_when_applied_then_it_is_noted_not_removed(self):
         # A repository that was released before it was turned `rules: basic`: its tag ruleset is no
@@ -320,6 +430,14 @@ class GitHubRulesetsTests(unittest.TestCase):
         self.assertEqual(len(notes), 1, lines)
         self.assertIn("ruleset 'release tags'", notes[0])
         self.assertIn("left as it is", notes[0])
+
+    def test_given_a_basic_repository_turned_release_when_applied_then_its_master_ruleset_is_noted_not_removed(self):
+        api = FakeGitHub(existing=["develop", "main", "master"])
+        lines = rules.apply_github(api, "artur-rios", by_repo()["shop-api"], dry_run=False)
+        self.assertNotIn("DELETE", [m for m, _, _ in api.writes()])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("ruleset 'master'", notes[0])
 
     def test_given_a_basic_repository_with_both_tag_rulesets_when_applied_then_both_are_noted(self):
         api = FakeGitHub(existing=["develop", "main", "release tags", "release tag creation"])
@@ -386,6 +504,10 @@ class GitHubRulesetsTests(unittest.TestCase):
         catalog["systems"][0]["applications"][0]["actionsChecks"] = []
         built = {r.repo: rules.github_rulesets(r) for r in rules.desired_rules(catalog)}
         self.assertEqual(sorted(built), sorted(fixture))
+        # A third difference since: storefront releases nothing, so it is basic now (develop, main and master without
+        # deletion or force push), no longer the release model with a main only Jenkins could merge.
+        self.assertEqual([p["name"] for p in built.pop("storefront")], ["develop", "main", "master"])
+        del fixture["storefront"]
         for repo, old in fixture.items():
             for payload in old:
                 if payload["name"] == "release tags":
@@ -505,6 +627,17 @@ class ForgejoRulesTests(unittest.TestCase):
             "allow_squash_merge": True, "allow_rebase": False, "allow_rebase_explicit": False,
             "default_merge_style": "merge"}))
 
+    def test_given_a_basic_repository_when_applied_on_forgejo_then_its_default_branch_is_left_as_migrated(self):
+        # The import keeps GitHub's default branch (main, master); a basic repository may have no develop, and
+        # Forgejo would refuse it, or worse, point the repository at a branch nobody uses.
+        api = FakeForgejo()
+        lines = forgejo_apply(api, "scratch")
+        method, path, body = api.writes()[0]
+        self.assertEqual((method, path), ("PATCH", f"/repos/{OWNER}/scratch"))
+        self.assertNotIn("default_branch", body)
+        self.assertEqual(body, {k: v for k, v in rules.forgejo_settings().items() if k != "default_branch"})
+        self.assertIn("  delete head branches on merge, merge settings (default branch kept)", lines)
+
     def test_given_an_application_when_applied_on_forgejo_then_main_is_merged_only_by_jenkins(self):
         api = FakeForgejo()
         forgejo_apply(api, "shop-api")
@@ -564,7 +697,7 @@ class ForgejoRulesTests(unittest.TestCase):
     def test_given_a_basic_repository_when_applied_then_no_checks_or_whitelists_are_set(self):
         api = FakeForgejo()
         lines = forgejo_apply(api, "scratch")
-        self.assertEqual(sorted(api.protections), ["develop", "main"])
+        self.assertEqual(sorted(api.protections), ["develop", "main", "master"])
         for entry in api.protections.values():
             self.assertEqual({k: v for k, v in entry.items() if k not in ("id", "rule_name")},
                              {"enable_push": True, "enable_merge_whitelist": False, "enable_status_check": False,
@@ -580,8 +713,9 @@ class ForgejoRulesTests(unittest.TestCase):
         lines = rules.apply_forgejo(api, OWNER, basic, None, False)
         self.assertEqual(sorted((m, p) for m, p, _ in api.writes()),
                          [("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/develop"),
-                          ("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/main")])
-        for name in ("develop", "main"):
+                          ("PATCH", f"/repos/{OWNER}/shop-api/branch_protections/main"),
+                          ("POST", f"/repos/{OWNER}/shop-api/branch_protections")])
+        for name in ("develop", "main", "master"):
             entry = protection(api, name)
             self.assertEqual((entry["enable_push"], entry["enable_merge_whitelist"], entry["enable_status_check"],
                               entry["status_check_contexts"], entry["protected_file_patterns"]),
@@ -597,6 +731,18 @@ class ForgejoRulesTests(unittest.TestCase):
         self.assertEqual([line for line in rules.apply_forgejo(api, OWNER, basic, None, False) if "note" in line],
                          notes)
         self.assertEqual(api.writes(), [])
+
+    def test_given_a_basic_repository_turned_release_when_applied_then_master_is_noted_not_removed(self):
+        api = FakeForgejo()
+        basic = dataclasses.replace(by_repo()["scratch"], repo="shop-api")
+        rules.apply_forgejo(api, OWNER, basic, None, False)
+        api.calls.clear()
+        lines = forgejo_apply(api, "shop-api")
+        self.assertIn("master", api.protections)
+        self.assertNotIn("DELETE", [m for m, _, _ in api.writes()])
+        notes = [line for line in lines if "note" in line]
+        self.assertEqual(len(notes), 1, lines)
+        self.assertIn("branch protection 'master'", notes[0])
 
     def test_given_a_tag_pattern_that_changed_when_applied_then_the_new_one_is_protected_and_the_old_noted(self):
         api = FakeForgejo()
@@ -1010,14 +1156,15 @@ class MirrorCommandTests(unittest.TestCase):
         for repo in ("shop-api", "storefront", "toolkit", "scratch", "notes"):
             self.assertIn(("POST", f"/repos/{OWNER}/{repo}/branch_protections"), [(m, p) for m, p, _ in forgejo.writes()],
                           repo)
-        for repo in ("shop-api", "storefront", "toolkit", "notes"):
+        for repo in ("shop-api", "toolkit", "notes"):
             self.assertIn(f"{repo} (GitHub copy {MIRROR}/{repo}): not applied: GET /repos/{MIRROR}/{repo}/rulesets"
                           f"?per_page=100: 404 Not Found", out)
-        # The basic repository's copy is never asked.
-        self.assertNotIn(f"/repos/{MIRROR}/scratch/rulesets?per_page=100", [p for _, p, _ in github.calls])
+        # The basic repositories' copies are never asked (storefront releases nothing: basic too).
+        for repo in ("scratch", "storefront"):
+            self.assertNotIn(f"/repos/{MIRROR}/{repo}/rulesets?per_page=100", [p for _, p, _ in github.calls])
         self.assertIsInstance(exit_.code, str)
-        self.assertIn("the mirror tags were not applied to 4 GitHub copies", exit_.code)
-        self.assertIn("shop-api, storefront, toolkit, notes", exit_.code)
+        self.assertIn("the mirror tags were not applied to 3 GitHub copies", exit_.code)
+        self.assertIn("shop-api, toolkit, notes", exit_.code)
 
     def test_given_github_refusing_one_copy_when_run_then_the_others_are_applied_and_it_exits_1(self):
         class RefusesToolkit(FakeGitHub):
@@ -1031,7 +1178,7 @@ class MirrorCommandTests(unittest.TestCase):
         _, out, exit_ = self.run_with_github(github)
         # (One fake for every copy: the first creates `mirror tags`, the next ones find it and update it.)
         written = [p.split("/")[3] for _, p, _ in github.writes()]
-        self.assertEqual(written, ["shop-api", "storefront", "notes"])
+        self.assertEqual(written, ["shop-api", "notes"])  # storefront and scratch are basic: no copy rules
         self.assertIn(f"toolkit (GitHub copy {MIRROR}/toolkit): not applied: GET", out)
         self.assertIn("403 Upgrade to GitHub Pro", out)
         self.assertIn("the mirror tags were not applied to 1 GitHub copy: toolkit", exit_.code)

@@ -2,7 +2,14 @@
 
 import contextlib
 import copy
+import fnmatch
 import io
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -257,12 +264,23 @@ class ChimeraCatalogTests(unittest.TestCase):
         self.assertEqual(application["host"], "chimera")
         self.assertEqual(application["container"], {"service": "web"})
         self.assertTrue(application["releaseArtifacts"])
+        # The checks Jenkins runs, named as in chimera's yggdrasil.yml; Cross-platform, which only gathered the
+        # browser, Safari and native results on GitHub, is gone: each is required by itself.
         self.assertEqual(application["checks"], [
-            "Analyze and test",
-            "Cross-platform",
-            "Container",
-            "Accessibility and performance",
+            "analyze-and-test",
+            "browser-tests",
+            "native-linux",
+            "container",
+            "accessibility-performance",
+            "cleanup-contract",
+            "generated-library",
+            "evaluate-projects",
+            "version-contract",
+            "build-contract",
+            "minimal-library",
         ])
+        self.assertIn("Safari", application["actionsChecks"])
+        self.assertIn("Native (windows)", application["actionsChecks"])
 
         plan = c.resolve(value, "chimera")
         self.assertEqual(
@@ -572,8 +590,14 @@ class RepositoryTests(unittest.TestCase):
     def test_given_no_repositories_when_read_then_there_are_none(self):
         self.assertEqual(c.repositories(catalog()), [])
 
-    def test_given_the_repository_catalog_when_read_then_it_has_no_repositories_yet(self):
-        self.assertEqual(c.repositories(c.load()), [])
+    def test_given_the_repository_catalog_when_read_then_the_libraries_are_released_by_their_owners_bare_tags(self):
+        entries = {entry["id"]: entry for entry in c.repositories(c.load())}
+        self.assertEqual(entries["dotnet-util"], {
+            "id": "dotnet-util", "checks": ["test", "coverage"], "actionsChecks": [],
+            "credentials": ["reportgenerator-license"], "releaseCredentials": [], "release": "owner-tag",
+            "tags": "[0-9]*", "rules": "release"})
+        self.assertEqual(entries["yggdrasil"]["release"], "owner-tag")
+        self.assertEqual(entries["yggdrasil"]["tags"], "v*")
 
     def test_given_applications_and_repositories_when_names_are_asked_then_every_git_repository_is_listed_once(self):
         # What a tool that visits every repository (Renovate) needs: an application's `repository`, else its
@@ -600,17 +624,104 @@ class RepositoryTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertTrue(any("repositories[0].id" in e for e in self.errors(repositories=[{"id": bad}])))
 
-    def test_given_a_repository_that_is_also_an_applications_when_validated_then_it_is_an_error(self):
-        errors = self.errors(repositories=[{"id": "shop-api"}])
-        self.assertTrue(any("shop-api is already an application's repository" in e for e in errors), errors)
-
-    def test_given_a_repository_that_is_an_applications_repository_field_when_validated_then_it_is_an_error(self):
+    def test_given_a_repository_named_like_an_application_when_validated_then_it_is_an_error(self):
+        # Each names a Jenkins job (the Job DSL): two jobs of one name cannot both exist.
         value = catalog(repositories=[{"id": "shop-frontend"}, {"id": "shop-web"}])
         value["systems"][0]["applications"][1]["repository"] = "shop-frontend"
         errors = c.validate(value)
-        # shop-web is no longer a repository name: shop-web's repository is shop-frontend.
-        self.assertEqual([e for e in errors if "already an application's repository" in e],
-                         ["repositories[0].id: shop-frontend is already an application's repository"])
+        # shop-frontend is shop-web's repository, which a repositories entry may share; shop-web is the
+        # application's id, which no repositories entry may take.
+        self.assertEqual([e for e in errors if "repositories[" in e],
+                         ["repositories[1].id: shop-web is already an application's id (each names a Jenkins "
+                          "job): rename one of them"])
+
+    def test_given_a_library_and_its_docs_application_on_one_repository_when_validated_then_it_is_valid(self):
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "tags": "[0-9]*",
+                                       "checks": ["unit", "coverage"]}])
+        value["systems"][0]["applications"].append(
+            {"id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://dotnet-util-docs:8080/",
+             "repository": "dotnet-util", "checks": [], "environments": {"staging": {}}})
+        self.assertEqual(c.validate(value), [])
+        self.assertEqual(c.repository_names(value), ["shop-api", "shop-web", "dotnet-util"])
+
+    def test_given_an_application_and_its_docs_application_on_one_repository_when_validated_then_it_is_valid(self):
+        # heimdall-api releases (prod: trigger release); its docs site deploys on a branch only.
+        value = catalog()
+        value["systems"][0]["applications"].append(
+            {"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://shop-api-docs:8080/",
+             "repository": "shop-api", "environments": {"staging": {}}})
+        self.assertEqual(c.validate(value), [])
+        self.assertEqual(c.repository_names(value), ["shop-api", "shop-web"])
+
+    def test_given_two_releasing_entries_on_one_repository_when_validated_then_it_is_an_error_naming_both(self):
+        # Who merges main and who creates the version tags would be two answers for one repository.
+        both_apps = catalog()
+        both_apps["systems"][0]["applications"][1]["repository"] = "shop-api"  # shop-web releases on prod
+        app_and_library = catalog(repositories=[{"id": "shop-web", "release": "owner-tag"}])
+        app_and_library["systems"][0]["applications"][1]["id"] = "shop-site"
+        app_and_library["systems"][0]["applications"][1]["repository"] = "shop-web"
+        for value, wanted in (
+                (both_apps, "repository shop-api: application shop-api and application shop-web both release"),
+                (app_and_library, "repository shop-web: application shop-site and repositories entry shop-web "
+                                  "both release")):
+            with self.subTest(wanted=wanted):
+                errors = [e for e in c.validate(value) if "both release" in e]
+                self.assertEqual(len(errors), 1, errors)
+                self.assertTrue(errors[0].startswith(wanted), errors)
+
+    def test_given_shared_repositories_when_grouped_then_the_deciding_entry_comes_first(self):
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "checks": ["unit", "coverage"]},
+                                      {"id": "notes", "checks": ["lint"]}])
+        apps = value["systems"][0]["applications"]
+        apps.insert(0, {"id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://d:8080/",
+                        "repository": "dotnet-util", "checks": ["links", "unit"], "environments": {"staging": {}}})
+        apps.append({"id": "shop-api-docs", "name": "Docs", "kind": "web", "health": "http://s:8080/",
+                     "repository": "shop-api", "checks": ["links"], "environments": {"staging": {}}})
+        apps[1]["checks"] = ["test"]  # shop-api, which releases (prod: trigger release)
+        groups = c.repository_entries(value)
+        # repository_names() order; each repository's deciding entry first: the releasing one, else the
+        # repositories entry, else the first application.
+        self.assertEqual(list(groups), c.repository_names(value))
+        self.assertEqual({repo: [(e["kind"], e["id"]) for e in entries] for repo, entries in groups.items()}, {
+            "dotnet-util": [("repository", "dotnet-util"), ("application", "dotnet-util-docs")],
+            "shop-api": [("application", "shop-api"), ("application", "shop-api-docs")],
+            "shop-web": [("application", "shop-web")],
+            "notes": [("repository", "notes")]})
+        self.assertEqual([e["releases"] for e in groups["dotnet-util"]], [True, False])
+
+    def test_given_a_repository_when_its_model_is_asked_then_it_is_the_deciding_entrys(self):
+        # A repositories entry says it (`rules`, release by default); an application is release only when it
+        # releases (shop-web has the trigger: release environment prod), else basic, and a docs site that
+        # shares a repository does not change what the deciding entry decided.
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag"},
+                                      {"id": "fork", "rules": "basic"}, {"id": "notes"}])
+        apps = value["systems"][0]["applications"]
+        apps.append({"id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://d:8080/",
+                     "repository": "dotnet-util", "environments": {"staging": {}}})
+        apps.append({"id": "plain", "name": "Plain", "kind": "web", "health": "http://p:8080/",
+                     "environments": {"staging": {}}})
+        self.assertEqual({repo: c.repository_model(value, repo)
+                          for repo in ("shop-web", "plain", "dotnet-util", "fork", "notes", "nowhere")},
+                         {"shop-web": "release", "plain": "basic", "dotnet-util": "release", "fork": "basic",
+                          "notes": "release", "nowhere": "release"})
+
+    def test_given_shared_repositories_when_their_checks_are_asked_then_every_entrys_count_once_deciding_first(self):
+        value = catalog(repositories=[{"id": "dotnet-util", "release": "owner-tag", "checks": ["unit", "coverage"]}])
+        value["systems"][0]["applications"].insert(0, {
+            "id": "dotnet-util-docs", "name": "Docs", "kind": "web", "health": "http://d:8080/",
+            "repository": "dotnet-util", "checks": ["links", "unit"], "environments": {"staging": {}}})
+        self.assertEqual(c.repository_checks(value, "dotnet-util"), ["unit", "coverage", "links"])
+        self.assertEqual(c.repository_checks(value, "shop-api"), [])
+        self.assertEqual(c.repository_checks(value, "nowhere"), [])
+
+    def test_given_one_releasing_entry_and_a_repositories_entry_without_releases_when_validated_then_it_is_valid(self):
+        # release: none releases nothing: shop-web (prod, trigger release) is the one releasing entry.
+        value = catalog(repositories=[{"id": "shop-frontend", "checks": ["lint"]}])
+        value["systems"][0]["applications"][1]["repository"] = "shop-frontend"
+        self.assertEqual(c.validate(value), [])
+        value["repositories"][0]["release"] = "owner-tag"
+        self.assertTrue(any("repository shop-frontend: application shop-web and repositories entry shop-frontend "
+                            "both release" in e for e in c.validate(value)))
 
     def test_given_two_repositories_with_the_same_id_when_validated_then_it_is_an_error(self):
         errors = self.errors(repositories=[{"id": "dotnet-util"}, {"id": "dotnet-util"}])
@@ -627,8 +738,15 @@ class RepositoryTests(unittest.TestCase):
         errors = self.errors(repositories=[{"id": "lib", "rules": "strict"}])
         self.assertTrue(any("repositories[0].rules" in e for e in errors), errors)
 
+    def test_given_a_package_at_version_pattern_when_validated_then_it_is_valid(self):
+        # A library that versions each package apart tags <package>@<version> (ArturRios.Data.Sqlite@3.1.0).
+        for good in ("*@*", "ArturRios.Data.*@[0-9]*"):
+            with self.subTest(good=good):
+                self.assertEqual(self.errors(repositories=[{"id": "lib", "release": "owner-tag", "tags": good}]), [])
+
     def test_given_a_bad_tag_pattern_when_validated_then_it_is_an_error(self):
-        for bad in ("", "v* ", "v/*", 3, None):
+        # '@' first would be a ref git refuses (`@` alone, `@{...}` reads as a reflog).
+        for bad in ("", "v* ", "v/*", 3, None, "@*", "@"):
             with self.subTest(bad=bad):
                 errors = self.errors(repositories=[{"id": "lib", "release": "owner-tag", "tags": bad}])
                 self.assertTrue(any("repositories[0].tags" in e for e in errors), errors)
@@ -774,6 +892,24 @@ class PublicHostTests(unittest.TestCase):
         self.assertEqual((status, out), (1, ""))
         self.assertIn("does not deploy to 'nope'", err)
 
+    def test_given_an_apex_site_with_a_host_when_its_apex_host_is_asked_then_production_gets_the_bare_domain(self):
+        # Production has no hostSuffix in BASE: the bare domain. dev (-dev) shares it, so it gets a name of its
+        # own under the domain, which its redirect router answers on instead.
+        value = self.site(apex=True, host="www")
+        self.assertEqual(self.ask(value, "apex-host", "site", "prod", "example.com"), (0, "example.com\n", ""))
+        self.assertEqual(self.ask(value, "apex-host", "site", "dev", "example.com"), (0, "apex-dev.example.com\n", ""))
+        value = self.site(apex=True, host="www", domain="artur-rios.tech")
+        self.assertEqual(self.ask(value, "apex-host", "site", "dev", "example.com")[1], "apex-dev.artur-rios.tech\n")
+
+    def test_given_a_site_that_is_not_an_apex_one_with_a_host_when_its_apex_host_is_asked_then_it_is_empty(self):
+        # Nothing at all, like public-host: deploy.sh's $(...) is then empty. An apex site without a host is the
+        # bare domain itself (public-host): it has nothing to redirect from.
+        for fields in ({"host": "docs"}, {"apex": True}, {}):
+            with self.subTest(fields=fields):
+                self.assertEqual(self.ask(self.site(**fields), "apex-host", "site", "prod", "example.com"), (0, "", ""))
+        self.assertEqual(self.ask(self.site(apex=True, host="www"), "apex-host", "site", "prod", ""), (0, "", ""))
+        self.assertEqual(self.ask(self.site(apex=True, host="www"), "apex-host", "site", "nope", "x")[0], 1)
+
     def test_given_the_wrong_number_of_arguments_when_asked_then_it_is_a_usage_error(self):
         self.assertEqual(self.ask(self.site(), "public-host", "site", "dev")[0], 2)
         self.assertEqual(self.ask(self.site(), "public-path")[0], 2)
@@ -858,6 +994,280 @@ class AddApplicationTests(unittest.TestCase):
     def test_given_the_repository_catalog_when_adding_then_it_still_loads(self):
         text = c.add_application(c.CATALOG.read_text(encoding="utf-8"), {"id": "new-system"}, dict(NEW, id="new-app"))
         self.assertEqual(c.system_of(c.yaml.safe_load(text), "new-app")["id"], "new-system")
+
+
+# --- The real catalog against the migration checklist -------------------------------------------------
+
+ROOT = c.CATALOG.parent
+HOSTS = ROOT / "docs" / "hosts.md"
+CHECKLIST = ROOT / "docs" / "migration-checklist.md"
+TEMPLATES = ROOT / "templates" / "stacks"
+# The kinds of the checklist (the spec's "Every repository" table) that get a Jenkins job; code only,
+# archived and plain forks are imported and mirrored, nothing more.
+JENKINS_KINDS = {"application", "library", "ci", "site"}
+CHECK_NAME = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")  # pipeline_config.py's: a check of yggdrasil.yml
+JOB = re.compile(r"(?P<job>\S+/\S+ on \S+) (?P<verdict>.+)")
+BECOMES = re.compile(r"(?P<what>check|actionsCheck|releaseCredential|credential) `(?P<name>[^`]+)`")
+
+
+def _cells(line):
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", line)[1:-1]]
+
+
+def checklist_rows():
+    """The table's rows: {repository: {"kinds", "jobs" [(job on runner, verdict)], "secrets"}}."""
+    rows = {}
+    for line in CHECKLIST.read_text(encoding="utf-8").split("\n## ", 1)[0].splitlines():
+        if not line.startswith("| ") or line.startswith("| Repository |"):
+            continue
+        cells = _cells(line)
+        kinds = {kind.strip().split(" ")[0] for kind in cells[1].split(",")}
+        jobs = [(m["job"], m["verdict"]) for m in (JOB.fullmatch(j) for j in cells[3].split("<br>") if j) if m]
+        rows[cells[0]] = {"kinds": kinds, "jobs": jobs, "secrets": re.findall(r"`([A-Z0-9_]+)`", cells[4])}
+    return rows
+
+
+def checklist_section(title):
+    """A hand-written section's table: [(repository, the job or secret, what it became)]."""
+    text = CHECKLIST.read_text(encoding="utf-8")
+    body = text[text.index(f"\n## {title}\n"):]
+    body = body[:body.find("\n## ", 1)] if "\n## " in body[1:] else body
+    return [(cells[0], cells[1].strip("`"), cells[2]) for cells in map(_cells, body.splitlines())
+            if len(cells) == 3 and cells[0] not in ("Repository", "---")]
+
+
+class RealCatalogTests(unittest.TestCase):
+    """catalog.yaml is the installation's: every repository and site moving onto Forgejo and Jenkins, from
+    docs/migration-checklist.md (Task 1's inventory of their GitHub workflows and its hand-written sections)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = c.load()  # validates: a broken catalog fails here
+        cls.rows = checklist_rows()
+        cls.entries = c.repository_entries(cls.catalog)
+
+    def entry_field(self, repository, field):
+        """`field` of every catalog entry of `repository`, together."""
+        return set(c.entries_union(self.entries.get(repository, []), field))
+
+    def test_given_the_real_catalog_when_validated_then_every_checklist_repository_with_ci_has_an_entry(self):
+        expected = {name for name, row in self.rows.items() if row["kinds"] & JENKINS_KINDS}
+        self.assertEqual(set(c.repository_names(self.catalog)), expected)
+        self.assertEqual(len(c.repository_names(self.catalog)), len(expected))  # each once
+        applications = {app["id"]: app for _, app in c.applications(self.catalog, deployable=True)}
+        repositories = {entry["id"]: entry for entry in c.repositories(self.catalog)}
+        for name in sorted(expected):
+            kinds = self.rows[name]["kinds"]
+            with self.subTest(repository=name, kinds=sorted(kinds)):
+                if "application" in kinds:
+                    self.assertIn(name, applications)
+                if "library" in kinds:
+                    # The owner's bare version tags (1.2.3), but dotnet-data's, which version each package
+                    # apart: <package>@<version>, as its publish workflow on GitHub took them, a digit after
+                    # the @ (ArturRios.Data.Sqlite@ names no version).
+                    tags = "*@[0-9]*" if name == "dotnet-data" else "[0-9]*"
+                    self.assertEqual((repositories[name]["release"], repositories[name]["tags"]), ("owner-tag", tags))
+                    self.assertEqual(applications[f"{name}-docs"].get("repository"), name)
+                if "ci" in kinds:
+                    self.assertIn(name, repositories)
+                if "site" in kinds:
+                    sites = [app for app in applications.values()
+                             if (app.get("repository") or app["id"]) == name and app.get("domain")]
+                    self.assertEqual(len(sites), 1, sites)
+                # The branch model the repository had on GitHub (a branch-policy workflow or not), where a
+                # repositories entry decides it.
+                deciding = self.entries[name][0]
+                if deciding["kind"] == "repository":
+                    had = any(job.startswith("branch-policy.yml/") for job, _ in self.rows[name]["jobs"])
+                    self.assertEqual(deciding["entry"]["rules"], "release" if had else "basic")
+
+    def test_given_dotnet_datas_tag_pattern_when_matched_then_a_package_tag_needs_a_version(self):
+        # The Job DSL discovers, and the pipeline builds, only the tags the pattern matches: a bare
+        # ArturRios.Data.Sqlite@ names no version (an empty RELEASE_VERSION), and the pipeline refuses it too.
+        tags = next(e for e in c.repositories(self.catalog) if e["id"] == "dotnet-data")["tags"]
+        for tag in ("ArturRios.Data.Sqlite@3.1.0", "ArturRios.Data@1.0.0"):
+            self.assertTrue(fnmatch.fnmatchcase(tag, tags), tag)
+        for tag in ("ArturRios.Data.Sqlite@", "ArturRios.Data.Sqlite@v3.1.0", "3.1.0"):
+            self.assertFalse(fnmatch.fnmatchcase(tag, tags), tag)
+
+    def test_given_the_checklist_when_every_ci_job_is_followed_then_it_is_a_catalog_check_or_says_why_not(self):
+        # Each job runs only its catalog entry's checks, and those are what Forgejo requires: a `→ check` job
+        # missing from the catalog would silently stop running. So every one, and every Windows or macOS job
+        # left on GitHub Actions, is in the "Check names" section, becoming a check or an actionsCheck of one
+        # of the repository's entries, or saying why not (release files, not required, dropped).
+        mapped = {(repo, job): becomes for repo, job, becomes in checklist_section("Check names")}
+        for repo, row in self.rows.items():
+            for job, verdict in row["jobs"]:
+                if not (verdict.startswith("→ check") or verdict.startswith("stays (Actions)")):
+                    continue
+                with self.subTest(repository=repo, job=job):
+                    self.assertIn((repo, job), mapped, "missing from the Check names section")
+                    self.assertIn(repo, self.entries, "a job with CI, and no catalog entry")
+        named = {"check": {}, "actionsCheck": {}}
+        for (repo, job), becomes in mapped.items():
+            with self.subTest(repository=repo, job=job, becomes=becomes):
+                self.assertIn(job, [j for j, _ in self.rows[repo]["jobs"]], "not a job of the table")
+                if BECOMES.match(becomes) is None:
+                    self.assertRegex(becomes, r"^(release\.build|release\.windows|not required: |dropped)")
+                    continue
+                # A job may become more than one: alexandria-ui's Linux integration job is the check
+                # `integration` and, for its sandboxed test, an actionsCheck too.
+                for match in BECOMES.finditer(becomes):
+                    field = "checks" if match["what"] == "check" else "actionsChecks"
+                    self.assertIn(match["name"], self.entry_field(repo, field))
+                    named[match["what"]].setdefault(repo, set()).add(match["name"])
+        # ... and nothing in the catalog that no job of the table became.
+        for repo in self.entries:
+            with self.subTest(repository=repo):
+                self.assertEqual(self.entry_field(repo, "checks"), named["check"].get(repo, set()))
+                self.assertEqual(self.entry_field(repo, "actionsChecks"), named["actionsCheck"].get(repo, set()))
+                for check in self.entry_field(repo, "checks"):
+                    self.assertRegex(check, CHECK_NAME)
+
+    def test_given_the_checklist_when_every_secret_is_followed_then_it_is_a_credential_of_the_right_kind(self):
+        mapped = {(repo, secret): becomes for repo, secret, becomes in checklist_section("Credentials")}
+        used = {"credential": {}, "releaseCredential": {}}
+        for repo, row in self.rows.items():
+            for secret in row["secrets"]:
+                with self.subTest(repository=repo, secret=secret):
+                    becomes = mapped.get((repo, secret))
+                    self.assertIsNotNone(becomes, "missing from the Credentials section")
+                    match = BECOMES.match(becomes)
+                    if match is None:
+                        self.assertTrue(becomes.startswith(("not needed: ", "dropped: ")), becomes)
+                        continue
+                    field = "credentials" if match["what"] == "credential" else "releaseCredentials"
+                    self.assertIn(match["name"], self.entry_field(repo, field))
+                    used[match["what"]].setdefault(repo, set()).add(match["name"])
+        self.assertEqual(len(mapped), sum(len(row["secrets"]) for row in self.rows.values()))
+        for repo in self.entries:
+            with self.subTest(repository=repo):
+                self.assertEqual(self.entry_field(repo, "credentials"), used["credential"].get(repo, set()))
+                self.assertEqual(self.entry_field(repo, "releaseCredentials"),
+                                 used["releaseCredential"].get(repo, set()))
+        # The NuGet key is the release agent's alone, around its push step: never a catalog credential.
+        everywhere = set().union(*(self.entry_field(repo, f) for repo in self.entries
+                                   for f in ("credentials", "releaseCredentials")))
+        self.assertNotIn("nuget-api-key", everywhere)
+
+    def test_given_every_catalog_credential_when_hosts_md_is_read_then_its_table_has_a_row_for_it(self):
+        # docs/hosts.md "Credentials" is what the owner creates in Jenkins: a credential the catalog lets a check or
+        # a release build bind, but that the table forgets, is one the first build fails on.
+        text = HOSTS.read_text(encoding="utf-8")
+        body = text[text.index("\n## 6. Credentials\n"):]
+        body = body[:body.index("\n## 7. ")]
+        # The first cell of a row starts with the credential's id in backticks.
+        listed = {match[1] for match in (re.match(r"`([^`]+)`", cells[0]) for cells in map(_cells, body.splitlines())
+                                         if cells) if match}
+        ids = set().union(*(self.entry_field(repo, field)
+                            for repo in self.entries for field in ("credentials", "releaseCredentials")))
+        self.assertTrue(ids)
+        self.assertEqual(sorted(ids - listed), [], "missing from docs/hosts.md, Credentials")
+
+    def test_given_every_site_when_its_stack_files_are_read_then_they_are_the_templates_with_its_id(self):
+        sites = [app for _, app in c.applications(self.catalog, deployable=True) if app.get("domain")]
+        self.assertEqual(len(sites), 24)
+        for app in sites:
+            proxy = ("site-path.proxy.yml" if app.get("path") else
+                     "site-apex-redirect.proxy.yml" if app.get("apex") else "site.proxy.yml")
+            for template, name in (("site.yml", f"{app['id']}.yml"), (proxy, f"{app['id']}.proxy.yml")):
+                with self.subTest(application=app["id"], stack=name):
+                    expected = c.yaml.safe_load(
+                        (TEMPLATES / template).read_text(encoding="utf-8").replace("APPLICATION_ID", app["id"]))
+                    actual = c.yaml.safe_load((ROOT / "stacks" / name).read_text(encoding="utf-8"))
+                    web = actual["services"]["web"]
+                    # The two additions a site's stack may make: its own Dockerfile's name (a repository whose
+                    # Dockerfile is another image's) and its variables handed to the container.
+                    if web.get("build", {}).pop("dockerfile", None) is not None:
+                        self.assertEqual(app["id"], "heimdall-api-docs")
+                    if web.pop("env_file", None) is not None:
+                        self.assertEqual(app["id"], "github-readme-stats")
+                    # The docs index's proxy stack adds the router that redirects the docs host's root to it (decision 5
+                    # of plan 5), as labels of its own: exactly these keys, and no other change to the template.
+                    if app["id"] == "dotnet-libraries-docs" and name.endswith(".proxy.yml"):
+                        root = f"{app['id']}-${{YGG_ENVIRONMENT}}-root"
+                        added = {label.split("=", 1)[0] for label in web["labels"]
+                                 if f".{root}." in label.split("=", 1)[0]}
+                        self.assertEqual(added, {f"traefik.http.routers.{root}.{key}" for key in
+                                                 ("rule", "entrypoints", "middlewares", "service")} |
+                                         {f"traefik.http.middlewares.{root}.redirectregex.{key}" for key in
+                                          ("regex", "replacement", "permanent")})
+                        web["labels"] = [label for label in web["labels"] if label.split("=", 1)[0] not in added]
+                    self.assertEqual(actual, expected)
+
+    @unittest.skipUnless(shutil.which("docker"), "needs docker")
+    def test_given_every_site_when_its_stack_is_rendered_then_compose_accepts_it_in_each_environment(self):
+        # As deploy.sh runs it: the values it exports, the host, path and apex host the catalog gives.
+        for _, app in c.applications(self.catalog, deployable=True):
+            if not app.get("domain"):
+                continue
+            for env in c.resolve(self.catalog, app["id"]):
+                with self.subTest(application=app["id"], environment=env["id"]), \
+                        tempfile.TemporaryDirectory() as app_dir:
+                    env_file = pathlib.Path(app_dir) / "app.env"
+                    env_file.write_text("GITHUB_TOKEN=sample\n", encoding="utf-8")
+                    host = c.public_host(self.catalog, app["id"], env["id"], "techcraftsmen.net")
+                    values = dict(os.environ, APP_DIR=app_dir, APP_ENV_FILE=str(env_file), YGG_ENVIRONMENT=env["id"],
+                                  YGG_PUBLIC_HOST=host, YGG_PUBLIC_PATH=app.get("path", ""),
+                                  GIT_COMMIT="0" * 40, IMAGE_TAG=f"{env['id']}-1.0.0-0000000",
+                                  YGG_APEX_HOST=c.apex_host(self.catalog, app["id"], env["id"], "techcraftsmen.net"))
+                    result = subprocess.run(
+                        ["docker", "compose", "--project-name", f"{app['id']}-{env['id']}", "--env-file", os.devnull,
+                         "-f", str(ROOT / "stacks" / f"{app['id']}.yml"),
+                         "-f", str(ROOT / "stacks" / f"{app['id']}.{env['mode']}.yml"),
+                         "config", "--format", "json"], env=values, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    labels = c.json.loads(result.stdout)["services"]["web"]["labels"]
+                    rule = labels[f"traefik.http.routers.{app['id']}-{env['id']}.rule"]
+                    self.assertIn(f"Host(`{host}`)", rule)
+                    if app.get("path"):
+                        self.assertIn(f"PathPrefix(`{app['path']}/`)", rule)
+                    if app.get("apex"):
+                        apex = labels[f"traefik.http.routers.{app['id']}-{env['id']}-apex.rule"]
+                        self.assertEqual(apex, f"Host(`{values['YGG_APEX_HOST']}`)")
+                        self.assertNotEqual(values["YGG_APEX_HOST"], host)
+
+    @unittest.skipUnless(shutil.which("docker"), "needs docker")
+    def test_given_the_docs_index_when_its_stack_is_rendered_then_the_docs_root_redirects_to_it(self):
+        # Decision 5: docs.<domain>/ is nobody's site, so the index's stack answers it with a 301 to the index's
+        # own path. Rendered as deploy.sh would, so the rule and the target are what Traefik reads.
+        app = next(app for _, app in c.applications(self.catalog, deployable=True)
+                   if app["id"] == "dotnet-libraries-docs")
+        for env in c.resolve(self.catalog, app["id"]):
+            with self.subTest(environment=env["id"]), tempfile.TemporaryDirectory() as app_dir:
+                host = c.public_host(self.catalog, app["id"], env["id"], "techcraftsmen.net")
+                values = dict(os.environ, APP_DIR=app_dir, YGG_ENVIRONMENT=env["id"], YGG_PUBLIC_HOST=host,
+                              YGG_PUBLIC_PATH=app["path"], GIT_COMMIT="0" * 40, IMAGE_TAG=f"{env['id']}-1.0.0-0000000")
+                result = subprocess.run(
+                    ["docker", "compose", "--project-name", f"{app['id']}-{env['id']}", "--env-file", os.devnull,
+                     "-f", str(ROOT / "stacks" / f"{app['id']}.yml"),
+                     "-f", str(ROOT / "stacks" / f"{app['id']}.{env['mode']}.yml"),
+                     "config", "--format", "json"], env=values, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                labels = c.json.loads(result.stdout)["services"]["web"]["labels"]
+                root = f"{app['id']}-{env['id']}-root"
+                self.assertEqual(labels[f"traefik.http.routers.{root}.rule"], f"Host(`{host}`) && Path(`/`)")
+                self.assertEqual(labels[f"traefik.http.routers.{root}.entrypoints"], "websecure")
+                # secure-headers first, like every router of a stack (test_edge), then the redirect.
+                self.assertEqual(labels[f"traefik.http.routers.{root}.middlewares"], f"secure-headers@file,{root}")
+                self.assertEqual(labels[f"traefik.http.routers.{root}.service"], f"{app['id']}-{env['id']}")
+                self.assertEqual(labels[f"traefik.http.middlewares.{root}.redirectregex.permanent"], "true")
+                # What Traefik will do with the root request: the regex matches it and the replacement is the
+                # index, on the same host. The path the site's own router takes is untouched.
+                regex = labels[f"traefik.http.middlewares.{root}.redirectregex.regex"]
+                self.assertRegex(f"https://{host}/", regex)
+                self.assertEqual(labels[f"traefik.http.middlewares.{root}.redirectregex.replacement"],
+                                 f"https://{host}/dotnet-libraries/")
+                self.assertIn("PathPrefix(`/dotnet-libraries/`)",
+                              labels[f"traefik.http.routers.{app['id']}-{env['id']}.rule"])
+
+    def test_given_the_apex_sites_when_their_apex_host_is_asked_then_only_production_has_the_bare_domain(self):
+        # Every environment of the host shares one bare domain: production (no hostSuffix) claims it, the others
+        # get apex<hostSuffix>.<domain>, so their redirect routers never collide.
+        self.assertEqual(c.apex_host(self.catalog, "personal-page", "production", "x"), "artur-rios.tech")
+        self.assertEqual(c.apex_host(self.catalog, "personal-page", "development", "x"), "apex-dev.artur-rios.tech")
+        self.assertEqual(c.apex_host(self.catalog, "tech-craftsmen-company-page", "homologation", "x"),
+                         "apex-hml.techcraftsmen.net")
 
 
 if __name__ == "__main__":

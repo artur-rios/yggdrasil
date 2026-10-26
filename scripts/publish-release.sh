@@ -4,7 +4,7 @@
 # Runs on the publish agent, the one that holds the write token and the GitHub App's token, and does every
 # call through scripts/forge.sh: it never learns how either server's API looks.
 #
-#     scripts/publish-release.sh <repo> <tag> <sha> <title> <notes-file> <files-dir> [--mirror-releases] [--missing <list>]
+#     scripts/publish-release.sh <repo> <tag> <sha> <title> <notes-file> <files-dir> [--mirror-releases] [--missing <list>] [--replace-files]
 #     scripts/publish-release.sh attach <repo> <tag> <files-dir> [--mirror-releases]
 #
 # The first form, per server:
@@ -14,7 +14,8 @@
 #   2. a draft release for the tag: the one a failed earlier run left, else a new one with the notes;
 #   3. every file under <files-dir> (any depth, by its file name) the release does not have yet with the
 #      same size is uploaded; a file that is there under the same name with another size stops the run
-#      (the owner deletes it: there is no command to);
+#      (on a draft the owner deletes it: there is no command to; a published release is never changed, so
+#      there the files are a new release's);
 #   4. the release's files are read again and must hold every file of <files-dir> with its size.
 # Only when both servers' drafts are complete is Forgejo's published, then GitHub's, last: a release
 # that is public on GitHub has been published everywhere else. A run that stopped half way is started
@@ -24,6 +25,11 @@
 # --mirror-releases (the installation is Forgejo and the catalog's mirror.releases is on) does the same
 # steps on GitHub, as the GitHub App. --missing <list> adds a "Missing files" section to the notes: the
 # files that could not be built (a skipped GitHub Actions run), separated by commas or spaces.
+# --replace-files (a release with release.finalize, whose manifest and signature describe this run's files):
+# on a draft, a file already there under the same name is deleted and uploaded again whatever its size, and
+# a file whose name is not in this run's set is deleted, so the draft holds exactly this run's files and
+# bytes: never an older file of the same name and size, nor one the new manifest does not list. A published
+# release is never changed: its files are checked by name and size as without the option.
 #
 # `attach` puts the files of <files-dir> on the releases that exist already, published or not, the same
 # way (steps 3 and 4), for the Windows files that arrive after a release was published. Both releases are
@@ -50,7 +56,7 @@ tag_wait=${GITHUB_TAG_WAIT:-600}
 
 usage() {
   cat >&2 <<'EOF'
-usage: publish-release.sh <repo> <tag> <sha> <title> <notes-file> <files-dir> [--mirror-releases] [--missing <list>]
+usage: publish-release.sh <repo> <tag> <sha> <title> <notes-file> <files-dir> [--mirror-releases] [--missing <list>] [--replace-files]
        publish-release.sh attach <repo> <tag> <files-dir> [--mirror-releases]
 EOF
   exit 2
@@ -68,10 +74,15 @@ mode=publish
 [[ "${1:-}" != attach ]] || { mode=attach; shift; }
 mirror=false
 missing=""
+replace=false
 positional=()
 while (($#)); do
   case "$1" in
     --mirror-releases) mirror=true ;;
+    --replace-files)
+      [[ "$mode" == publish ]] || usage
+      replace=true
+      ;;
     --missing)
       [[ "$mode" == publish && $# -ge 2 ]] || usage
       missing=$2
@@ -173,15 +184,33 @@ remote_files() {
   done <<<"$out"
 }
 
-# upload_files <side> <release-id>: what the release does not have yet, then a check of all of it.
+# upload_files <side> <release-id>: what the release does not have yet, then a check of all of it. With
+# --replace-files, on a draft, what it has under the same name is replaced, and what is not in the set is
+# deleted.
 upload_files() {
   local side=$1 id=$2 index name
   remote_files "$side" "$id"
+  if [[ "$replace" == true && "${release_draft[$side]:-}" == true ]]; then
+    for name in "${!remote_sizes[@]}"; do
+      [[ -z "${local_sizes[$name]+set}" ]] || continue
+      must_forge "deleting $name, not one of this release's files, from $(label "$side")" "$side" \
+        delete-release-file "$repo" "$id" "$name"
+      unset "remote_sizes[$name]"
+    done
+  fi
   for index in "${!names[@]}"; do
     name=${names[$index]}
+    if [[ -n "${remote_sizes[$name]+set}" && "$replace" == true && "${release_draft[$side]:-}" == true ]]; then
+      must_forge "replacing $name on $(label "$side")" "$side" delete-release-file "$repo" "$id" "$name"
+      unset "remote_sizes[$name]"
+    fi
     if [[ -n "${remote_sizes[$name]+set}" ]]; then
-      [[ "${remote_sizes[$name]}" == "${local_sizes[$name]}" ]] \
-        || fail "uploading $name to $(label "$side")" "the release has a file of that name with ${remote_sizes[$name]} bytes, not ${local_sizes[$name]}; delete it and run again"
+      if [[ "${remote_sizes[$name]}" != "${local_sizes[$name]}" ]]; then
+        # A published release is never changed: what it holds was released, so these files are another release's.
+        [[ "${release_draft[$side]:-}" == true ]] \
+          || fail "uploading $name to $(label "$side")" "the release of $tag there is published, with a file of that name of ${remote_sizes[$name]} bytes, not ${local_sizes[$name]}: a published release is never changed, so these files go in a new release, with a new version"
+        fail "uploading $name to $(label "$side")" "the release has a file of that name with ${remote_sizes[$name]} bytes, not ${local_sizes[$name]}; delete it and run again"
+      fi
       continue
     fi
     must_forge "uploading $name to $(label "$side")" "$side" upload-release-file "$repo" "$id" "${paths[$index]}"

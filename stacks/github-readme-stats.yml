@@ -1,0 +1,28 @@
+# GitHub readme stats, github-readme-stats in catalog.yaml: templates/stacks/site.yml
+# with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
+# One addition, marked below.
+
+services:
+  web:
+    build:
+      context: ${APP_DIR:?APP_DIR is set by scripts/deploy.sh}
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        YGG_ENVIRONMENT: ${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}
+        PUBLIC_HOST: ${YGG_PUBLIC_HOST:-}
+        PUBLIC_PATH: ${YGG_PUBLIC_PATH:-}
+    image: github-readme-stats:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    # The application's variables (its read-only GitHub token), read when the container runs:
+    # never a build argument.
+    env_file: ${APP_ENV_FILE:?APP_ENV_FILE is set by scripts/deploy.sh}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

@@ -12,6 +12,9 @@
     python3 scripts/catalog.py public-host <app> <environment> <default-domain>
                                                           the site's full host name (nothing if it has none)
     python3 scripts/catalog.py public-path <app>          the site's URL path (nothing if it has none)
+    python3 scripts/catalog.py apex-host <app> <environment> <default-domain>
+                                                          the bare-domain name an apex site redirects from there
+                                                          (nothing for any other application)
     python3 scripts/catalog.py owner | repository         the GitHub owner, this repository's name
     python3 scripts/catalog.py forge [type|url|api|jenkins-user|publish-agent]  the git server (JSON without
                                                            an argument; publish-agent exits 1 without one)
@@ -65,8 +68,10 @@ USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 BOT_USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[bot\])?\Z")
 # A Jenkins credential id (what a `credentials(...)` binding names).
 CREDENTIAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-# A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*).
-TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-]+\Z")
+# A git tag glob: letters, digits, '.', '_', '-', the wildcard '*' and character classes ([0-9]*), and '@'
+# (never first) for the <package>@<version> tags of a library that versions each package apart (*@*). The
+# pipeline's TAG (yggdrasilPipeline.groovy) takes the same characters in a tag.
+TAG_PATTERN = re.compile(r"^[A-Za-z0-9.*_\[\]-][A-Za-z0-9.*_\[\]@-]*\Z")
 FORGES = ("forgejo", "github")
 # A Jenkins agent label: what an environment's id is by default, so the same shape.
 AGENT_NAME = ID
@@ -204,6 +209,7 @@ def validate(catalog):
                                       "(neither the application nor the environment sets them)")
     errors += _project_errors(systems, env_ids)
     errors += _repository_errors(catalog, systems)
+    errors += _shared_repository_errors(catalog, systems)
     return errors
 
 
@@ -323,18 +329,53 @@ def _environment_agents(catalog):
     return agents
 
 
-def _repository_names(systems):
-    """The repository of every application that has one: its `repository`, else its id (the rule
-    github/rulesets.py applies). Platform components live in this repository and have none."""
-    names = set()
-    for system in systems:
-        for app in (system.get("applications") or []) if isinstance(system, dict) else []:
-            if not isinstance(app, dict) or app.get("kind") == "platform":
-                continue
-            name = _text(app.get("repository")) or app.get("id")
-            if isinstance(name, str):
-                names.add(name)
-    return names
+def _deployable_applications(systems):
+    """The applications that are mappings and not platform components (those live in this repository and
+    have no repository or job of their own), skipping anything malformed: its error is reported elsewhere."""
+    return [app for system in systems if isinstance(system, dict)
+            for app in (system.get("applications") if isinstance(system.get("applications"), list) else [])
+            if isinstance(app, dict) and app.get("kind") != "platform"]
+
+
+def _application_releases(app, environments):
+    """Whether the application deploys to an environment whose trigger, after its override, is release
+    (Jenkins then merges its repository's main and creates the v* tags). Malformed parts are skipped."""
+    overrides = app.get("environments")
+    for env in environments if isinstance(environments, list) else []:
+        if not isinstance(env, dict) or not isinstance(env.get("id"), str):
+            continue
+        if overrides is not None and not (isinstance(overrides, dict) and env["id"] in overrides):
+            continue
+        override = overrides.get(env["id"]) if isinstance(overrides, dict) else None
+        if {**env, **(override if isinstance(override, dict) else {})}.get("trigger") == "release":
+            return True
+    return False
+
+
+def _shared_repository_errors(catalog, systems):
+    """One repository may back several catalog entries (an application and its docs site, a library's
+    `repositories` entry and its docs application: one Jenkins job each, one yggdrasil.yml), but at most
+    one of them releases -- an application with a trigger: release environment, or a `repositories`
+    entry whose release is not none. Two releasing entries would give two answers to who merges main and
+    who creates the version tags (scripts/rules.py takes them from the releasing entry)."""
+    releasing = {}
+    for app in _deployable_applications(systems):
+        name = _text(app.get("repository")) or app.get("id")
+        if isinstance(name, str) and isinstance(app.get("id"), str) \
+                and _application_releases(app, catalog.get("environments")):
+            releasing.setdefault(name, []).append(f"application {app['id']}")
+    entries = catalog.get("repositories")
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry.get("release", "none") != "none":
+            releasing.setdefault(entry["id"], []).append(f"repositories entry {entry['id']}")
+    errors = []
+    for repository, names in releasing.items():
+        if len(names) > 1:
+            listed = ", ".join(names[:-1]) + " and " + names[-1]
+            errors.append(f"repository {repository}: {listed} {'both' if len(names) == 2 else 'all'} release; at most "
+                          "one catalog entry of a repository may (an application with a trigger: release environment, "
+                          "or a repositories entry with release other than none)")
+    return errors
 
 
 def _repository_errors(catalog, systems):
@@ -345,7 +386,9 @@ def _repository_errors(catalog, systems):
         return ["repositories: a list of {id, checks, actionsChecks, credentials, releaseCredentials, release, tags, "
                 "rules}"]
     errors = []
-    taken = _repository_names(systems)
+    # A repositories entry may share an application's repository (see _shared_repository_errors), never an
+    # application's id: both name a Jenkins job (the Job DSL), and two jobs of one name cannot exist.
+    taken = {app["id"] for app in _deployable_applications(systems) if isinstance(app.get("id"), str)}
     seen = []
     for i, entry in enumerate(entries):
         where = f"repositories[{i}]"
@@ -361,7 +404,8 @@ def _repository_errors(catalog, systems):
         elif rid in seen:
             errors.append(f"{where}.id: duplicate '{rid}'")
         elif rid in taken:
-            errors.append(f"{where}.id: {rid} is already an application's repository")
+            errors.append(f"{where}.id: {rid} is already an application's id (each names a Jenkins job): "
+                          "rename one of them")
         else:
             seen.append(rid)
         if "release" in entry and entry["release"] not in RELEASES:
@@ -369,7 +413,8 @@ def _repository_errors(catalog, systems):
         if "rules" in entry and entry["rules"] not in RULES:
             errors.append(f"{where}.rules: one of {list(RULES)}")
         if "tags" in entry and not (isinstance(entry["tags"], str) and TAG_PATTERN.match(entry["tags"])):
-            errors.append(f"{where}.tags: a tag pattern of letters, digits, '.', '_', '-', '*' and [classes], e.g. v*")
+            errors.append(f"{where}.tags: a tag pattern of letters, digits, '.', '_', '-', '*', [classes] and '@' (not "
+                          "first), e.g. v* or *@*")
         errors += _check_list_errors(where, entry)
     return errors
 
@@ -576,6 +621,59 @@ def repository_names(catalog):
     return list(dict.fromkeys(names))
 
 
+def repository_entries(catalog):
+    """Every repository of the catalog (repository_names() order) -> its catalog entries, one Jenkins job
+    each, the deciding entry first: the one that releases (an application with a trigger: release
+    environment, or a `repositories` entry whose release is not none; validate() allows at most one), else
+    the `repositories` entry, else the first application. The rest follow in catalog order. Each entry is
+    {kind ("application" | "repository"), id, releases, entry (the application as written, or the resolved
+    repositories() entry)}. scripts/rules.py takes a repository's rules from its deciding entry."""
+    grouped = {}
+    for _, app in applications(catalog, deployable=True):
+        releases = any(env["trigger"] == "release" for env in resolve(catalog, app["id"]))
+        grouped.setdefault(app.get("repository") or app["id"], []).append(
+            {"kind": "application", "id": app["id"], "releases": releases, "entry": app})
+    for entry in repositories(catalog):
+        grouped.setdefault(entry["id"], []).append(
+            {"kind": "repository", "id": entry["id"], "releases": entry["release"] != "none", "entry": entry})
+    ordered = {}
+    for repository, entries in grouped.items():
+        deciding = (next((e for e in entries if e["releases"]), None)
+                    or next((e for e in entries if e["kind"] == "repository"), None)
+                    or entries[0])
+        ordered[repository] = [deciding] + [e for e in entries if e is not deciding]
+    return ordered
+
+
+def repository_model(catalog, repository):
+    """The branching model of `repository`: "release" or "basic" ("release" for one the catalog does not
+    have). The deciding entry's: a `repositories` entry's `rules`, or, for an application, "release" when
+    it releases (a trigger: release environment) and "basic" when it only deploys on branches. scripts/
+    rules.py applies the model's protections, and the pipeline's branch policy checks a pull request only
+    under "release" (pipeline_config.py describe says it as the entry's `rules`)."""
+    entries = repository_entries(catalog).get(repository)
+    if not entries:
+        return "release"
+    deciding = entries[0]
+    if deciding["kind"] == "repository":
+        return deciding["entry"]["rules"]
+    return "release" if deciding["releases"] else "basic"
+
+
+def entries_union(entries, field):
+    """`field` (checks, actionsChecks) of every one of `entries` (a repository_entries() list), in their
+    order, each name once."""
+    return list(dict.fromkeys(name for e in entries for name in (e["entry"].get(field) or [])))
+
+
+def repository_checks(catalog, repository):
+    """The checks main requires of `repository`, besides branch-policy and deploy/<environment>: every
+    catalog entry's `checks`, the deciding entry's first, each once ([] for a repository the catalog does
+    not have). scripts/rules.py requires exactly these, and a release pull request's releasing job runs
+    exactly these before it deploys (pipeline_config.py plan --release)."""
+    return entries_union(repository_entries(catalog).get(repository, []), "checks")
+
+
 def applications(catalog, deployable=False):
     for system in catalog.get("systems") or []:
         for app in system.get("applications") or []:
@@ -626,25 +724,43 @@ def environment_options(catalog, env_id):
     raise CatalogError(f"'{env_id}' is not an environment in catalog.yaml")
 
 
+def _site_address(catalog, app_id, env_id, default_domain):
+    """(application, the environment's hostSuffix after the application's override, the domain its names go
+    under: its own `domain`, else `default_domain`), what public_host and apex_host build names from. Raises
+    CatalogError when the application does not deploy to the environment."""
+    app = application(catalog, app_id)
+    for env in resolve(catalog, app_id):
+        if env["id"] == env_id:
+            return app, env["hostSuffix"], app.get("domain") or default_domain
+    raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
+
+
 def public_host(catalog, app_id, env_id, default_domain):
     """The full public host name of an application in an environment: <host><hostSuffix>.<domain>,
     the domain being the application's own `domain`, else the default (the host's DOMAIN). With
     `apex: true` and no `host` it is the bare domain; `host` wins when both are set. "" when the
     application is not public, or when there is no domain to put it under (an installation whose
     stacks do not use it)."""
-    app = application(catalog, app_id)
-    suffix = None
-    for env in resolve(catalog, app_id):
-        if env["id"] == env_id:
-            suffix = env["hostSuffix"]
-    if suffix is None:
-        raise CatalogError(f"'{app_id}' does not deploy to '{env_id}' (catalog.yaml)")
-    domain = app.get("domain") or default_domain
+    app, suffix, domain = _site_address(catalog, app_id, env_id, default_domain)
     if not domain:
         return ""
     if app.get("host"):
         return f"{app['host']}{suffix}.{domain}"
     return domain if app.get("apex") else ""
+
+
+def apex_host(catalog, app_id, env_id, default_domain):
+    """The name an `apex: true` site with a `host` answers on besides its host, and redirects to it, in an
+    environment: the bare domain where the environment has no hostSuffix (production: artur-rios.tech, to
+    www.artur-rios.tech), else apex<hostSuffix>.<domain> (apex-dev.artur-rios.tech, to www-dev.), since every
+    environment of one host shares the bare domain and only one may claim it; a name under the wildcard
+    certificate and DNS record instead, which redirects like the bare domain does. deploy.sh exports it as
+    YGG_APEX_HOST for site-apex-redirect.proxy.yml. "" for any other application (no apex, or apex without a
+    host, which is the bare domain itself: public_host), and when there is no domain."""
+    app, suffix, domain = _site_address(catalog, app_id, env_id, default_domain)
+    if not (app.get("apex") and app.get("host") and domain):
+        return ""
+    return f"apex{suffix}.{domain}" if suffix else domain
 
 
 def _print_value(value):
@@ -790,6 +906,11 @@ def main(argv):
         elif command == "public-host" and len(args) == 3:
             # Nothing at all (not a blank line) when there is none, so $(...) is empty.
             host = public_host(catalog, *args)
+            if host:
+                print(host)
+        elif command == "apex-host" and len(args) == 3:
+            # Nothing at all when there is none, like public-host.
+            host = apex_host(catalog, *args)
             if host:
                 print(host)
         elif command == "public-path" and len(args) == 1:

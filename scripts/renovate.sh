@@ -2,7 +2,8 @@
 # Runs Renovate once against the repositories of the catalog, on Forgejo: the `renovate` service user of the
 # dev machine, in its own rootless Docker engine, from the systemd user timer yggdrasil-renovate.timer
 # (platform/systemd, installed by `ygg install`, step renovate-timer). Renovate opens pull requests from
-# renovate/* branches into develop; branch-policy accepts them there.
+# renovate/* branches into develop; branch-policy accepts them there. A repository on main or master
+# (no develop) overrides that with baseBranchPatterns in its own renovate.json.
 #
 #     scripts/renovate.sh run
 #
@@ -19,7 +20,8 @@
 #                           the applications' and the `repositories` entries), the owner being FORGE_OWNER,
 #                           else the catalog's, as forge.sh reads it. Renovate never autodiscovers: it visits
 #                           these and nothing else the token can see.
-#   RENOVATE_CONFIG         the global options: branchPrefix renovate/, baseBranches develop, and no
+#   RENOVATE_CONFIG         the global options: branchPrefix renovate/, baseBranchPatterns develop (the default
+#                           a repository's baseBranchPatterns overrides), and no
 #                           onboarding: a repository without a Renovate config of its own is skipped
 #                           (requireConfig: required) instead of getting an onboarding pull request.
 #   GITHUB_COM_TOKEN        the value of RENOVATE_GITHUB_COM_TOKEN, under the name Renovate reads, when
@@ -48,7 +50,7 @@ RENOVATE_IMAGE=renovate/renovate:44.181.0@sha256:1a06e15f2d8bc08342828ec43c0a90d
 
 # The global options (see the header): the branches Renovate pushes and opens pull requests from, where they
 # go, and what it does with a repository that has no config of its own.
-RENOVATE_GLOBAL_CONFIG='{"branchPrefix":"renovate/","baseBranches":["develop"],"onboarding":false,"requireConfig":"required"}'
+RENOVATE_GLOBAL_CONFIG='{"branchPrefix":"renovate/","baseBranchPatterns":["develop"],"onboarding":false,"requireConfig":"required"}'
 
 usage="usage: renovate.sh run"
 [[ "${1:-}" == run && $# -eq 1 ]] || { echo "renovate: $usage" >&2; exit 2; }

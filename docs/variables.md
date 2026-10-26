@@ -235,8 +235,8 @@ fortuna-api needs no change: it reads the new public key from heimdall-api's key
 **Share one value between environments or applications**
 
 ```bash
-ygg vars set @<env> DB_HOST=host.docker.internal     # every application in <env>
-ygg vars set <app> DB_PORT=5432                      # <app> in every environment
+ygg vars set @<env> TZ=America/Sao_Paulo            # every application in <env>
+ygg vars set <app> DB_HOST=db                        # <app> in every environment
 ygg vars unset <app>@<env> DB_HOST                   # drop the now-redundant copy
 ```
 
@@ -373,13 +373,17 @@ ygg vars backup ~/yggdrasil-backups
 ```
 
 It writes `vars-<UTC timestamp>.db` (a consistent copy, taken while the store is in use) and
-`vars-<UTC timestamp>.key`, both `0600`. A weekly cron line, in `/etc/cron.d/yggdrasil-vars`:
+`vars-<UTC timestamp>.key`, both `0600`.
+
+On a `dev` or `apps` machine, the item `vars` of `backup.conf` takes this copy every night and sends it, with the
+other backups, to the other machine ([hosts.md, Backups](hosts.md#7-backups-and-restore), which also says how to
+restore it). Elsewhere, a weekly cron line as the store's owner, in `/etc/cron.d/yggdrasil-vars`:
 
 ```text
-0 3 * * 0 root /opt/yggdrasil/scripts/ygg vars backup /root/yggdrasil-backups
+0 3 * * 0 ygg /opt/yggdrasil/scripts/ygg vars backup /home/ygg/yggdrasil-backups
 ```
 
-Nothing installs it for you. A backup next to the key is as sensitive as the store: keep copies
+Nothing installs it for you, and it stays on the machine. A backup next to the key is as sensitive as the store: keep copies
 off the machine only where both are protected, and the key's own copy in your password manager.
 
 **Check** at any time with `ygg vars check`. A bad key is found when the store is opened,

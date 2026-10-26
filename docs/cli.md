@@ -194,7 +194,7 @@ reads it as `ygg` inside its container, can still read it. Changes you don't app
 | `ygg agent up\|down\|ps\|logs --user ci\|release` | Host › agent | The Jenkins build agent of a service user (`scripts/agent.sh`), as that user. As the admin |
 | `ygg backup run\|list` | Host › backup | Back up this machine, or list the backups (`scripts/backup.sh`). As `ygg` |
 | `ygg self-install` | Host › self-install | The `ygg` command and its tab completion |
-| `ygg catalog validate \| environments \| applications \| systems \| show \| public-host \| public-path \| plan \| environment \| get \| owner \| repository \| forge \| mirror \| repositories \| repository-entry \| repository-names` | Catalog | Reads `catalog.yaml` (`scripts/catalog.py`) |
+| `ygg catalog validate \| environments \| applications \| systems \| show \| public-host \| apex-host \| public-path \| plan \| environment \| get \| owner \| repository \| forge \| mirror \| repositories \| repository-entry \| repository-names` | Catalog | Reads `catalog.yaml` (`scripts/catalog.py`) |
 | `ygg help [<command>]`, `ygg version`, `ygg completion bash` | Help and version | |
 
 Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown command, a missing argument),
@@ -221,7 +221,7 @@ as the menu. Keys need read access to the store's key; without it they are not o
 
 A machine has a **role**: `dev`, `apps` or `workstation`. `--role` picks it; without it the command uses
 the role `install` wrote to `/etc/yggdrasil-role`, and `workstation` when there is none. `dev` and `apps`
-are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine is rootless;
+are the Ubuntu 24.04 or 26.04 LTS servers of [hosts.md](hosts.md), where every Docker engine is rootless;
 `workstation` is the check and install that came before the roles, for a laptop or a host set up by hand.
 
 ### `--role dev` and `--role apps`
@@ -239,7 +239,7 @@ are the Ubuntu 24.04 servers of [hosts.md](hosts.md), where every Docker engine 
 Rows that ask another user's engine or read a closed directory need `sudo`. `check` runs `sudo -v` first, which asks
 for your password once; if that fails it says so and goes on, and those rows say "not checked".
 
-`install` works on Ubuntu 24.04 only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
+`install` works on Ubuntu 24.04 or 26.04 LTS only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
 part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci`
 limits, the low ports, SSH, the checkout, secrets directories, the firewall, each user's engine, the backup timer and the role
 file. It refuses up front, changing nothing: when it doesn't run from `/opt/yggdrasil` (clone yggdrasil there), when
@@ -273,7 +273,7 @@ is still a dev or apps machine to the next `ygg install`. It puts its SSH file b
 5. **A firewall** (ufw) letting in only SSH, 80 and 443. It's for servers, so the default is no.
 
 The platform itself (`platform.sh`) now runs only on a **rootless** engine of the user running it, so a
-workstation-role host needs one set up by hand ([setup.md 8.6](setup.md#86-not-on-ubuntu-2404-or-not-behind-cloudflare)).
+workstation-role host needs one set up by hand ([setup.md 8.6](setup.md#86-not-on-ubuntu-2404-or-2604-or-not-behind-cloudflare)).
 
 ## Build agents
 
@@ -305,12 +305,26 @@ Fill it in as that file says:
 | `JENKINS_AGENT_NAME` | `ci` for the `ci` user, `release` for `release`. Left empty in the template on purpose, so an unedited copy fails instead of starting the wrong node. Lowercase letters, digits, `-` and `_` |
 | `JENKINS_AGENT_SECRET` | The node's secret, from its page in Jenkins once the node exists |
 | `YGG_AGENT_WORKDIR` | Absolute, owned by the user: `/home/ci/agent` for `ci`, `/home/release/agent` for `release`. Mounted at the same path in the agent and on the host, so a check's `docker run -v $WORKSPACE:…` finds the same directory in the engine. Also empty in the template |
+| `TESTCONTAINERS_HOST_OVERRIDE` | **Optional**, commented out in the template. Where a check's Testcontainers reaches the containers it starts; see below |
 
-An empty or missing variable stops `agent.sh` before anything starts, and says which. The Compose project is
+An empty or missing variable stops `agent.sh` before anything starts, and says which, except the optional one. The
+Compose project is
 `yggdrasil-agent-<name>` (so the two agents never share one), from
 [platform/build-agent.yml](../platform/build-agent.yml). `up` builds the agent's image and starts it, waiting
 until it runs. This agent is not the deploy agent: that one is the `agent` profile of the platform stack and runs on the
 apps machine.
+
+**Where a check reaches its containers.** A check with `docker: true` (Testcontainers) starts containers on the
+user's engine and connects to their published ports at `TESTCONTAINERS_HOST_OVERRIDE`, which `scripts/run-check.sh`
+gives it from the agent's environment. `agent.sh` sets it: `agent.env`'s when the file has one, else the host's own
+primary IPv4 address, the source address of its route to the internet (`ip -4 route get 1.1.1.1`); `up` prints the
+one it used. Not the containers' default gateway (`172.17.0.1`): `ygg install` gives every engine the `slirp4netns`
+port driver, so that Traefik sees real client addresses ([hosts.md](hosts.md#5-rootless-docker)), and that driver opens
+a published port on the host only, where nothing in the engine's network answers it at the gateway. A container
+that dials the host's own address goes out through `slirp4netns` and is handed back in. To use another address
+(another interface of the host, say), set `TESTCONTAINERS_HOST_OVERRIDE=<address>` in `agent.env` and run
+`ygg agent up` again. When neither is found, the value is empty and `run-check.sh` falls back to the gateway.
+An agent started before this existed has no value: run `ygg agent up --user ci` (and `release`) again.
 
 ## Backups
 

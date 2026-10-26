@@ -1,0 +1,33 @@
+# A site under a path of a shared host (docs.<domain>/<repository>), behind Traefik, for
+# stacks/<application-id>.proxy.yml (copy this file there and replace APPLICATION_ID with the application's id
+# from catalog.yaml, everywhere in the file). It is the overlay of site.yml (stacks/<application-id>.yml) in proxy
+# environments; the catalog gives the application a host, a domain and a `path`.
+#
+# The router matches the host and the path deploy.sh exports as YGG_PUBLIC_HOST and YGG_PUBLIC_PATH. The prefix
+# is NOT stripped: the site is built for its path (Hugo's baseURL, Vite's base, Next's basePath) and its server
+# has the files under it, so the request must arrive whole. The rule takes the path itself (the server redirects
+# /name to /name/) and everything under /name/, but not /name-other, which is another site: a bare
+# PathPrefix(`/name`) would send it here. Several sites share the host, each with a rule of its own; Traefik
+# gives the longer rule priority, so /heimdall-api/ goes to its site and not to /heimdall's.
+#
+# Named after the environment, from YGG_ENVIRONMENT, so that several environments can share one host: the alias
+# APPLICATION_ID.<environment> (how the status API reaches the catalog's `health`, qualified with the
+# environment) and the router and service APPLICATION_ID-<environment>. The labels are a list because Compose
+# substitutes variables in values only.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["APPLICATION_ID.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh from the catalog; give the application a host and a domain}`) && (Path(`${YGG_PUBLIC_PATH:?YGG_PUBLIC_PATH is set by scripts/deploy.sh from the catalog; give the application a path}`) || PathPrefix(`${YGG_PUBLIC_PATH}/`))
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.APPLICATION_ID-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.APPLICATION_ID-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true

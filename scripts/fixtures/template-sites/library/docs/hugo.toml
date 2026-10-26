@@ -1,0 +1,14 @@
+baseURL = 'https://example.org/'
+title = 'Library sample'
+disableKinds = ['taxonomy', 'term', 'RSS', 'sitemap']
+
+[module]
+  [[module.mounts]]
+    source = 'content/en'
+    target = 'content'
+  [[module.mounts]]
+    source = 'layouts'
+    target = 'layouts'
+  [[module.mounts]]
+    source = 'coverage-report'
+    target = 'static/coverage-report'

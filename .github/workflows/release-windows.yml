@@ -1,0 +1,66 @@
+name: Release Windows
+
+# The console's Windows installer for a release. Jenkins builds the Android APK (ci/release-build.sh), dispatches
+# this workflow on the release's tag once the mirror has pushed it (release.windows in yggdrasil.yml), waits for
+# it, and attaches the installer below to the release on Forgejo and on GitHub. The web console is not here: each
+# environment host builds it from this repository (scripts/platform.sh). It is not a pull request check.
+#
+# The "Tag is on main" job is gone: Jenkins builds a tag only when it is on main. Run it by hand only to look at
+# a build; its files reach a release through Jenkins (the actions-release job attaches them to a release that was
+# published without them).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build, e.g. v0.2.0'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-windows-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      # The same Flutter as ci/flutter-env.sh pins for the Linux builds.
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.4
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Build
+        shell: pwsh
+        run: flutter build windows --release --build-name=$($env:TAG.TrimStart('v'))
+      - name: Bundle the Visual C++ runtime
+        shell: pwsh
+        run: |
+          foreach ($dll in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
+            Copy-Item "$env:WINDIR/System32/$dll" build/windows/x64/runner/Release
+          }
+      - name: Build the installer
+        # yggdrasil-console-<version>-setup.exe (windows/installer/yggdrasil.iss).
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DAppVersion=$($env:TAG.TrimStart('v'))" windows/installer/yggdrasil.iss
+      # Downloaded by Jenkins as yggdrasil-console-windows/<file> (release.windows.files).
+      - uses: actions/upload-artifact@v7
+        with:
+          name: yggdrasil-console-windows
+          path: console/build/windows/installer/*.exe
+          if-no-files-found: error

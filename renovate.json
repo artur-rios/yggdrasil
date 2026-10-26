@@ -1,0 +1,30 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "What Dependabot updated (pub in console/, NuGet in status/, the workflow actions), plus the images and tools pinned in yggdrasil.yml, ci/*.sh and the Dockerfiles (every FROM is pinned by version and digest: status/, console/, platform/jenkins/). The docker-compose manager is left out, as dependabot.yml left docker out: the platform images in platform/compose.yml are moved by hand.",
+  "extends": ["local>artur-rios/yggdrasil//renovate/default"],
+  "enabledManagers": ["pub", "nuget", "github-actions", "dockerfile", "custom.regex"],
+  "packageRules": [
+    {
+      "description": "pub, NuGet and the workflow actions weekly, as Dependabot did (the preset has actions monthly).",
+      "matchManagers": ["pub", "nuget", "github-actions"],
+      "schedule": ["on monday"]
+    },
+    {
+      "description": "The workflow actions in one pull request, as Dependabot grouped them.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "templates/ are examples copied into other repositories: Dependabot never updated their pins, and they change by hand.",
+      "matchManagers": ["dockerfile", "custom.regex"],
+      "matchFileNames": ["templates/**"],
+      "enabled": false
+    },
+    {
+      "description": "jenkins/inbound-agent tags are <build>.v<hash>-<n>-jdk21, which docker versioning cannot parse.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["jenkins/inbound-agent"],
+      "versioning": "regex:^(?<major>\\d+)\\.v[0-9a-z_]+-(?<patch>\\d+)-(?<compatibility>jdk21)$"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# Company page, tech-craftsmen-company-page in catalog.yaml: templates/stacks/site-apex-redirect.proxy.yml
+# with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["tech-craftsmen-company-page.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh from the catalog; give the application a host and a domain}`)
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.service=tech-craftsmen-company-page-${YGG_ENVIRONMENT}
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.rule=Host(`${YGG_APEX_HOST:?YGG_APEX_HOST is set by scripts/deploy.sh from the catalog; give the application a host, a domain and apex true}`)
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.entrypoints=websecure
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.middlewares=secure-headers@file,tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex
+      - traefik.http.routers.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.service=tech-craftsmen-company-page-${YGG_ENVIRONMENT}
+      - traefik.http.middlewares.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.redirectregex.regex=^https?://[^/]+(.*)
+      - traefik.http.middlewares.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.redirectregex.replacement=https://${YGG_PUBLIC_HOST}$${1}
+      - traefik.http.middlewares.tech-craftsmen-company-page-${YGG_ENVIRONMENT}-apex.redirectregex.permanent=true
+      - traefik.http.services.tech-craftsmen-company-page-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true

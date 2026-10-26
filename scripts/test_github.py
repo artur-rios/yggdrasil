@@ -178,6 +178,29 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "https://example/release/17\n")
         self.assertEqual(self.body("releases")["tag_name"], "v1.2.3")
+        self.assertFalse(self.body("releases")["prerelease"])
+
+    def test_given_versions_with_and_without_a_prerelease_part_when_releasing_then_only_those_are_prereleases(self):
+        # github.sh's releases go through forge.sh's create-release, so they follow its rule: a pre-release
+        # part makes a prerelease (never GitHub's latest), build metadata alone does not.
+        self.respond("releases", last=(0, {"id": 17, "draft": False, "html_url": "https://example/release/17"}))
+        for number, (version, prerelease) in enumerate((("1.2.0-rc.1", True), ("1.2.0+build.5", False),
+                                                        ("1.2.0+build-5", False), ("1.2.0", False)), start=1):
+            with self.subTest(version=version):
+                result = self.github("release", "app", version, "abc123")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                body = self.body("releases", number)
+                self.assertEqual((body["tag_name"], body["prerelease"]), (f"v{version}", prerelease))
+
+    def test_given_a_prerelease_version_when_publishing_through_the_artifact_workflow_then_the_draft_is_a_prerelease(self):
+        # The releaseArtifacts path: the draft the workflow publishes is created a prerelease already.
+        self.respond("refs", (0, {"ref": "refs/tags/v1.2.3-beta.1"}))
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "https://example/release/17"}))
+        self.respond("dispatches", (0, None))
+        self.respond("17", (0, {"tag_name": "v1.2.3-beta.1", "draft": False, "html_url": "https://example/release/17"}))
+        result = self.github("publish-release", "app", "1.2.3-beta.1", "abc123", "60")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.body("releases")["draft"], self.body("releases")["prerelease"]), (True, True))
 
     def test_given_a_status_when_set_then_forge_sh_posts_it_to_the_commit(self):
         self.respond("abc123", (0, {"id": 1}))

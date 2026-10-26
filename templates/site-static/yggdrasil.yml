@@ -1,0 +1,15 @@
+# The pipeline file for a static site (templates/site-static/).
+# Copy it to the repository's root as yggdrasil.yml. The pipeline of the yggdrasil installation that deploys the
+# repository reads it (yggdrasil's docs/catalog.md, "Repository pipeline file", has every field). It is data, never
+# code: images (pinned by version and digest, which Renovate keeps up to date: the owner merges those changes),
+# commands, globs and the names of Jenkins credentials. Every check the catalog lists in the application's `checks`
+# must be defined here. Check it where the catalog is, in the yggdrasil checkout:
+#   python3 scripts/pipeline_config.py describe <application-id> <this repository's checkout>
+#
+# The site itself is built into an image by the deploy (the Dockerfile); this check is only the pull request's
+# proof that there is something to serve. List it in the application's `checks` in catalog.yaml, or delete it.
+
+checks:
+  site:
+    image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    run: test -f public/index.html       # SITE_DIR of the Dockerfile, public by default

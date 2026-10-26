@@ -27,6 +27,177 @@ owner: artur-rios
 # main branch. Default yggdrasil; set it if your fork has another name.
 repository: yggdrasil
 
+# The git server (forge) and its GitHub mirror: the `forge` and `mirror` blocks, right after
+# `repository:` above. Until cutover 5.9 (docs/cutover.md) neither is here: with no forge block this
+# is a GitHub installation, which is what the old controller reads. The move to Forgejo adds both
+# inside its window (2.2 and 4.2 to local copies, 5.9 on main), not before.
+
+# Repositories that are not applications: the libraries, the repositories that only run CI or
+# publish releases, and yggdrasil itself. Each gets a Jenkins job (its checks; for release: owner-tag,
+# the owner's version tags) and the branch rules, but nothing is deployed from it. A repository may be
+# an entry here and an application's `repository` too (a library and its docs site): one Jenkins job
+# each, one yggdrasil.yml, and at most one of them releases. Reference: docs/catalog.md, Repositories.
+#
+#   checks             What Jenkins runs and reports on every pull request (and push) of develop and
+#                      main (and master, for rules: basic), required there. A job runs only its own entry's checks: each one must be
+#                      here, and defined under `checks` in the repository's yggdrasil.yml. With rules:
+#                      basic they still run and report, but Forgejo requires none of them (no branch
+#                      policy there, as on GitHub): intended.
+#   actionsChecks      GitHub Actions job names (Windows, macOS), as GitHub reports them, required on
+#                      develop: only jobs that run on every pull request.
+#   credentials        The Jenkins credentials its checks may bind.
+#   releaseCredentials The Jenkins credentials its release build and finalize step may bind
+#                      (release.build and release.finalize: signing keys).
+#   release            none (default) | owner-tag: the owner pushes the version tags (`tags`, default
+#                      v*) and Jenkins builds the release, or packs and pushes the NuGet packages.
+#   rules              release (default): develop, main and release/* protected, as the repositories
+#                      with a branch-policy workflow had on GitHub | basic: develop, main and master (a
+#                      fork's default branch, checked and protected like main) only.
+#
+# Where each check, Actions job and credential came from (the GitHub workflow jobs and secrets):
+# docs/migration-checklist.md, "Check names" and "Credentials".
+repositories:
+  # The .NET libraries: tests and coverage on every pull request; the owner's bare version tag (1.2.3)
+  # on main packs and pushes to nuget.org from the release agent (nuget-api-key, which no check and no
+  # catalog entry ever names). Each one's docs site is the application <library>-docs, below.
+  - id: dotnet-configuration
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-data               # versions each package apart: ArturRios.Data.Sqlite@3.1.0
+    release: owner-tag
+    tags: "*@[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-extensions
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-jwt
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-logging
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-mediator
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-messaging
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-output
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-test-util
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-util
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-validation
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: dotnet-webapi-util
+    release: owner-tag
+    tags: "[0-9]*"
+    checks: [test, coverage]
+    credentials: [reportgenerator-license]
+    rules: release
+
+  # CI only: checks, and the branch rules they had on GitHub (release where a branch-policy workflow
+  # existed, basic where none did). Nothing is released.
+  - id: ai-coding-skills          # only its branch policy ran on GitHub
+    rules: release
+  - id: alexandria-api
+    checks: [lint-and-test]
+    rules: release
+  - id: cerberus-api
+    checks: [test, docker]
+    credentials: [reportgenerator-license]
+    rules: release
+  - id: coding-challenge-library
+    checks: [test, docker]
+    rules: basic
+  - id: dotnet-libraries          # the libraries' index; its site is the application dotnet-libraries-docs
+    checks: [verify]
+    rules: basic
+  - id: reveal.js                 # a fork: its default branch is master
+    checks: [codespell, build]
+    rules: basic
+
+  # Released by their owner's v* tags on main: Jenkins builds the release files (Windows ones through
+  # GitHub Actions, release.windows in yggdrasil.yml) and publishes the release.
+  - id: alexandria-ui
+    checks: [analyze, test, integration, build]
+    actionsChecks:
+      - Unit and widget tests (windows)
+      - Integration (windows)
+      - Release build (windows)
+      - Sandboxed page engine (linux)   # needs user namespaces a Jenkins check container doesn't have
+    release: owner-tag
+    rules: release
+  - id: cerberus-ui               # its v* tag build (web, Android, Linux; Windows on Actions) is the release
+    checks: [analyze-and-test, generated-drift, web-bundle]
+    release: owner-tag
+    tags: "v*"
+    rules: release
+  - id: maestro
+    checks: [analyze-test, linux-platform]
+    actionsChecks: [windows-platform]
+    releaseCredentials: [maestro-signing-key, maestro-signing-public-key]
+    release: owner-tag
+    rules: release
+  - id: orpheus                   # its docs site is the application orpheus-docs
+    checks: [linux]
+    actionsChecks: [Windows and the installer]
+    releaseCredentials:
+      - orpheus-android-keystore
+      - orpheus-android-keystore-password
+      - orpheus-android-key-alias
+      - orpheus-android-key-password
+    release: owner-tag
+    rules: release
+  - id: personal-lab              # its site is the application personal-lab-site, deployed on main
+    checks: [build]               # the site's image, as the Pages build ran on every pull request
+    release: owner-tag
+    rules: release
+
+  # yggdrasil itself: the owner merges its release pull request and pushes the v* tag, as on GitHub.
+  - id: yggdrasil
+    checks: [status, console, platform]
+    actionsChecks: [Console (Windows)]
+    release: owner-tag
+    rules: release
+
 # Environments, in promotion order. An application deploys to every one of them, with these options,
 # unless it lists its own (see `environments` under an application below).
 #
@@ -108,10 +279,21 @@ environments:
 #                   (heimdall -> https://heimdall.<domain>, https://heimdall-dev.<domain>). It routes
 #                   nothing: stacks/<id>.proxy.yml does, from PUBLIC_HOST in the env file; keep them
 #                   equal. Omit for applications that are not public.
-#   checks          GitHub check names required on develop and main, besides branch-policy (and,
-#                   on main, deploy/<environment> for each release environment). Only checks that
-#                   run on every pull request.
-#   container       Compose project and service to read container state from. project defaults to
+#   checks          The checks Jenkins runs and reports, required on develop and main, besides
+#                   branch-policy (and, on main, deploy/<environment> for each release environment).
+#                   A job runs only its own entry's checks, each defined in the repository's
+#                   yggdrasil.yml. Only checks that run on every pull request. In a repository with the
+#                   basic rules (a site deployed on main) they run and report but are not required:
+#                   intended.
+#   actionsChecks   GitHub Actions job names (Windows, macOS) required on develop, as GitHub
+#                   reports them.
+#   credentials     The Jenkins credentials its checks may bind; releaseCredentials, those its
+#                   release build and finalize step may (release.build and release.finalize:
+#                   signing keys).
+#   domain          The domain a site is served on, when it is not the host's DOMAIN.
+#   path            Where under the host a site lives (docs.artur-rios.tech/<repository>).
+#   apex            true: the site also answers on the bare domain (which its stack redirects to www).
+#   container      Compose project and service to read container state from. project defaults to
 #                   the id, and is suffixed with -<environment> like the id (platform components
 #                   excepted). Without service, any container of the project matches: set it when
 #                   the stack has more than one service.
@@ -133,13 +315,46 @@ systems:
         health: http://heimdall-api:8080/healthcheck
         metrics: heimdall-api:9464
         host: heimdall-api
-        checks: [test, docker]
+        # check: the OpenAPI document, path-filtered (yggdrasil.yml `paths`: skipped, which passes).
+        checks: [test, docker, check]
+        credentials: [reportgenerator-license]
       - id: heimdall-ui
         name: Heimdall web
         kind: web
         health: http://heimdall-ui:8080/healthz
         host: heimdall
-        checks: [Analyze and test, Regenerate and compare]
+        checks: [analyze-and-test, api-client-drift, build-web]
+        # The Android package of a release is signed on the release agent.
+        releaseCredentials:
+          - heimdall-ui-android-keystore
+          - heimdall-ui-android-keystore-password
+          - heimdall-ui-android-key-alias
+          - heimdall-ui-android-key-password
+      # The API's docs site, from the same repository (one yggdrasil.yml: its deploy takes the coverage
+      # report from a check of the API's, deploy.inputs). The repository's Dockerfile is the API's, so
+      # the site's is docs.Dockerfile (stacks/heimdall-api-docs.yml).
+      - id: heimdall-api-docs
+        name: Heimdall API docs
+        kind: web
+        repository: heimdall-api
+        health: http://heimdall-api-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /heimdall-api
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs a check of the API's that binds it
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: heimdall-docs
+        name: Heimdall docs
+        kind: web
+        health: http://heimdall-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /heimdall-docs
+        checks: [build]
+        environments:
+          production: { trigger: branch, branches: main }
 
   - id: fortuna
     name: Fortuna
@@ -151,17 +366,27 @@ systems:
         health: http://fortuna-api:8080/healthcheck
         metrics: fortuna-api:9464
         host: fortuna-api
-        checks: [test, docker, check, audit]
+        # native-msrv and native-build: the native core on Linux, path-filtered like check. Its Windows
+        # build stays on GitHub Actions, path-filtered too, so it is waited for when it runs and never
+        # required (no actionsChecks).
+        checks: [test, docker, check, audit, native-msrv, native-build]
+        credentials: [reportgenerator-license]
       - id: fortuna-ui
         name: Fortuna web
         kind: web
         health: http://fortuna-ui:8080/healthz
         host: fortuna
-        checks:
-          - Analyze and test
-          - API client matches api/fortuna.json
-          - Vendored C header matches the one the API publishes
-          - FFI bindings match the vendored header
+        checks: [analyze-and-test, api-client-drift, header-drift, bindings-drift]
+      - id: fortuna-docs
+        name: Fortuna docs
+        kind: web
+        health: http://fortuna-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /fortuna-docs
+        checks: [build]
+        environments:
+          production: { trigger: branch, branches: main }
 
   - id: chimera
     name: Chimera
@@ -179,12 +404,305 @@ systems:
           homologation: {}
           production:
             approval: true
+        # Cross-platform only gathered the browser, Safari and native results on GitHub: each is
+        # required by itself now.
         checks:
-          - Analyze and test
-          - Cross-platform
-          - Container
-          - Accessibility and performance
+          - analyze-and-test
+          - browser-tests
+          - native-linux
+          - container
+          - accessibility-performance
+          - cleanup-contract
+          - generated-library
+          - evaluate-projects
+          - version-contract
+          - build-contract
+          - minimal-library
+        actionsChecks:
+          - Safari
+          - Native (windows)
+          - Artifact cleanup (windows-latest)
+          - Generated NuGet library (windows-latest)
+          - .NET project evaluation (windows-latest)
+          - Project version editing (windows-latest)
+          - .NET build, coverage and process lifecycle (windows-latest)
+          - Minimal library contracts (windows-latest)
+          - Windows owned terminal lifecycle
         container: { service: web }
+
+  - id: alexandria
+    name: Alexandria
+    description: Personal library
+    applications:
+      - id: alexandria-docs
+        name: Alexandria docs
+        kind: web
+        health: http://alexandria-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /alexandria-docs
+        checks: [build]
+        environments:
+          production: { trigger: branch, branches: main }
+
+  - id: orpheus
+    name: Orpheus
+    description: Music player
+    applications:
+      # The repository is the repositories entry orpheus (checks, releases); this is its docs site.
+      - id: orpheus-docs
+        name: Orpheus docs
+        kind: web
+        repository: orpheus
+        health: http://orpheus-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /orpheus
+        checks: []
+        environments:
+          production: { trigger: branch, branches: main }
+
+  # The docs sites of the .NET libraries and their index. Each library is a repositories entry (its checks
+  # and packages); its site is built from its coverage report (deploy.inputs in its yggdrasil.yml), so it
+  # needs no check of its own. The index's stack (stacks/dotnet-libraries-docs.proxy.yml) also has a router that
+  # answers docs.artur-rios.tech/ with a 301 to the index.
+  - id: dotnet-libraries
+    name: .NET libraries
+    description: The ArturRios .NET library family
+    applications:
+      - id: dotnet-libraries-docs
+        name: .NET libraries index
+        kind: web
+        repository: dotnet-libraries
+        health: http://dotnet-libraries-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-libraries
+        checks: []
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-configuration-docs
+        name: dotnet-configuration docs
+        kind: web
+        repository: dotnet-configuration
+        health: http://dotnet-configuration-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-configuration
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-data-docs
+        name: dotnet-data docs
+        kind: web
+        repository: dotnet-data
+        health: http://dotnet-data-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-data
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-extensions-docs
+        name: dotnet-extensions docs
+        kind: web
+        repository: dotnet-extensions
+        health: http://dotnet-extensions-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-extensions
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-jwt-docs
+        name: dotnet-jwt docs
+        kind: web
+        repository: dotnet-jwt
+        health: http://dotnet-jwt-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-jwt
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-logging-docs
+        name: dotnet-logging docs
+        kind: web
+        repository: dotnet-logging
+        health: http://dotnet-logging-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-logging
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-mediator-docs
+        name: dotnet-mediator docs
+        kind: web
+        repository: dotnet-mediator
+        health: http://dotnet-mediator-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-mediator
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-messaging-docs
+        name: dotnet-messaging docs
+        kind: web
+        repository: dotnet-messaging
+        health: http://dotnet-messaging-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-messaging
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-output-docs
+        name: dotnet-output docs
+        kind: web
+        repository: dotnet-output
+        health: http://dotnet-output-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-output
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-test-util-docs
+        name: dotnet-test-util docs
+        kind: web
+        repository: dotnet-test-util
+        health: http://dotnet-test-util-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-test-util
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-util-docs
+        name: dotnet-util docs
+        kind: web
+        repository: dotnet-util
+        health: http://dotnet-util-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-util
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-validation-docs
+        name: dotnet-validation docs
+        kind: web
+        repository: dotnet-validation
+        health: http://dotnet-validation-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-validation
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+      - id: dotnet-webapi-util-docs
+        name: dotnet-webapi-util docs
+        kind: web
+        repository: dotnet-webapi-util
+        health: http://dotnet-webapi-util-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /dotnet-webapi-util
+        checks: []
+        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        environments:
+          production: { trigger: branch, branches: main }
+
+  - id: personal
+    name: Personal sites
+    description: Artur Rios' own site, blog and lab
+    applications:
+      # Released like an application: develop, release/* and the release pull request to main.
+      - id: personal-page
+        name: Personal page
+        kind: web
+        health: http://personal-page:8080/healthz
+        domain: artur-rios.tech
+        host: www
+        apex: true                # artur-rios.tech redirects to www (its stack)
+        checks: [lint-and-build]
+        environments:
+          development: {}
+          homologation: {}
+          production: {}
+      - id: personal-blog
+        name: Personal blog
+        kind: web
+        health: http://personal-blog:8080/healthz
+        domain: artur-rios.tech
+        host: blog
+        checks: []
+        environments:
+          production: { trigger: branch, branches: main }
+      # The repository is the repositories entry personal-lab, which the owner's tags release; the site
+      # deploys on main as it did on GitHub Pages. An application's id is its Jenkins job's name, and the
+      # entry already has the repository's, hence -site.
+      - id: personal-lab-site
+        name: Personal lab
+        kind: web
+        repository: personal-lab
+        health: http://personal-lab-site:8080/healthz
+        domain: artur-rios.tech
+        host: lab
+        checks: []
+        environments:
+          production: { trigger: branch, branches: main }
+      # A fork, whose default branch is master.
+      - id: under-construction-template
+        name: Placeholder page
+        kind: web
+        health: http://under-construction-template:8080/healthz
+        domain: artur-rios.tech
+        host: placeholder
+        checks: []
+        environments:
+          production: { trigger: branch, branches: master }
+
+  - id: tech-craftsmen
+    name: Tech Craftsmen
+    description: The company's page and public services
+    applications:
+      # Released like an application: release/* deploys homologation, the release pull request production.
+      - id: tech-craftsmen-company-page
+        name: Company page
+        kind: web
+        health: http://tech-craftsmen-company-page:8080/healthz
+        domain: techcraftsmen.net
+        host: www
+        apex: true                # techcraftsmen.net redirects to www (its stack)
+        checks: []
+        environments:
+          homologation: {}
+          production: {}
+      # An API: reads GitHub with a read-only token, its application secret (env_file in its stack). A
+      # fork, whose default branch is master.
+      - id: github-readme-stats
+        name: GitHub readme stats
+        kind: api
+        health: http://github-readme-stats:8080/healthz
+        domain: techcraftsmen.net
+        host: readme-stats
+        checks: [test]            # test.yml's job: tests, lint, bench, Prettier (basic rules: not required)
+        environments:
+          production: { trigger: branch, branches: master }
 
   # yggdrasil itself, so the console also answers "is the platform up?". Not deployed by Jenkins:
   # scripts/platform.sh runs these.

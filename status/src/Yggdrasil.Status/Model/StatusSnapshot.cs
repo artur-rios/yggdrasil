@@ -90,9 +90,34 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
             observation.Probe);
     }
 
-    /// <summary>https://&lt;host&gt;&lt;hostSuffix&gt;.&lt;domain&gt;: heimdall + -dev is heimdall-dev.example.com.</summary>
-    public static string? Url(ApplicationDefinition application, string hostSuffix, string domain) =>
-        application.Host is null ? null : $"https://{application.Host}{hostSuffix}.{domain}";
+    /// <summary>
+    /// Where the application is served: https://&lt;host&gt;&lt;hostSuffix&gt;.&lt;domain&gt;&lt;path&gt;, so heimdall +
+    /// -dev is heimdall-dev.example.com. The domain is the application's own <c>domain</c>, else
+    /// <paramref name="domain"/> (the host's YGGDRASIL_DOMAIN). Without a host, an <c>apex</c> site is
+    /// the bare domain; a host wins when both are set; with neither there is no address, a path alone
+    /// not making one. A platform component is https://&lt;host&gt;.&lt;YGGDRASIL_DOMAIN&gt;: it serves every
+    /// environment, so no suffix, and it has no site of its own to move.
+    /// <para>
+    /// These are the rules of <c>public_host</c> and <c>public-path</c> in scripts/catalog.py, which
+    /// is what deploy.sh routes: keep them in step. scripts/test_status_parity.py and
+    /// PublicAddressTests check both against one list of addresses.
+    /// </para>
+    /// </summary>
+    public static string? Url(ApplicationDefinition application, string hostSuffix, string domain)
+    {
+        if (application.Kind == ApplicationKind.Platform)
+        {
+            return application.Host is null ? null : $"https://{application.Host}.{domain}";
+        }
+
+        domain = application.Domain ?? domain;
+        if (application.Host is not null)
+        {
+            return $"https://{application.Host}{hostSuffix}.{domain}{application.Path}";
+        }
+
+        return application.Apex ? $"https://{domain}{application.Path}" : null;
+    }
 
     public static string? Repository(ApplicationDefinition application, string owner) =>
         application.Repository is null ? null : $"https://github.com/{owner}/{application.Repository}";

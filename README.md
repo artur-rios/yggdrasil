@@ -19,6 +19,11 @@ like) in one catalog file. yggdrasil then:
 
 Adding an application, an environment or a whole system is a catalog entry, not a change to the platform.
 
+This repository lives at [git.techcraftsmen.net/artur-rios/yggdrasil](https://git.techcraftsmen.net/artur-rios/yggdrasil)
+(`git clone https://git.techcraftsmen.net/artur-rios/yggdrasil.git`).
+[github.com/artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil) is a read-only mirror of it, where the
+console's Windows builds run on GitHub Actions; the releases are published on both.
+
 ```mermaid
 flowchart LR
     dev([Developer]) -- push / pull request --> gh
@@ -50,7 +55,7 @@ an agent that dials out to the one controller.
 | **Application** | One deployable unit (an API, a web UI, a worker) with its own repository, container image and release cycle. |
 | **System** | What users think of as one product: a group of applications that work together. The console shows a system's status and, expanded, each of its applications. |
 | **Environment** | A stage applications run in, such as local, development, homologation or production. Options: exposure (`proxy` through Traefik or host `ports`), `trigger` (`manual`, `branch` or `release`), which Jenkins `agent` deploys it, whether it needs `approval`, `hostSuffix` (its host names, `heimdall-dev.<domain>`), `onDemand` (runs only while used), timeouts and rollback depth. Each application deploys to all environments or to its own list, and can override any option per environment. |
-| **Host** | A machine (a VPS, a VM) with a role, `dev` or `apps` ([docs/hosts.md](docs/hosts.md)): Ubuntu 24.04, where every service user runs its own rootless Docker engine. An **apps** host runs one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins agent and one or more domains for all of them; each application runs once per environment, as its own Compose project. The **dev** host runs Forgejo, the Jenkins controller and the build agents. A workstation's `ports` environment needs no platform. |
+| **Host** | A machine (a VPS, a VM) with a role, `dev` or `apps` ([docs/hosts.md](docs/hosts.md)): Ubuntu 24.04 or 26.04 LTS, where every service user runs its own rootless Docker engine. An **apps** host runs one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins agent and one or more domains for all of them; each application runs once per environment, as its own Compose project. The **dev** host runs Forgejo, the Jenkins controller and the build agents. A workstation's `ports` environment needs no platform. |
 | **Variables store** | An encrypted SQLite database per machine that holds the platform's and every application's environment variables and secrets, in layers (a value shared by several applications or environments is defined once), with history and rollback. Opt-in: without it the scripts read env files. Reference: [docs/variables.md](docs/variables.md). |
 | **Catalog** | [`catalog.yaml`](catalog.yaml): the environments, systems and applications. Jenkins jobs and agents, the git server's branch rules, deploys, the status API, Prometheus and the console all read it. Reference: [docs/catalog.md](docs/catalog.md). |
 
@@ -159,8 +164,8 @@ The same Flutter app on three platforms:
 | | How to get it | Hosts |
 |---|---|---|
 | **Web** | `https://yggdrasil.<DOMAIN>` on each host | Starts on the host that serves it |
-| **Windows** | `yggdrasil-console-<version>-setup.exe` from the GitHub releases. Per-user install by default, no administrator rights | Add each one (URL and token) in the **Hosts** screen, then switch from the overview |
-| **Android** | `yggdrasil-console-<version>.apk` from the GitHub releases | Same as Windows (HTTPS only) |
+| **Windows** | `yggdrasil-console-<version>-setup.exe` from the [releases](https://git.techcraftsmen.net/artur-rios/yggdrasil/releases) (or their GitHub copies). Per-user install by default, no administrator rights | Add each one (URL and token) in the **Hosts** screen, then switch from the overview |
+| **Android** | `yggdrasil-console-<version>.apk` from the same releases | Same as Windows (HTTPS only) |
 
 - A **host** shows every environment it runs, each with its status, e.g. `Development · Stopped`, `Homologation · Stopped`, `Production · Up`.
 - Every **system** is a card with one status chip per environment: its applications there taken together, `down` when every deployed one is down, `degraded` when any is down or degraded, else `unknown` or `up`; `not deployed` ones don't count ([the rules](docs/status-api.md#roll-up)). Problems sort first.
@@ -174,7 +179,10 @@ The same Flutter app on three platforms:
 - Data comes from each host's **status API** (`GET /api/status`, bearer token), one for all its environments. The console refreshes every 30 s while visible; the API probes every 15 s.
 - Contract: [docs/status-api.md](docs/status-api.md).
 
-The installer and the APK are attached to every `v*` release of this repository by `.github/workflows/release.yml`.
+The installer and the APK are attached to every `v*` release of this repository by its own pipeline: Jenkins builds
+the APK (`ci/release-build.sh`) and has GitHub Actions on the mirror build the installer
+(`.github/workflows/release-windows.yml`), as [`yggdrasil.yml`](yggdrasil.yml) declares
+([CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
 
 ## Getting started
 
@@ -191,7 +199,9 @@ first release. In short:
 | **Finish** | Apply the branch rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-branch-rules) |
 
 **Moving an installation that runs today** (one VPS deploying from GitHub) to the two machines and Forgejo:
-[docs/cutover.md](docs/cutover.md), the runbook for the machines, the maintenance window and the clean-up.
+[docs/cutover.md](docs/cutover.md), the runbook for the machines, the maintenance window and the clean-up, and then
+[docs/moving-repositories.md](docs/moving-repositories.md), the guide to landing each repository's prepared branch on
+Forgejo and Jenkins, one at a time.
 
 On an Ubuntu host, [`ygg`](docs/cli.md) does the host steps, as a command or from an arrow-key
 menu: it installs the tools, sets up and deploys applications, shows what runs, and shows, changes
@@ -229,7 +239,7 @@ default setup worked through on real hardware:
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads) |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, the two machines (`hosts.md`), the cutover runbook (`cutover.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
+| `docs/` | Catalog reference, setup guide, the two machines (`hosts.md`), the cutover runbook (`cutover.md`), the guide to moving each repository (`moving-repositories.md`, with `migration-checklist.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
 
 ## Day to day
 

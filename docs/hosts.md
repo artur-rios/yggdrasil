@@ -116,8 +116,12 @@ A specific record wins over the wildcard, so these four names reach the dev mach
 everything else reaches the apps machine.
 
 `scripts/cloudflare_dns.py` makes all of these through Cloudflare's API, with the comment `yggdrasil` on
-each. Run it once when building the machines, and again at the cutover with the new apps machine's address
-(with the old address it is the rollback):
+each. Run it once when building the machines. At a cutover to a new apps machine, run it again with that
+machine's address (with the old address it is the rollback). A cutover that converts the old server in
+place, as [cutover.md](cutover.md) does, keeps the address: there the script runs again only to turn the
+proxy on (its 5.8), and a rollback puts the records back by hand
+([cutover.md 6, step 2](cutover.md#6-rollback)), since running the script again would turn the proxy back
+on:
 
 ```bash
 read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # paste the token, then Enter
@@ -144,9 +148,10 @@ ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-po
 covers what that can't.
 
 Something that gets its certificates over HTTP-01 is refused by that record too. `artur-rios.tech`'s `www.` and
-`blog.` are served by Vercel until their sites move, and Vercel renews their certificates through Let's Encrypt over
-HTTP-01, so that zone's `CAA` waits: `--skip-caa artur-rios.tech` leaves it out ("CAA skipped on artur-rios.tech
-(--skip-caa)"): neither created, updated nor reported. Drop the flag once those sites have moved
+`blog.`, and `techcraftsmen.net`'s company page (`www.` and the bare domain), are served by Vercel until their sites
+move, and Vercel renews their certificates through Let's Encrypt over HTTP-01, so those zones' `CAA` waits:
+`--skip-caa artur-rios.tech --skip-caa techcraftsmen.net` leaves it out ("CAA skipped on <zone> (--skip-caa)"):
+neither created, updated nor reported. Drop each zone's flag once its Vercel sites have moved
 ([cutover.md, 1.5](cutover.md#15-the-records)).
 
 Why the dev machine is not proxied:
@@ -313,9 +318,17 @@ include <tunables/global>
 }
 ```
 
-Ubuntu 24.04 blocks unprivileged user namespaces by default
+Ubuntu 24.04 and 26.04 block unprivileged user namespaces by default
 (`kernel.apparmor_restrict_unprivileged_userns`). Rootless Docker's helper, `rootlesskit`, needs
 one. This profile allows it, and only it. `ygg install` reloads AppArmor after writing it.
+
+**Only where the system has no such profile of its own.** Ubuntu 26.04's `apparmor` package ships one,
+`/etc/apparmor.d/rootlesskit` (`profile rootlesskit /usr/bin/rootlesskit flags=(unconfined)` with
+`userns,`). Two profiles that attach to the same program conflict: the kernel logs `conflicting profile
+attachments`, applies neither, and `rootlesskit` fails with `fork/exec /proc/self/exe: permission
+denied`. So where that file allows `userns` for `/usr/bin/rootlesskit`, `ygg install` writes no profile,
+and unloads (`apparmor_parser -R`) and deletes the one an earlier install wrote; `ygg check`'s
+`apparmor rootlesskit` row then names the system's file.
 
 ### `/etc/systemd/system/user@.service.d/delegate.conf`
 
@@ -362,7 +375,9 @@ without this, a check in `ci`'s engine could publish `-p 80:80 -p 443:443`, take
 restarts, and pass Let's Encrypt's HTTP-01 check for `git.` or `jenkins.`. The rule is on the user's slice, so it
 covers the user's engine and every container in it, a container binding port 80 inside its own network
 included: such a check must listen on 1024 or above. `ygg check` shows a "low ports" row per user. The
-[`CAA` record](#dns-records) closes the same door at the certificate authority.
+[`CAA` record](#dns-records) closes the same door at the certificate authority, once it exists: while the company
+page is still on Vercel, techcraftsmen.net carries no CAA record (`--skip-caa techcraftsmen.net`), and this rule is
+the only guard for `git.` and `jenkins.`.
 
 > **To verify on the real host:** that the rule takes effect on a running slice after `systemctl daemon-reload`
 > (or only once the user's manager restarts: `sudo systemctl restart user@<uid>`), and that it refuses the
@@ -394,7 +409,7 @@ Three things make this file safe:
   If the admin has no `~/.ssh/authorized_keys`, `ygg install` stops at the start, before changing
   anything, and says so. Put your public key in it first (`ssh-copy-id` from your own computer).
 
-Then it runs `systemctl try-reload-or-restart ssh` (on 24.04 SSH may be socket-activated, where a
+Then it runs `systemctl try-reload-or-restart ssh` (on 24.04 and later SSH may be socket-activated, where a
 plain reload can find nothing to reload). Keep your current SSH session open and test a new one
 before closing it.
 
@@ -601,6 +616,16 @@ after a request from a machine whose address you know. What to expect differs by
 sees them. This is why the dev machine opens 2222 for Forgejo in `ufw` and why the apps machine can
 restrict 80 and 443 to Cloudflare.
 
+**Published ports, seen from a container: the host's address.** The `slirp4netns` port driver opens a published
+port in the host's network namespace only. Inside the engine's own namespace nothing listens on it, so a container
+that dials its default gateway (`172.17.0.1`) at that port is refused. It answers at the host's own address
+instead: the container goes out through `slirp4netns` to that address, and the driver's listener hands the
+connection back in (`ufw` lets it through, as the host reaches its own address over `lo`). This is what a check's
+Testcontainers needs: `scripts/agent.sh` gives each build agent `TESTCONTAINERS_HOST_OVERRIDE`, the host's primary
+IPv4 address (the source of its route to the internet, `ip -4 route get 1.1.1.1`) unless the user's `agent.env`
+sets another, and `scripts/run-check.sh` hands it to a `docker: true` check, falling back to the gateway when it is
+empty ([cli.md, Build agents](cli.md#build-agents)). `scripts/prove-machine.sh dev` proves it with the same value.
+
 **Isolation, checked.** `ygg check --role dev` proves that `ci`, `release`, `dev` and `renovate` cannot read
 `ygg`'s engine socket or `/etc/yggdrasil/platform.env`, and that `ci` cannot read `release`'s engine socket or
 `/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that
@@ -614,7 +639,11 @@ client addresses Traefik logs ([cutover.md, 2.6](cutover.md#26-the-rootless-proo
 Where every secret lives. A line marked **later** is created by a later part of the move to Forgejo and
 Jenkins: nothing creates it yet, and the table says where it will live. The Jenkins credentials are defined by
 Configuration as Code from files the controller mounts (`platform/jenkins/controller/casc*.yaml`); a build agent
-holds one only while the build step it is bound to runs.
+holds one only while the build step it is bound to runs. The credentials of the repositories' own checks and
+release builds (`reportgenerator-license` and the signing keys) are the exception: the owner creates them in
+Jenkins by hand, as **secret text** (the pipeline binds them with `string`, so a keystore is kept base64-encoded,
+as it was a GitHub secret), under exactly the ID shown. The catalog's `credentials` and `releaseCredentials` say which
+job may bind each one, and `scripts/test_catalog.py` checks that this table has a row for every id there.
 
 | Credential | Lives with | Can | Created |
 |---|---|---|---|
@@ -633,13 +662,32 @@ holds one only while the build step it is bound to runs.
 | Jenkins agent secrets | Each agent's env file: `/etc/yggdrasil-ci/agent.env`, `/etc/yggdrasil-release/agent.env`, and the deploy agent's `JENKINS_AGENT_SECRET` in `platform.env` | Connect as that agent | now: [setup.md 9.8](setup.md#98-the-ci-and-release-agents) |
 | Application secrets, platform passwords | `/etc/yggdrasil` of the machine that uses them (`platform.env`, `<environment>/<application>.env`, or the [variables store](variables.md)) | As today | now |
 | Cloudflare API token (DNS edit on the `techcraftsmen.net` and `artur-rios.tech` zones only) | `acme.env` on each machine | Prove domain control for certificates; edit those two zones' DNS records | now |
-| ReportGenerator license | Jenkins credential, bound into the `test` checks that use it | Never bound on `renovate/*` builds | later |
+| `reportgenerator-license`: secret text, the ReportGenerator license key (`REPORTGENERATOR_LICENSE` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `credentials` of the 12 libraries (dotnet-configuration to dotnet-webapi-util), cerberus-api, heimdall-api and fortuna-api, and of the docs sites whose deploy runs their coverage check (each library's `-docs` and heimdall-api-docs). Bound only into the check that names it, never on `renovate/*` builds | Unlock ReportGenerator's pro reports in the `test`/`coverage` checks | later: create it before the first build |
 | `nuget-api-key`: the nuget.org API key, `NUGET_API_KEY_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`); optional. The id is fixed and bound only on the release agent, in the step that pushes a library's packages (`scripts/nuget-push.sh`), where no repository code runs. No check or release build can bind it | Publish the owner's packages. It is on `dotnet`'s command line inside the push container | now: [setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget) |
-| Maestro's update-manifest signing key (Ed25519, `MAESTRO_RELEASE_SECRET_KEY_BASE64`) | Jenkins credential, allowed only for maestro's release build (the catalog's `releaseCredentials`, never its checks' `credentials`), named in `release.build.credentials` of its `yggdrasil.yml`, bound only on its release build, on the release agent | Sign what installed copies of Maestro trust | later: the credential is created when the repository moves |
-| Orpheus' Android keystore and passwords (`ANDROID_KEYSTORE_*`) | Jenkins credential, allowed only for orpheus' release build (`releaseCredentials`), bound only on its release build, on the release agent | Sign Orpheus' Android builds | later |
-| Any other secret a release workflow uses today | Same rule: a Jenkins credential, allowed per repository in the catalog's `releaseCredentials`, bound only on the release agent | The builder lists them from every `release*.yml` | later |
-| GitHub read-only token for github-readme-stats | `/etc/yggdrasil` on the apps machine, as an application secret | Read public GitHub data | later |
+| `heimdall-ui-android-keystore`: secret text, the Android keystore, base64-encoded (`HEIMDALL_UI_KEYSTORE_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Hold the key that signs Heimdall web's Android package | later: create it before the first release build |
+| `heimdall-ui-android-keystore-password`: secret text, the keystore's password (`HEIMDALL_UI_KEYSTORE_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Open the keystore | later: create it before the first release build |
+| `heimdall-ui-android-key-alias`: secret text, the signing key's alias in the keystore (`HEIMDALL_UI_KEY_ALIAS` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Name the key to sign with | later: create it before the first release build |
+| `heimdall-ui-android-key-password`: secret text, the signing key's password (`HEIMDALL_UI_KEY_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Unlock the key | later: create it before the first release build |
+| `maestro-signing-key`: secret text, the Ed25519 secret key that signs the update manifest, base64-encoded (`MAESTRO_RELEASE_SECRET_KEY_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of maestro: bound only on its release build, on the release agent, never by a check | Sign what installed copies of Maestro trust | later: create it before the first release build |
+| `maestro-signing-public-key`: secret text, the matching Ed25519 public key, base64-encoded (`MAESTRO_RELEASE_PUBLIC_KEY_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of maestro: bound only on its release build, on the release agent, never by a check | Let the release build verify the manifest it signed (the Windows package keeps its GitHub secret) | later: create it before the first release build |
+| `orpheus-android-keystore`: secret text, the Android keystore, base64-encoded (`ANDROID_KEYSTORE_BASE64` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Hold the key that signs Orpheus' Android builds | later: create it before the first release build |
+| `orpheus-android-keystore-password`: secret text, the keystore's password (`ANDROID_KEYSTORE_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Open the keystore | later: create it before the first release build |
+| `orpheus-android-key-alias`: secret text, the signing key's alias in the keystore (`ANDROID_KEY_ALIAS` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Name the key to sign with | later: create it before the first release build |
+| `orpheus-android-key-password`: secret text, the signing key's password (`ANDROID_KEY_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Unlock the key | later: create it before the first release build |
+| GitHub read-only token for github-readme-stats: **not a Jenkins credential** | An application variable of the apps machine (`/etc/yggdrasil/production/github-readme-stats.env`, or the [variables store](variables.md)), which its stack hands to the container as `env_file` when it runs (`stacks/github-readme-stats.yml`); never a build argument, so no `credentials` entry in the catalog | Read public GitHub data (a fine-grained token with no permissions) | later: the owner sets it when the site is deployed |
 | Backup SSH key (`~/.ssh/yggdrasil-backup`) | `ygg`, on each machine; its public half on the other | Send backups to the other machine, and nothing else (it can only run `rrsync` in one directory) | now: [Backups](#7-backups-and-restore) |
+
+### Secrets that go away
+
+These secrets of the GitHub workflows have no Jenkins credential, and the owner creates nothing for them
+([the checklist](migration-checklist.md#credentials) lists them by repository):
+
+| Secret | Why it goes |
+|---|---|
+| `GITHUB_TOKEN` (GitHub's own: every library, dotnet-libraries, fortuna-api, heimdall-api) | Dropped: GitHub issues it to each run. It only pushed to GitHub Packages (dropped) or read it, posted the `audit` check run (Jenkins reports `audit` itself), or fetched the coverage artifact for the Pages build (the docs site takes the report through `deploy.inputs`) |
+| `NUGET_API_KEY` (every library) | Not needed in the catalog: it is the release agent's fixed `nuget-api-key` above, bound around the push step alone |
+| `VERCEL_TOKEN` and the like | Dropped: no workflow holds one (Vercel's git integration deployed the five sites), and the integration goes. `VERCEL_GIT_COMMIT_SHA` and `VERCEL_ENV` become build arguments the deploy passes |
+| The GitHub Pages deployment permissions | Dropped: Pages is no longer used; each docs site is an application of its own |
 
 ### The first Forgejo account
 
@@ -735,8 +783,9 @@ lines.
 | Item | Becomes | How |
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
+| `vars` | `vars.tar.gz` | the [variables store](variables.md) of this machine and its key, `vars.db` and `vars.key` of the secrets directory: a consistent copy (`ygg vars backup`), taken while the store is in use |
 | `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running |
-| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user |
+| `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user. A stopped one (exited, or created) is started for it and stopped again, unless another container of its project runs by then; a restarting, paused or dead one fails the item |
 
 A volume's name is its Compose project, an underscore and its name in the Compose file. The
 platform's are `yggdrasil_jenkins`, `yggdrasil_forgejo-data`, `yggdrasil_grafana` and so on
@@ -747,6 +796,7 @@ For example, on the dev machine:
 ```text
 BACKUP_TARGET=ygg@203.0.113.20:.
 forgejo
+vars
 volume yggdrasil_jenkins
 ```
 
@@ -754,9 +804,33 @@ and on the apps machine:
 
 ```text
 BACKUP_TARGET=ygg@git.example.com:.
+vars
 volume shop-api-production_data
 postgres shop-db-1 postgres
 ```
+
+`vars` belongs on every machine with a store (`vars.db` in `/etc/yggdrasil`): it holds the platform's settings and
+every application's variables, secrets included. Its archive carries the key too, so the other machine holds both:
+a store is no use without its key, and a machine that is lost takes its key with it. That makes `~/received/` on
+each machine as sensitive as the other's `/etc/yggdrasil`: the files arrive `ygg`'s alone (`600`, as `backup.sh`
+writes them, and `rsync -a` keeps), and the key that writes them can do nothing else (`rrsync`, below). Keep the key's own copy in your password manager as well
+([variables.md](variables.md#backup-and-recovery)).
+
+An API whose stack runs its own PostgreSQL, as heimdall-api's and fortuna-api's do (`stacks/*-api.proxy.yml`,
+the `db` service), has one such item per environment: `postgres heimdall-api-production-db-1 postgres`. Not
+`volume heimdall-api-production_db`: the files of a database that runs are no backup. An on-demand
+environment's database container is stopped when its environment is: `backup.sh` starts it for the dump,
+alone (its API stays stopped), waits for it to accept connections (60 seconds,
+`BACKUP_POSTGRES_START_WAIT`), and stops it again. Only an exited or created container is started: a
+restarting, paused or dead one fails its item, since starting and stopping it would mark it stopped by hand
+and `restart: unless-stopped` would no longer bring it back. It stays up if another container of its Compose
+project runs by the end of the dump (its environment was started meanwhile), and a run that is interrupted
+stops it on the way out.
+
+Give an item only to a container that exists (`docker ps -a --format '{{.Names}}' | grep -- '-db-1$'`): one
+for a container no deploy has made yet fails every night with `No such object`. A database restored before
+its environment's first deploy is then only in its volume and in the dump it came from: add its item right
+after that deploy.
 
 The `:.` after the host means "the directory the key is restricted to", explained next. The host is the
 other machine's address (`203.0.113.20` is a documentation address: use the real one) or a name that points
@@ -894,6 +968,19 @@ docker run --rm -v yggdrasil_jenkins:/volume -v "$HOME/restore/2026-10-22":/back
 Start the platform again. Compose may warn that the volume "was not created by Docker Compose" if
 you restored it before the first `up`: it uses it anyway.
 
+**The variables store** (`vars.tar.gz`): into the secrets directory, before the platform or a deploy reads it.
+On a rebuilt machine `ygg install` has made `/etc/yggdrasil`, `ygg`'s and empty of a store:
+
+```bash
+tar -C /etc/yggdrasil -xzf ~/restore/2026-10-22/vars.tar.gz vars.db vars.key
+chmod 600 /etc/yggdrasil/vars.db /etc/yggdrasil/vars.key
+ygg vars check
+```
+
+`tar` overwrites a store that is there: on a machine that still has one, move `vars.db` and `vars.key` aside first.
+`ygg vars check` opens the store with the key, so a key of another store or a damaged copy shows here, not at the
+next deploy. Then `scripts/platform.sh up` and the deploys read it as before.
+
 **A PostgreSQL dump** (`postgres-<container>.sql.gz`): into the new, running database container,
 `gunzip -c postgres-<container>.sql.gz | docker exec -i <container> psql -U <user> -d postgres`.
 
@@ -902,7 +989,7 @@ you restored it before the first `up`: it uses it anyway.
 Another apps host (a second `ygg` engine for more applications, or one environment per host) is set
 up like the first apps machine:
 
-1. **Ubuntu 24.04** with an admin user that has `sudo` and your key in `~/.ssh/authorized_keys`.
+1. **Ubuntu 24.04 or 26.04 LTS** with an admin user that has `sudo` and your key in `~/.ssh/authorized_keys`.
 2. **The checkout and the install**, as in [setup.md step 8](setup.md#8-prepare-each-machine): clone into
    `/opt/yggdrasil`, then `ygg install --role apps`. It creates its own `ygg` user and engine; nothing
    is shared with the other machines.
@@ -944,7 +1031,10 @@ downtime: the applications are off while you move their data.
      databases and secrets.
    - `docker run --rm … busybox tar`: a throwaway container with the volume mounted read-only writes its
      content to a `.tar.gz` in `/srv/migration`. Run it once per volume.
-   Dump a database that runs outside Docker with its own tools.
+   Dump a database that runs outside Docker with its own tools: a PostgreSQL on the host is dumped with
+   `pg_dump` and restored into the stack's own `db` container, as
+   [cutover.md 5.4 and 5.6a](cutover.md#56a-the-databases-into-their-containers) do, since a rootless engine's
+   containers cannot reach the host's.
 3. **Update and install.** `git pull` in `/opt/yggdrasil`, then `ygg install --role apps` as the admin
    (the user with `sudo`). It creates `ygg`, disables and masks the rootful Docker, gives `ygg` an
    engine, hands the checkout to `ygg`, sets the firewall and writes the other files of

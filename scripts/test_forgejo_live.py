@@ -15,7 +15,8 @@ then deleted), and collaborators. One test pins a known gap instead: jenkins, wh
 tags, can also move and delete them (docs/setup.md, step 12).
 
 Skipped unless YGG_FORGEJO_TESTS=1 (and Docker, bash, jq and git are there). The suite starts one
-container of the pinned image, named ygg-forgejo-test-*, on a free local port, with SQLite and the
+container of the pinned image, named ygg-forgejo-test-*, on a free local port (or in the network of the
+container YGG_FORGEJO_TEST_NETWORK names, as ci/platform.sh does in a check), with SQLite and the
 compose file's sign-in settings; creates the users artur-rios (the owner, an administrator), jenkins
 and claude, with tokens, and the repositories shop-api (an application) and reveal.js (a `rules:
 basic` repository, with a dot in its name), each with main, develop and a Jenkinsfile; applies the
@@ -267,9 +268,14 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         cls.temp = pathlib.Path(tempfile.mkdtemp(prefix="forgejo-live-"))
         cls.addClassCleanup(shutil.rmtree, cls.temp, ignore_errors=True)
 
-        port = free_port()
+        # YGG_FORGEJO_TEST_NETWORK=container:<id>: Forgejo joins that container's network instead of
+        # publishing a port, and is reached at 127.0.0.1:3000 there. ci/platform.sh sets it to the check's own
+        # container, from which the engine's host and its published ports are out of reach.
+        network = os.environ.get("YGG_FORGEJO_TEST_NETWORK")
+        port = 3000 if network else free_port()
         cls.url = f"http://127.0.0.1:{port}"
-        docker("run", "--detach", f"--name={cls.container}", f"--publish=127.0.0.1:{port}:3000", "--memory=1g",
+        reach = f"--network={network}" if network else f"--publish=127.0.0.1:{port}:3000"
+        docker("run", "--detach", f"--name={cls.container}", reach, "--memory=1g",
                "--env=FORGEJO__security__INSTALL_LOCK=true",
                "--env=FORGEJO__database__DB_TYPE=sqlite3",
                f"--env=FORGEJO__server__ROOT_URL={cls.url}/",
@@ -530,7 +536,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
 
         for repo in (APP, DOTTED):
             settings = owner.request("GET", f"/repos/{OWNER}/{repo}")
-            self.assertEqual({k: settings[k] for k in rules.forgejo_settings()}, rules.forgejo_settings(), repo)
+            expected = rules.forgejo_settings(self.rules[repo].model)  # a basic one keeps its default branch
+            self.assertEqual({k: settings[k] for k in expected}, expected, repo)
 
         protections = {p["rule_name"]: p for p in owner.request("GET", f"/repos/{OWNER}/{APP}/branch_protections")}
         self.assertEqual(set(protections), {"develop", "main", "release/*"})
@@ -550,7 +557,8 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.assertEqual([(t["name_pattern"], t["whitelist_usernames"]) for t in tags], [("v*", [JENKINS])])
         basic = {p["rule_name"]: p for p in owner.request("GET", f"/repos/{OWNER}/{DOTTED}/branch_protections")}
         self.assertEqual({name: (p["enable_push"], p["enable_merge_whitelist"], p["enable_status_check"])
-                          for name, p in basic.items()}, {"develop": (True, False, False), "main": (True, False, False)})
+                          for name, p in basic.items()},
+                         {name: (True, False, False) for name in ("develop", "main", "master")})
         for repo in (APP, DOTTED):
             hooks = owner.request("GET", f"/repos/{OWNER}/{repo}/hooks")
             self.assertEqual([(h["type"], h["config"]["url"], h["config"]["content_type"], h["active"]) for h in hooks],
@@ -847,6 +855,10 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         # rules: basic sends develop and main protections with pushing allowed and nothing else: Forgejo
         # refuses a force push and a deletion under any protection, even to the owner, whom the
         # protection does not otherwise bind. Pushing on top is still allowed.
+        # A basic repository keeps the default branch it was made with (rules.forgejo_settings sets none for
+        # it): main here, as create_repository made it.
+        default = self.api[OWNER].request("GET", f"/repos/{OWNER}/{DOTTED}")["default_branch"]
+        self.assertEqual(default, "main")
         for user in (CLAUDE, JENKINS, OWNER):
             for branch in ("develop", "main"):
                 before = self.head(DOTTED, branch)
@@ -859,13 +871,13 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
                 self.assertIn(f"branch {branch} is protected from force push", forced.stderr, (user, branch))
                 deleted = self.git(user, "push", "origin", f":refs/heads/{branch}", cwd=clone)
                 self.assertNotEqual(deleted.returncode, 0, (user, branch))
-                # develop is the default branch, which Forgejo refuses to delete before it asks the
-                # protection; main shows the protection's own refusal.
-                self.assertIn("is the default branch and cannot be deleted" if branch == "develop"
-                              else "branch main is protected from deletion", deleted.stderr, (user, branch))
+                # The default branch Forgejo refuses to delete before it asks the protection; the other
+                # shows the protection's own refusal.
+                self.assertIn("is the default branch and cannot be deleted" if branch == default
+                              else f"branch {branch} is protected from deletion", deleted.stderr, (user, branch))
                 error = self.refused(user, "DELETE", f"/repos/{OWNER}/{DOTTED}/branches/{branch}")
                 self.assertEqual((error.status, error.message),
-                                 (403, "can not delete default branch" if branch == "develop" else "branch protected"))
+                                 (403, "can not delete default branch" if branch == default else "branch protected"))
                 self.assertEqual(self.head(DOTTED, branch), before, (user, branch))
 
         clone = self.clone(CLAUDE, DOTTED)
@@ -1044,12 +1056,14 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         self.eventually(lambda: self.branch_exists(target, "develop"), "the develop branch on the target")
         self.eventually(lambda: self.head(target, "main") == self.head(source, "main"), "main on the target")
 
-        # ...and a tag pushed to the source later goes with the next sync.
+        # ...and a tag pushed to the source later goes with the sync that push starts (sync_on_commit, above).
+        # No sync is asked for besides: a second one would push the same tag at the same time, the one that
+        # loses fails with "reference already exists", and Forgejo keeps that as the mirror's last error,
+        # which verify below reads as a failed mirror.
         clone = self.clone(OWNER, source)
         self.assertEqual(self.git(OWNER, "tag", "v0.0.1", cwd=clone).returncode, 0)
         pushed = self.git(OWNER, "push", "origin", "v0.0.1", cwd=clone)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
-        owner.request("POST", f"/repos/{OWNER}/{source}/push_mirrors-sync")
         self.eventually(lambda: "v0.0.1" in self.tags(target), "the tag on the target")
 
         # Run again: the mirror is there and has pushed, so nothing is written.

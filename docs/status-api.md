@@ -21,7 +21,7 @@ Several environments share one Docker engine, so an application is found and rea
 | Compose service (`com.docker.compose.service`) | `container.service`, when the catalog sets one | The same |
 | Health URL probed | The catalog's `health`, its host qualified: `http://heimdall-api.production:8080/healthcheck` | The catalog's `health` as written |
 | Metrics target | The catalog's `metrics`, its host qualified: `heimdall-api.production:9464` | The catalog's `metrics` as written |
-| `url` | `https://<host><hostSuffix>.<DOMAIN>`, e.g. `https://heimdall-dev.example.com` | `https://<host>.<DOMAIN>` |
+| `url` | `https://<host><hostSuffix>.<domain><path>`, e.g. `https://heimdall-dev.example.com`; see [Fields](#fields) for `domain`, `path` and `apex` | `https://<host>.<DOMAIN>` |
 | Probed | Once per environment | Once per refresh; the same result appears in every environment it is in |
 
 `hostSuffix` and `onDemand` are the application's options in that environment, resolved like every catalog option: the default, then the environment's value, then the application's override (see [catalog.md](catalog.md)).
@@ -196,7 +196,15 @@ When the Docker proxy is unreachable, applications whose probe fails are `down` 
 - **`environments`**: the host's environments, in catalog order. `id` and `name` are the catalog's; `onDemand` is the environment's own option (not an application's override).
 - **`systems`**: in catalog order. **`systems[].environments`** lists, in catalog order, only the host's environments the system has at least one application in; `environment` is the environment's `id`. The platform system is in every environment its components are in.
 - **Application objects** (`systems[].environments[].applications[]`):
-  - **`url`**: `https://<host><hostSuffix>.<DOMAIN>` when the catalog gives a `host`, with the application's `hostSuffix` in that environment (platform components: no suffix); otherwise `null`.
+  - **`url`**: where the application is served, formed as `scripts/catalog.py` forms it for `scripts/deploy.sh` (`public-host`, `public-path`), so it is the address the proxy answers to: `https://<host><hostSuffix>.<domain><path>`.
+    - `<host>` is the catalog's `host`, and `<hostSuffix>` the application's in that environment.
+    - `<domain>` is the application's own `domain`, else the host's `YGGDRASIL_DOMAIN`.
+    - `<path>` is the application's `path` (`/docs`), and nothing without one.
+    - An application with `apex: true` and no `host` is served on the bare domain: `https://<domain><path>`, the same in every environment. With both, the `host` wins.
+    - `null` when the catalog gives neither a `host` nor `apex` (a `path` alone makes no address).
+    - A platform component is `https://<host>.<YGGDRASIL_DOMAIN>`: no suffix, and its `domain`, `path` and `apex` are not read.
+    - Examples: `https://heimdall-dev.example.com`, `https://docs.example.com/docs`, `https://www.acme.dev`, `https://example.com`.
+    - Same shape and type as before (a string or `null`), so the contract stays version 2.
   - **`repository`**: `https://github.com/<owner>/<repository>` for applications with a repository; `null` for platform components.
   - **`deployment`**: read from the container labels `scripts/deploy.sh` sets: `yggdrasil.version`, `yggdrasil.commit` and `yggdrasil.deployed_at`. `image` is the image Docker lists for the container: its name, or its id (`sha256:...`) once that name points to another image (a rebuilt `:local` image, a re-pulled tag). The object is `null` when there is no container. Each field is `null` when its label is missing, as for platform components.
   - **`container`**: from Docker's container list (`GET /containers/json`), the only request the status API's socket proxy lets through: not the container inspect, which would also hand the status API every container's environment, i.e. every application's secrets (see [Docker access](#docker-access)). `null` when there is no container.
