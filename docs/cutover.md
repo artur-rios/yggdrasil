@@ -153,7 +153,9 @@ done
 
 **Success looks like:**
 - The roles: the nine of the table and `postgres`; `t` in the second column for `postgres` only (the only superuser),
-  and `t` in the last column for every role (a SCRAM password).
+  and `t` in the last column for each of the nine (a SCRAM password). `postgres` has `f` there: Ubuntu gives it no
+  password (it logs in over the socket as the system user `postgres`), and 5.6a never carries it; each container's
+  `postgres` gets `DB_SUPERUSER_PASSWORD` instead.
 - The members: nothing.
 - The owners: the table's six databases with their owners, and `postgres`, which holds nothing of the applications.
 - The extensions: nothing, or only PostgreSQL's own contrib ones (`pgcrypto`, `citext`, `uuid-ossp` and the like),
