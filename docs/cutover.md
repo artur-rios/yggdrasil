@@ -663,6 +663,9 @@ and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cuto
   accepts.
 - `groups:` includes `docker`, and `docker group:` lists the members that 6 gives back.
 - `admin key: there`: the installer switches SSH passwords off and refuses to start without a key for the admin.
+  That a file is there does not say it holds **your** key: a login that falls back to a password works today and
+  stops at 5.5. From your machine, with passwords refused on your side:
+  `ssh -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no <old admin>@<apps ip> true && echo key ok` prints `key ok`.
 - `owner:` lines for the checkout (`<old admin>`) and `/etc/yggdrasil` (`<old admin>:docker 2750`, the layout of
   [hosts.md 9](hosts.md#9-upgrading-a-host-from-rootful-docker)'s first lines): 6 gives them back.
 - `checkout: v0.7.4, changes: 0`: 5.5 switches it to `main`, which a local change could stop.
@@ -697,8 +700,17 @@ and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cuto
 
   `adduser` asks for the password `sudo` will ask for (SSH keeps taking keys only). The checkout becomes the admin's,
   as the rest of this page expects (5.5 part 1 runs `git` in it as `<old admin>`); the `safe.directory` line keeps
-  v0.7.4's own `git` calls, as root, working on it until the window. Then, from your machine, `ssh artur@<apps ip>`,
-  `sudo -v`, and run this block again as `artur`: `admin: artur`, `groups:` with `sudo` and `docker`, `admin key:
+  v0.7.4's own `git` calls, as root, working on it until the window. The keys are root's, which may not be yours: a
+  provider often puts its own key there, and you have logged in as root with a password. So, from your machine,
+  prove that yours is among them, with passwords refused on your side:
+
+  ```bash
+  ssh -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no artur@<apps ip> true && echo key ok
+  ```
+
+  `Permission denied (publickey)`: your key is not there; add it as **If it fails** says for `admin key: MISSING`
+  (over `ssh artur@<apps ip>` with `artur`'s password, which still works until 5.5), and test again. Then `ssh
+  artur@<apps ip>`, `sudo -v`, and run this block again as `artur`: `admin: artur`, `groups:` with `sudo` and `docker`, `admin key:
   there`, and the checkout's `owner:` line `artur:artur`. From then on `<old admin>` is `artur`. `/etc/yggdrasil` may
   stay `root:docker`: the `docker` group reads it, and 5.5 part 3 gives it to `ygg`.
   **Back out:** `deluser --remove-home artur`, `chown -R root:root /opt/yggdrasil` and `git config --system --unset
@@ -712,7 +724,12 @@ and a copy on your machine (`scp <old admin>@<apps ip>:cutover-before.txt ~/cuto
   container. 4.7's rehearsal shows it; stop and report it before the window.
 - A cron job or timer that uses `docker` (a backup script of yours, a `docker system prune`): move it to `ygg` after
   the window, or let it go; as root it would fail every night once the rootful engine is masked.
-- `admin key: MISSING`: from your machine, `ssh-copy-id <old admin>@<apps ip>`, then a login without a password.
+- `admin key: MISSING`, or the test above saying `Permission denied (publickey)`: from your machine,
+  `ssh-copy-id <old admin>@<apps ip>` (it logs in with the password once and adds your public key), then the test
+  again. Without `ssh-copy-id` (Windows' OpenSSH has none), print your key with `cat ~/.ssh/id_ed25519.pub` and, in a
+  session as the admin, add it: `read -r KEY && printf '%s\n' "$KEY" | ssh-keygen -lf -` (paste the line at the
+  silent prompt; the fingerprint must be the one your `ssh -v` offers), then `printf '%s\n' "$KEY" >>
+  ~/.ssh/authorized_keys && unset KEY`.
 - `changes:` above `0`: `git -C /opt/yggdrasil status` names them; commit them to your fork or drop them now.
 - `package: docker.io ...` (Ubuntu's own Docker) instead of `docker-ce`: the install replaces it with Docker's
   packages (it asks, and keeps `/var/lib/docker`). The rollback then runs Docker's engine on the same data, not
@@ -1133,7 +1150,8 @@ The window starts only when all of these hold:
 - [ ] `inventory` exits `0`: no open pull request anywhere.
 - [ ] 2.1 to 2.7 and 3.1 to 3.4 looked like their success lines. The dev machine's install (2.1) and its proofs (2.6)
   passed on Ubuntu 26.04, the release of the old VPS. The old VPS runs Ubuntu 24.04 or 26.04 (26.04.1 here) and
-  PostgreSQL 18.6, `<old admin>` has `sudo` and an SSH key, nothing else on it needs the rootful engine or another
+  PostgreSQL 18.6, `<old admin>` has `sudo` and logs in with your key alone (3.1's `ssh -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no` test
+  prints `key ok`), nothing else on it needs the rootful engine or another
   login (no cron job or timer either), and `~/cutover-before.txt` is kept, on the server and on your machine.
 - [ ] **The disk has room** for every archive, the dumps, 5.4a's copy, the restore and the backups until 7.1: the free
   space of 3.2 is at least its sum.
