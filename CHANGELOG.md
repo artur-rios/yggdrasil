@@ -33,15 +33,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **The cutover converts the old VPS in place.** [docs/cutover.md](docs/cutover.md) no longer rents a fresh apps
   machine: only the dev machine is new, and the old VPS becomes the apps machine during the window, as
   [docs/hosts.md](docs/hosts.md#9-upgrading-a-host-from-rootful-docker) section 9 describes. Section 3 now only reads
-  the server days before (Ubuntu 24.04, `sudo` and the admin's key, the owners, the firewall, the room for the
-  archives) and keeps a record of it; the rehearsal archives one volume read-only from the rootful engine and
-  restores it on the dev machine's rootless engine; the window archives every volume and `/etc/yggdrasil` into
-  `/srv/migration` with `volumes.sh`, runs `ygg install --role apps`, hands the settings to `ygg`, changes the
-  platform's settings in the variables store, restores the volumes into `ygg`'s engine, turns Cloudflare's proxy on
-  for the names that stay on the same address and sets up the backups. The rollback reverses each change of the
-  install (rootful Docker unmasked, the `docker` group, the checkout at `v0.7.4`, the copy of `/etc/yggdrasil`, the
-  firewall rule) and says what it cannot undo; the clean-up deletes the archives and the rootful engine's data once
-  the apps machine has run a release. The window is now estimated at 4 to 8 hours.
+  the server days before (Ubuntu 24.04 or 26.04, the old VPS's being 26.04.1, which the dev machine, rented on
+  26.04 too, proves before the window; `sudo` and the admin's key, the owners, the firewall, its PostgreSQL, cron
+  jobs and timers, the room for the archives, the dumps and the backups until the clean-up) and keeps a record of it.
+  **The databases move too**: heimdall-api's and fortuna-api's six databases leave the PostgreSQL on the host, which
+  a rootless engine's containers cannot reach, for the stacks' `db` containers. Section 0 records their roles,
+  owners and whole connection strings; the rehearsal archives one volume read-only from the rootful engine and
+  restores one database, both on the dev machine's rootless engine; the window archives every volume and
+  `/etc/yggdrasil` into `/srv/migration` with `volumes.sh`, dumps the roles and each database (`pg_dump`, a custom
+  and a plain copy), checks every archive and dump against its checksum, copies them off the server, runs `ygg
+  install --role apps`, hands the settings to `ygg`, changes the platform's settings in the variables store,
+  restores the volumes into `ygg`'s engine, restores each database into a labelled `<application>-<environment>_db`
+  volume through a temporary container with only its own roles and compares it with the plain dump, sets
+  `DB_HOST=db` (and `Host=db` in a whole connection string) and a new `DB_SUPERUSER_PASSWORD`, turns Cloudflare's
+  proxy on for the names that stay on the same address and sets up the backups, the six databases' dumps included.
+  The rollback reverses each change of the install (rootful Docker unmasked, the `docker` group, the checkout at
+  `v0.7.4`, the copy of `/etc/yggdrasil`, which brings `DB_HOST=host.docker.internal` back, the firewall rule),
+  points `jenkins.` back in every rollback, carries production's writes back into the host's PostgreSQL or states
+  that they are let go, and says what it cannot undo; the clean-up switches the host's PostgreSQL off, then deletes
+  the archives, the rootful engine's data and the PostgreSQL packages once the apps machine has run a release. The
+  window is now estimated at 4 to 8 hours.
 - **The `dev` and `apps` roles install on Ubuntu 26.04 LTS too.** `ygg install --role dev|apps` accepted Ubuntu
   24.04 only; it now accepts 24.04 and 26.04 (`MACHINE_UBUNTU_VERSIONS` in `scripts/machine.sh`), and `ygg check`
   no longer warns about 26.04. Docker's apt repository was already picked by the release's codename.
