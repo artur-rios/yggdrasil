@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Ctrl-C at the menu's pause always returns to the menu.** After a command, "Enter to return to the menu"
+  waited in `input()`, which a Ctrl-C ended through SIGINT; a SIGINT that came after the prompt but before
+  `input()` was reading went unnoticed, and the pause waited on with Ctrl-C lost. On a busy machine that happened
+  about one time in seven (and failed the TUI test in Jenkins). On a terminal the pause now reads keys with the
+  terminal's signals off, switched before the prompt shows, as the menu itself does: Ctrl-C is a key, Enter and
+  Ctrl-D return as before.
 - **The socket proxies' live suite runs on a Jenkins agent.** Its fake Docker sockets live in the check's scratch
   directory, in the checkout, where the engine can mount them, and on an agent the checkout's path is long
   (`/home/ci/agent/workspace/<job>@<n>/app`): past the 107 bytes a Unix socket's path may have, every build's

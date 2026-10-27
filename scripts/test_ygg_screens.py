@@ -145,8 +145,10 @@ class RunnerTests(unittest.TestCase):
     def run_effect(self, effect, pause=True, answer=None):
         from unittest import mock
         done = mock.Mock(returncode=3)
+        # Input piped in, as in CI: the pause asks input(). (On a terminal it reads keys; test_ygg_tui drives that.)
         with mock.patch.object(app.subprocess, "run", return_value=done) as run, \
                 mock.patch("builtins.input", side_effect=answer or [""]) as typed, \
+                mock.patch.object(app.sys, "stdin", mock.Mock(isatty=lambda: False)), \
                 mock.patch("builtins.print"):
             status = app.Runner(pause=pause)(effect, ("yggdrasil", "Host"))
         return status, run, typed
