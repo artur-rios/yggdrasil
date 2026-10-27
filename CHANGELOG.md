@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Forgejo Actions is off.** Jenkins runs every check, but Forgejo's own Actions was on by default. It ran each
+  repository's `.github/workflows` (Forgejo reads them when there is no `.forgejo/workflows`), and with no runner
+  those jobs sat on every pull request as "Waiting for a runner with the following label: ubuntu-latest". The
+  `forgejo` service of `platform/compose.yml` now sets `FORGEJO__actions__ENABLED=false`. It takes effect when the
+  container is recreated (`ygg platform up`).
 - **The `renovate` token's scopes.** The docs and `env/renovate.env.example` asked for `write:repository` and
   `write:issue` only, and Renovate stopped at once with `Authentication failure`: it asks Forgejo who it is when
   it starts, and Forgejo answers that only to a token with `read:user`. The token now has `read:user` and
