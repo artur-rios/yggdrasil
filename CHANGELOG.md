@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The unit suite passes on `main` again.** Cutover step 5.9 put the `forge` and `mirror` blocks in `main`'s
+  `catalog.yaml` only, and twelve tests assumed this repository's catalog is a GitHub one: `test_catalog` said so,
+  and `test_platform` added its scenarios' blocks on top of the real catalog. Every build of `main` failed its
+  `platform` check, while every branch of `develop` passed. `develop` now has `main`'s catalog as it is, the
+  platform tests start from a copy without the forge and mirror blocks, and the catalog test asserts Forgejo
+  mirrored to the owner. (`main`'s catalog has each block twice, identically; that is left for a later change, so
+  the next release merges cleanly.)
+
 ## [0.9.1] - 2026-10-26
 
 ### Fixed

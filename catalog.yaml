@@ -26,6 +26,20 @@ owner: artur-rios
 # This repository's name under the owner: Jenkins loads its pipeline, scripts and stacks from its
 # main branch. Default yggdrasil; set it if your fork has another name.
 repository: yggdrasil
+forge:
+  type: forgejo
+  url: https://git.techcraftsmen.net
+  developers: [claude]
+mirror:
+  github: artur-rios
+  releases: true
+forge:
+  type: forgejo
+  url: https://git.techcraftsmen.net
+  developers: [claude]
+mirror:
+  github: artur-rios
+  releases: true
 
 # The git server (forge) and its GitHub mirror: the `forge` and `mirror` blocks, right after
 # `repository:` above. Until cutover 5.9 (docs/cutover.md) neither is here: with no forge block this
@@ -66,7 +80,7 @@ repositories:
     checks: [test, coverage]
     credentials: [reportgenerator-license]
     rules: release
-  - id: dotnet-data               # versions each package apart: ArturRios.Data.Sqlite@3.1.0
+  - id: dotnet-data # versions each package apart: ArturRios.Data.Sqlite@3.1.0
     release: owner-tag
     tags: "*@[0-9]*"
     checks: [test, coverage]
@@ -135,7 +149,7 @@ repositories:
 
   # CI only: checks, and the branch rules they had on GitHub (release where a branch-policy workflow
   # existed, basic where none did). Nothing is released.
-  - id: ai-coding-skills          # only its branch policy ran on GitHub
+  - id: ai-coding-skills # only its branch policy ran on GitHub
     rules: release
   - id: alexandria-api
     checks: [lint-and-test]
@@ -147,10 +161,10 @@ repositories:
   - id: coding-challenge-library
     checks: [test, docker]
     rules: basic
-  - id: dotnet-libraries          # the libraries' index; its site is the application dotnet-libraries-docs
+  - id: dotnet-libraries # the libraries' index; its site is the application dotnet-libraries-docs
     checks: [verify]
     rules: basic
-  - id: reveal.js                 # a fork: its default branch is master
+  - id: reveal.js # a fork: its default branch is master
     checks: [codespell, build]
     rules: basic
 
@@ -162,10 +176,10 @@ repositories:
       - Unit and widget tests (windows)
       - Integration (windows)
       - Release build (windows)
-      - Sandboxed page engine (linux)   # needs user namespaces a Jenkins check container doesn't have
+      - Sandboxed page engine (linux) # needs user namespaces a Jenkins check container doesn't have
     release: owner-tag
     rules: release
-  - id: cerberus-ui               # its v* tag build (web, Android, Linux; Windows on Actions) is the release
+  - id: cerberus-ui # its v* tag build (web, Android, Linux; Windows on Actions) is the release
     checks: [analyze-and-test, generated-drift, web-bundle]
     release: owner-tag
     tags: "v*"
@@ -176,7 +190,7 @@ repositories:
     releaseCredentials: [maestro-signing-key, maestro-signing-public-key]
     release: owner-tag
     rules: release
-  - id: orpheus                   # its docs site is the application orpheus-docs
+  - id: orpheus # its docs site is the application orpheus-docs
     checks: [linux]
     actionsChecks: [Windows and the installer]
     releaseCredentials:
@@ -186,8 +200,8 @@ repositories:
       - orpheus-android-key-password
     release: owner-tag
     rules: release
-  - id: personal-lab              # its site is the application personal-lab-site, deployed on main
-    checks: [build]               # the site's image, as the Pages build ran on every pull request
+  - id: personal-lab # its site is the application personal-lab-site, deployed on main
+    checks: [build] # the site's image, as the Pages build ran on every pull request
     release: owner-tag
     rules: release
 
@@ -342,7 +356,7 @@ systems:
         host: docs
         path: /heimdall-api
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs a check of the API's that binds it
+        credentials: [reportgenerator-license] # its deploy runs a check of the API's that binds it
         environments:
           production: { trigger: branch, branches: main }
       - id: heimdall-docs
@@ -376,7 +390,8 @@ systems:
         kind: web
         health: http://fortuna-ui:8080/healthz
         host: fortuna
-        checks: [analyze-and-test, api-client-drift, header-drift, bindings-drift]
+        checks:
+          [analyze-and-test, api-client-drift, header-drift, bindings-drift]
       - id: fortuna-docs
         name: Fortuna docs
         kind: web
@@ -490,7 +505,7 @@ systems:
         host: docs
         path: /dotnet-configuration
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-data-docs
@@ -502,7 +517,7 @@ systems:
         host: docs
         path: /dotnet-data
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-extensions-docs
@@ -514,7 +529,7 @@ systems:
         host: docs
         path: /dotnet-extensions
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-jwt-docs
@@ -526,7 +541,7 @@ systems:
         host: docs
         path: /dotnet-jwt
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-logging-docs
@@ -538,7 +553,7 @@ systems:
         host: docs
         path: /dotnet-logging
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-mediator-docs
@@ -550,7 +565,7 @@ systems:
         host: docs
         path: /dotnet-mediator
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-messaging-docs
@@ -562,7 +577,7 @@ systems:
         host: docs
         path: /dotnet-messaging
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-output-docs
@@ -574,7 +589,7 @@ systems:
         host: docs
         path: /dotnet-output
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-test-util-docs
@@ -586,7 +601,7 @@ systems:
         host: docs
         path: /dotnet-test-util
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-util-docs
@@ -598,7 +613,7 @@ systems:
         host: docs
         path: /dotnet-util
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-validation-docs
@@ -610,7 +625,7 @@ systems:
         host: docs
         path: /dotnet-validation
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
       - id: dotnet-webapi-util-docs
@@ -622,7 +637,7 @@ systems:
         host: docs
         path: /dotnet-webapi-util
         checks: []
-        credentials: [reportgenerator-license]   # its deploy runs the coverage check (deploy.inputs)
+        credentials: [reportgenerator-license] # its deploy runs the coverage check (deploy.inputs)
         environments:
           production: { trigger: branch, branches: main }
 
@@ -637,7 +652,7 @@ systems:
         health: http://personal-page:8080/healthz
         domain: artur-rios.tech
         host: www
-        apex: true                # artur-rios.tech redirects to www (its stack)
+        apex: true # artur-rios.tech redirects to www (its stack)
         checks: [lint-and-build]
         environments:
           development: {}
@@ -687,7 +702,7 @@ systems:
         health: http://tech-craftsmen-company-page:8080/healthz
         domain: techcraftsmen.net
         host: www
-        apex: true                # techcraftsmen.net redirects to www (its stack)
+        apex: true # techcraftsmen.net redirects to www (its stack)
         checks: []
         environments:
           homologation: {}
@@ -700,7 +715,7 @@ systems:
         health: http://github-readme-stats:8080/healthz
         domain: techcraftsmen.net
         host: readme-stats
-        checks: [test]            # test.yml's job: tests, lint, bench, Prettier (basic rules: not required)
+        checks: [test] # test.yml's job: tests, lint, bench, Prettier (basic rules: not required)
         environments:
           production: { trigger: branch, branches: master }
 
