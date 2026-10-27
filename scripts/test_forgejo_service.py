@@ -43,6 +43,11 @@ class ForgejoServiceTests(unittest.TestCase):
         services = yaml.safe_load(COMPOSE.read_text())["services"]
         self.assertIn("jenkins", services)
 
+    def test_given_the_forgejo_service_when_read_then_forgejo_actions_is_off(self):
+        # Jenkins runs every check. With Actions on, Forgejo also runs a repository's .github/workflows
+        # (when it has no .forgejo/workflows), and with no runner those jobs wait on every pull request.
+        self.assertEqual(forgejo()["environment"]["FORGEJO__actions__ENABLED"], "false")
+
     def test_given_the_forgejo_service_when_read_then_ssh_is_published_on_2222_by_default(self):
         service = forgejo()
         self.assertIn("${FORGEJO_SSH_PORT:-2222}:2222", service["ports"])

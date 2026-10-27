@@ -1,5 +1,11 @@
 # yggdrasil
 
+> [!NOTE]
+> This is the real, open-source code of yggdrasil. Its home is Forgejo, at
+> https://git.techcraftsmen.net/artur-rios/yggdrasil; the copy on GitHub is a read-only mirror, for viewing only, and
+> its issues and pull requests are not followed. If you want to contribute, email me at
+> arturdev@duck.com.
+
 A self-hosted **deploy manager** for Docker applications. You describe your **systems** (products
 made of one or more applications, such as an API and its web front end) and your **environments**
 (development, homologation, production, or as many as you need, several of them on one host if you

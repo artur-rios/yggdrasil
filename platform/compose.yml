@@ -329,6 +329,9 @@ services:
       # Compose service name on the shared network, so http://jenkins:8080 works as a webhook address too
       # (the other private addresses stay refused).
       FORGEJO__webhook__ALLOWED_HOST_LIST: "external,jenkins"
+      # Jenkins runs every check. Forgejo Actions would also run a repository's .github/workflows (when
+      # it has no .forgejo/workflows), and with no runner here those jobs would wait on every pull request.
+      FORGEJO__actions__ENABLED: "false"
     ports:
       - "${FORGEJO_SSH_PORT:-2222}:2222"
     volumes:
