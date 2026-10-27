@@ -19,7 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   directory, in the checkout, where the engine can mount them, and on an agent the checkout's path is long
   (`/home/ci/agent/workspace/<job>@<n>/app`): past the 107 bytes a Unix socket's path may have, every build's
   `platform` check stopped at `OSError: AF_UNIX path too long`. The fake binds through a short link in `/tmp`
-  when the path is too long; the socket is still made where the engine mounts it.
+  when the path is too long; the socket is still made where the engine mounts it. Traefik there gets 60 seconds
+  to start watching events, as Alloy does (30 ran out next to the other checks' builds), and a client that does
+  not get there fails with its own log and the requests its fake received.
 - **`catalog.yaml` has its `forge` and `mirror` blocks once.** Cutover step 5.9 had pasted both twice, identically,
   which YAML reads without a word (the last of two equal keys wins). A test now refuses a top-level key that is in
   the repository's catalog twice.

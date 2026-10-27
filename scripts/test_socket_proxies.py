@@ -511,13 +511,22 @@ class ProxyContainerTests(unittest.TestCase):
         return result.stdout.strip()
 
     @staticmethod
-    def wait_for(condition, what, seconds=30):
+    def wait_for(condition, what, seconds=30, details=None):
+        """Waits for the condition; on a timeout, says what was awaited and `details()` (what the client
+        and the fake saw: a build agent's log is all there is to go on afterwards)."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if condition():
                 return
             time.sleep(0.5)
-        raise AssertionError(f"timed out waiting for {what}")
+        raise AssertionError(f"timed out waiting for {what}" + (f"\n{details()}" if details else ""))
+
+    def story(self, name, fake):
+        """What a client container said and what reached its fake Docker, for a failure message."""
+        logs = docker("logs", name, check=False)
+        said = (logs.stdout + logs.stderr).strip().splitlines()[-40:]
+        return ("requests the fake received: " + (", ".join(f"{method} {path}" for method, path in fake.requests)
+                                                   or "none") + f"\nthe last of {name}'s log:\n" + "\n".join(said))
 
     def reached(self, proxy, method, path):
         return (method, path) in self.fakes[proxy].requests
@@ -565,9 +574,11 @@ class ProxyContainerTests(unittest.TestCase):
             "traefik", self.services["traefik"]["image"], "--log.level=DEBUG", "--providers.docker=true",
             "--providers.docker.endpoint=tcp://traefik-docker-proxy:2375",
             "--providers.docker.exposedbydefault=false", "--providers.docker.network=edge")
-        self.wait_for(lambda: any(path.endswith("/events") for _, path in fake.requests), "traefik to watch events")
+        # 60 seconds, as Alloy below: on a build agent Traefik starts next to the other checks' builds.
+        self.wait_for(lambda: any(path.endswith("/events") for _, path in fake.requests), "traefik to watch events",
+                      60, lambda: self.story(name, fake))
         self.wait_for(lambda: "whoami" in docker("logs", name, check=False).stderr + docker("logs", name, check=False).stdout,
-                      "traefik to build the router of the fake container")
+                      "traefik to build the router of the fake container", 60, lambda: self.story(name, fake))
         self.assertEqual(blocked(), [])
         paths = {re.sub(r"^/v1\.[0-9]+", "", path) for _, path in fake.requests}
         self.assertLessEqual({"/_ping", "/version", "/containers/json", f"/containers/{ID}/json", "/events"}, paths)
@@ -575,11 +586,12 @@ class ProxyContainerTests(unittest.TestCase):
     def test_given_alloy_behind_its_proxy_when_it_starts_then_it_discovers_and_tails_the_containers(self):
         fake = self.fakes["alloy-docker-proxy"]
         fake.requests.clear()
-        _, blocked = self.start_client(
+        name, blocked = self.start_client(
             "alloy", f"--volume={ALLOY_CONFIG}:/etc/alloy/config.alloy:ro",
             "--tmpfs=/var/lib/alloy/data", self.services["alloy"]["image"],
             "run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy")
-        self.wait_for(lambda: any(path.endswith("/logs") for _, path in fake.requests), "alloy to tail the logs", 60)
+        self.wait_for(lambda: any(path.endswith("/logs") for _, path in fake.requests), "alloy to tail the logs", 60,
+                      lambda: self.story(name, fake))
         self.assertEqual(blocked(), [])
         paths = {re.sub(r"^/v1\.[0-9]+", "", path) for _, path in fake.requests}
         self.assertLessEqual({"/_ping", "/containers/json", "/networks", f"/containers/{ID}/json", f"/containers/{ID}/logs"}, paths)
