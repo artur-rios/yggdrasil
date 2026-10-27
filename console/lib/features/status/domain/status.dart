@@ -354,7 +354,7 @@ class ApplicationStatus {
   /// The public address, or `null` when the application is not public.
   final String? url;
 
-  /// The GitHub repository, or `null` for platform components.
+  /// The repository's page on the git server (Forgejo or GitHub), or `null` for platform components.
   final String? repository;
 
   /// `null` when there is no container.

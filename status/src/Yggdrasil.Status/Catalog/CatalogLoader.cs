@@ -62,7 +62,7 @@ public static partial class CatalogLoader
         var owner = raw.Owner?.Trim() ?? "";
         if (owner.Length == 0)
         {
-            errors.Add("owner: required (the GitHub account the repositories belong to)");
+            errors.Add("owner: required (the account on the git server the repositories belong to)");
         }
 
         var (environments, declared) = ValidateEnvironments(raw.Environments, errors);
@@ -111,7 +111,36 @@ public static partial class CatalogLoader
             systems.Add(new SystemDefinition(systemId, rawSystem.Name?.Trim() ?? "", rawSystem.Description?.Trim() ?? "", applications));
         }
 
-        return new Catalog(owner, environments, systems);
+        return new Catalog(owner, environments, systems, ValidateForge(raw.Forge, errors));
+    }
+
+    /// <summary>
+    /// The git server's web address, as scripts/catalog.py's forge() resolves it: the url of a forgejo block
+    /// without its trailing slash, GitHub without a block or with type github. catalog.py validate checks the
+    /// block in full (an https URL, no path); here only what the address needs.
+    /// </summary>
+    private static string ValidateForge(RawForge? forge, List<string> errors)
+    {
+        var type = forge?.Type?.Trim();
+        if (string.IsNullOrEmpty(type) || type == "github")
+        {
+            return Catalog.GitHub;
+        }
+
+        if (type != "forgejo")
+        {
+            errors.Add($"forge.type: '{type}' is not forgejo or github");
+            return Catalog.GitHub;
+        }
+
+        var url = forge!.Url?.Trim().TrimEnd('/') ?? "";
+        if (url.Length == 0)
+        {
+            errors.Add("forge.url: required with type forgejo (the https:// address of the Forgejo server)");
+            return Catalog.GitHub;
+        }
+
+        return url;
     }
 
     private static (List<EnvironmentDefinition> Environments, HashSet<string> Declared) ValidateEnvironments(
@@ -332,7 +361,7 @@ public static partial class CatalogLoader
         var repository = NullIfBlank(raw.Repository);
         if (repository is not null && !RepositoryName().IsMatch(repository))
         {
-            errors.Add($"{where}: repository '{repository}' is not a GitHub repository name");
+            errors.Add($"{where}: repository '{repository}' is not a repository name");
         }
 
         // "Defaults to id. Omit for platform components": an omitted repository means the id for
@@ -461,8 +490,16 @@ public static partial class CatalogLoader
     private sealed class RawCatalog
     {
         public string? Owner { get; set; }
+        public RawForge? Forge { get; set; }
         public List<RawEnvironment>? Environments { get; set; }
         public List<RawSystem>? Systems { get; set; }
+    }
+
+    // Only what the repository links need; the forge block's other keys (jenkinsUser, developers...) are Jenkins'.
+    private sealed class RawForge
+    {
+        public string? Type { get; set; }
+        public string? Url { get; set; }
     }
 
     private sealed class RawSystem

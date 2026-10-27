@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **The console's Repository links open the git server.** The status API built every application's `repository`
+  as `https://github.com/<owner>/<repository>`, so on a Forgejo installation the console's Repository button
+  opened the read-only GitHub copy. It now reads the catalog's `forge` block, as `scripts/catalog.py` does: Forgejo's
+  `url` when there is one, `https://github.com` otherwise. The status API's contract is unchanged (still a string or
+  `null`); its catalog errors no longer say GitHub where they mean the git server.
 - **Ctrl-C at the menu's pause always returns to the menu.** After a command, "Enter to return to the menu"
   waited in `input()`, which a Ctrl-C ended through SIGINT; a SIGINT that came after the prompt but before
   `input()` was reading went unnoticed, and the pause waited on with Ctrl-C lost. On a busy machine that happened
