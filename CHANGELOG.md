@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   those jobs sat on every pull request as "Waiting for a runner with the following label: ubuntu-latest". The
   `forgejo` service of `platform/compose.yml` now sets `FORGEJO__actions__ENABLED=false`. It takes effect when the
   container is recreated (`ygg platform up`).
+- **The `renovate` token's scopes.** The docs and `env/renovate.env.example` asked for `write:repository` and
+  `write:issue` only, and Renovate stopped at once with `Authentication failure`: it asks Forgejo who it is when
+  it starts, and Forgejo answers that only to a token with `read:user`. The token now has `read:user` and
+  `read:organization` as well, as Renovate's docs for Forgejo ask, and setup.md 9.9 shows how to check a token's
+  scopes without printing it. An installation with the old token makes a new one (setup.md 9.7) and puts it in
+  `renovate.env`.
 
 ## [0.9.0] - 2026-10-26
 
