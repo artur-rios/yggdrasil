@@ -19,6 +19,15 @@ TRAEFIK_SETTINGS = {"DOMAIN": "techcraftsmen.net", "ACME_EMAIL": "ops@techcrafts
                     "ACME_DNS_PROVIDER": "cloudflare"}
 TRAEFIK_ENV = "".join(f"{key}={value}\n" for key, value in TRAEFIK_SETTINGS.items())
 
+# A top-level `forge:` or `mirror:` block: the key and its indented lines.
+FORGE_OR_MIRROR = re.compile(r"^(?:forge|mirror):[ \t]*\n(?:[ \t]+\S.*\n)*", re.M)
+
+
+def github_catalog():
+    """The repository's catalog.yaml without its forge and mirror blocks: a GitHub installation's, whatever
+    git server this installation has moved to. The tests' baseline, which use_catalog adds a block to."""
+    return FORGE_OR_MIRROR.sub("", (SCRIPT.parent.parent / "catalog.yaml").read_text())
+
 
 @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
 class PlatformTests(unittest.TestCase):
@@ -59,6 +68,7 @@ class PlatformTests(unittest.TestCase):
                         FAKE_ROOTLESS_INFO='["name=seccomp","name=rootless"]',
                         # The user's own engine, whoever runs the tests; the lookup's tests unset it.
                         DOCKER_HOST="unix:///run/user/1000/docker.sock")
+        self.use_catalog("")
 
     def up(self, platform_env):
         (self.secrets / "platform.env").write_text(TRAEFIK_ENV + platform_env)
@@ -408,10 +418,10 @@ class PlatformTests(unittest.TestCase):
                    "FORGE_WEBHOOK_SECRET_FILE=/etc/yggdrasil/forge-webhook-secret\n")
 
     def use_catalog(self, forge_block):
-        """Points the tooling at a copy of the catalog with this forge/mirror block (YAML text)."""
-        catalog = (SCRIPT.parent.parent / "catalog.yaml").read_text()
+        """Points the tooling at a copy of the catalog with this forge/mirror block (YAML text) in place of
+        its own (none: a GitHub installation's, the default every test starts from)."""
         path = self.temp / "catalog.yaml"
-        path.write_text(catalog + "\n" + forge_block)
+        path.write_text(github_catalog() + "\n" + forge_block)
         self.env["YGG_CATALOG"] = str(path)
 
     def test_given_the_jenkins_profile_without_a_library_version_when_up_then_it_is_refused(self):

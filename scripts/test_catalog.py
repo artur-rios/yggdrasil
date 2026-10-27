@@ -344,9 +344,12 @@ class ForgeTests(unittest.TestCase):
                                              "api": "https://api.github.com", "jenkinsUser": "jenkins",
                                              "developers": [], "publishAgent": "vps"})
 
-    def test_given_the_repository_catalog_when_read_then_it_is_github_without_a_mirror(self):
-        self.assertEqual(c.forge(c.load())["type"], "github")
-        self.assertIsNone(c.mirror(c.load()))
+    def test_given_the_repository_catalog_when_read_then_it_is_forgejo_mirrored_to_the_owner(self):
+        # This installation after its cutover (docs/cutover.md 5.9): Forgejo, each repository pushed to the
+        # owner's GitHub copy. Tests of a GitHub installation build their own catalog without the blocks.
+        catalog = c.load()
+        self.assertEqual(c.forge(catalog)["type"], "forgejo")
+        self.assertEqual(c.mirror(catalog)["github"], catalog["owner"])
 
     def test_given_forgejo_when_read_then_the_api_is_under_its_url(self):
         v = catalog(forge={"type": "forgejo", "url": "https://git.techcraftsmen.net/"})
