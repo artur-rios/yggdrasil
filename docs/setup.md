@@ -984,7 +984,7 @@ forgejo_user() {
     forgejo admin user "$@"
 }
 forgejo_user create --username jenkins --email jenkins@<DOMAIN> --random-password --must-change-password=false
-forgejo_user generate-access-token --username jenkins --token-name jenkins --scopes write:repository --raw
+forgejo_user generate-access-token --username jenkins --token-name jenkins --scopes write:repository,read:user,read:organization --raw
 ```
 
 - `create … --random-password`: nobody signs in as these accounts, so the printed password is never used.
@@ -992,14 +992,30 @@ forgejo_user generate-access-token --username jenkins --token-name jenkins --sco
 
 | Account | Access to every repository of the catalog, and to yggdrasil's | Token scopes | The token goes to |
 |---|---|---|---|
-| `forge.jenkinsUser` (`jenkins` by default) | **Write** collaborator ([Forgejo details](#forgejo-details-worth-knowing)) | `write:repository` | `FORGE_WRITE_TOKEN_FILE`, which becomes the Jenkins credential `forge-write` |
-| `jenkins-ci` (the name is fixed) | **Read** collaborator | `read:repository` | `FORGE_READ_TOKEN_FILE`, the credential `forge-read` |
-| `renovate` | **Write** collaborator | `write:repository` and `write:issue` | `RENOVATE_TOKEN` of [9.9](#99-renovate) |
+| `forge.jenkinsUser` (`jenkins` by default) | **Write** collaborator ([Forgejo details](#forgejo-details-worth-knowing)) | `write:repository`, `read:user` and `read:organization` (`--scopes write:repository,read:user,read:organization`) | `FORGE_WRITE_TOKEN_FILE`, which becomes the Jenkins credential `forge-write` |
+| `jenkins-ci` (the name is fixed) | **Read** collaborator | `read:repository`, `read:user` and `read:organization` (`--scopes read:repository,read:user,read:organization`) | `FORGE_READ_TOKEN_FILE`, the credential `forge-read` |
+| `renovate` | **Write** collaborator | `write:repository`, `write:issue`, `read:user` and `read:organization` (`--scopes write:repository,write:issue,read:user,read:organization`) | `RENOVATE_TOKEN` of [9.9](#99-renovate) |
 
 `forge-write` changes the git server: statuses, merges, tags, releases, uploads. Jenkins binds it on the
 controller, to post statuses, and on the **publish agent** (`forge.publishAgent`: the deploy agent of the last
 release environment, unless you set it) for the steps that merge, tag, release and upload. The `ci` and
-`release` agents and the checks never hold it: they read with `forge-read`. The live suite proves the rules
+`release` agents and the checks never hold it: they read with `forge-read`.
+
+Both Jenkins tokens need `read:user` and `read:organization` besides their repository scope: when Jenkins scans a
+repository, its Gitea plugin looks the owner up (`/api/v1/users/<owner>`, `/api/v1/orgs/<owner>`), and Forgejo
+answers that only to a token with those scopes. Without them every scan fails with `GiteaHttpStatusException: HTTP
+403/Forbidden` in the controller's log, the jobs find no branches and no pull requests, and no pull request ever gets
+a status from Jenkins. To see what Forgejo says of a token file, as `ygg` and without printing the token:
+
+```bash
+for p in users/<owner> orgs/<owner>; do printf 'Authorization: token %s\n' "$(cat /etc/yggdrasil/forge-read-token)" | curl -s -H @- -o /dev/null -w "$p: %{http_code}\n" "https://git.<DOMAIN>/api/v1/$p"; done
+```
+
+Both lines should end in `200` (`orgs/<owner>` is `404` for a user rather than an organization, which is fine); a
+`403` is a token without the scope. Run it for `forge-write-token` too. After writing a new token to the file,
+restart the controller (`docker restart yggdrasil-jenkins-1`) and **Scan Repository Now** on the jobs.
+
+The live suite proves the rules
 with a `write:repository` token ([setup step 12](#12-apply-the-branch-rules)) but gives the Jenkins user all
 scopes; if Forgejo refuses a call of the pipeline with the narrower token, widen it.
 
@@ -1075,8 +1091,8 @@ each, a systemd user timer that `ygg install` sets up, removes what the last wee
 
 Dev machine, Forgejo only. The `renovate` user (made by `ygg install`) runs Renovate once a day from a
 systemd user timer, in its own engine: [hosts.md](hosts.md#renovate-the-daily-run) has the unit and what it
-does. Make the Forgejo account `renovate` with the token of 9.7 (`write:repository` and `write:issue`) and
-write access to every repository, then as the admin:
+does. Make the Forgejo account `renovate` with the token of 9.7 (`write:repository`, `write:issue`, `read:user`
+and `read:organization`) and write access to every repository, then as the admin:
 
 ```bash
 sudoedit /etc/yggdrasil-renovate/renovate.env       # RENOVATE_TOKEN=<the token>; the rest can stay
@@ -1086,6 +1102,16 @@ cd /opt/yggdrasil && sudo -u renovate env XDG_RUNTIME_DIR=/run/user/$(id -u reno
 Optionally, put a GitHub token in the same file as `RENOVATE_GITHUB_COM_TOKEN=`: a fine-grained personal access
 token with read-only access to public repositories and no permissions, so Renovate can read the release notes of
 GitHub-hosted dependencies without GitHub's anonymous rate limit. `ygg check` warns while it is empty.
+
+Renovate starts by asking Forgejo who it is (`GET /api/v1/user`), which Forgejo answers only to a token with
+`read:user`: without it the run stops at `Initialization error`, `Authentication failure`. To see what Forgejo says
+of the token in the file, without printing it:
+
+```bash
+sudo -u renovate bash -c 't=$(sed -n "s/^RENOVATE_TOKEN=//p" /etc/yggdrasil-renovate/renovate.env); printf "Authorization: token %s\n" "$t" | curl -s -H @- https://git.<DOMAIN>/api/v1/user; echo'
+```
+
+It prints the account (`"login":"renovate"`), or the scope it lacks.
 
 Run it **once by hand first**, as above, and read what it says: the unit then runs it every day at 05:00. It
 visits only the repositories of the catalog and, with `requireConfig: required`, skips a repository that has no

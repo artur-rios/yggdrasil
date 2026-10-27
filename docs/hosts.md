@@ -510,7 +510,8 @@ configuration of its own (no onboarding pull requests).
 
 Its settings are `/etc/yggdrasil-renovate/renovate.env` (`ygg install` copies
 [env/renovate.env.example](../env/renovate.env.example) there: `renovate:renovate`, mode `600`). Fill in as `renovate`
-(`RENOVATE_TOKEN`, the `renovate` Forgejo user's token with `write:repository` and `write:issue`;
+(`RENOVATE_TOKEN`, the `renovate` Forgejo user's token with `write:repository`, `write:issue`, `read:user` and
+`read:organization`;
 `RENOVATE_ENDPOINT` can stay empty, it is then `<forge url>/api/v1` from the catalog). The container gets the file
 as `--env-file`, a copy made for the run in `renovate`'s runtime directory (mode `600`, removed afterwards), so
 the token is never an argument of any command. `ygg check` shows whether the token is set and how the last
@@ -647,10 +648,10 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 
 | Credential | Lives with | Can | Created |
 |---|---|---|---|
-| `forge-write`: the Forgejo token of `forge.jenkinsUser` (`jenkins`), `FORGE_WRITE_TOKEN_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`, `ygg`, dev); bound by Jenkins on the controller, to post statuses, and on the **publish agent** (`forge.publishAgent`, the deploy agent of the last release environment), for the steps that merge, tag, release and upload. Never on the `ci` or `release` agent | Write every repository; the only account allowed to merge into an application's `main` and create its `v*` tags; post statuses | now: [setup.md 9.7](setup.md#97-the-forgejo-accounts-and-tokens) |
-| `forge-read`: the Forgejo token of `jenkins-ci` (read-only), `FORGE_READ_TOKEN_FILE` | The Jenkins controller; bound for repository scans (controller) and for checkouts on every agent: CI, release and deploy | Read every repository, including yggdrasil's own (the library and the scripts) | now: setup.md 9.7 |
+| `forge-write`: the Forgejo token of `forge.jenkinsUser` (`jenkins`; `write:repository`, `read:user`, `read:organization`), `FORGE_WRITE_TOKEN_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`, `ygg`, dev); bound by Jenkins on the controller, to post statuses, and on the **publish agent** (`forge.publishAgent`, the deploy agent of the last release environment), for the steps that merge, tag, release and upload. Never on the `ci` or `release` agent | Write every repository; the only account allowed to merge into an application's `main` and create its `v*` tags; post statuses | now: [setup.md 9.7](setup.md#97-the-forgejo-accounts-and-tokens) |
+| `forge-read`: the Forgejo token of `jenkins-ci` (read-only: `read:repository`, `read:user`, `read:organization`), `FORGE_READ_TOKEN_FILE` | The Jenkins controller; bound for repository scans (controller) and for checkouts on every agent: CI, release and deploy | Read every repository, including yggdrasil's own (the library and the scripts) | now: setup.md 9.7 |
 | `forge-webhook`: the webhook secret, `FORGE_WEBHOOK_SECRET_FILE` | The Jenkins controller; the same value is `FORGE_WEBHOOK_SECRET` in the operator's shell for `rules.py` | Signs the webhooks `rules.py` creates. The Gitea plugin verifies no signature, so Jenkins checks nothing with it (a forged webhook only triggers a scan); it stays here as the one place the secret lives. Forgejo never shows it again: to change it, delete the hooks and run `rules.py` again | now: setup.md 9.7 |
-| Forgejo `renovate` bot token (`write:repository`, `write:issue`), `RENOVATE_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Push `renovate/*` branches (and any unprotected branch) and open pull requests | now: [Renovate](#renovate-the-daily-run) |
+| Forgejo `renovate` bot token (`write:repository`, `write:issue`, `read:user`, `read:organization`), `RENOVATE_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Push `renovate/*` branches (and any unprotected branch) and open pull requests | now: [Renovate](#renovate-the-daily-run) |
 | GitHub fine-grained token (read-only, public repositories, no permissions; optional), `RENOVATE_GITHUB_COM_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Read the release notes and changelogs of GitHub-hosted dependencies without the anonymous rate limit | now: [Renovate](#renovate-the-daily-run) |
 | Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |

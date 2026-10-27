@@ -9,6 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Forgejo Actions is off.** Jenkins runs every check, but Forgejo's own Actions was on by default. It ran each
+  repository's `.github/workflows` (Forgejo reads them when there is no `.forgejo/workflows`), and with no runner
+  those jobs sat on every pull request as "Waiting for a runner with the following label: ubuntu-latest". The
+  `forgejo` service of `platform/compose.yml` now sets `FORGEJO__actions__ENABLED=false`. It takes effect when the
+  container is recreated (`ygg platform up`).
+- **The `renovate` token's scopes.** The docs and `env/renovate.env.example` asked for `write:repository` and
+  `write:issue` only, and Renovate stopped at once with `Authentication failure`: it asks Forgejo who it is when
+  it starts, and Forgejo answers that only to a token with `read:user`. The token now has `read:user` and
+  `read:organization` as well, as Renovate's docs for Forgejo ask, and setup.md 9.9 shows how to check a token's
+  scopes without printing it. An installation with the old token makes a new one (setup.md 9.7) and puts it in
+  `renovate.env`.
+- **The Jenkins tokens' scopes.** setup.md 9.7 gave the `jenkins` token `write:repository` and the `jenkins-ci` token
+  `read:repository` only. When Jenkins scans a repository, its Gitea plugin looks the owner up, which Forgejo answers
+  only to a token with `read:user` and `read:organization`: every scan failed with `HTTP 403/Forbidden`, the jobs
+  found no pull requests, and no pull request got a status from Jenkins. Both tokens now have both scopes, and 9.7
+  shows how to check a token file without printing it. An installation with the old tokens makes new ones (9.7),
+  writes them to `forge-write-token` and `forge-read-token`, restarts the controller and scans the jobs again.
 - **The console check's APK is collected again.** `flutter pub get` links each plugin of the console's Windows build
   from the pub cache, outside the checkout (`console/windows/flutter/ephemeral/.plugin_symlinks`), and Jenkins refuses
   to collect anything from a checkout with a link that leads out of it: every build stopped at `a link in the

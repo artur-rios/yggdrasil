@@ -677,7 +677,8 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
     @classmethod
     def create_users(cls):
         cls.tokens = {}
-        scopes = {JENKINS_CI: "read:repository"}
+        # As setup.md 9.7 makes it: the plugin's scan looks the owner up, which needs read:user and read:organization.
+        scopes = {JENKINS_CI: "read:repository,read:user,read:organization"}
         for user in (OWNER, JENKINS, JENKINS_CI, CLAUDE):
             cls.admin_cli("create", "--username", user, "--password", f"throwaway-{uuid.uuid4().hex}",
                           "--email", f"{user}@example.com", *(["--admin"] if user == OWNER else []),
