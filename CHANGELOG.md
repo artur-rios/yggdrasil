@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   found no pull requests, and no pull request got a status from Jenkins. Both tokens now have both scopes, and 9.7
   shows how to check a token file without printing it. An installation with the old tokens makes new ones (9.7),
   writes them to `forge-write-token` and `forge-read-token`, restarts the controller and scans the jobs again.
+- **The console check's APK is collected again.** `flutter pub get` links each plugin of the console's Windows build
+  from the pub cache, outside the checkout (`console/windows/flutter/ephemeral/.plugin_symlinks`), and Jenkins refuses
+  to collect anything from a checkout with a link that leads out of it: every build stopped at `a link in the
+  checkout leads outside it (exit 3); nothing of console is collected` and was unstable, without the APK.
+  `ci/console.sh` now deletes that generated folder when it ends, whether the check passed or failed;
+  `scripts/test_ci_console.py` runs it with a fake Flutter to prove no such link is left.
 
 ## [0.9.0] - 2026-10-26
 
