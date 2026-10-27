@@ -20,6 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `read:organization` as well, as Renovate's docs for Forgejo ask, and setup.md 9.9 shows how to check a token's
   scopes without printing it. An installation with the old token makes a new one (setup.md 9.7) and puts it in
   `renovate.env`.
+- **The Jenkins tokens' scopes.** setup.md 9.7 gave the `jenkins` token `write:repository` and the `jenkins-ci` token
+  `read:repository` only. When Jenkins scans a repository, its Gitea plugin looks the owner up, which Forgejo answers
+  only to a token with `read:user` and `read:organization`: every scan failed with `HTTP 403/Forbidden`, the jobs
+  found no pull requests, and no pull request got a status from Jenkins. Both tokens now have both scopes, and 9.7
+  shows how to check a token file without printing it. An installation with the old tokens makes new ones (9.7),
+  writes them to `forge-write-token` and `forge-read-token`, restarts the controller and scans the jobs again.
 
 ## [0.9.0] - 2026-10-26
 
