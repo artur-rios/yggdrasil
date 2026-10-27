@@ -23,10 +23,12 @@ and what each repository needs from you besides ([section 3](#3-what-each-reposi
 
 ## 0. Before the first branch
 
-**The cutover is done, through 5.19.** [`migrate.py verify`](cutover.md#516-verify-the-gate) says `0 checks failed`,
-Jenkins has scanned the repositories ([5.18](cutover.md#518-the-new-controller-sees-the-repositories)), and your clone
-points at Forgejo ([5.19](cutover.md#519-your-clones-point-at-forgejo)). The cutover names the remotes `origin` (Forgejo)
-and `github` (the mirrored copy, for reading only), and every command below pushes to `origin`:
+**The cutover was carried out on 2026-10-26.** The old server became the
+[Linux Application Server](../README.md#concepts), the [Linux DevOps Server](../README.md#concepts) was added, and all
+the repositories were imported into Forgejo. [`migrate.py verify`](cutover.md#516-verify-the-gate) said `0 checks
+failed`, Jenkins scanned the repositories ([5.18](cutover.md#518-the-new-controller-sees-the-repositories)), and your
+clone points at Forgejo ([5.19](cutover.md#519-your-clones-point-at-forgejo)). The cutover names the remotes `origin`
+(Forgejo) and `github` (the mirrored copy, for reading only), and every command below pushes to `origin`:
 
 ```bash
 git -C D:/Repositories/<repo> remote -v      # origin: git.techcraftsmen.net, github: github.com
@@ -48,7 +50,7 @@ that tag. Every branch below relies on the pipeline of this plan (checks scoped 
 `YGGDRASIL_LIBRARY_VERSION`. Check that it is a tag that has them before the first pull request:
 
 ```bash
-grep '^YGGDRASIL_LIBRARY_VERSION=' /etc/yggdrasil/platform.env                  # on the dev machine
+grep '^YGGDRASIL_LIBRARY_VERSION=' /etc/yggdrasil/platform.env                  # on the DevOps Server
 git ls-remote --tags origin 'v*' | tail -3                                      # the tags on Forgejo's yggdrasil
 git show <tag>:jenkins/library/vars/yggdrasilPipeline.groovy | grep -c finalize    # not 0 when the tag has them
 ```
@@ -56,24 +58,25 @@ git show <tag>:jenkins/library/vars/yggdrasilPipeline.groovy | grep -c finalize 
 If it is `0`, 5.8a was not done or the variable was not changed: do that first. Later, to upgrade the pipeline,
 release yggdrasil and set the variable again ([README, Day to day](../README.md#day-to-day): "Upgrade the pipeline").
 
-**What must not happen early.**
+**What had to wait for the window.** The window is over, so none of this is pending; it is the reason the branches
+were prepared and left unpushed until now.
 
-- **Nothing of this plan reaches `main` before the window.** The old controller reads `main`, so the plan's branch
-  (`feature/plan-5-repositories`) and yggdrasil's move branch go onto `develop` and `main` in 5.8a, once the old
-  controller is stopped (5.3), and the `forge` and `mirror` blocks of `catalog.yaml` are added only at
-  [2.2](cutover.md#22-the-catalog-the-dev-machine-reads), [4.2](cutover.md#42-your-catalog-locally) and
-  [5.9](cutover.md#59-the-catalog-goes-to-main); `python3 scripts/catalog.py forge type` prints `github` until then.
-- **Merging this plan into `develop` early freezes yggdrasil's releases until 5.8a.** A release branch is a snapshot
-  of `develop`, so any yggdrasil release cut after that merge carries the plan to `main`, which the old controller
-  reads. If the plan does reach `develop` before the window, release nothing of yggdrasil until 5.8a, whose step 1
-  then finds it merged already and goes on.
-- **No branch is pushed to Forgejo before the window has finished.** Until 5.16 passes, pushes still go to GitHub.
+- **Nothing of this plan reached `main` before the window.** The old controller read `main`, so the plan's branch
+  (`feature/plan-5-repositories`) and yggdrasil's move branch went onto `develop` and `main` in 5.8a, once the old
+  controller was stopped (5.3), and the `forge` and `mirror` blocks of `catalog.yaml` were added only at
+  [2.2](cutover.md#22-the-catalog-the-devops-server-reads), [4.2](cutover.md#42-your-catalog-locally) and
+  [5.9](cutover.md#59-the-catalog-goes-to-main); `python3 scripts/catalog.py forge type` printed `github` until then
+  (and prints `forgejo` now).
+- **Merging the plan into `develop` early would have frozen yggdrasil's releases until 5.8a.** A release branch is a
+  snapshot of `develop`, so any yggdrasil release cut after that merge would have carried the plan to `main`, which the
+  old controller read.
+- **No branch was pushed to Forgejo before the window finished.** Until 5.16 passed, pushes still went to GitHub.
 
 **Create the credentials and variables a branch needs before its first check or release uses them.** The Jenkins
 credentials are in [hosts.md, section 6](hosts.md#6-credentials): `reportgenerator-license` (every library, cerberus-api,
 fortuna-api, heimdall-api), the four `heimdall-ui-android-*`, `maestro-signing-key` and `maestro-signing-public-key`,
 and the four `orpheus-android-*`, all **secret text** under exactly those ids. Without `reportgenerator-license` the
-`coverage` check falls back to the free report and says so. One more is not made in Jenkins but on the dev machine:
+`coverage` check falls back to the free report and says so. One more is not made in Jenkins but on the DevOps Server:
 the nuget.org API key the libraries' tags push with, the file `NUGET_API_KEY_FILE` names in `platform.env`, which the
 controller turns into the credential `nuget-api-key` ([cutover.md, 2.3](cutover.md#23-forgejo-the-controller-and-the-agents);
 [setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget)). Without it a library's tag build packs, then fails
@@ -173,7 +176,7 @@ kind:
 
 | Kind | The first one | Success looks like |
 |---|---|---|
-| **Deployed application** (heimdall-api, heimdall-ui, fortuna-api, fortuna-ui, chimera) | A release, as [setup.md, 14](setup.md#14-the-first-release): `git switch develop && git pull && git switch -c release/<x.y.z> && git push -u origin release/<x.y.z>`, then the pull request `release/<x.y.z>` → `main`, approving each **Deploy** | Jenkins merges and tags `v<x.y.z>`; the release has its files; `ygg status` on the apps machine shows the new version. Set what the repository's `CONTRIBUTING.md` asks for (a version in the manifest, a changelog heading) on `develop` first: a release branch carries no commits of its own |
+| **Deployed application** (heimdall-api, heimdall-ui, fortuna-api, fortuna-ui, chimera) | A release, as [setup.md, 14](setup.md#14-the-first-release): `git switch develop && git pull && git switch -c release/<x.y.z> && git push -u origin release/<x.y.z>`, then the pull request `release/<x.y.z>` → `main`, approving each **Deploy** | Jenkins merges and tags `v<x.y.z>`; the release has its files; `ygg status` on the Application Server shows the new version. Set what the repository's `CONTRIBUTING.md` asks for (a version in the manifest, a changelog heading) on `develop` first: a release branch carries no commits of its own |
 | **Library** (the 12 `dotnet-*`) | The release of its `CONTRIBUTING.md`, "Releasing": a `release/<version>` pull request into `main`, merged by you with a merge commit, then an **annotated** tag with the bare version, pushed the same day | The package is on nuget.org, and the docs site is rebuilt at `docs.artur-rios.tech/<repo>` by the push to `main` |
 | **Owner-tag repository with release files** (yggdrasil, alexandria-ui, cerberus-ui, maestro, orpheus, personal-lab) | The same, with a `v<version>` tag | The release has its files (and, for alexandria-ui, cerberus-ui, maestro and orpheus, their Windows ones); for maestro, `release-manifest.json` and `.sig` |
 | **CI repository with no release** (alexandria-api, cerberus-api, ai-coding-skills, coding-challenge-library, reveal.js) | Nothing to release: the pull request's green checks are the test | Step 3 |
@@ -200,17 +203,17 @@ For a repository with a site on GitHub Pages or Vercel, once the new address ser
 - **Vercel** (the five projects: personal-page, personal-blog, tech-craftsmen-company-page, under-construction-template,
   github-readme-stats): in Vercel, delete the project.
 - **Then the DNS.** In Cloudflare's **DNS → Records**, delete the site's records that pointed at Vercel
-  (`cname.vercel-dns.com`, or an `A` to `76.76.21.21`), the ones the cutover kept ([5.8](cutover.md#58-dns-the-apps-machines-names-behind-cloudflare);
+  (`cname.vercel-dns.com`, or an `A` to `76.76.21.21`), the ones the cutover kept ([5.8](cutover.md#58-dns-the-application-servers-names-behind-cloudflare);
   1.5's zone exports list them), in both zones:
   - `artur-rios.tech`: the `CNAME`s of `www` (personal-page) and `blog` (personal-blog), and the bare domain's record
     if it points there;
   - `techcraftsmen.net`: the company page's `www` and the bare domain's record (tech-craftsmen-company-page), and any
     other name of the zone the export shows on Vercel, with its site.
 
-  The wildcard record then sends a subdomain to the apps machine. A bare domain has no record left: run
+  The wildcard record then sends a subdomain to the Application Server. A bare domain has no record left: run
   `cloudflare_dns.py` (below) right after deleting it, with the `--skip-caa` flags still needed, and it makes the bare
   domain's `A`. These names stay the same, so the new site is served only once their Vercel record
-  is gone, and you cannot try it first: the apps machine refuses anything that does not come through Cloudflare
+  is gone, and you cannot try it first: the Application Server refuses anything that does not come through Cloudflare
   ([cutover.md, 8](cutover.md#8-what-you-check-by-hand)). For each, delete the record first, look at the site at once
   (`curl -sI https://www.artur-rios.tech/`, `curl -sI https://www.techcraftsmen.net/`), and delete the Vercel project
   only when it is right. To go back, put the record back from 1.5's zone export, DNS only.
@@ -329,7 +332,7 @@ the tag. So steps 1 to 3 do not apply to it, and the head in section 2 is the on
 ### The libraries
 
 - Credential `reportgenerator-license` for all twelve (their `coverage` check; their docs sites take its report).
-  The release agent's `nuget-api-key` comes from the key file you put on the dev machine and name in `NUGET_API_KEY_FILE`
+  The release agent's `nuget-api-key` comes from the key file you put on the DevOps Server and name in `NUGET_API_KEY_FILE`
   ([section 0](#0-before-the-first-branch)): check it is there (**Manage Jenkins → Credentials** lists `nuget-api-key`)
   before the first library's tag.
 - **The release.** `CONTRIBUTING.md`'s "Releasing" on each branch: the version and the changelog go on `develop` first,
@@ -377,7 +380,7 @@ the tag. So steps 1 to 3 do not apply to it, and the head in section 2 is the on
 - **personal-blog.**
   - Delete the local, untracked `.vercel/` and `.env.local` in the clone: `.env.local` holds a `VERCEL_OIDC_TOKEN`.
   - Giscus needs the GitHub repository `personal-blog-comments` with **Discussions** on.
-- **github-readme-stats.** On the apps machine, as application variables of `production`
+- **github-readme-stats.** On the Application Server, as application variables of `production`
   (`ygg vars set github-readme-stats@production PAT_1=-`, or `/etc/yggdrasil/production/github-readme-stats.env`):
   - `PAT_1`, and optionally `PAT_2` to `PAT_n`: read-only GitHub tokens with no permissions;
   - `WHITELIST=artur-rios`, required: it limits the token to your cards;

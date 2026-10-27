@@ -11,7 +11,7 @@ Every part of yggdrasil reads it:
 | Jenkins: the shared pipeline | What each push or pull request deploys, where, and with which options; with the repository's `yggdrasil.yml`, which checks and releases it gets ([The pipeline](setup.md#the-pipeline)) |
 | `scripts/pipeline_config.py` | Reads each repository's `yggdrasil.yml` and checks it against its catalog entry: credentials, checks, release, publish ([Repository pipeline file](#repository-pipeline-file)) |
 | `scripts/deploy.sh` | Whether the application deploys to that environment, its mode, timeouts, rollback depth and whether it runs on demand |
-| `scripts/platform.sh` | That every environment in the host's `ENVIRONMENTS` exists; the GitHub owner and repository for Jenkins |
+| `scripts/platform.sh` | That every environment in the host's `ENVIRONMENTS` exists; the owner and repository for Jenkins |
 | `ygg` (`scripts/host.sh`) | The applications of each of the host's environments; which environments it may stop |
 | `scripts/rules.py` (`github/rulesets.py` runs it) | The git server (`forge`), the `repositories`, each repository's required checks and the `deploy/<environment>` statuses on `main`, the users who may merge (`forge.jenkinsUser`, `forge.developers`) and the tag pattern. Applies them on GitHub or Forgejo ([setup.md, step 12](setup.md#12-apply-the-branch-rules)), and with a `mirror` the `mirror tags` ruleset on each repository's GitHub copy under `mirror.github` |
 | `scripts/forge.sh` | The git server's type, API address and the owner, when the environment doesn't give them: the commands Jenkins and the scripts use to set statuses, merge, tag, release and delete branches ([setup.md](setup.md#the-git-server-commands)) |
@@ -41,7 +41,7 @@ The catalog is read from each host's checkout when the containers start. After c
 ## Top level
 
 ```yaml
-owner: acme            # GitHub user or organisation of the application repositories and of this one
+owner: acme            # user or organisation on the git server of the application repositories and of this one
 repository: yggdrasil  # this repository's name under the owner (default yggdrasil)
 forge: {...}           # the git server: forgejo or github (default: github, see below)
 mirror: {...}          # optional, with forgejo: mirror the repositories to GitHub
@@ -411,9 +411,9 @@ on the preset.
 
 An environment is a place applications run: a laptop, a staging server, production. A host (a
 machine, a VM, a WSL distribution: anything with its own Docker engine) runs one environment or
-several. The shipped catalog has both: `local` on a developer's Docker Desktop, and `development`,
-`homologation` and `production` together on one VPS
-([example](examples/docker-desktop-and-vps/README.md)).
+several; a [Linux Application Server](../README.md#concepts) is such a host. The shipped catalog has both: `local`
+on a developer's Docker Desktop, and `development`, `homologation` and `production` together on one Application
+Server ([example](examples/docker-desktop-and-vps/README.md)).
 
 ```yaml
 environments:
@@ -635,7 +635,7 @@ command.
 ## Recipes
 
 **Several environments on one host.** The shipped catalog's layout: development, homologation and
-production on one VPS. Give the environments the same `agent`, a distinct `hostSuffix` (production
+production on one Application Server. Give the environments the same `agent`, a distinct `hostSuffix` (production
 can keep none), and `onDemand: true` to those that should run only while used:
 
 ```yaml
@@ -659,7 +659,7 @@ certificate covers them all. Then `scripts/platform.sh up`, and run the agent na
 `ygg env start development` switches development on, `env stop development` off again.
 
 **A dev server that follows `develop`, on a host of its own.** Add the environment below and push
-it to `main`. Then pull and restart Jenkins on the controller host (it creates the new agent only
+it to `main`. Then pull and restart Jenkins on the [Linux DevOps Server](../README.md#concepts) (it creates the new agent only
 when it starts), and bring up a host for it with that agent's secret
 ([setup.md](setup.md#an-environment)):
 

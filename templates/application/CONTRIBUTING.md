@@ -1,6 +1,6 @@
 # Contributing
 
-This repository is deployed by [yggdrasil](https://github.com/<owner>/<repository>) (the `owner` and
+This repository is deployed by [yggdrasil](https://<git-server>/<owner>/<repository>) (the git server, `owner` and
 `repository` of that installation's `catalog.yaml`). It is the application `<application-id>` in
 that catalog, which decides its environments, its Jenkins job, its branch rules and required checks on
 its git server (Forgejo or GitHub), and its place in the console. What Jenkins checks and releases is
@@ -52,7 +52,8 @@ the Branch Policy workflow. It fails, with the message shown, when:
 | Into `main`, every commit of the release branch must already be on `develop` | `'<branch>' has commits that are not on develop. ...` |
 | Into `main`, the version must not be released yet (no tag `v<version>`) | `Version <version> was already released (tag v<version> exists). Bump the version.` |
 
-`v*` tags can't be moved or deleted once created.
+`v*` tags are created only by Jenkins (or, for an owner-tagged repository, its owner) and must never be moved or
+deleted: GitHub refuses it, and on Forgejo a daily check fails and names any tag that was.
 
 ## Commits and changelog
 
@@ -116,10 +117,11 @@ changelog (step 1 below), never on the release branch.
 
 Steps 4 and 5 are Jenkins' only when the application has a release environment (`trigger: release`)
 in the catalog. Otherwise, once the checks pass, merge the pull request yourself with a merge commit
-and create the release, which creates the tag:
+and create the release, which creates the tag (on Forgejo, **New Release** on the repository's Releases page, with
+the target `main`):
 
 ```bash
-gh release create v1.4.0 --target main --generate-notes
+gh release create v1.4.0 --target main --generate-notes   # on GitHub
 ```
 
 If a deploy fails:

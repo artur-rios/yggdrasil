@@ -1,11 +1,5 @@
 # yggdrasil
 
-> [!NOTE]
-> This is the real, open-source code of yggdrasil. Its home is Forgejo, at
-> https://git.techcraftsmen.net/artur-rios/yggdrasil; the copy on GitHub is a read-only mirror, for viewing only, and
-> its issues and pull requests are not followed. If you want to contribute, email me at
-> arturdev@duck.com.
-
 A self-hosted **deploy manager** for Docker applications. You describe your **systems** (products
 made of one or more applications, such as an API and its web front end) and your **environments**
 (development, homologation, production, or as many as you need, several of them on one host if you
@@ -32,17 +26,21 @@ console's Windows builds run on GitHub Actions; the releases are published on bo
 
 ```mermaid
 flowchart LR
-    dev([Developer]) -- push / pull request --> gh
-    subgraph gh [Git server: Forgejo or GitHub]
-        repos[Application repositories<br/>Protected branches and tags: release flow]
+    dev([Developer]) -- push / pull request --> forge
+    subgraph devops [Linux DevOps Server]
+        forge[Forgejo<br/>protected branches and tags: release flow]
+        jc[Jenkins controller]
+        build[CI and release agents]
+        forge -- webhooks --> jc
+        jc -- status, merge, tag, release --> forge
+        jc -. WebSocket .- build
     end
-    subgraph vps [VPS: the controller host]
-        jc[Jenkins controller] -. WebSocket .- a1[Agent vps]
-        a1 --> envs[development · homologation · production<br/>applications, one Compose project per environment]
+    subgraph apps [Linux Application Server]
+        a1[Deploy agent] --> envs[development · homologation · production<br/>applications, one Compose project per environment]
         p1[Traefik · status API · console · monitoring<br/>one platform for the three environments] --> envs
     end
-    gh -- webhooks --> jc
-    jc -- status, merge, tag, release --> gh
+    jc -. WebSocket .- a1
+    forge -- push mirror --> gh[(GitHub<br/>read-only mirror)]
     subgraph ws [Workstation]
         local[local: Docker Desktop<br/>deployed by hand]
     end
@@ -50,9 +48,10 @@ flowchart LR
     console([Console<br/>web · Windows · Android]) -- /api/status --> p1
 ```
 
-That is the default setup, and [the worked example](docs/examples/docker-desktop-and-vps/README.md).
-Each environment can also have a host of its own, or any mix: every host runs its own platform and
-an agent that dials out to the one controller.
+That is this repository's default setup: a **Linux DevOps Server** that keeps the code and runs the pipeline,
+and a **Linux Application Server** that runs the environments ([Concepts](#concepts) says what each one is).
+Each environment can also have an Application Server of its own, or any mix: every Application Server runs its
+own platform and a deploy agent that dials out to the one Jenkins controller.
 
 ## Concepts
 
@@ -61,7 +60,9 @@ an agent that dials out to the one controller.
 | **Application** | One deployable unit (an API, a web UI, a worker) with its own repository, container image and release cycle. |
 | **System** | What users think of as one product: a group of applications that work together. The console shows a system's status and, expanded, each of its applications. |
 | **Environment** | A stage applications run in, such as local, development, homologation or production. Options: exposure (`proxy` through Traefik or host `ports`), `trigger` (`manual`, `branch` or `release`), which Jenkins `agent` deploys it, whether it needs `approval`, `hostSuffix` (its host names, `heimdall-dev.<domain>`), `onDemand` (runs only while used), timeouts and rollback depth. Each application deploys to all environments or to its own list, and can override any option per environment. |
-| **Host** | A machine (a VPS, a VM) with a role, `dev` or `apps` ([docs/hosts.md](docs/hosts.md)): Ubuntu 24.04 or 26.04 LTS, where every service user runs its own rootless Docker engine. An **apps** host runs one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins agent and one or more domains for all of them; each application runs once per environment, as its own Compose project. The **dev** host runs Forgejo, the Jenkins controller and the build agents. A workstation's `ports` environment needs no platform. |
+| **Linux DevOps Server** | The machine that keeps the code and runs the pipeline: Forgejo, the Jenkins controller, the CI and release build agents, Renovate and their backups. There is one per installation. Its role is `dev` (`ygg install --role dev`); [docs/hosts.md](docs/hosts.md) has its users, firewall and files. |
+| **Linux Application Server** | A machine that runs the applications: one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins deploy agent and one or more domains for all of them; each application runs once per environment, as its own Compose project. An installation has one or more. Its role is `apps` (`ygg install --role apps`). |
+| **Host** | Either server. Any machine that runs Ubuntu 24.04 or 26.04 LTS will do: a rented virtual server, a cloud VM, a physical server or one at home; yggdrasil assumes nothing of where it runs. On every host each service user runs its own rootless Docker engine. A workstation's `ports` environment needs no host. |
 | **Variables store** | An encrypted SQLite database per machine that holds the platform's and every application's environment variables and secrets, in layers (a value shared by several applications or environments is defined once), with history and rollback. Opt-in: without it the scripts read env files. Reference: [docs/variables.md](docs/variables.md). |
 | **Catalog** | [`catalog.yaml`](catalog.yaml): the environments, systems and applications. Jenkins jobs and agents, the git server's branch rules, deploys, the status API, Prometheus and the console all read it. Reference: [docs/catalog.md](docs/catalog.md). |
 
@@ -139,13 +140,13 @@ If a deploy fails, it rolls back to the image that was running, `deploy/<environ
 
 ```mermaid
 flowchart TB
-    net([Internet]) -- ":443 (apps machine: from Cloudflare only)" --> traefik
-    gitnet([git over SSH]) -- ":2222 (dev machine)" --> forgejo
+    net([Internet]) -- ":443 (Application Server: from Cloudflare only)" --> traefik
+    gitnet([git over SSH]) -- ":2222 (DevOps Server)" --> forgejo
     subgraph engine [One rootless Docker engine, run by the service user ygg]
         traefik[Traefik<br/>Let's Encrypt *.DOMAIN] --> apps[Applications<br/>one Compose project per environment]
         traefik --> console[Console web]
         traefik -- "/api/" --> status[Status API]
-        traefik -- "git.DOMAIN" --> forgejo[Forgejo<br/>dev machine]
+        traefik -- "git.DOMAIN" --> forgejo[Forgejo<br/>DevOps Server]
         status -- probes health --> apps
         status -- container list only --> proxy[Docker socket proxies<br/>read-only, one per client]
         traefik -- containers, events --> proxy
@@ -159,9 +160,9 @@ flowchart TB
     end
 ```
 
-Two Docker networks connect them: `edge` (Traefik, applications, status API) and `telemetry` (Prometheus and everything it scrapes). On both, an application is `<application>.<environment>` (`heimdall-api.production`), so the environments of a host never mix. No container publishes a port except Traefik (80, 443) and, on the dev machine, Forgejo's git over SSH (2222). Metrics are served on a private port that is neither published nor routed.
+Two Docker networks connect them: `edge` (Traefik, applications, status API) and `telemetry` (Prometheus and everything it scrapes). On both, an application is `<application>.<environment>` (`heimdall-api.production`), so the environments of a host never mix. No container publishes a port except Traefik (80, 443) and, on the DevOps Server, Forgejo's git over SSH (2222). Metrics are served on a private port that is neither published nor routed.
 
-The engine is **rootless**: it runs as the service user `ygg`, and "root" inside a container is that user on the host, so a compromised container reaches only what `ygg` can. Only the Jenkins agent holds the Docker socket, since it deploys. Traefik, Alloy and the status API each read Docker through a socket proxy of their own, on a private network, that allows only the read-only requests that client makes. The status API, the one behind a token on the internet, gets the container list and nothing else: not the container inspect, which carries every application's secrets. The two machines, their users and their firewall are in [docs/hosts.md](docs/hosts.md).
+The engine is **rootless**: it runs as the service user `ygg`, and "root" inside a container is that user on the host, so a compromised container reaches only what `ygg` can. Only the Jenkins agent holds the Docker socket, since it deploys. Traefik, Alloy and the status API each read Docker through a socket proxy of their own, on a private network, that allows only the read-only requests that client makes. The status API, the one behind a token on the internet, gets the container list and nothing else: not the container inspect, which carries every application's secrets. The two servers, their users and their firewall are in [docs/hosts.md](docs/hosts.md).
 
 ## The console
 
@@ -192,19 +193,19 @@ the APK (`ci/release-build.sh`) and has GitHub Actions on the mirror build the i
 
 ## Getting started
 
-**[docs/setup.md](docs/setup.md) is the step-by-step guide**, from an empty GitHub account to a
-first release. In short:
+**[docs/setup.md](docs/setup.md) is the step-by-step guide**, from nothing to a first release. In short:
 
 | | Step | Guide |
 |---|---|---|
 | **Prepare** | Plan environments and hosts, install the tools, fork this repository | [0–2](docs/setup.md#0-plan-the-installation) |
 | | Write `catalog.yaml` and the stack files | [3–4](docs/setup.md#3-write-the-catalog), [catalog.md](docs/catalog.md) |
 | | Add the [`templates/application/`](templates/application) files to each application repository | [5](docs/setup.md#5-prepare-each-application-repository) |
-| **Accounts** | A domain and its DNS (Cloudflare, or free with DuckDNS), and a GitHub App for Jenkins | [6–7](docs/setup.md#6-domain-and-dns), [dns.md](docs/dns.md) |
-| **Hosts** | Prepare each machine with `ygg install --role dev\|apps`, bring up the dev machine (the controller host) and the apps machine, then the application env files | [8–11](docs/setup.md#8-prepare-each-machine), [hosts.md](docs/hosts.md) |
+| **Accounts** | A domain and its DNS (Cloudflare, or free with DuckDNS), and a GitHub App for Jenkins (for GitHub, or for Forgejo's GitHub mirror) | [6–7](docs/setup.md#6-domain-and-dns), [dns.md](docs/dns.md) |
+| **Hosts** | Prepare each machine with `ygg install --role dev\|apps`, bring up the Linux DevOps Server (the controller host) and the Linux Application Server, then the application env files | [8–11](docs/setup.md#8-prepare-each-machine), [hosts.md](docs/hosts.md) |
 | **Finish** | Apply the branch rules, check everything, cut the first `release/x.y.z` | [12–14](docs/setup.md#12-apply-the-branch-rules) |
 
-**Moving an installation that runs today** (one VPS deploying from GitHub) to the two machines and Forgejo:
+**Moving an installation of the older layout** (one server that runs Jenkins and every environment, deploying from
+GitHub) to the two servers and Forgejo:
 [docs/cutover.md](docs/cutover.md), the runbook for the machines, the maintenance window and the clean-up, and then
 [docs/moving-repositories.md](docs/moving-repositories.md), the guide to landing each repository's prepared branch on
 Forgejo and Jenkins, one at a time.
@@ -213,11 +214,11 @@ On an Ubuntu host, [`ygg`](docs/cli.md) does the host steps, as a command or fro
 menu: it installs the tools, sets up and deploys applications, shows what runs, and shows, changes
 and rolls back each application's variables and secrets (`scripts/ygg.sh self-install` installs it).
 
-[docs/examples/docker-desktop-and-vps](docs/examples/docker-desktop-and-vps/README.md) is the
-default setup worked through on real hardware:
+[docs/examples/docker-desktop-and-vps](docs/examples/docker-desktop-and-vps/README.md) works through the older,
+one-server layout on real hardware:
 - `local` on Docker Desktop (Windows), deployed by hand
 - `development` and `homologation`, on demand, and `production`, always on, all three on one
-  Ubuntu VPS that also runs Jenkins
+  Ubuntu server that also runs Jenkins
 
 ## Layout
 
@@ -235,9 +236,9 @@ default setup worked through on real hardware:
 | `scripts/github.sh` | The GitHub Actions side of a release: read the checks of a commit, wait for a tag, run a workflow, download its files (and the old GitHub-only release path). The rest it hands to `forge.sh` |
 | `scripts/pipeline_config.py`, `scripts/branch-policy.sh`, `scripts/run-check.sh` | A repository's `yggdrasil.yml` read and validated against the catalog; the branching model checked on a pull request; one check run in its container on a build agent ([docs/catalog.md](docs/catalog.md#repository-pipeline-file)) |
 | `scripts/publish-release.sh`, `scripts/release_notes.py`, `scripts/nuget-push.sh` | A release made on the git server (and its GitHub copy) with its files checked and its notes written; a library's NuGet packages pushed |
-| `scripts/renovate.sh` | One Renovate run against the catalog's repositories, by the `renovate` user on the dev machine |
+| `scripts/renovate.sh` | One Renovate run against the catalog's repositories, by the `renovate` user on the DevOps Server |
 | `scripts/rules.py` | Applies the branching model (protected branches, tags, required checks, webhooks) to every catalog repository, on Forgejo or GitHub |
-| `scripts/migrate.py`, `scripts/cloudflare_dns.py`, `scripts/volumes.sh`, `scripts/prove-machine.sh` | The move from one VPS on GitHub to the two machines: the repositories imported into Forgejo with their GitHub copies and push mirrors, the DNS records of both domains, the Docker volumes carried across, and the rootless setup proved on each machine ([docs/cutover.md](docs/cutover.md)) |
+| `scripts/migrate.py`, `scripts/cloudflare_dns.py`, `scripts/volumes.sh`, `scripts/prove-machine.sh` | The move from one server on GitHub to the two servers: the repositories imported into Forgejo with their GitHub copies and push mirrors, the DNS records of both domains, the Docker volumes carried across, and the rootless setup proved on each machine ([docs/cutover.md](docs/cutover.md)) |
 | `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, the Jenkins controller and the deploy agent (`platform/build-agent.yml` is the CI and release agents') |
 | `jenkins/Jenkinsfile.default`, `jenkins/library/` | The one Jenkinsfile every job runs (a repository's own is never read) and the pinned library it calls: checks, deploys, releases |
 | `github/rulesets.py` | Moved: runs `scripts/rules.py` with the same arguments |
@@ -245,7 +246,7 @@ default setup worked through on real hardware:
 | `console/` | The console (Flutter): web, Android, Windows |
 | `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads) |
 | `templates/application/` | Files each application repository needs |
-| `docs/` | Catalog reference, setup guide, the two machines (`hosts.md`), the cutover runbook (`cutover.md`), the guide to moving each repository (`moving-repositories.md`, with `migration-checklist.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
+| `docs/` | Catalog reference, setup guide, the two servers (`hosts.md`), the cutover runbook (`cutover.md`), the guide to moving each repository (`moving-repositories.md`, with `migration-checklist.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
 
 ## Day to day
 
@@ -275,7 +276,12 @@ Upgrading an existing installation from one release to the next is described in
 to 0.5 (several environments per host), see
 [Upgrading from 0.4 to 0.5](./CHANGELOG.md#upgrading-from-04-to-05); from 0.5 to 0.6 (the variables store, optional), see
 [Upgrading from 0.5 to 0.6](./CHANGELOG.md#upgrading-from-05-to-06); from 0.6 to 0.7 (the `ygg` command), see
-[Upgrading from 0.6 to 0.7](./CHANGELOG.md#upgrading-from-06-to-07).
+[Upgrading from 0.6 to 0.7](./CHANGELOG.md#upgrading-from-06-to-07); from 0.7.3 to 0.7.4, see
+[Upgrading from 0.7.3 to 0.7.4](./CHANGELOG.md#upgrading-from-073-to-074); to 0.8 (the Jenkins pipeline, rootless
+Docker), see [Upgrading an existing GitHub installation to the pipeline](./CHANGELOG.md#upgrading-an-existing-github-installation-to-the-pipeline),
+[Upgrading: start tag-check's record](./CHANGELOG.md#upgrading-start-tag-checks-record) and
+[Upgrading a host from rootful Docker](./CHANGELOG.md#upgrading-a-host-from-rootful-docker); to 0.9 (Forgejo, and the
+two servers), [docs/cutover.md](docs/cutover.md).
 
 ## Changelog
 
@@ -287,9 +293,11 @@ Notable changes in each release are recorded in [CHANGELOG.md](./CHANGELOG.md). 
 Building and testing the status API, the console and the platform scripts, the branching model and the release
 process of this repository are described in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
+The GitHub repository is a read-only mirror for the real, open-source code of yggdrasil. Its home is Forgejo, at
+https://git.techcraftsmen.net/artur-rios/yggdrasil. If you want to contribute, e-mail me at arturdev@duck.com.
+
 ## Legal
 
-Proprietary. See [LICENSE](LICENSE). Copyright (c) 2026 Artur Rios. All rights reserved.
+This project is licensed under the [Artur Rios Attribution License](LICENSE). It is free and open source: you may view, use, fork, modify, and extend it, provided you credit the author, Artur Rios, with a link to [artur-rios.tech](https://artur-rios.tech) or [github.com/artur-rios](https://github.com/artur-rios).
 
-The license lets you fork or copy this repository, change it and run it on your own hosts to deploy your own
-applications. It does not let you redistribute it, or offer it to others as a service.
+Copyright &copy; 2026 Artur Rios.

@@ -14,7 +14,8 @@ DNS provider must:
 A machine can serve **more than one domain**: `DOMAIN` and, in `EXTRA_DOMAINS`, others (the default
 setup has two Cloudflare zones, one for applications and APIs and one for static and docs sites).
 Traefik gets a certificate for each domain and its wildcard, and the DNS provider must manage all of
-them. [hosts.md](hosts.md#2-domains-and-cloudflare) explains the layout of the two machines.
+them. [hosts.md](hosts.md#2-domains-and-cloudflare) explains the layout of the two servers: the
+[Linux DevOps Server and the Linux Application Server](../README.md#concepts).
 
 > **Coming from [setup.md](setup.md) step 6?** Do only **A1 to A4** (Cloudflare) or **B1**
 > (DuckDNS) now, then go back to setup.md. You write the host's files (A5 or B2) at setup step 9.2,
@@ -39,9 +40,9 @@ With `DOMAIN=example.dev`, one host serves, for all its environments:
 | Host name | What |
 |---|---|
 | `yggdrasil.<DOMAIN>` | The web console, and the status API under `/api/` |
-| `grafana<PLATFORM_HOST_SUFFIX>.<DOMAIN>` | Grafana (`PLATFORM_HOST_SUFFIX` is empty unless you set it; the dev machine sets `-dev`, giving `grafana-dev.<DOMAIN>`) |
+| `grafana<PLATFORM_HOST_SUFFIX>.<DOMAIN>` | Grafana (`PLATFORM_HOST_SUFFIX` is empty unless you set it; the DevOps Server sets `-dev`, giving `grafana-dev.<DOMAIN>`) |
 | `traefik<PLATFORM_HOST_SUFFIX>.<DOMAIN>` | The Traefik dashboard. Answers `401` until you sign in |
-| `jenkins.<DOMAIN>` | The Jenkins controller, only on the host whose `COMPOSE_PROFILES` includes `jenkins`. GitHub's webhooks go here |
+| `jenkins.<DOMAIN>` | The Jenkins controller, only on the host whose `COMPOSE_PROFILES` includes `jenkins`. The git server's webhooks go here (Forgejo's, or GitHub's on a GitHub installation) |
 | `<name><hostSuffix>.<DOMAIN>` | Each deployed application in each environment, at the `PUBLIC_HOST` or `UI_HOST` of its env file (its `host` in `catalog.yaml` plus the environment's `hostSuffix`: `heimdall-dev`, `heimdall-hml`, `heimdall`). Traefik answers `404` until the application is deployed there |
 
 A wildcard record covers them all: adding an application, or an environment to the host, never
@@ -56,7 +57,7 @@ a name under it, such as `yggdrasil.<DOMAIN>`.
 |---|---|
 | `example.dev` | Your domain |
 | `yourname.duckdns.org` | Your DuckDNS subdomain |
-| `203.0.113.10` | Your host's public IPv4 address. This one is reserved for documentation and reaches nothing. On the VPS, `curl -4 https://ifconfig.me` prints the real one; the provider's panel shows it too |
+| `203.0.113.10` | Your host's public IPv4 address. This one is reserved for documentation and reaches nothing. On the server, `curl -4 https://ifconfig.me` prints the real one; the provider's panel shows it too |
 | `you@example.com` | Your e-mail address. Let's Encrypt refuses addresses at `example.com` |
 | `<token>` | The API token or DuckDNS token you create below |
 
@@ -101,12 +102,12 @@ With one host, that one record is all: it runs development, homologation and pro
 one `DOMAIN`. Only another host, with a `DOMAIN` of its own, needs another record, named after it:
 `DOMAIN=staging.example.dev` → record `*.staging`.
 
-**With two machines and two domains** (the default setup, [hosts.md](hosts.md#2-domains-and-cloudflare)),
-make the records on **each** zone for the **apps machine**: `*` and the bare domain (the apps machine's
-`DOMAIN` and `EXTRA_DOMAINS` are both served by it). Then on the zone of the machine's `DOMAIN` add the
-**dev machine**'s own names, `git`, `jenkins`, `traefik-dev` and `grafana-dev` (its dashboards, with
-`PLATFORM_HOST_SUFFIX=-dev`), pointing at the dev machine's IP. A specific record
-wins over the wildcard. The dev machine's records stay **DNS only** for good: git over SSH cannot pass
+**With two servers and two domains** (the default setup, [hosts.md](hosts.md#2-domains-and-cloudflare)),
+make the records on **each** zone for the **Application Server**: `*` and the bare domain (the Application
+Server's `DOMAIN` and `EXTRA_DOMAINS` are both served by it). Then on the zone of the server's `DOMAIN` add the
+**DevOps Server**'s own names, `git`, `jenkins`, `traefik-dev` and `grafana-dev` (its dashboards, with
+`PLATFORM_HOST_SUFFIX=-dev`), pointing at the DevOps Server's IP. A specific record
+wins over the wildcard. The DevOps Server's records stay **DNS only** for good: git over SSH cannot pass
 Cloudflare's proxy, and a large push over HTTPS would hit its request size limit.
 
 A private address (`192.168.x.x`) is fine for a host only used on a LAN, or behind NAT: Let's
@@ -118,13 +119,13 @@ Cloudflare's form has no field for `validationmethods`: use the API, or the *DNS
 file line `@ 300 IN CAA 0 issue "letsencrypt.org; validationmethods=dns-01"`. `0 issue "letsencrypt.org; validationmethods=dns-01"`: only Let's Encrypt may issue certificates for
 the zone, and only after a DNS-01 proof, which needs the Cloudflare API token. Traefik proves control by DNS-01
 alone, so nothing legitimate is lost; without the record, whoever answers on port 80 of a name's address (a
-process on the dev machine that got there before Traefik, say) could pass Let's Encrypt's HTTP-01 check and get a
+process on the DevOps Server that got there before Traefik, say) could pass Let's Encrypt's HTTP-01 check and get a
 certificate for `git.` or `jenkins.`.
 Without `validationmethods=dns-01` the record still limits issuance to Let's Encrypt, but no longer to the proof
 Traefik uses.
 
 Start with **DNS only**: nothing sits between you and the host while you set things up. The proxy is
-[step A7](#a7-optional-the-cloudflare-proxy), for the apps machine only.
+[step A7](#a7-optional-the-cloudflare-proxy), for the Application Server only.
 
 Check it from any machine, a minute later:
 
@@ -133,8 +134,8 @@ nslookup yggdrasil.example.dev 1.1.1.1
 ```
 
 It should print your host's IP. `nslookup example.dev` (without a name in front) answers only if you
-made the bare-domain record too: with two machines and two domains you did (and it should print the
-apps machine's IP); with the one `*` record of a single host it finds nothing, and that's expected,
+made the bare-domain record too: with two servers and two domains you did (and it should print the
+Application Server's IP); with the one `*` record of a single host it finds nothing, and that's expected,
 because `*` covers names under the domain, not the domain itself.
 
 ### A4. Create the API token
@@ -209,9 +210,9 @@ JENKINS_URL=https://jenkins.example.dev/
   certificate; the same API token must manage them all. Empty if there is one domain.
 - `CLOUDFLARE_PROXIED`: `false` for now, as the records are DNS only. It becomes `true` once the records
   are proxied: [A7](#a7-optional-the-cloudflare-proxy) step 6 flips it. `false` for good on a machine whose
-  records stay DNS only, such as the dev machine.
-- `PLATFORM_HOST_SUFFIX`: not in this sample. The dev machine sets `PLATFORM_HOST_SUFFIX=-dev`, so its
-  Traefik dashboard and Grafana are `traefik-dev.` and `grafana-dev.` and do not take the apps machine's
+  records stay DNS only, such as the DevOps Server.
+- `PLATFORM_HOST_SUFFIX`: not in this sample. The DevOps Server sets `PLATFORM_HOST_SUFFIX=-dev`, so its
+  Traefik dashboard and Grafana are `traefik-dev.` and `grafana-dev.` and do not take the Application Server's
   names (hosts.md, [DNS records](hosts.md#dns-records)).
 - `ACME_CA_SERVER` is commented out in the template: remove the `#` in front of it. It points
   Traefik at Let's Encrypt's staging service for the first run: see
@@ -231,7 +232,7 @@ Coming from setup.md: go back to it. Otherwise, continue with
 ### A7. Optional: the Cloudflare proxy
 
 The proxy (orange cloud) hides the host's IP and adds DDoS protection and caching. It is for the
-**apps machine**; the dev machine stays DNS only (A3). Turn it on only once the real certificate works
+**Application Server**; the DevOps Server stays DNS only (A3). Turn it on only once the real certificate works
 ([step 4](#4-switch-to-the-real-certificate)):
 
 1. **SSL/TLS → Overview**. Set the encryption mode to **Full (strict)**, on every zone. On newer zones the
@@ -252,10 +253,10 @@ The proxy (orange cloud) hides the host's IP and adds DDoS protection and cachin
    **Bypass cache**. JSON is not cached by default, but a rule makes sure of it.
 6. On the machine, set `CLOUDFLARE_PROXIED=true` in `platform.env` and run `platform.sh up` (below).
 
-Behind the proxy the apps machine accepts 80 and 443 **only from Cloudflare's ranges**: its firewall
+Behind the proxy the Application Server accepts 80 and 443 **only from Cloudflare's ranges**: its firewall
 (`ygg install --role apps`) enforces it, so the machine cannot be reached around Cloudflare
-([hosts.md, the origin lock](hosts.md#the-origin-lock)). GitHub's webhooks and the Jenkins agents'
-WebSockets work through the proxy.
+([hosts.md, the origin lock](hosts.md#the-origin-lock)). Webhooks and the Jenkins agents'
+WebSockets work through the proxy too.
 
 **Per-source limits and Cloudflare.** Heimdall's edge limit on its credential routes
 (`stacks/heimdall-api.proxy.yml`), like Heimdall's own, counts the client address Traefik sees. Behind the
@@ -276,7 +277,7 @@ resolves every name below it too, so `yourname.duckdns.org` also answers for
 ### B1. Create the subdomains
 
 1. Sign in at [duckdns.org](https://www.duckdns.org) (GitHub, Google, ...).
-2. Add one subdomain **per host**: `yourname` for the VPS, which covers all its environments
+2. Add one subdomain **per host**: `yourname` for the server, which covers all its environments
    (`heimdall-dev.yourname.duckdns.org`). Every name under a subdomain shares its address, so a
    second host needs a subdomain of its own, `yourname-staging`, not `staging.yourname`.
 3. Set each subdomain's **current ip** to its host's public IPv4 address and click *update ip*.
@@ -333,15 +334,15 @@ one.
 ### 1. Open the ports
 
 Already done if you followed [setup.md step 8](setup.md#8-prepare-each-machine) (`ygg install` sets the
-firewall). In the VPS provider's panel, if it has its own firewall or security group, allow the same
+firewall). In the provider's panel, if it has its own firewall or security group, allow the same
 ports. On the host, as the admin:
 
 ```bash
 sudo ufw status
 ```
 
-It should list 22 (OpenSSH) as `ALLOW`, and 80 and 443: from anywhere on the dev machine (which also has
-2222), but only from Cloudflare's ranges on the apps machine, one rule per range. A rootless Docker
+It should list 22 (OpenSSH) as `ALLOW`, and 80 and 443: from anywhere on the DevOps Server (which also has
+2222), but only from Cloudflare's ranges on the Application Server, one rule per range. A rootless Docker
 engine publishes ports as ordinary processes, so these rules really apply to them.
 
 ### 2. Fill in every required variable
@@ -358,7 +359,7 @@ Otherwise `platform.sh` stops with `required variable ... is missing a value`.
 | `TRAEFIK_DASHBOARD_USERS` | `admin:` and a password hash, in single quotes. The template's `replace-me` placeholder passes the check but no password works with it |
 | `GRAFANA_ADMIN_PASSWORD` | Any password |
 | `YGGDRASIL_STATUS_TOKEN` | A random token of at least 32 characters. Keep a copy: the console asks for it |
-| `COMPOSE_PROFILES` | **Empty** to test DNS alone, on any host (`apps` on a machine that has `ENVIRONMENTS`). On the controller host, `forge,jenkins` once [setup.md step 9.2](setup.md#92-the-env-files-first-pass) is done: the GitHub App key must exist first. Not `agent` yet: it needs an agent secret that only exists later |
+| `COMPOSE_PROFILES` | **Empty** to test DNS alone, on any host (`apps` on a machine that has `ENVIRONMENTS`). On the DevOps Server (the controller host), `forge,jenkins` once [setup.md step 9.2](setup.md#92-the-env-files-first-pass) is done: the GitHub App key must exist first. Not `agent` yet: it needs an agent secret that only exists later |
 | `CLOUDFLARE_PROXIED`, `EXTRA_DOMAINS` | As in A5 |
 
 The secrets can be generated straight into the file:
@@ -424,8 +425,8 @@ docker exec yggdrasil-traefik-1 grep -o '"main": *"[^"]*"' /letsencrypt/acme.jso
 
 It prints `"main": "example.dev"` (your domain) once the certificate is issued, and nothing before.
 
-Then test it **from your own computer**, not the VPS. Many providers don't route a host's requests
-to its own public IP, so `curl` on the VPS times out even when everything works.
+Then test it **from your own computer**, not the server. Many providers don't route a host's requests
+to its own public IP, so `curl` on the server times out even when everything works.
 
 ```bash
 nslookup yggdrasil.example.dev 1.1.1.1                               # your host's IP (Cloudflare's, if proxied)
@@ -433,7 +434,7 @@ curl -kI https://yggdrasil.example.dev                               # HTTP/2 20
 curl -kvI https://yggdrasil.example.dev 2>&1 | grep -i issuer        # an issuer containing "(STAGING)"
 ```
 
-`-k` accepts the untrusted staging certificate. To test on the VPS itself, send the request to
+`-k` accepts the untrusted staging certificate. To test on the server itself, send the request to
 `127.0.0.1` while keeping the name:
 
 ```bash
@@ -467,7 +468,8 @@ Traefik renews the certificate by itself, 30 days before it expires.
 
 ### 5. Point the GitHub App and the applications at it
 
-- **GitHub App** ([setup.md step 7](setup.md#7-create-the-github-app)): Homepage URL
+- **GitHub App** (a GitHub installation only; on Forgejo `scripts/rules.py` makes the webhooks to Jenkins itself, so
+  there is nothing to point; [setup.md step 7](setup.md#7-create-the-github-app)): Homepage URL
   `https://jenkins.<DOMAIN>` (only informational), Webhook URL
   `https://jenkins.<DOMAIN>/github-webhook/` (must be reachable from GitHub, trailing slash
   included), with the `DOMAIN` of the host that runs the controller. It must match `JENKINS_URL`.
@@ -519,8 +521,8 @@ Traefik's errors: `docker logs yggdrasil-traefik-1 2>&1 | grep -iE 'acme|error' 
 | `rateLimited` | Too many attempts against the production CA. Use the staging CA and wait (the limits reset within hours) |
 | `unrecognized name` TLS alert, or `SEC_E_ILLEGAL_MESSAGE` on Windows | Traefik has no certificate for that name and refuses unknown names (`sniStrict`). Either the certificate isn't issued yet (read Traefik's errors), or the request used an IP address or a name outside `DOMAIN`/`*.DOMAIN` |
 | `Could not resolve host` for `example.dev` itself | Expected: only `*.example.dev` has a record. Test `yggdrasil.example.dev` |
-| Timeout from the VPS itself, but it works from your computer | The provider doesn't route the host's requests to its own public IP. Test on the VPS with `curl --resolve <name>:443:127.0.0.1` |
+| Timeout from the server itself, but it works from your computer | The provider doesn't route the host's requests to its own public IP. Test on the server with `curl --resolve <name>:443:127.0.0.1` |
 | Timeout on every host name, from everywhere | Ports 80/443 closed on the host or at the provider, or the record points at another address (check it isn't the example `203.0.113.10`) |
 | `ERR_TOO_MANY_REDIRECTS` | Cloudflare proxy with SSL/TLS mode *Flexible*: set **Full (strict)** |
 | A host on a LAN doesn't resolve at home | The router's DNS rebinding protection drops answers with private addresses: allow the domain there, or use hosts-file entries |
-| GitHub deliveries fail | `jenkins.<DOMAIN>` isn't reachable from the internet, or the Webhook URL lacks `/github-webhook/` |
+| Webhook deliveries fail | `jenkins.<DOMAIN>` isn't reachable from the internet, or (a GitHub App) the Webhook URL lacks `/github-webhook/` |

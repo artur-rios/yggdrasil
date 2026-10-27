@@ -30,6 +30,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **yggdrasil is free and open source**, under the Artur Rios Attribution License (`LICENSE`): you may view, use,
+  fork, modify and extend it, crediting the author. It was proprietary.
+- **The docs name the two servers the Linux DevOps Server and the Linux Application Server**, defined in the
+  README's Concepts, instead of "the dev machine", "the apps machine" and "the VPS": any Ubuntu 24.04 or 26.04
+  LTS machine will do, rented, in a cloud, physical or at home. The roles keep their names (`dev`, `apps`), as
+  does the deploy agent `vps`. The docs were reviewed for what the move to Forgejo and Jenkins made out of date;
+  the README's overview diagram shows the two servers and the GitHub mirror, its Upgrading section links every
+  upgrade note, and its note on the GitHub mirror is now at the end of Contributing.
 - **The `platform` check runs the unit suite in parallel.** It took twenty minutes on its own, forty in Jenkins
   next to the other checks, most of it `test_machine` starting short processes one test after another.
   `scripts/run_tests.py` runs the same tests as `python3 -m unittest discover -s scripts`, with the same results,

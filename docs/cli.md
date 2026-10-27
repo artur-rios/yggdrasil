@@ -1,9 +1,9 @@
 # `ygg`: the host's command line app
 
-`ygg` runs on an Ubuntu host (a VPS, a VM, WSL or a laptop) and does what [setup.md](setup.md)
-otherwise has you do by hand:
+`ygg` runs on an Ubuntu host (the [Linux DevOps Server or a Linux Application Server](../README.md#concepts), another
+Ubuntu machine, WSL or a laptop) and does what [setup.md](setup.md) otherwise has you do by hand:
 
-- install the tools, or check they are there, and set up a machine as a dev or apps machine
+- install the tools, or check they are there, and set up a machine as a DevOps Server or an Application Server
   ([hosts.md](hosts.md))
 - start the Jenkins build agents of the `ci` and `release` users, and back up the machine
 - set up a new API, web front end or worker, and deploy it
@@ -19,7 +19,7 @@ menu you drive with the arrow keys, where every command and every option is too,
 shows the command line it builds.
 
 A host runs one environment or several: `ENVIRONMENTS` in its `platform.env` lists them
-(`development,homologation,production` on the VPS of the
+(`development,homologation,production` on the Application Server of the
 [example](examples/docker-desktop-and-vps/README.md)). Where a command needs one environment and
 the host has several, it takes it as an argument or asks.
 
@@ -34,10 +34,10 @@ From the yggdrasil checkout (`/opt/yggdrasil` on a host):
 
 ```bash
 scripts/ygg.sh self-install      # links /usr/local/bin/ygg to this checkout, installs tab completion
-ygg version                      # yggdrasil 0.7.0 (1a2b3c4) at /opt/yggdrasil
+ygg version                      # yggdrasil 0.9.2 (1a2b3c4) at /opt/yggdrasil
 ```
 
-`ygg install` offers it too (for the `workstation` role; on a dev or apps machine, run `self-install`
+`ygg install` offers it too (for the `workstation` role; on a DevOps or Application Server, run `self-install`
 yourself after the install, [setup.md 8.4](setup.md#84-the-ygg-command)). `scripts/ygg.sh` keeps working
 everywhere `ygg` does, for scripts and docs written before 0.7; on a host without python3 it still runs
 `check` and `install`, with their `--role`.
@@ -49,7 +49,7 @@ ygg
 ```
 
 ```text
- yggdrasil › Applications › heimdall-api › production           vps-1 · 0.7.0
+ yggdrasil › Applications › heimdall-api › production           vps-1 · 0.9.2
  ─────────────────────────────────────────────────────────────────────────────
    ▏type to filter
    HEIMDALL_CORS_ALLOWED_ORIGINS   https://heimdall.example.com       heimdall-api@production
@@ -190,7 +190,7 @@ reads it as `ygg` inside its container, can still read it. Changes you don't app
 | `ygg vars <command>` | Variables and secrets | The variables store: `init`, `set`, `get`, `list`, `unset`, `edit`, `history`, `rollback`, `import`, `export`, `render`, `render-platform`, `backup`, `check` ([variables.md](variables.md#commands)) |
 | `ygg platform up \| down \| ps \| config \| logs [<service>] [--last-good]` | Platform | This host's platform stack (`scripts/platform.sh`) |
 | `ygg check [--role dev\|apps\|workstation]` | Host › check | What is installed and what is missing, for the machine's role |
-| `ygg install [--role dev\|apps\|workstation]` | Host › install | Installs what is missing, asking before each part. A dev or apps machine: as the admin |
+| `ygg install [--role dev\|apps\|workstation]` | Host › install | Installs what is missing, asking before each part. On a DevOps or Application Server: as the admin |
 | `ygg agent up\|down\|ps\|logs --user ci\|release` | Host › agent | The Jenkins build agent of a service user (`scripts/agent.sh`), as that user. As the admin |
 | `ygg backup run\|list` | Host › backup | Back up this machine, or list the backups (`scripts/backup.sh`). As `ygg` |
 | `ygg self-install` | Host › self-install | The `ygg` command and its tab completion |
@@ -221,7 +221,7 @@ as the menu. Keys need read access to the store's key; without it they are not o
 
 A machine has a **role**: `dev`, `apps` or `workstation`. `--role` picks it; without it the command uses
 the role `install` wrote to `/etc/yggdrasil-role`, and `workstation` when there is none. `dev` and `apps`
-are the Ubuntu 24.04 or 26.04 LTS servers of [hosts.md](hosts.md), where every Docker engine is rootless;
+are the Linux DevOps Server and the Linux Application Server, the Ubuntu 24.04 or 26.04 LTS servers of [hosts.md](hosts.md), where every Docker engine is rootless;
 `workstation` is the check and install that came before the roles, for a laptop or a host set up by hand.
 
 ### `--role dev` and `--role apps`
@@ -231,9 +231,9 @@ are the Ubuntu 24.04 or 26.04 LTS servers of [hosts.md](hosts.md), where every D
 | Group | Checks |
 |---|---|
 | **System** | The packages; the machine's own Docker is switched off, and disabled after a reboot, and nobody is in the `docker` group; the three system files (unprivileged ports, AppArmor, cgroup delegation); unattended upgrades |
-| **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` limits and, for `ci`, `release`, `renovate` and `dev`, no port below 1024 (dev); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
-| **Firewall** | `ufw` is on and denies incoming by default, with the role's ports, and no other rule lets everyone in (a port, a range or a profile such as `Nginx Full`). On an apps machine, 80 and 443 are open to Cloudflare only, and the rules and `cloudflare-ips` match Cloudflare's current list |
-| **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a dev machine: `ci`, `release`, `dev` and `renovate` cannot read `ygg`'s socket or secrets, and `ci` cannot read `release`'s |
+| **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` limits and, for `ci`, `release`, `renovate` and `dev`, no port below 1024 (DevOps Server); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
+| **Firewall** | `ufw` is on and denies incoming by default, with the role's ports, and no other rule lets everyone in (a port, a range or a profile such as `Nginx Full`). On an Application Server, 80 and 443 are open to Cloudflare only, and the rules and `cloudflare-ips` match Cloudflare's current list |
+| **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a DevOps Server: `ci`, `release`, `dev` and `renovate` cannot read `ygg`'s socket or secrets, and `ci` cannot read `release`'s |
 | **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled; `backup.conf` is there; the last run succeeded (or a warning: never run, failed); the newest day in `~/backups` is at most 36 hours old |
 
 Rows that ask another user's engine or read a closed directory need `sudo`. `check` runs `sudo -v` first, which asks
@@ -245,7 +245,7 @@ limits, the low ports, SSH, the checkout, secrets directories, the firewall, eac
 file. It refuses up front, changing nothing: when it doesn't run from `/opt/yggdrasil` (clone yggdrasil there), when
 `sudo -v` fails (a check that can't run as root would find nothing to do), and when the admin has no
 `~/.ssh/authorized_keys`. It writes the role file before the first part it does, so an install that stops halfway
-is still a dev or apps machine to the next `ygg install`. It puts its SSH file back if sshd would not run with it. Each part, and what you would type by hand, is in
+is still a DevOps or Application Server to the next `ygg install`. It puts its SSH file back if sshd would not run with it. Each part, and what you would type by hand, is in
 [setup.md step 8](setup.md#83-install); the files and why, in [hosts.md](hosts.md#4-system-settings).
 
 `install` does not write `backup.conf`: copy `env/backup.conf.example` yourself
@@ -284,7 +284,7 @@ ygg agent ps --user ci
 ygg agent down --user ci
 ```
 
-On the dev machine, the `ci` and `release` users each run a Jenkins build agent on their own rootless engine
+On the DevOps Server, the `ci` and `release` users each run a Jenkins build agent on their own rootless engine
 ([hosts.md](hosts.md#3-users)). `ygg agent` is run by the **admin**: it uses `sudo` to run
 `scripts/agent.sh` as the service user, which has no login. `--user` is required and is `ci` or `release`.
 
@@ -301,7 +301,7 @@ Fill it in as that file says:
 
 | Variable | Value |
 |---|---|
-| `JENKINS_URL` | The controller's address (`https://jenkins.<DOMAIN>/` of the dev machine); the agent dials out to it over WebSocket. Empty in the template, like the next and the last |
+| `JENKINS_URL` | The controller's address (`https://jenkins.<DOMAIN>/` of the DevOps Server); the agent dials out to it over WebSocket. Empty in the template, like the next and the last |
 | `JENKINS_AGENT_NAME` | `ci` for the `ci` user, `release` for `release`. Left empty in the template on purpose, so an unedited copy fails instead of starting the wrong node. Lowercase letters, digits, `-` and `_` |
 | `JENKINS_AGENT_SECRET` | The node's secret, from its page in Jenkins once the node exists |
 | `YGG_AGENT_WORKDIR` | Absolute, owned by the user: `/home/ci/agent` for `ci`, `/home/release/agent` for `release`. Mounted at the same path in the agent and on the host, so a check's `docker run -v $WORKSPACE:…` finds the same directory in the engine. Also empty in the template |
@@ -312,7 +312,7 @@ Compose project is
 `yggdrasil-agent-<name>` (so the two agents never share one), from
 [platform/build-agent.yml](../platform/build-agent.yml). `up` builds the agent's image and starts it, waiting
 until it runs. This agent is not the deploy agent: that one is the `agent` profile of the platform stack and runs on the
-apps machine.
+Application Server.
 
 **Where a check reaches its containers.** A check with `docker: true` (Testcontainers) starts containers on the
 user's engine and connects to their published ports at `TESTCONTAINERS_HOST_OVERRIDE`, which `scripts/run-check.sh`
@@ -329,7 +329,7 @@ An agent started before this existed has no value: run `ygg agent up --user ci` 
 ## Backups
 
 ```bash
-ygg backup run      # dump now, prune old days, send them to the other machine
+ygg backup run      # dump now, prune old days, send them to the other server
 ygg backup list     # the days and files in ~/backups, and whether the newest day is complete
 ```
 
@@ -355,7 +355,7 @@ is `backup.conf`; how to set it up and how to restore is in [hosts.md](hosts.md#
 | Public host | the id; none for a worker | `host`, and the `PUBLIC_HOST` router (`<host><hostSuffix>.<DOMAIN>` in each environment) |
 | Metrics port | none | `metrics: <id>:<port>`, and the telemetry network |
 | Build arguments | none | For a web front end without its own Compose file: build `args`, filled from the env file |
-| GitHub checks | none | `checks` |
+| Checks | none | `checks` |
 
 It then writes:
 
@@ -386,7 +386,8 @@ It then writes:
   running afterwards; otherwise `deploy.sh` stops it again once it is healthy.
 
 Last, it lists what the catalog can't do for you: push the catalog and stack files to `main`, set up
-the application's repository, install the GitHub App on it, apply the rules, and restart the status
+the application's repository, give the git server's accounts access to it (on Forgejo, write access for
+`forge.jenkinsUser` and `forge.developers`; on GitHub, the GitHub App), apply the rules, and restart the status
 API (and Jenkins) on every host.
 
 The generated files are a starting point, like the examples in `stacks/`: edit them freely.
