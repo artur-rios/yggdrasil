@@ -571,7 +571,11 @@ class ProxyContainerTests(unittest.TestCase):
         fake = self.fakes["traefik-docker-proxy"]
         fake.requests.clear()
         name, blocked = self.start_client(
-            "traefik", self.services["traefik"]["image"], "--log.level=DEBUG", "--providers.docker=true",
+            # An entry point of its own on 8080: without one Traefik listens on :80, and a check may not bind a
+            # port below 1024, not even in its own container (docs/hosts.md, the low ports: the ci user's slice
+            # denies it). Nothing connects to it; the test is about the Docker provider.
+            "traefik", self.services["traefik"]["image"], "--entryPoints.web.address=:8080",
+            "--log.level=DEBUG", "--providers.docker=true",
             "--providers.docker.endpoint=tcp://traefik-docker-proxy:2375",
             "--providers.docker.exposedbydefault=false", "--providers.docker.network=edge")
         # 60 seconds, as Alloy below: on a build agent Traefik starts next to the other checks' builds.
