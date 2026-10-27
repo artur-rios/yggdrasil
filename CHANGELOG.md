@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Forgejo Actions is off.** Jenkins runs every check, but Forgejo's own Actions was on by default. It ran each
+  repository's `.github/workflows` (Forgejo reads them when there is no `.forgejo/workflows`), and with no runner
+  those jobs sat on every pull request as "Waiting for a runner with the following label: ubuntu-latest". The
+  `forgejo` service of `platform/compose.yml` now sets `FORGEJO__actions__ENABLED=false`. It takes effect when the
+  container is recreated (`ygg platform up`).
+
 ## [0.9.0] - 2026-10-26
 
 ### Added
