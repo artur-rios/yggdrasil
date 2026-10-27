@@ -1411,6 +1411,14 @@ for the others only after they adopt the file.
   and run the script again; it creates the hook with the new secret. (The same secret goes into Jenkins.)
 - **Users must exist.** The `jenkins` user, and any `forge.developers`, are created by you; the script does
   not create accounts or collaborators.
+- **Every build ends with a 403 from the Gitea plugin, and that is expected.** The plugin posts a build status
+  of its own (`yggdrasil/pipeline/head`) when a build finishes, with the credential that scans the repository:
+  `forge-read`, the read-only `jenkins-ci` token. Forgejo refuses it, and the log ends with `ERROR: Could not
+  send notifications`, `GiteaHttpStatusException: HTTP 403/Forbidden`. It changes nothing: the pipeline posts
+  the statuses that count (`branch-policy`, the checks, `deploy/<environment>`) itself, with `forge-write`, and
+  the build's result is decided before. The plugin has no switch to stop it (no trait of its own turns its
+  notifications off, and `skip-notifications-trait` covers GitHub and Bitbucket only), and giving the scan a
+  token that can write would undo the read-only scan, so the line stays.
 
 Run the script again after adding an application or a repository to the catalog (the full steps are in
 [Adding things](#adding-things)) and after adding a release environment: `main` then also requires its

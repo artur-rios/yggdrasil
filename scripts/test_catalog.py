@@ -351,6 +351,12 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(c.forge(catalog)["type"], "forgejo")
         self.assertEqual(c.mirror(catalog)["github"], catalog["owner"])
 
+    def test_given_the_repository_catalog_when_read_then_no_top_level_key_is_there_twice(self):
+        # YAML takes the last of two equal keys without a word, so a block pasted twice (the forge and mirror
+        # blocks once were) or two diverging copies would go unnoticed.
+        keys = re.findall(r"^([A-Za-z_][\w-]*):", c.CATALOG.read_text(encoding="utf-8"), re.M)
+        self.assertEqual(sorted(key for key in set(keys) if keys.count(key) > 1), [])
+
     def test_given_forgejo_when_read_then_the_api_is_under_its_url(self):
         v = catalog(forge={"type": "forgejo", "url": "https://git.techcraftsmen.net/"})
         self.assertEqual(c.forge(v)["url"], "https://git.techcraftsmen.net")
