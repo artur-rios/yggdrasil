@@ -7,6 +7,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-27
+
+### Fixed
+
+- **The console's Repository links open the git server.** The status API built every application's `repository`
+  as `https://github.com/<owner>/<repository>`, so on a Forgejo installation the console's Repository button
+  opened the read-only GitHub copy. It now reads the catalog's `forge` block, as `scripts/catalog.py` does: Forgejo's
+  `url` when there is one, `https://github.com` otherwise. The status API's contract is unchanged (still a string or
+  `null`); its catalog errors no longer say GitHub where they mean the git server.
+- **Ctrl-C at the menu's pause always returns to the menu.** After a command, "Enter to return to the menu"
+  waited in `input()`, which a Ctrl-C ended through SIGINT; a SIGINT that came after the prompt but before
+  `input()` was reading went unnoticed, and the pause waited on with Ctrl-C lost. On a busy machine that happened
+  about one time in seven (and failed the TUI test in Jenkins). On a terminal the pause now reads keys with the
+  terminal's signals off, switched before the prompt shows, as the menu itself does: Ctrl-C is a key, Enter and
+  Ctrl-D return as before.
+- **The socket proxies' live suite runs on a Jenkins agent.** Its fake Docker sockets live in the check's scratch
+  directory, in the checkout, where the engine can mount them, and on an agent the checkout's path is long
+  (`/home/ci/agent/workspace/<job>@<n>/app`): past the 107 bytes a Unix socket's path may have, every build's
+  `platform` check stopped at `OSError: AF_UNIX path too long`. The fake binds through a short link in `/tmp`
+  when the path is too long; the socket is still made where the engine mounts it. The suite's Traefik listens on
+  8080: with no entry point it took :80, which a check may not bind even in its own container (the `ci` user's
+  slice denies ports below 1024, docs/hosts.md), and it stopped at `bind: operation not permitted`. A client
+  that does not get where the test waits for now fails with its own log and the requests its fake received, and
+  Traefik waits up to 60 seconds, as Alloy does.
+- **`catalog.yaml` has its `forge` and `mirror` blocks once.** Cutover step 5.9 had pasted both twice, identically,
+  which YAML reads without a word (the last of two equal keys wins). A test now refuses a top-level key that is in
+  the repository's catalog twice.
+
+### Changed
+
+- **yggdrasil is free and open source**, under the Artur Rios Attribution License (`LICENSE`): you may view, use,
+  fork, modify and extend it, crediting the author. It was proprietary.
+- **The docs name the two servers the Linux DevOps Server and the Linux Application Server**, defined in the
+  README's Concepts, instead of "the dev machine", "the apps machine" and "the VPS": any Ubuntu 24.04 or 26.04
+  LTS machine will do, rented, in a cloud, physical or at home. The roles keep their names (`dev`, `apps`), as
+  does the deploy agent `vps`. The docs were reviewed for what the move to Forgejo and Jenkins made out of date;
+  the README's overview diagram shows the two servers and the GitHub mirror, its Upgrading section links every
+  upgrade note, and its note on the GitHub mirror is now at the end of Contributing.
+- **The `platform` check runs the unit suite in parallel.** It took twenty minutes on its own, forty in Jenkins
+  next to the other checks, most of it `test_machine` starting short processes one test after another.
+  `scripts/run_tests.py` runs the same tests as `python3 -m unittest discover -s scripts`, with the same results,
+  in chunks on up to eight workers (`-j`, or `YGG_TEST_WORKERS`); `ci/platform.sh` and CONTRIBUTING.md use it.
+- **`machine check` starts far fewer processes.** A check asked `getent` for a user's uid or home over a thousand
+  times, `sudo -n true` almost as often and `dpkg-query` once per package. Within one check (which adds no user,
+  installs nothing and does not change sudo), each is now asked once, when it starts, and forgotten when it ends;
+  `passwd_field` splits the entry itself instead of with `cut`. Outside a check, and for anything a listing does not
+  hold, the system is asked as before. One check test went from 13 to 7.5 seconds; with the parallel runner the
+  whole unit suite takes about two minutes instead of twenty.
+- **setup.md explains the 403 at the end of every build.** The Gitea plugin posts a build status of its own with
+  the read-only `forge-read` token, Forgejo refuses it, and the log ends with `Could not send notifications ...
+  HTTP 403/Forbidden`. It is harmless (the pipeline posts the statuses that count with `forge-write`) and the plugin
+  has no switch to stop it: [Forgejo details worth knowing](docs/setup.md#forgejo-details-worth-knowing).
+
 ## [0.9.2] - 2026-10-27
 
 ### Fixed
@@ -924,7 +977,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/artur-rios/yggdrasil/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/artur-rios/yggdrasil/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/artur-rios/yggdrasil/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/artur-rios/yggdrasil/compare/v0.8.0...v0.9.0

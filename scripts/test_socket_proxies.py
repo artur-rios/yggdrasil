@@ -286,16 +286,36 @@ class AllowlistTests(unittest.TestCase):
         self.assertEqual(re.findall(r'host\s*=\s*"([^"]+)"', alloy), ["tcp://alloy-docker-proxy:2375"] * 2)
 
 
+# The longest path a Unix socket can be bound by (sun_path, less its closing NUL).
+SUN_PATH_MAX = 107
+
+
 class FakeDocker(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     """Just enough of the Docker Engine API, on a Unix socket, for Traefik's provider and Alloy's
-    discovery and log tailing to run their normal course. Records every request that reaches it."""
+    discovery and log tailing to run their normal course. Records every request that reaches it.
+
+    The socket is made at `path`, the path the engine mounts. When that is longer than a Unix socket's
+    path can be (a checkout's own path can be: /home/ci/agent/workspace/<job>@<n>/app on a build agent),
+    it is bound through `alias`, a short directory in /tmp holding a link to the socket's directory, which
+    server_close removes."""
 
     daemon_threads = True
 
     def __init__(self, path):
         self.requests = []
         self.stopping = threading.Event()
+        path = pathlib.Path(path)
+        self.alias = None
+        if len(os.fsencode(path)) > SUN_PATH_MAX:
+            self.alias = pathlib.Path(tempfile.mkdtemp(prefix="ygg-sock-", dir="/tmp"))
+            (self.alias / "d").symlink_to(path.parent)
+            path = self.alias / "d" / path.name
         super().__init__(str(path), FakeDockerHandler)
+
+    def server_close(self):
+        super().server_close()
+        if self.alias is not None:
+            shutil.rmtree(self.alias, ignore_errors=True)
 
 
 CONTAINER_LABELS = {
@@ -384,6 +404,36 @@ class FakeDockerHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
 
+@unittest.skipUnless(os.name == "posix", "Unix sockets and /tmp")
+class FakeDockerSocketTests(unittest.TestCase):
+    """A Unix socket's path is at most 107 bytes, and the scratch directory is in the checkout, whose path
+    alone can be long: Jenkins' is /home/ci/agent/workspace/<job>@<n>/app."""
+
+    def test_given_a_directory_past_the_socket_path_limit_when_bound_then_the_socket_is_made_there(self):
+        temp = pathlib.Path(tempfile.mkdtemp(prefix="socket-path-test-"))
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        deep = temp / ("d" * 60) / ("e" * 60)
+        deep.mkdir(parents=True)
+        path = deep / "traefik-docker-proxy.sock"
+        self.assertGreater(len(os.fsencode(path)), SUN_PATH_MAX)
+        fake = FakeDocker(path)
+        try:
+            self.assertTrue(path.is_socket())
+        finally:
+            fake.server_close()
+        self.assertFalse(fake.alias.exists())
+
+    def test_given_a_short_path_when_bound_then_it_is_bound_as_it_is(self):
+        temp = pathlib.Path(tempfile.mkdtemp(prefix="socket-path-test-"))
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        fake = FakeDocker(temp / "a.sock")
+        try:
+            self.assertTrue((temp / "a.sock").is_socket())
+            self.assertIsNone(fake.alias)
+        finally:
+            fake.server_close()
+
+
 def docker(*arguments, check=True):
     return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=check, timeout=120)
 
@@ -461,13 +511,22 @@ class ProxyContainerTests(unittest.TestCase):
         return result.stdout.strip()
 
     @staticmethod
-    def wait_for(condition, what, seconds=30):
+    def wait_for(condition, what, seconds=30, details=None):
+        """Waits for the condition; on a timeout, says what was awaited and `details()` (what the client
+        and the fake saw: a build agent's log is all there is to go on afterwards)."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if condition():
                 return
             time.sleep(0.5)
-        raise AssertionError(f"timed out waiting for {what}")
+        raise AssertionError(f"timed out waiting for {what}" + (f"\n{details()}" if details else ""))
+
+    def story(self, name, fake):
+        """What a client container said and what reached its fake Docker, for a failure message."""
+        logs = docker("logs", name, check=False)
+        said = (logs.stdout + logs.stderr).strip().splitlines()[-40:]
+        return ("requests the fake received: " + (", ".join(f"{method} {path}" for method, path in fake.requests)
+                                                   or "none") + f"\nthe last of {name}'s log:\n" + "\n".join(said))
 
     def reached(self, proxy, method, path):
         return (method, path) in self.fakes[proxy].requests
@@ -512,12 +571,18 @@ class ProxyContainerTests(unittest.TestCase):
         fake = self.fakes["traefik-docker-proxy"]
         fake.requests.clear()
         name, blocked = self.start_client(
-            "traefik", self.services["traefik"]["image"], "--log.level=DEBUG", "--providers.docker=true",
+            # An entry point of its own on 8080: without one Traefik listens on :80, and a check may not bind a
+            # port below 1024, not even in its own container (docs/hosts.md, the low ports: the ci user's slice
+            # denies it). Nothing connects to it; the test is about the Docker provider.
+            "traefik", self.services["traefik"]["image"], "--entryPoints.web.address=:8080",
+            "--log.level=DEBUG", "--providers.docker=true",
             "--providers.docker.endpoint=tcp://traefik-docker-proxy:2375",
             "--providers.docker.exposedbydefault=false", "--providers.docker.network=edge")
-        self.wait_for(lambda: any(path.endswith("/events") for _, path in fake.requests), "traefik to watch events")
+        # 60 seconds, as Alloy below: on a build agent Traefik starts next to the other checks' builds.
+        self.wait_for(lambda: any(path.endswith("/events") for _, path in fake.requests), "traefik to watch events",
+                      60, lambda: self.story(name, fake))
         self.wait_for(lambda: "whoami" in docker("logs", name, check=False).stderr + docker("logs", name, check=False).stdout,
-                      "traefik to build the router of the fake container")
+                      "traefik to build the router of the fake container", 60, lambda: self.story(name, fake))
         self.assertEqual(blocked(), [])
         paths = {re.sub(r"^/v1\.[0-9]+", "", path) for _, path in fake.requests}
         self.assertLessEqual({"/_ping", "/version", "/containers/json", f"/containers/{ID}/json", "/events"}, paths)
@@ -525,11 +590,12 @@ class ProxyContainerTests(unittest.TestCase):
     def test_given_alloy_behind_its_proxy_when_it_starts_then_it_discovers_and_tails_the_containers(self):
         fake = self.fakes["alloy-docker-proxy"]
         fake.requests.clear()
-        _, blocked = self.start_client(
+        name, blocked = self.start_client(
             "alloy", f"--volume={ALLOY_CONFIG}:/etc/alloy/config.alloy:ro",
             "--tmpfs=/var/lib/alloy/data", self.services["alloy"]["image"],
             "run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy")
-        self.wait_for(lambda: any(path.endswith("/logs") for _, path in fake.requests), "alloy to tail the logs", 60)
+        self.wait_for(lambda: any(path.endswith("/logs") for _, path in fake.requests), "alloy to tail the logs", 60,
+                      lambda: self.story(name, fake))
         self.assertEqual(blocked(), [])
         paths = {re.sub(r"^/v1\.[0-9]+", "", path) for _, path in fake.requests}
         self.assertLessEqual({"/_ping", "/containers/json", "/networks", f"/containers/{ID}/json", f"/containers/{ID}/logs"}, paths)

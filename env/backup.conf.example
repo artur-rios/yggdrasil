@@ -3,7 +3,7 @@
 # Never commit the copy. Not read by Compose: NAME=value lines, then one item per line. Comments and
 # empty lines are fine, but only on their own lines.
 
-# Where the backups go, as rsync writes it: <user>@<host>:<path>. Required. The other machine's
+# Where the backups go, as rsync writes it: <user>@<host>:<path>. Required. The other server's
 # authorized_keys line for the key restricts it to rrsync in one directory (docs/hosts.md), and the path
 # is relative to that directory: <user>@<host>:. is the directory itself.
 BACKUP_TARGET=
@@ -11,7 +11,7 @@ BACKUP_TARGET=
 # The ssh key that logs in there. Default: ~/.ssh/yggdrasil-backup
 # BACKUP_KEY=~/.ssh/yggdrasil-backup
 
-# How many days are kept in ~/backups on this machine (the other machine's copy follows). Default: 7
+# How many days are kept in ~/backups on this server (the other server's copy follows). Default: 7
 # An item's newest good file is kept even beyond that, in its own day, so an item that fails for longer
 # than BACKUP_KEEP days never loses its last good dump.
 # BACKUP_KEEP=7
@@ -27,11 +27,11 @@ BACKUP_TARGET=
 #                                 container is started for it and stopped again)
 #                                 -> postgres-<container>.sql.gz
 #
-# On the dev machine (Forgejo, Jenkins, the registry):
+# On the DevOps Server (Forgejo, Jenkins):
 # forgejo
 # vars
 # volume yggdrasil_jenkins
 #
-# On the apps machine (its settings, an app's database):
+# On an Application Server (its settings, an app's database):
 # vars
 # postgres myapp-db-1 postgres

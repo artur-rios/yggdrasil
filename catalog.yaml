@@ -9,18 +9,19 @@
 # Everything that has to know "which applications and environments exist" reads this file:
 #
 #   Jenkins        deploy jobs, agents, and what each push or pull request deploys where
-#   GitHub         rulesets, required checks and the deploy/<environment> statuses on main
+#   Git server     branch rules, required checks and the deploy/<environment> statuses on main
 #   deploy.sh      which environments an application has, and their options
 #   Status API     what to probe in its host's environments, and how systems group applications
 #   Prometheus     scrape targets (through the status API)
 #   Console        what it shows (through the status API)
 #
-# This is the catalog of one installation. Replace the systems below with your own. The
-# environments are the ones from docs/examples/docker-desktop-and-vps/README.md: local on a
-# developer's Docker Desktop, deployed by hand; development, homologation and production together on
-# one VPS, where production is always on and the other two run only while someone uses them.
+# This is the catalog of one installation, this repository's own: replace the systems below, the
+# owner and the forge and mirror blocks with your own. Its environments: local on a developer's Docker
+# Desktop, deployed by hand; development, homologation and production together on one Linux
+# Application Server (README.md, Concepts), where production is always on and the other two run only
+# while someone uses them.
 
-# GitHub owner (user or organisation) of the application repositories and of this repository.
+# Owner (user or organisation, on the git server) of the application repositories and of this repository.
 owner: artur-rios
 
 # This repository's name under the owner: Jenkins loads its pipeline, scripts and stacks from its
@@ -33,18 +34,11 @@ forge:
 mirror:
   github: artur-rios
   releases: true
-forge:
-  type: forgejo
-  url: https://git.techcraftsmen.net
-  developers: [claude]
-mirror:
-  github: artur-rios
-  releases: true
 
 # The git server (forge) and its GitHub mirror: the `forge` and `mirror` blocks, right after
-# `repository:` above. Until cutover 5.9 (docs/cutover.md) neither is here: with no forge block this
-# is a GitHub installation, which is what the old controller reads. The move to Forgejo adds both
-# inside its window (2.2 and 4.2 to local copies, 5.9 on main), not before.
+# `repository:` above (docs/catalog.md). This installation's git server is Forgejo, on its Linux DevOps
+# Server, with every repository pushed to a read-only copy on GitHub. Without a forge block this is a
+# GitHub installation, as it was until the move to Forgejo (docs/cutover.md, carried out 2026-10-26).
 
 # Repositories that are not applications: the libraries, the repositories that only run CI or
 # publish releases, and yggdrasil itself. Each gets a Jenkins job (its checks; for release: owner-tag,
@@ -219,7 +213,7 @@ repositories:
 #                 ports: published on the host, no Traefik (stacks/<app>.ports.yml)
 #   trigger       manual:  only by hand (scripts/deploy.sh) or "Build with Parameters" in Jenkins
 #                 branch:  when a branch matching `branches` is pushed
-#                 release: when the release/x.y.z -> main pull request passes every GitHub check.
+#                 release: when the release/x.y.z -> main pull request passes its checks.
 #                          Release environments deploy one after the other, in this order, and the
 #                          pull request is merged and tagged once the last one succeeds.
 #   branches      For trigger branch: glob(s), e.g. release/* or [develop, hotfix/*]. Use only *
@@ -252,7 +246,7 @@ environments:
     mode: ports
     trigger: manual
 
-  # The next three share one VPS, its agent and its DOMAIN; hostSuffix tells their hosts apart.
+  # The next three share one Application Server, its agent and its DOMAIN; hostSuffix tells their hosts apart.
   - id: development
     name: Development
     trigger: branch

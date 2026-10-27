@@ -6,7 +6,7 @@ This guide is for changing yggdrasil itself. Installing and running it is in the
 The repository lives at [git.techcraftsmen.net/artur-rios/yggdrasil](https://git.techcraftsmen.net/artur-rios/yggdrasil):
 clone it from there and open pull requests there.
 [github.com/artur-rios/yggdrasil](https://github.com/artur-rios/yggdrasil) is a read-only mirror: it runs the GitHub
-Actions jobs below, and takes no pushes or pull requests.
+Actions jobs below, and takes no pushes, issues or pull requests.
 
 ```bash
 git clone https://git.techcraftsmen.net/artur-rios/yggdrasil.git
@@ -109,9 +109,14 @@ every run; see [Versioning](#versioning) for the version they carry.
 
 ```bash
 shellcheck scripts/*.sh
-python3 -m unittest discover -s scripts -v
+python3 scripts/run_tests.py
 python3 scripts/catalog.py validate
 ```
+
+`scripts/run_tests.py` runs the same tests as `python3 -m unittest discover -s scripts -v`, in parallel: about
+two minutes instead of twenty (`-j` sets the number of workers; `-j 1` runs them one after another). Run a single
+module or test with unittest as usual (`python3 -m unittest test_machine` from `scripts/`). `ci/platform.sh`, the
+`platform` check, uses `run_tests.py` too.
 
 CI also validates `platform/compose.yml` and every stack in `stacks/` with `docker compose config`, using dummy values
 for each variable they require. Traefik's configuration is rendered first, as `platform.sh` does
@@ -197,7 +202,8 @@ upgraded, run it.
 
 This repository follows the same branching model it enforces on application repositories (see
 [Branches and releases](README.md#branches-and-releases)). `develop` is the integration branch and the base for all
-new work; `main` only holds released code.
+new work; `main` only holds released code. To send a change, push a `feature/<name>` or `fix/<name>` branch cut from
+`develop` to Forgejo and open a pull request into `develop`; Jenkins reports the checks on it.
 
 The **branch policy** ([`scripts/branch-policy.sh`](scripts/branch-policy.sh), status `branch-policy`), which Jenkins
 runs on every pull request into `develop` or `main`, as for every repository:

@@ -1,26 +1,39 @@
-# The two machines
+# The two servers
 
-yggdrasil runs on two Ubuntu servers. This page is for the person who sets them up and looks after
-them: what runs where, who the users are, which files the installer writes and why, where every
-secret lives, how backups work and how to restore from them. It assumes you have never seen the
-design. The step-by-step setup is in [setup.md](setup.md); this page is the reference behind it.
+yggdrasil runs on two kinds of server, both Ubuntu machines ([the README's Concepts](../README.md#concepts) say
+the same in short):
 
-1. [Two machines](#1-two-machines)
+- The **Linux DevOps Server** keeps the code and runs the pipeline: Forgejo, the Jenkins controller, the `ci` and
+  `release` build agents, Renovate and their backups. An installation has one. Its role is `dev`
+  (`ygg install --role dev`), and it runs no application.
+- A **Linux Application Server** runs the applications: one environment or several, with one platform stack
+  (Traefik, the status API, the console, Prometheus, Loki, Alloy and Grafana) and one Jenkins deploy agent that
+  dials out to the controller. An installation has one or more. Its role is `apps` (`ygg install --role apps`).
+- A **host** is either of them: any machine that runs Ubuntu 24.04 or 26.04 LTS, whether a rented virtual server, a
+  cloud VM, a physical server or one at home. yggdrasil assumes nothing of where it runs.
+
+This page is for the person who sets them up and looks after them: what runs where, who the users are, which
+files the installer writes and why, where every secret lives, how backups work and how to restore from them. It
+assumes you have never seen the design. The step-by-step setup is in [setup.md](setup.md); this page is the
+reference behind it. Where a section says "the DevOps Server" or "the Application Server", it means these two; this
+installation has one of each.
+
+1. [The two servers](#1-the-two-servers)
 2. [Domains and Cloudflare](#2-domains-and-cloudflare)
 3. [Users](#3-users)
 4. [System settings](#4-system-settings)
 5. [Rootless Docker](#5-rootless-docker)
 6. [Credentials](#6-credentials)
 7. [Backups and restore](#7-backups-and-restore)
-8. [Adding a machine](#8-adding-a-machine)
+8. [Adding an Application Server](#8-adding-an-application-server)
 9. [Upgrading a host from rootful Docker](#9-upgrading-a-host-from-rootful-docker)
 
-## 1. Two machines
+## 1. The two servers
 
 ```mermaid
 flowchart LR
     dev([Owner / AI sessions]) -- git push, pull requests --> forgejo
-    subgraph devm [Dev machine]
+    subgraph devm [DevOps Server]
         traefikd[Traefik] --> forgejo[Forgejo<br/>git.DOMAIN]
         traefikd --> jenkins[Jenkins controller<br/>jenkins.DOMAIN]
         ci[CI agent + checks<br/>user ci]
@@ -30,7 +43,7 @@ flowchart LR
     forgejo -- push mirror --> gh[(GitHub<br/>backup + Windows/macOS Actions)]
     jenkins -. reads results, dispatches .-> gh
     ci -. WebSocket .-> jenkins
-    subgraph appsm [Apps machine]
+    subgraph appsm [Application Server]
         agent[Deploy agent] --> envs[development · homologation · production]
         traefika[Traefik · status API · console · monitoring] --> envs
     end
@@ -38,13 +51,13 @@ flowchart LR
     agent -- merge, tag, release --> forgejo
 ```
 
-The diagram shows the finished design. What `ygg install` and the platform Compose file build is the machines
-themselves: Traefik, Forgejo, the Jenkins controller, the monitoring, the deploy agent and the build agents.
-The pipeline that runs on them (the checks on the CI agent, the release builds on the release agent, Renovate)
-is [setup.md, The pipeline](setup.md#the-pipeline). Moving an installation from one VPS on GitHub to these machines,
-its repositories to Forgejo with their GitHub mirrors, is [cutover.md](cutover.md).
+What `ygg install` and the platform Compose file build is the servers themselves: Traefik, Forgejo, the Jenkins
+controller, the monitoring, the deploy agent and the build agents. The pipeline that runs on them (the checks on
+the CI agent, the release builds on the release agent, Renovate) is [setup.md, The pipeline](setup.md#the-pipeline).
+Moving an installation from one server on GitHub to these two, its repositories to Forgejo with their GitHub
+mirrors, is [cutover.md](cutover.md) (carried out for this installation on 2026-10-26).
 
-| | Dev machine (`--role dev`) | Apps machine (`--role apps`) |
+| | DevOps Server (`--role dev`) | Application Server (`--role apps`) |
 |---|---|---|
 | Purpose | Git server, CI/CD, AI development | Every environment of every application |
 | Runs | Traefik, Forgejo, the Jenkins controller, monitoring, the CI agent and its checks, Renovate, AI sessions | Traefik, status API, console, monitoring, the applications, the deploy agent |
@@ -59,11 +72,11 @@ What the profiles are:
 
 | Profile | Starts | On |
 |---|---|---|
-| (none) | Traefik, Prometheus, Loki, Alloy, Grafana and the Docker socket proxies | every machine |
-| `apps` | The status API (with its socket proxy) and the console | a machine that runs applications. `ENVIRONMENTS` belongs to it: `platform.sh` refuses `ENVIRONMENTS` without `apps` |
-| `forge` | Forgejo | the dev machine |
-| `jenkins` | The Jenkins controller | the dev machine |
-| `agent` | The Jenkins agent that deploys to this machine's applications | the apps machine |
+| (none) | Traefik, Prometheus, Loki, Alloy, Grafana and the Docker socket proxies | every server |
+| `apps` | The status API (with its socket proxy) and the console | an Application Server. `ENVIRONMENTS` belongs to it: `platform.sh` refuses `ENVIRONMENTS` without `apps` |
+| `forge` | Forgejo | the DevOps Server |
+| `jenkins` | The Jenkins controller | the DevOps Server |
+| `agent` | The Jenkins agent that deploys to this server's applications | the Application Server |
 
 The `ci` and `release` build agents are not in this list. They are not part of the platform stack:
 each has its own Compose file, [platform/build-agent.yml](../platform/build-agent.yml), and its own
@@ -71,17 +84,17 @@ engine. See [Rootless Docker](#5-rootless-docker).
 
 Other things to know:
 
-- **The Jenkins controller moved** from the apps machine to the dev machine. The apps machine no
-  longer runs the `jenkins` profile. Its deploy agent dials out to `https://jenkins.<DOMAIN>`
+- **The Jenkins controller is on the DevOps Server.** In the older layout it ran on the single server, which is
+  now the Application Server; the Application Server no longer runs the `jenkins` profile. Its deploy agent dials out to `https://jenkins.<DOMAIN>`
   over a WebSocket on 443, like every agent. No agent port is opened anywhere.
-- **Each machine monitors itself.** Each runs its own Prometheus, Loki, Alloy and Grafana for its own
-  engine. On the dev machine, which has no `apps` profile and so no status API to discover
+- **Each server monitors itself.** Each runs its own Prometheus, Loki, Alloy and Grafana for its own
+  engine. On the DevOps Server, which has no `apps` profile and so no status API to discover
   targets from, Prometheus reads a written-out list
   ([prometheus-static.yml](../platform/prometheus/prometheus-static.yml)).
 - **The firewall works now.** Rootful Docker writes its own firewall rules and bypasses `ufw`.
   Rootless Docker publishes a port as an ordinary listening process, so the `ufw` rules apply to
   it. If a port is not allowed in `ufw`, nobody reaches it.
-- **Size.** The CPU is the shared resource on the dev machine. The `ci` user is capped at 6 of the 8
+- **Size.** The CPU is the shared resource on the DevOps Server. The `ci` user is capped at 6 of the 8
   CPUs and 20 GB of memory, so AI sessions stay responsive during a build. The caps are on the
   user's systemd slice, so they cover the user's whole engine, not one container.
 
@@ -91,12 +104,12 @@ There are two domains, both zones on Cloudflare:
 
 | Domain | Used for |
 |---|---|
-| `techcraftsmen.net` | The applications and APIs, the platform's names, and the dev machine's `git.` and `jenkins.` |
+| `techcraftsmen.net` | The applications and APIs, the platform's names, and the DevOps Server's `git.` and `jenkins.` |
 | `artur-rios.tech` | Static and docs sites |
 
-Substitute your own. A machine serves `DOMAIN` and, if you set it, `EXTRA_DOMAINS`
-(comma-separated) in its `platform.env`. The apps machine sets `DOMAIN=techcraftsmen.net` and
-`EXTRA_DOMAINS=artur-rios.tech`. The dev machine sets only `DOMAIN=techcraftsmen.net`. Traefik asks
+Substitute your own. A server serves `DOMAIN` and, if you set it, `EXTRA_DOMAINS`
+(comma-separated) in its `platform.env`. The Application Server sets `DOMAIN=techcraftsmen.net` and
+`EXTRA_DOMAINS=artur-rios.tech`. The DevOps Server sets only `DOMAIN=techcraftsmen.net`. Traefik asks
 Let's Encrypt for one certificate per domain, covering the domain and `*.` the domain, using the
 DNS-01 challenge through Cloudflare's API. DNS-01 never goes through the proxy, so renewals keep
 working with the proxy on.
@@ -107,17 +120,17 @@ On each domain:
 
 | Record | Points to | Proxy |
 |---|---|---|
-| `A` `*` | the apps machine | **Proxied** (orange) |
-| `A` the bare domain | the apps machine | **Proxied** |
-| `A` `git`, `jenkins`, `traefik-dev`, `grafana-dev` (techcraftsmen.net only) | the dev machine | **DNS only** (grey) |
+| `A` `*` | the Application Server | **Proxied** (orange) |
+| `A` the bare domain | the Application Server | **Proxied** |
+| `A` `git`, `jenkins`, `traefik-dev`, `grafana-dev` (techcraftsmen.net only) | the DevOps Server | **DNS only** (grey) |
 | `CAA` the bare domain: `0 issue "letsencrypt.org; validationmethods=dns-01"` | n/a | n/a |
 
-A specific record wins over the wildcard, so these four names reach the dev machine and
-everything else reaches the apps machine.
+A specific record wins over the wildcard, so these four names reach the DevOps Server and
+everything else reaches the Application Server.
 
 `scripts/cloudflare_dns.py` makes all of these through Cloudflare's API, with the comment `yggdrasil` on
-each. Run it once when building the machines. At a cutover to a new apps machine, run it again with that
-machine's address (with the old address it is the rollback). A cutover that converts the old server in
+each. Run it once when building the servers. At a cutover to a new Application Server, run it again with that
+server's address (with the old address it is the rollback). A cutover that converts the old server in
 place, as [cutover.md](cutover.md) does, keeps the address: there the script runs again only to turn the
 proxy on (its 5.8), and a rollback puts the records back by hand
 ([cutover.md 6, step 2](cutover.md#6-rollback)), since running the script again would turn the proxy back
@@ -142,9 +155,9 @@ names: an old `www` or `blog` `CNAME` keeps winning over the wildcard until you 
 The `CAA` record, one per zone: `0 issue "letsencrypt.org; validationmethods=dns-01"`: only Let's Encrypt may issue certificates for
 the zone, and only after a DNS-01 proof, which needs the Cloudflare API token. Traefik proves control by DNS-01
 alone, so nothing legitimate is lost; without the record, whoever answers on port 80 of a name's address (a
-process on the dev machine that got there before Traefik, say) could pass Let's Encrypt's HTTP-01 check and get a
-certificate for `git.` or `jenkins.`. The dev machine also keeps its other users off
-ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-portsconf-dev-machine)); the record
+process on the DevOps Server that got there before Traefik, say) could pass Let's Encrypt's HTTP-01 check and get a
+certificate for `git.` or `jenkins.`. The DevOps Server also keeps its other users off
+ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-portsconf-devops-server)); the record
 covers what that can't.
 
 Something that gets its certificates over HTTP-01 is refused by that record too. `artur-rios.tech`'s `www.` and
@@ -154,27 +167,27 @@ move, and Vercel renews their certificates through Let's Encrypt over HTTP-01, s
 neither created, updated nor reported. Drop each zone's flag once its Vercel sites have moved
 ([cutover.md, 1.5](cutover.md#15-the-records)).
 
-Why the dev machine is not proxied:
+Why the DevOps Server is not proxied:
 
 - **Git over SSH** (port 2222) cannot pass Cloudflare's proxy: it only carries web traffic.
 - **Large pushes over HTTPS** would hit the proxy's limit on a request's size (about 100 MB on the
   free plan).
 
-Every machine runs its own Traefik dashboard and Grafana, and `*.techcraftsmen.net` reaches the apps
-machine, so the two machines cannot both be `traefik.` and `grafana.`. The optional platform variable
+Every server runs its own Traefik dashboard and Grafana, and `*.techcraftsmen.net` reaches the Application
+Server, so the two servers cannot both be `traefik.` and `grafana.`. The optional platform variable
 `PLATFORM_HOST_SUFFIX` (empty by default) is put after `traefik` and `grafana` in the dashboard's and
-Grafana's names (and Grafana's root URL): the apps machine leaves it empty and keeps `traefik.<DOMAIN>`
-and `grafana.<DOMAIN>`; the dev machine sets `PLATFORM_HOST_SUFFIX=-dev` in its `platform.env` and its
+Grafana's names (and Grafana's root URL): the Application Server leaves it empty and keeps `traefik.<DOMAIN>`
+and `grafana.<DOMAIN>`; the DevOps Server sets `PLATFORM_HOST_SUFFIX=-dev` in its `platform.env` and its
 dashboards are `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>`. Those two names need their own
-DNS-only records pointing at the dev machine (the table above), because the wildcard would send them
-to the apps machine. The certificate already covers them: it is for `*.<DOMAIN>`.
+DNS-only records pointing at the DevOps Server (the table above), because the wildcard would send them
+to the Application Server. The certificate already covers them: it is for `*.<DOMAIN>`.
 
 ### Cloudflare settings
 
 | Setting | Value | Why |
 |---|---|---|
-| SSL/TLS mode | **Full (strict)** | Cloudflare checks the apps machine's certificate too. *Flexible* makes every page loop (`ERR_TOO_MANY_REDIRECTS`), and *Full* (without strict) accepts any certificate. Set it on both zones. |
-| API token | **Zone → Zone → Read** and **Zone → DNS → Edit**, on both zones (one *Zone Resources* row for each) | Traefik proves domain control with it. Put it in `acme.env` on each machine. [dns.md A4](dns.md#a4-create-the-api-token) |
+| SSL/TLS mode | **Full (strict)** | Cloudflare checks the Application Server's certificate too. *Flexible* makes every page loop (`ERR_TOO_MANY_REDIRECTS`), and *Full* (without strict) accepts any certificate. Set it on both zones. |
+| API token | **Zone → Zone → Read** and **Zone → DNS → Edit**, on both zones (one *Zone Resources* row for each) | Traefik proves domain control with it. Put it in `acme.env` on each server. [dns.md A4](dns.md#a4-create-the-api-token) |
 | Cache Rule | **Bypass cache** for the APIs and for the status API | See below |
 
 **Caching.** Cloudflare caches static file extensions by default. A JSON response is not cached by
@@ -188,7 +201,7 @@ no hash in its name and is the usual cause ([dns.md A7](dns.md#a7-optional-the-c
 
 ### The origin lock
 
-The apps machine's firewall accepts 80 and 443 **only from Cloudflare's published address ranges**.
+The Application Server's firewall accepts 80 and 443 **only from Cloudflare's published address ranges**.
 Nobody reaches it by connecting to its address instead of going through Cloudflare. The ranges
 change rarely. `ygg install --role apps` downloads them from `https://www.cloudflare.com/ips-v4` and
 `/ips-v6` and adds one `ufw` rule per range, marked with the comment `yggdrasil-cloudflare`.
@@ -196,14 +209,14 @@ change rarely. `ygg install --role apps` downloads them from `https://www.cloudf
 or out of date. Run `ygg install` again to update them. A download that fails or returns anything but
 address ranges changes no Cloudflare rule: a firewall built from half an answer would lock real
 visitors out or let everyone in. The rest of the firewall is still set, and fails closed: SSH in,
-everything else refused (on a new machine, 80 and 443 stay closed until a download works). After the
+everything else refused (on a new server, 80 and 443 stay closed until a download works). After the
 ranges change, `scripts/platform.sh up` (as `ygg`) makes Traefik trust the new ones.
 
 ### Client addresses
 
 Behind Cloudflare every connection comes from a Cloudflare address, and the visitor's own is in the
 `X-Forwarded-For` header. Rate limits count by client address (heimdall-api's sign-in limit, for
-one), so Traefik must see the real one. On the apps machine set `CLOUDFLARE_PROXIED=true` in
+one), so Traefik must see the real one. On the Application Server set `CLOUDFLARE_PROXIED=true` in
 `platform.env`. Then:
 
 - `ygg install` writes Cloudflare's ranges, one per line, to `/etc/yggdrasil/cloudflare-ips`.
@@ -211,7 +224,7 @@ one), so Traefik must see the real one. On the apps machine set `CLOUDFLARE_PROX
   forwarded headers **from those ranges only** (`forwardedHeaders.trustedIPs`, on ports 80 and 443).
   From anyone else the header would let a client choose the address Traefik logs and counts.
 - With `CLOUDFLARE_PROXIED=true` and no `cloudflare-ips` file, `platform.sh up` stops and says
-  to run `ygg install`. With `false` (the dev machine, whose clients connect directly) the file is
+  to run `ygg install`. With `false` (the DevOps Server, whose clients connect directly) the file is
   not read.
 
 The trust check needs the TCP source address of the connection, which the engine's network mode
@@ -219,7 +232,7 @@ keeps. See [Rootless Docker](#5-rootless-docker).
 
 ## 3. Users
 
-Rules on both machines:
+Rules on both servers:
 
 - **`root` cannot log in.** No SSH login, no password.
 - **SSH accepts keys only**, and only for the users listed with a login below.
@@ -233,7 +246,7 @@ Rules on both machines:
 - **Home directories are `750`.** One service user cannot read another's files.
 - **Security updates install by themselves** ([unattended upgrades](#4-system-settings)).
 
-### Apps machine
+### Application Server
 
 | User | Login | `sudo` | Runs, in its own rootless engine | Owns |
 |---|---|---|---|---|
@@ -244,7 +257,7 @@ Rules on both machines:
 The platform and the applications share one engine on purpose. Traefik reaches the applications
 over that engine's `edge` network, and the deploy agent drives the engine they run in.
 
-### Dev machine
+### DevOps Server
 
 | User | Login | `sudo` | Runs, in its own rootless engine | Holds |
 |---|---|---|---|---|
@@ -264,11 +277,11 @@ directory and its own linger. What `dev` runs, and what is in its directory, com
 nuget.org. If they were built in the `ci` engine, a check from a pull request by `claude` or Renovate
 could reach the build's containers while it runs and change what comes out. The release agent runs
 only builds the owner started, so the code it builds was merged by the owner. Signing happens
-there, never on the controller and never on the apps machine.
+there, never on the controller and never on the Application Server.
 
 ### What each user may do
 
-- **`ygg` on the dev machine** is the most sensitive account: Jenkins' credentials can merge, tag
+- **`ygg` on the DevOps Server** is the most sensitive account: Jenkins' credentials can merge, tag
   and deploy. Only the owner logs in as it.
 - **`ci`** can read code and post nothing. A compromised check could read the repositories and the other
   containers of the `ci` engine, and nothing else. It cannot push, merge, tag or deploy. `ygg check`
@@ -284,7 +297,7 @@ there, never on the controller and never on the apps machine.
 |---|---|---|
 | Daily work: platform, deploys, variables, backups | `ygg`: `ssh ygg@<host>` | `cd /opt/yggdrasil`, then `ygg …` or `scripts/platform.sh …`. The login shell points `docker` at `ygg`'s engine. |
 | System work: updates, packages, users, firewall, `ygg install`, `ygg check`, `ygg agent` | the admin: `ssh artur@<host>` | `sudo` for what needs root. `ygg agent` and the engine rows of `ygg check` run commands as another user through `sudo`. |
-| AI development (dev machine) | `dev`: `ssh dev@<host>` | its own engine and Forgejo account |
+| AI development (DevOps Server) | `dev`: `ssh dev@<host>` | its own engine and Forgejo account |
 
 `ygg install` copies the admin's `~/.ssh/authorized_keys` to `ygg` (and `dev`) when that user has none,
 after asking. A user that already has keys is never touched.
@@ -347,9 +360,9 @@ APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 ```
 
-Security updates install themselves. Nobody logs in to these machines to run them.
+Security updates install themselves. Nobody logs in to these servers to run them.
 
-### `/etc/systemd/system/user-<uid>.slice.d/limits.conf` (dev machine)
+### `/etc/systemd/system/user-<uid>.slice.d/limits.conf` (DevOps Server)
 
 ```text
 [Slice]
@@ -361,7 +374,7 @@ MemoryMax=20G
 six CPUs (600% is six full ones) and 20 GB of memory. A build cannot starve Forgejo, the release agent
 or an AI session.
 
-### `/etc/systemd/system/user-<uid>.slice.d/50-yggdrasil-ports.conf` (dev machine)
+### `/etc/systemd/system/user-<uid>.slice.d/50-yggdrasil-ports.conf` (DevOps Server)
 
 ```text
 [Slice]
@@ -393,7 +406,7 @@ AllowUsers artur ygg dev
 ```
 
 `AllowUsers` lists the admin (whoever ran the install; `artur` here) first, then the role's SSH
-users: `ygg` on the apps machine, `ygg` and `dev` on the dev machine. `ci`, `release` and `renovate`
+users: `ygg` on the Application Server, `ygg` and `dev` on the DevOps Server. `ci`, `release` and `renovate`
 have `/usr/sbin/nologin` as their shell.
 
 Three things make this file safe:
@@ -495,7 +508,7 @@ WantedBy=timers.target
 
 ### Renovate: the daily run
 
-Dev machine only. `ygg install` (step `renovate-timer`) copies [platform/systemd](../platform/systemd)'s
+DevOps Server only. `ygg install` (step `renovate-timer`) copies [platform/systemd](../platform/systemd)'s
 `yggdrasil-renovate.service` and `yggdrasil-renovate.timer` into `~renovate/.config/systemd/user/`, as
 `renovate`, and enables the timer, the same way as the backup's. The timer fires every day at 05:00 (plus a
 random delay of up to 30 minutes; `Persistent=true`, so a machine that was off at 05:00 runs it when it is next
@@ -532,7 +545,7 @@ notes.
 
 ### The CI engines: the weekly prune
 
-Dev machine only. Every build in `ci`'s and `release`'s rootless engines leaves images and build cache behind,
+DevOps Server only. Every build in `ci`'s and `release`'s rootless engines leaves images and build cache behind,
 and nothing else removes them. `ygg install` (step `prune-timer`, right after the engines) copies
 [platform/systemd](../platform/systemd)'s `yggdrasil-prune.service` and `yggdrasil-prune.timer` into
 `~/.config/systemd/user/` of **each** of `ci` and `release`, as that user, and enables the timer, the same way
@@ -559,7 +572,7 @@ applications, which are not leftovers.
 | `/etc/yggdrasil-role` | The role: `dev` or `apps`. `ygg check` and `ygg install` without `--role` use it. Written before the first step that changes anything, so an install that stops halfway keeps its role. |
 | `/opt/yggdrasil` | Owned by `ygg`, mode `755`: `ygg` deploys from this checkout, and the backup unit runs its `scripts/backup.sh`. `ygg install` refuses to run from a checkout anywhere else. |
 | `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`; `renovate` gets `renovate.env`. Files `600`. A file that is already there is never touched. |
-| `/etc/yggdrasil/cloudflare-ips` (apps machine) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
+| `/etc/yggdrasil/cloudflare-ips` (Application Server) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
 | `/etc/yggdrasil/traefik.yml` | Not written by `ygg install`: `platform.sh up` renders Traefik's static configuration there (as `ygg`, mode `600`) once the engine is checked, and Traefik's container mounts it. The other commands (`down`, `ps`, `logs`, `config`) render a throwaway copy and leave this one alone. It stays there so that Traefik starts again after a crash or a reboot; deleting it takes ingress down at the next restart of the container, until the next `platform.sh up`. `platform.sh` refuses to run as root, since a root-owned file here is one the rootless Traefik can't read. |
 | `ufw` rules | Dev: `OpenSSH`, `80,443/tcp`, `2222/tcp`. Apps: `OpenSSH`, and for each Cloudflare range `allow proto tcp from <range> to any port 80,443 comment yggdrasil-cloudflare`. The defaults: `deny incoming`, `allow outgoing`. Then `ufw` is turned on, with SSH allowed first so the session that runs the install is not cut. `ygg check` reports any other rule that lets everyone in. |
 | Packages | `git curl openssl python3 apache2-utils ca-certificates python3-yaml python3-cryptography uidmap dbus-user-session slirp4netns docker-ce docker-ce-cli containerd.io docker-ce-rootless-extras docker-buildx-plugin docker-compose-plugin ufw rsync unattended-upgrades`. Docker's come from its own apt repository; the distribution's `docker.io` and similar are removed first, if you agree. |
@@ -605,16 +618,16 @@ connection. `ygg check` shows a "client addresses" row per user. After a change 
 records the client address of each request: `docker logs yggdrasil-traefik-1 2>&1 | tail -5`, run as `ygg`
 after a request from a machine whose address you know. What to expect differs by machine:
 
-- **Dev machine** (DNS only, clients connect directly): your own public address. An address like `10.0.2.2`
+- **DevOps Server** (DNS only, clients connect directly): your own public address. An address like `10.0.2.2`
   or the engine's own for every request means the `slirp4netns` settings are not in force.
-- **Apps machine** (behind Cloudflare's proxy): a **Cloudflare** address, from one of the ranges in
+- **Application Server** (behind Cloudflare's proxy): a **Cloudflare** address, from one of the ranges in
   `cloudflare-ips`, never yours: Cloudflare is what connects. That is the `slirp4netns` part working. Your
   own address is in the `X-Forwarded-For` header, which Traefik trusts from those ranges only
   ([Client addresses](#client-addresses)); an application behind it sees it there. The same internal address
   for every request would mean, here too, that the settings are not in force.
 
 **The firewall applies.** A rootless engine publishes ports as ordinary listening processes, so `ufw`
-sees them. This is why the dev machine opens 2222 for Forgejo in `ufw` and why the apps machine can
+sees them. This is why the DevOps Server opens 2222 for Forgejo in `ufw` and why the Application Server can
 restrict 80 and 443 to Cloudflare.
 
 **Published ports, seen from a container: the host's address.** The `slirp4netns` port driver opens a published
@@ -632,13 +645,14 @@ empty ([cli.md, Build agents](cli.md#build-agents)). `scripts/prove-machine.sh d
 `/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that
 the path exists) so a green row means something. `scripts/prove-machine.sh dev` (or `apps`), run once by the admin on
 a new machine, proves the rest on the real thing: from a container of `ci`'s engine, `ygg`'s socket, home and secrets
-are out of reach; Testcontainers reaches a published port; no service runs as root; and, on the apps machine, which
+are out of reach; Testcontainers reaches a published port; no service runs as root; and, on the Application Server, which
 client addresses Traefik logs ([cutover.md, 2.6](cutover.md#26-the-rootless-proofs)).
 
 ## 6. Credentials
 
-Where every secret lives. A line marked **later** is created by a later part of the move to Forgejo and
-Jenkins: nothing creates it yet, and the table says where it will live. The Jenkins credentials are defined by
+Where every secret lives. A line marked **later** is created at a later step (the AI development user, or the move of
+the repository it belongs to, [moving-repositories.md](moving-repositories.md)): nothing creates it yet, and the
+table says where it will live. The Jenkins credentials are defined by
 Configuration as Code from files the controller mounts (`platform/jenkins/controller/casc*.yaml`); a build agent
 holds one only while the build step it is bound to runs. The credentials of the repositories' own checks and
 release builds (`reportgenerator-license` and the signing keys) are the exception: the owner creates them in
@@ -656,7 +670,7 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 | Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
 | Forgejo owner token (`write:repository`; for the move, `read:user` too, which `migrate.py collaborators` needs to look the bots up), `FORGE_TOKEN` | The operator's shell, for a run of `python3 scripts/rules.py` or `scripts/migrate.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks; import the repositories, make their push mirrors, give the bots their access | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules), [cutover.md](cutover.md#24-the-owners-token) |
-| GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev): with each push mirror, in that repository's git configuration on disk, inside Forgejo's data volume. So the nightly Forgejo dump ([Backups](#7-backups-and-restore)) carries it, and a copy of it sits in the apps machine's `~/received/from-dev` | Push to the GitHub copies. It cannot move or delete a version tag there: nobody bypasses the copies' `mirror tags` ruleset, so such a push fails and Forgejo shows the mirror's sync failing ([setup.md](setup.md#version-tags-tag-check-and-repairs)) | at the move: `scripts/migrate.py mirrors` hands it to Forgejo ([cutover.md](cutover.md#41-the-two-github-tokens)). A new token reaches no existing mirror: rotating it means making the mirrors again ([cutover.md, 7.3](cutover.md#73-the-windows-tokens)) |
+| GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev): with each push mirror, in that repository's git configuration on disk, inside Forgejo's data volume. So the nightly Forgejo dump ([Backups](#7-backups-and-restore)) carries it, and a copy of it sits in the Application Server's `~/received/from-dev` | Push to the GitHub copies. It cannot move or delete a version tag there: nobody bypasses the copies' `mirror tags` ruleset, so such a push fails and Forgejo shows the mirror's sync failing ([setup.md](setup.md#version-tags-tag-check-and-repairs)) | at the move: `scripts/migrate.py mirrors` hands it to Forgejo ([cutover.md](cutover.md#41-the-two-github-tokens)). A new token reaches no existing mirror: rotating it means making the mirrors again ([cutover.md, 7.3](cutover.md#73-the-windows-tokens)) |
 | GitHub token for the copies' rulesets (`gh auth login`, or `GH_TOKEN`; Administration read and write on the mirrored repositories) | The operator's shell, for `python3 scripts/rules.py` on a Forgejo installation with a `mirror` (not kept in a file) | Set the `mirror tags` ruleset on each GitHub copy | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules) |
 | `github-app`: the GitHub App `yggdrasil` (App ID, PKCS#8 key `GITHUB_APP_KEY_FILE`). On a GitHub installation it is the git server's write identity and everything below; on Forgejo it exists only with a `mirror`, reduced to Actions read and write, Checks read, Contents read and write, Metadata read | The Jenkins controller; bound by Jenkins on the **publish agent** only (Forgejo with a mirror), never on the `ci` or `release` agent | On Forgejo: read Actions results, download Actions artifacts, dispatch workflows, create releases on GitHub and upload their files. Contents write is needed for releases; it could also push to the GitHub copy, which the next mirror push would overwrite. It no longer writes statuses or pull requests | [setup.md step 7](setup.md#7-create-the-github-app); reduced after the move ([cutover.md](cutover.md#72-the-github-app-reduced)) |
 | `github-read`: a second, read-only GitHub App (contents, metadata, pull requests, commit statuses), `GITHUB_READ_APP_ID`, `GITHUB_READ_APP_KEY_FILE` | The Jenkins controller; optional, GitHub installations only; bound for the CI agent's checkout and status reads | Read the repositories. Without it the CI agent uses `github-app`, whose token can write: an accepted risk, and every build log says so | now: [setup.md 9.2](setup.md#92-the-env-files-first-pass) |
@@ -675,7 +689,7 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 | `orpheus-android-keystore-password`: secret text, the keystore's password (`ANDROID_KEYSTORE_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Open the keystore | later: create it before the first release build |
 | `orpheus-android-key-alias`: secret text, the signing key's alias in the keystore (`ANDROID_KEY_ALIAS` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Name the key to sign with | later: create it before the first release build |
 | `orpheus-android-key-password`: secret text, the signing key's password (`ANDROID_KEY_PASSWORD` on GitHub) | Jenkins credential the owner creates (Manage Jenkins, Credentials, System, Global: kind **Secret text**, the ID exactly as written). Used by the `releaseCredentials` of orpheus: bound only on its release build, on the release agent, never by a check | Unlock the key | later: create it before the first release build |
-| GitHub read-only token for github-readme-stats: **not a Jenkins credential** | An application variable of the apps machine (`/etc/yggdrasil/production/github-readme-stats.env`, or the [variables store](variables.md)), which its stack hands to the container as `env_file` when it runs (`stacks/github-readme-stats.yml`); never a build argument, so no `credentials` entry in the catalog | Read public GitHub data (a fine-grained token with no permissions) | later: the owner sets it when the site is deployed |
+| GitHub read-only token for github-readme-stats: **not a Jenkins credential** | An application variable of the Application Server (`/etc/yggdrasil/production/github-readme-stats.env`, or the [variables store](variables.md)), which its stack hands to the container as `env_file` when it runs (`stacks/github-readme-stats.yml`); never a build argument, so no `credentials` entry in the catalog | Read public GitHub data (a fine-grained token with no permissions) | later: the owner sets it when the site is deployed |
 | Backup SSH key (`~/.ssh/yggdrasil-backup`) | `ygg`, on each machine; its public half on the other | Send backups to the other machine, and nothing else (it can only run `rrsync` in one directory) | now: [Backups](#7-backups-and-restore) |
 
 ### Secrets that go away
@@ -693,7 +707,7 @@ These secrets of the GitHub workflows have no Jenkins credential, and the owner 
 ### The first Forgejo account
 
 Registration is closed, so the owner's account is created from the command line, once Forgejo is
-up. Run this as `ygg` on the dev machine:
+up. Run this as `ygg` on the DevOps Server:
 
 ```bash
 docker exec "$(docker ps -q --filter label=com.docker.compose.project=yggdrasil --filter label=com.docker.compose.service=forgejo)" \
@@ -713,12 +727,12 @@ docker exec "$(docker ps -q --filter label=com.docker.compose.project=yggdrasil 
 ## 7. Backups and restore
 
 GitHub receives only git data: not pull requests, issues, check results or release files. So each
-machine copies its own data every night to the other, and each machine holds the other's.
+server copies its own data every night to the other, and each holds the other's.
 
 ```mermaid
 flowchart LR
-    devout["Dev machine<br/>~/backups/&lt;date&gt;/"] -- "rsync over SSH, restricted key" --> appsin["Apps machine<br/>~/received/from-dev/"]
-    appsout["Apps machine<br/>~/backups/&lt;date&gt;/"] -- "rsync over SSH, restricted key" --> devin["Dev machine<br/>~/received/from-apps/"]
+    devout["DevOps Server<br/>~/backups/&lt;date&gt;/"] -- "rsync over SSH, restricted key" --> appsin["Application Server<br/>~/received/from-dev/"]
+    appsout["Application Server<br/>~/backups/&lt;date&gt;/"] -- "rsync over SSH, restricted key" --> devin["DevOps Server<br/>~/received/from-apps/"]
 ```
 
 ### What runs
@@ -727,7 +741,7 @@ flowchart LR
 
 | Unit | Does |
 |---|---|
-| `yggdrasil-backup.timer` | Fires every night at 03:30, plus a random delay of up to 15 minutes so the two machines do not call each other in the same second. `Persistent=true`: a machine that was off at 03:30 backs up when it is next on. |
+| `yggdrasil-backup.timer` | Fires every night at 03:30, plus a random delay of up to 15 minutes so the two servers do not call each other in the same second. `Persistent=true`: a machine that was off at 03:30 backs up when it is next on. |
 | `yggdrasil-backup.service` | Runs `/opt/yggdrasil/scripts/backup.sh run`, after `docker.service` of the user (the timer's catch-up run at boot must wait for the engine). It gets `DOCKER_HOST` itself, since a user unit does not read `~/.profile`. |
 
 You can run it by hand as `ygg`: `ygg backup run`. `ygg backup list` shows the days and files kept in
@@ -792,7 +806,7 @@ A volume's name is its Compose project, an underscore and its name in the Compos
 platform's are `yggdrasil_jenkins`, `yggdrasil_forgejo-data`, `yggdrasil_grafana` and so on
 (`docker volume ls`). An application's are `<application>-<environment>_<volume>`.
 
-For example, on the dev machine:
+For example, on the DevOps Server:
 
 ```text
 BACKUP_TARGET=ygg@203.0.113.20:.
@@ -801,7 +815,7 @@ vars
 volume yggdrasil_jenkins
 ```
 
-and on the apps machine:
+and on the Application Server:
 
 ```text
 BACKUP_TARGET=ygg@git.example.com:.
@@ -835,16 +849,16 @@ after that deploy.
 
 The `:.` after the host means "the directory the key is restricted to", explained next. The host is the
 other machine's address (`203.0.113.20` is a documentation address: use the real one) or a name that points
-straight at it. The apps machine's own names are proxied by Cloudflare, which carries web traffic only, so
-SSH to them does not work: use its IP address or a DNS-only record. SSH is on port 22 on both machines.
+straight at it. The Application Server's own names are proxied by Cloudflare, which carries web traffic only, so
+SSH to them does not work: use its IP address or a DNS-only record. SSH is on port 22 on both servers.
 
 `forgejo` dumps fail while Forgejo has no repository at all (`Failed to include repositories`). Leave the item
 out until the first repository exists, or the nightly run reports a failure.
 
 ### The key, on both machines
 
-Do this for each direction (dev sends to apps, apps sends to dev). "Sender" is the machine that runs
-the backup; "receiver" is the one that stores it.
+Do this for each direction (the DevOps Server sends to the Application Server, and the Application Server to
+the DevOps Server). "Sender" is the server that runs the backup; "receiver" is the one that stores it.
 
 1. **On the sender, as `ygg`**, make a key with no passphrase (the timer runs unattended):
    ```bash
@@ -862,7 +876,7 @@ the backup; "receiver" is the one that stores it.
    ```text
    restrict,command="rrsync ~/received/from-dev" ssh-ed25519 AAAA… yggdrasil-backup@dev
    ```
-   - `from-dev` is the sender's name: `from-apps` on the dev machine.
+   - `from-dev` is the sender's name: `from-apps` on the DevOps Server.
    - `restrict`: turns off everything SSH can do for this key: a shell, port forwarding, agent forwarding.
    - `command="rrsync …"`: whatever the key asks for, the receiver runs `rrsync`, which lets only `rsync`
      through, and only inside that directory. A stolen key gets nothing outside it: no shell, no other
@@ -985,30 +999,30 @@ next deploy. Then `scripts/platform.sh up` and the deploys read it as before.
 **A PostgreSQL dump** (`postgres-<container>.sql.gz`): into the new, running database container,
 `gunzip -c postgres-<container>.sql.gz | docker exec -i <container> psql -U <user> -d postgres`.
 
-## 8. Adding a machine
+## 8. Adding an Application Server
 
-Another apps host (a second `ygg` engine for more applications, or one environment per host) is set
-up like the first apps machine:
+Another Application Server (a second `ygg` engine for more applications, or one environment per server) is set
+up like the first:
 
 1. **Ubuntu 24.04 or 26.04 LTS** with an admin user that has `sudo` and your key in `~/.ssh/authorized_keys`.
 2. **The checkout and the install**, as in [setup.md step 8](setup.md#8-prepare-each-machine): clone into
    `/opt/yggdrasil`, then `ygg install --role apps`. It creates its own `ygg` user and engine; nothing
-   is shared with the other machines.
+   is shared with the other servers.
 3. **DNS and Cloudflare**: a wildcard record and the bare-domain record for its domain, proxied, and
-   `CLOUDFLARE_PROXIED=true`. If it shares a domain with the first apps machine, only one of them
+   `CLOUDFLARE_PROXIED=true`. If it shares a domain with the first Application Server, only one of them
    can have the wildcard; give the new one a domain of its own (`DOMAIN=staging.example.com`). A
    Cloudflare certificate at the edge covers one level only, as in
    [dns.md A7](dns.md#a7-optional-the-cloudflare-proxy).
-4. **Its deploy agent**: the environments it runs set a new `agent` in the catalog. After the dev
-   machine restarts Jenkins, the agent exists; copy its secret into the new machine's `platform.env`
-   ([setup.md step 10](setup.md#10-the-apps-machine)).
+4. **Its deploy agent**: the environments it runs set a new `agent` in the catalog. After the DevOps
+   Server restarts Jenkins, the agent exists; copy its secret into the new server's `platform.env`
+   ([setup.md step 10](setup.md#10-the-linux-application-server)).
 5. **Backups**: its own `backup.conf` and key as in [Backups](#7-backups-and-restore). Send them to
-   the dev machine, with another directory there: `rrsync ~/received/from-<machine>`.
+   the DevOps Server, with another directory there: `rrsync ~/received/from-<machine>`.
 
 ## 9. Upgrading a host from rootful Docker
 
 For a host set up with the earlier guide (your user in the `docker` group, `/etc/yggdrasil` owned by you
-with group `docker`) that you want to move to the apps machine layout **on the same server**. Plan for
+with group `docker`) that you want to move to the Application Server layout **on the same machine**. Plan for
 downtime: the applications are off while you move their data.
 
 1. **Stop everything, with the old checkout.** Before `git pull`, because the new `platform.sh`
@@ -1051,8 +1065,8 @@ downtime: the applications are off while you move their data.
    - `chown -R ygg:ygg`: `ygg` owns the directory and everything in it.
    - `chmod -R u=rwX,go=`: only `ygg` can read or write. The capital `X` keeps directories enterable.
    - `chmod 750`: the directory itself as the installer makes it (`ygg check` reports anything else).
-   The GitHub App key (`github-app.pem`), if this host ran the controller, moves to the dev machine
-   ([setup.md step 9](setup.md#9-the-dev-machine)). If this host **keeps** the controller (`apps,jenkins,agent`),
+   The GitHub App key (`github-app.pem`), if this host ran the controller, moves to the DevOps Server
+   ([setup.md step 9](setup.md#9-the-linux-devops-server)). If this host **keeps** the controller (`apps,jenkins,agent`),
    the key must stay readable by the controller's container user, which is not `ygg` (uid 1000 in the container
    is a subordinate id on the host), so give it back its `644`:
    ```bash

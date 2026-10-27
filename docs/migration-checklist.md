@@ -336,8 +336,8 @@ decision above.
 ## Repositories with no prepared branch
 
 Written by hand, and kept when the table is regenerated. Every repository with CI has a prepared branch (the
-table's *Prepared branch* column); these 24 have no workflows, so there is nothing to prepare. The import carries
-them to Forgejo as they are.
+table's *Prepared branch* column); these 24 have no workflows, so there is nothing to prepare. The import carried
+them to Forgejo as they are (on 2026-10-26).
 
 | Repository | Why it has no branch |
 |---|---|

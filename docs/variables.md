@@ -375,9 +375,10 @@ ygg vars backup ~/yggdrasil-backups
 It writes `vars-<UTC timestamp>.db` (a consistent copy, taken while the store is in use) and
 `vars-<UTC timestamp>.key`, both `0600`.
 
-On a `dev` or `apps` machine, the item `vars` of `backup.conf` takes this copy every night and sends it, with the
-other backups, to the other machine ([hosts.md, Backups](hosts.md#7-backups-and-restore), which also says how to
-restore it). Elsewhere, a weekly cron line as the store's owner, in `/etc/cron.d/yggdrasil-vars`:
+On a Linux DevOps Server or a Linux Application Server (the [two servers](../README.md#concepts)), the item `vars` of
+`backup.conf` takes this copy every night and sends it, with the other backups, to the other server
+([hosts.md, Backups](hosts.md#7-backups-and-restore), which also says how to restore it). Elsewhere, a weekly cron
+line as the store's owner, in `/etc/cron.d/yggdrasil-vars`:
 
 ```text
 0 3 * * 0 ygg /opt/yggdrasil/scripts/ygg vars backup /home/ygg/yggdrasil-backups

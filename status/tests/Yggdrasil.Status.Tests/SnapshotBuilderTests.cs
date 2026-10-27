@@ -93,10 +93,24 @@ public class SnapshotBuilderTests
     }
 
     [Fact]
-    public void GivenARepository_WhenBuildingItsUrl_ThenItIsOnGitHubUnderTheOwner()
+    public void GivenARepository_WhenBuildingItsUrl_ThenItIsOnTheGitServerUnderTheOwner()
     {
-        Assert.Equal("https://github.com/artur-rios/heimdall-api", SnapshotBuilder.Repository(App("heimdall-api"), "artur-rios"));
-        Assert.Null(SnapshotBuilder.Repository(App("jenkins"), "artur-rios"));
+        Assert.Equal("https://git.example.com/artur-rios/heimdall-api",
+            SnapshotBuilder.Repository(App("heimdall-api"), "artur-rios", "https://git.example.com"));
+        Assert.Equal("https://github.com/artur-rios/heimdall-api",
+            SnapshotBuilder.Repository(App("heimdall-api"), "artur-rios", "https://github.com"));
+        Assert.Null(SnapshotBuilder.Repository(App("jenkins"), "artur-rios", "https://git.example.com"));
+    }
+
+    [Fact]
+    public void GivenAForgejoCatalog_WhenAnApplicationIsBuilt_ThenItsRepositoryIsOnForgejo()
+    {
+        var forgejo = CatalogLoader.Parse("forge:\n  type: forgejo\n  url: https://git.example.com/\n" + TestData.CatalogYaml);
+        var builder = new SnapshotBuilder(HostCatalog.For(forgejo, TestData.HostEnvironments), TestData.Options());
+
+        var app = builder.BuildApplication(Target("heimdall-api"), Up, TestData.Now);
+
+        Assert.Equal("https://git.example.com/artur-rios/heimdall-api", app.Repository);
     }
 
     [Fact]

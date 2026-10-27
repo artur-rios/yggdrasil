@@ -91,16 +91,33 @@ machine_user_shell() {
   echo /usr/sbin/nologin
 }
 
+# The passwd entries of one check, by user, from a single `getent passwd` (machine_passwd_load). A check
+# asks for a uid or a home over a thousand times, each a getent of its own otherwise; it never adds or
+# changes a user, so its entries cannot go stale. Empty outside a check (check_machine fills and clears
+# it), and a user it lacks (a directory that does not list its users) is asked of getent on its own.
+declare -gA MACHINE_PASSWD=()
+machine_passwd_load() {
+  local line
+  MACHINE_PASSWD=()
+  while IFS= read -r line; do
+    [[ "$line" == *:* ]] && MACHINE_PASSWD[${line%%:*}]=$line
+  done < <(getent passwd 2>/dev/null || true)
+}
+
 # passwd_field <user> <n>: field n of the user's passwd entry (3 uid, 6 home, 7 shell); nothing when
 # there is no such user. Uids and homes are asked of the system, never assumed.
 passwd_field() {
-  local entry
-  entry=$(getent passwd "$1" 2>/dev/null) || return 0
-  cut -d: -f"$2" <<<"$entry"
+  local entry fields
+  entry=${MACHINE_PASSWD[$1]-}
+  if [[ -z "$entry" ]]; then
+    entry=$(getent passwd "$1" 2>/dev/null) || return 0
+  fi
+  IFS=: read -r -a fields <<<"$entry"
+  printf '%s\n' "${fields[$2 - 1]-}"
 }
 
 # user_exists <user>
-user_exists() { getent passwd "$1" >/dev/null 2>&1; }
+user_exists() { [[ -n "${MACHINE_PASSWD[$1]-}" ]] || getent passwd "$1" >/dev/null 2>&1; }
 
 # secrets_dir_of <user>: the user's secrets directory under $YGG_SYSROOT: ygg keeps /etc/yggdrasil,
 # every other service user has /etc/yggdrasil-<user>.
@@ -378,7 +395,13 @@ read_as_user() {
 }
 
 # machine_can_read_as_users: sudo would run something for another user without asking for a password.
+# Within a check, the answer check_machine got once at its start (MACHINE_CAN_READ_AS_USERS, yes or no:
+# a check asks it about a thousand times, and nothing in a check changes it); outside one, sudo is asked.
 machine_can_read_as_users() {
+  case "${MACHINE_CAN_READ_AS_USERS:-}" in
+    yes) return 0 ;;
+    no) return 1 ;;
+  esac
   ((EUID == 0)) || { has sudo && sudo -n true 2>/dev/null; }
 }
 
@@ -632,11 +655,21 @@ machine_needs() {
 check_machine() {
   machine_todo=() machine_missing=()
   machine_current_role=$1
+  # What the check asks most, asked once (see MACHINE_PASSWD and machine_can_read_as_users), and forgotten
+  # after it: install changes users and sudo's state between two checks.
+  machine_passwd_load
+  installed_load
+  if machine_can_read_as_users; then MACHINE_CAN_READ_AS_USERS=yes; else MACHINE_CAN_READ_AS_USERS=no; fi
   if [[ -n "${2:-}" ]]; then
     machine_report >/dev/null
   else
     machine_report
   fi
+  # The report's own status, as before (declared only now, so the report cannot write to it).
+  local report_status=$?
+  MACHINE_PASSWD=() MACHINE_CAN_READ_AS_USERS=""
+  installed_clear
+  return "$report_status"
 }
 
 machine_report() {

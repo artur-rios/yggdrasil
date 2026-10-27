@@ -3,12 +3,17 @@ namespace Yggdrasil.Status;
 /// <summary>
 /// catalog.yaml, validated: the environments, every system and the applications each one is made of,
 /// in every environment. The service itself reports on the environments of its host: see <see cref="HostCatalog"/>.
+/// <see cref="ForgeUrl"/> is the git server's web address, without a trailing slash: the forge block's url for
+/// Forgejo, <see cref="GitHub"/> without one, as scripts/catalog.py's forge() resolves it.
 /// </summary>
 public sealed record Catalog(
     string Owner,
     IReadOnlyList<EnvironmentDefinition> Environments,
-    IReadOnlyList<SystemDefinition> Systems)
+    IReadOnlyList<SystemDefinition> Systems,
+    string ForgeUrl = Catalog.GitHub)
 {
+    public const string GitHub = "https://github.com";
+
     public IEnumerable<ApplicationDefinition> Applications => Systems.SelectMany(system => system.Applications);
 }
 
@@ -82,7 +87,8 @@ public sealed record ContainerSelector(string Project, string? Service);
 public sealed record HostCatalog(
     IReadOnlyList<EnvironmentDefinition> Environments,
     string Owner,
-    IReadOnlyList<SystemDefinition> Systems)
+    IReadOnlyList<SystemDefinition> Systems,
+    string ForgeUrl = Catalog.GitHub)
 {
     public IEnumerable<ApplicationDefinition> Applications => Systems.SelectMany(system => system.Applications);
 
@@ -132,7 +138,7 @@ public sealed record HostCatalog(
             .Where(system => system.Applications.Count > 0)
             .ToList();
 
-        return new HostCatalog(environments, catalog.Owner, systems);
+        return new HostCatalog(environments, catalog.Owner, systems, catalog.ForgeUrl);
     }
 }
 
