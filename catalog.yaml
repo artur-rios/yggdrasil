@@ -33,13 +33,6 @@ forge:
 mirror:
   github: artur-rios
   releases: true
-forge:
-  type: forgejo
-  url: https://git.techcraftsmen.net
-  developers: [claude]
-mirror:
-  github: artur-rios
-  releases: true
 
 # The git server (forge) and its GitHub mirror: the `forge` and `mirror` blocks, right after
 # `repository:` above. Until cutover 5.9 (docs/cutover.md) neither is here: with no forge block this

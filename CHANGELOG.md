@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`catalog.yaml` has its `forge` and `mirror` blocks once.** Cutover step 5.9 had pasted both twice, identically,
+  which YAML reads without a word (the last of two equal keys wins). A test now refuses a top-level key that is in
+  the repository's catalog twice.
+
+### Changed
+
+- **setup.md explains the 403 at the end of every build.** The Gitea plugin posts a build status of its own with
+  the read-only `forge-read` token, Forgejo refuses it, and the log ends with `Could not send notifications ...
+  HTTP 403/Forbidden`. It is harmless (the pipeline posts the statuses that count with `forge-write`) and the plugin
+  has no switch to stop it: [Forgejo details worth knowing](docs/setup.md#forgejo-details-worth-knowing).
+
 ## [0.9.2] - 2026-10-27
 
 ### Fixed
