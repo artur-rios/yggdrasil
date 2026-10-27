@@ -1,9 +1,24 @@
 # The cutover: from one server on GitHub to two servers on Forgejo
 
-> **Status:** carried out on 2026-10-26, and complete for this installation: the old server is the Application
-> Server, the DevOps Server was added, every repository is on Forgejo and its GitHub copy is a push mirror. The
-> per-repository moves of [moving-repositories.md](moving-repositories.md) are still to do, one repository at a
-> time. The steps below are kept as they were run: the record, and a guide for anyone repeating it.
+> **Status:** the window (sections 0 to 5) was carried out on 2026-10-26 for this installation: the old server is
+> the Application Server, the DevOps Server was added, and all 61 repositories are on Forgejo (`verify`: 61
+> repositories, 0 checks failed), each with its GitHub copy as a push mirror. Still to do: the per-repository moves
+> of [moving-repositories.md](moving-repositories.md), one repository at a time, and the clean-up of
+> [section 7](#7-clean-up), which waits for the first moved repository's release. The steps below are kept as they
+> were run: the record, and a guide for anyone repeating it.
+>
+> **What the window turned up, fixed since** (a repeat of it with the current release does not meet them):
+> - The `renovate` token needs `read:user` and `read:organization` too, or Renovate stops at `Authentication
+>   failure` (2.7); and so do the `jenkins` and `jenkins-ci` tokens, or every repository scan fails with `HTTP
+>   403/Forbidden` and no pull request gets a status from Jenkins (5.18). [setup.md 9.7](setup.md#97-the-forgejo-accounts-and-tokens)
+>   asks for them now (0.9.1).
+> - Forgejo's own Actions ran the imported repositories' `.github/workflows`, and with no runner their jobs waited on
+>   every pull request. It is off since 0.9.1 (`FORGEJO__actions__ENABLED=false`).
+> - 5.9 put the `forge` and `mirror` blocks in `main`'s `catalog.yaml` only (and twice): the unit suite failed every
+>   build of `main`. 0.9.2 brought `main`'s catalog to `develop` and made the tests independent of it; the duplicate
+>   is gone in the next release.
+> - `migrate.py collaborators` saw anyone as a collaborator of a public repository (Forgejo's permission endpoint
+>   answers `read` for anybody there) and skipped adding `jenkins-ci`; it reads the collaborators list now.
 
 This is the runbook for moving an installation from what runs today, **one rootful server that deploys from
 GitHub**, to the default setup of [setup.md](setup.md): a **[Linux DevOps Server](../README.md#concepts)**
@@ -917,8 +932,8 @@ python3 scripts/migrate.py inventory | tee ~/cutover-log/inventory-rehearsal.txt
 repository: name, `private` or `public`, fork `yes`/`no`, open pull requests, in the catalog `yes`/`no`; then the
 totals.
 
-**Success looks like:** the totals line, `<N> repositories: ...` (60 today; this `<N>` is the count every later
-step expects), and exit `0`. Keep the file: it tells you which
+**Success looks like:** the totals line, `<N> repositories: ...` (61 in the window, on 2026-10-26: 9 forks, 4
+archived, 37 in the catalog and 24 not; this `<N>` is the count every later step expects), and exit `0`. Keep the file: it tells you which
 repositories are **private and in the catalog** (6 lists them), which are archived, and which have open pull
 requests.
 **If it fails:** exit `1` with `<repository>: N open pull requests: finish or close them first` is the list of
@@ -2049,7 +2064,13 @@ git rev-parse HEAD > ~/cutover-log/catalog-commit.txt
 (Your change of 4.2 is the commit: 5.8a brought it back on `main`, the conflict resolved and `validate` passed. If
 `git pull` refuses because of it, `git stash`, `git pull`, `git stash pop`; a conflict in `catalog.yaml` on that pop
 is resolved as in 5.8a, the `forge:` and `mirror:` blocks right after the `repository:` line, then `python3
-scripts/catalog.py validate` before the commit.)
+scripts/catalog.py validate` before the commit. `grep -c '^forge:' catalog.yaml` must print `1`: in the window the
+blocks ended up there twice.)
+
+`develop` does not get this change here, and it needs it: until it has the same `catalog.yaml`, the unit suite fails
+on every build of `main` (its tests read the repository's catalog) and the next release merges a catalog `develop`
+never had. After the window, bring it over on a `fix/` branch cut from `develop`
+(`git checkout origin/main -- catalog.yaml`, commit, pull request). This installation did it in 0.9.2.
 
 - `github-before.json`: each repository's description and whether its issues are on.
 - `github-before/<repository>.json`: each ruleset in full (every repository's, the catalog's and the others',
@@ -2413,7 +2434,10 @@ the `develop` builds end green with `deploy: development is on demand and <appli
 it again`; `tag-check` is green (`<N> release tags checked`; `unknown target: released from 'main', not a
 commit` lines are imported releases that name a branch, and not failures); the test delivery has a green mark
 and response `200`; Renovate skips every repository, which has no Renovate configuration of its own yet.
-**If it fails:** a scan that finds no branches: `jenkins-ci` cannot read the repository (5.14). Every build
+**If it fails:** a scan that finds no branches: `jenkins-ci` cannot read the repository (5.14), or its token lacks
+`read:user` and `read:organization` (the controller's log then has `GiteaHttpStatusException: HTTP
+403/Forbidden`): a new token, as in [setup.md 9.7](setup.md#97-the-forgejo-accounts-and-tokens), a restart of the
+controller and **Scan Repository Now**. Every build
 failing to load the library: `YGGDRASIL_LIBRARY_VERSION` is not a tag on Forgejo's yggdrasil, or `jenkins-ci`
 cannot read yggdrasil (5.14). A webhook delivery refused by Forgejo: 2.5. More in
 [setup.md, Troubleshooting](setup.md#troubleshooting).
@@ -2436,7 +2460,8 @@ done
 - `remote rename origin github`: the GitHub copy stays reachable as `github`, which is what a tag is repaired
   from ([setup.md](setup.md#version-tags-tag-check-and-repairs)). Never push to it: the next mirror sync
   overwrites what you pushed.
-- `git fetch origin` asks for your Forgejo user and a token (the Git Credential Manager keeps it); or use SSH,
+- `git fetch origin` asks for your Forgejo user and a token (the Git Credential Manager keeps it; it may instead open
+  Forgejo's sign-in in the browser and ask you to authorize "Git Credential Manager": do, and it keeps that); or use SSH,
   `ssh://git@git.techcraftsmen.net:2222/artur-rios/<repo>.git`, with your key added in Forgejo's **Settings → SSH
   / GPG Keys**.
 - The loop makes each local branch track Forgejo's branch of the same name.
