@@ -15,6 +15,11 @@ source ci/android-sdk.sh
 ensure_android_sdk
 
 cd console
+# `flutter pub get` links each plugin of the Windows build from the pub cache, outside the checkout
+# (windows/flutter/ephemeral/.plugin_symlinks), and Jenkins collects nothing from a checkout with a link that
+# leads out of it (LINK_GUARD in jenkins/library/vars/yggdrasilPipeline.groovy): not even the APK. The folder is
+# generated and git-ignored, so it goes when the script ends, whatever the result.
+trap 'rm -rf "$PWD/windows/flutter/ephemeral"' EXIT
 flutter pub get
 dart format --output=none --set-exit-if-changed lib test
 flutter analyze
