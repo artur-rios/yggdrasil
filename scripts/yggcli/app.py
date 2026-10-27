@@ -15,6 +15,44 @@ def _ignore(signum, frame):
     """While a command runs, Ctrl-C is the command's: the menu stays."""
 
 
+PROMPT = "Enter to return to the menu "
+
+
+def _wait_for_return():
+    """The pause after a command: Enter, Ctrl-C or the end of input return to the menu.
+
+    On a terminal the keys are read one by one with the terminal's signals off, so Ctrl-C is a key, as in
+    the menu (ui.py), not a SIGINT: a SIGINT that came after the prompt but before input() was reading
+    went unnoticed, and the pause went on waiting, Ctrl-C lost. Elsewhere (input piped in), input()."""
+    if not sys.stdin.isatty():
+        try:
+            input(PROMPT)
+        except EOFError:
+            pass
+        except KeyboardInterrupt:
+            print(flush=True)
+        return
+    import termios  # a terminal's, POSIX only; input() above needs none
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    mode = termios.tcgetattr(fd)
+    mode[3] &= ~(termios.ICANON | termios.ECHO | termios.ISIG)
+    mode[6][termios.VMIN], mode[6][termios.VTIME] = 1, 0
+    try:
+        # The signals go off before the prompt shows: from the moment it can be answered, Ctrl-C is a key.
+        termios.tcsetattr(fd, termios.TCSADRAIN, mode)
+        try:
+            print(PROMPT, end="", flush=True)
+            # Enter (\r, or \n through ICRNL), Ctrl-C, Ctrl-D, or the terminal gone; any other key is ignored.
+            while os.read(fd, 1) not in (b"", b"\r", b"\n", b"\x03", b"\x04"):
+                pass
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    except KeyboardInterrupt:  # Ctrl-C before the switch, while the command was ending
+        pass
+    print(flush=True)
+
+
 class Runner:
     def __init__(self, pause=True):
         self.pause = pause
@@ -36,12 +74,7 @@ class Runner:
         if status != 0:
             print(f"(exit {status})", flush=True)
         if self.pause:
-            try:
-                input("Enter to return to the menu ")
-            except EOFError:
-                pass
-            except KeyboardInterrupt:  # Ctrl-C at the pause returns too: the menu stays
-                print(flush=True)
+            _wait_for_return()  # Ctrl-C at the pause returns too: the menu stays
         return status
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The platform (ci.yml's job "Platform"): ShellCheck over the scripts, the Python unit suite (about twenty
+# The platform (ci.yml's job "Platform"): ShellCheck over the scripts, the Python unit suite (in parallel, a few
 # minutes), the Docker socket proxies and Forgejo live suites, the catalog's validation, and every Compose file
 # rendered. Run from anywhere; it works from the repository's root.
 #
@@ -61,7 +61,9 @@ shellcheck scripts/*.sh scripts/ygg ci/*.sh
 pip install --quiet pyyaml cryptography
 
 echo "== Test the catalog tooling"
-python3 -m unittest discover -s scripts -v
+# In parallel (scripts/run_tests.py): the same tests as `python3 -m unittest discover -s scripts`, which take
+# twenty minutes one after another, most of it test_machine starting short processes.
+python3 scripts/run_tests.py
 
 echo "== Test the Docker socket proxies against Traefik and Alloy"
 # The pinned proxy image with compose.yml's allowlists, in front of a fake Docker API. The suite hands each proxy

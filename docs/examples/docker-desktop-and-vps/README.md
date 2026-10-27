@@ -1,26 +1,32 @@
-# Example: Docker Desktop and one VPS
+# Example: Docker Desktop and one Ubuntu server
 
+> **This is the older, one-server layout.** Jenkins and every environment run on one Ubuntu server,
+> and the code is on GitHub. The default is now **two servers**: a
+> [Linux DevOps Server](../../../README.md#concepts) (Forgejo, Jenkins, the build agents) and one or
+> more [Linux Application Servers](../../../README.md#concepts) that run the environments. Start with
+> [setup.md](../../setup.md), which sets that up; this page is for the case where you want it all on
+> one server, and for its Docker Desktop and PostgreSQL parts, which apply to both layouts.
+>
 > **Read [hosts.md](../../hosts.md) and [setup.md](../../setup.md) first.** This example was written
-> for a single VPS before hosts had roles and before the platform ran on rootless Docker. The parts
-> that name the VPS's setup are updated to the current model (the one-machine layout: role `apps`,
+> for a single server before hosts had roles and before the platform ran on rootless Docker. The parts
+> that name the server's setup are updated to the current model (the one-server layout: role `apps`,
 > profiles `apps,jenkins` then `apps,jenkins,agent`, `ygg` as the only service user, rootless Docker,
 > `750`/`600` env files owned by `ygg`), the **PostgreSQL** section included: each API's database is a
 > container of its stack, on `ygg`'s rootless engine, no longer a PostgreSQL on the host. The part that
 > still predates it is the **Windows** `local` environment, which is unchanged because Docker Desktop is
-> not a yggdrasil host. The two-machine
-> layout (a dev machine with Forgejo and Jenkins, an apps machine) is in hosts.md.
+> not a yggdrasil host. The two-server layout is in hosts.md.
 
-A complete installation on two machines: a Windows workstation and one Ubuntu VPS. It is the
-setup this repository's [`catalog.yaml`](../../../catalog.yaml) describes: two systems, heimdall and
-fortuna, each an ASP.NET Core API with a Flutter web UI, and four environments, three of them on
-the VPS.
+A complete installation on a Windows workstation and one Ubuntu server. It has the same systems and
+environments as this repository's [`catalog.yaml`](../../../catalog.yaml), which now runs them on an
+Application Server of its own: two systems, heimdall and fortuna, each an ASP.NET Core API with a Flutter
+web UI, and four environments, three of them on the server.
 
 | Environment | Where | `mode` | `trigger` | Runs | Reached at |
 |---|---|---|---|---|---|
 | `local` | Windows workstation, **Docker Desktop** | `ports` | `manual` | While you deploy it | `http://localhost:<port>` |
-| `development` | The **VPS** | `proxy` | `branch` (`develop`) | On demand | `https://<host>-dev.example.com` |
-| `homologation` | The **VPS** | `proxy` | `branch` (`release/*`) | On demand | `https://<host>-hml.example.com` |
-| `production` | The **VPS**, which also runs the Jenkins controller (the one-machine layout, [setup.md step 0](../../setup.md#0-plan-the-installation)) | `proxy` | `release` | Always | `https://<host>.example.com` |
+| `development` | The **server** | `proxy` | `branch` (`develop`) | On demand | `https://<host>-dev.example.com` |
+| `homologation` | The **server** | `proxy` | `branch` (`release/*`) | On demand | `https://<host>-hml.example.com` |
+| `production` | The **server**, which also runs the Jenkins controller (the one-server layout, [setup.md step 0](../../setup.md#0-plan-the-installation)) | `proxy` | `release` | Always | `https://<host>.example.com` |
 
 ```mermaid
 flowchart TB
@@ -31,7 +37,7 @@ flowchart TB
         pg[(PostgreSQL<br/>on Windows)]
         localapps --> pg
     end
-    subgraph vps [Ubuntu VPS · one platform stack]
+    subgraph vps [Ubuntu server · one platform stack]
         traefik[Traefik :443<br/>*.example.com] --> dev[development<br/>on demand]
         traefik --> hml[homologation<br/>on demand]
         traefik --> prod[production]
@@ -73,13 +79,13 @@ environments:
     agent: vps
 ```
 
-- The three VPS environments share one rootless Docker engine (`ygg`'s), one platform stack, one `DOMAIN` and one
+- The three server environments share one rootless Docker engine (`ygg`'s), one platform stack, one `DOMAIN` and one
   Jenkins agent, `vps`. Each application runs in each of them as its own Compose project
   (`heimdall-api-development`, `heimdall-api-homologation`, `heimdall-api-production`), so they
   never replace each other's containers ([catalog.md](../../catalog.md#several-environments-on-one-host)).
 - `hostSuffix` tells their host names apart under the one domain: `heimdall-dev.example.com`,
   `heimdall-hml.example.com`, `heimdall.example.com`.
-- `onDemand` keeps development and homologation stopped until you need them, so they cost the VPS
+- `onDemand` keeps development and homologation stopped until you need them, so they cost the server
   nothing while nobody uses them.
 
 Env file templates for every application in each environment are in [`env/`](env). They use
@@ -91,22 +97,22 @@ them with bash.
 
 Cloudflare hosts the domain (`ACME_DNS_PROVIDER=cloudflare`, `CF_DNS_API_TOKEN` in `acme.env`: an
 API token with **Zone → Zone → Read** and **Zone → DNS → Edit** on the zone; step by step in
-[dns.md](../../dns.md)). One record covers every environment of the VPS:
+[dns.md](../../dns.md)). One record covers every environment of the server:
 
 | Record | Points at | Proxy |
 |---|---|---|
-| `*.example.com` (name `*`) | The VPS's public IP | Either: **DNS only** to start, **Proxied** once the real certificate works ([dns.md A7](../../dns.md#a7-optional-the-cloudflare-proxy)), with `CLOUDFLARE_PROXIED=true` in `platform.env` from then on |
+| `*.example.com` (name `*`) | The server's public IP | Either: **DNS only** to start, **Proxied** once the real certificate works ([dns.md A7](../../dns.md#a7-optional-the-cloudflare-proxy)), with `CLOUDFLARE_PROXIED=true` in `platform.env` from then on |
 
 `heimdall-api-dev`, `heimdall-hml`, `fortuna`, `yggdrasil`, `jenkins` ... are all one label under
 `example.com`, so the record and Traefik's one `*.example.com` certificate cover them, and adding
-an application or an environment to the VPS never needs a DNS change. `local` needs no record:
+an application or an environment to the server never needs a DNS change. `local` needs no record:
 it is reached at `localhost`.
 
-## The VPS
+## The server
 
-Follow [setup.md](../../setup.md) steps 6 and 7, prepare the VPS with `ygg install --role apps`
+Follow [setup.md](../../setup.md) steps 6 and 7, prepare the server with `ygg install --role apps`
 ([step 8](../../setup.md#8-prepare-each-machine)), then 9.1 to 9.5 (the controller's steps, which on
-one machine also run the environments) and 11: the VPS is the controller host and the only host.
+one server also run the environments) and 11: the server is the controller host and the only host.
 Everything is done as `ygg`. The lines of `platform.env` this example fixes, on top of every
 variable of [setup.md 9.2](../../setup.md#92-the-env-files-first-pass):
 
@@ -130,7 +136,7 @@ Jenkins creates one agent, `vps`, for the three environments (**Manage Jenkins �
 secret goes in `JENKINS_AGENT_SECRET` at step 9.5). One `YGGDRASIL_STATUS_TOKEN` covers the three
 environments: the console reads all of them from the one status API.
 
-Size the VPS for production plus whatever runs at the same time: each on-demand environment that is
+Size the server for production plus whatever runs at the same time: each on-demand environment that is
 on adds this example's four containers (two APIs, two web UIs), with their memory, next to
 production's. Stop them when you are done (below).
 
@@ -218,13 +224,13 @@ same way: heimdall-api's operations guide, "Separating the migration owner from 
 the order.
 
 An existing database moves in from a PostgreSQL on the host with a dump and a restore into such a
-container: [cutover.md, 5.4 and 5.6a](../../cutover.md#56a-the-databases-into-their-containers) do it for
-this installation, and 5.21 backs them up every night (`postgres <application>-<environment>-db-1
+container: [cutover.md, 5.4 and 5.6a](../../cutover.md#56a-the-databases-into-their-containers) did it for
+this installation, and 5.21 set up their nightly backup (`postgres <application>-<environment>-db-1
 postgres` in `backup.conf`).
 
 ### The env files
 
-Twelve files, one per application and environment, in `/etc/yggdrasil/<environment>/` on the VPS,
+Twelve files, one per application and environment, in `/etc/yggdrasil/<environment>/` on the server,
 owned by `ygg` ([setup.md step 11](../../setup.md#11-application-env-files)). For the APIs, start from the
 repository's own `docker/<environment>.env.example`, which documents every variable and has that
 environment's values; the templates in [`env/`](env) only list what yggdrasil relies on. The web
@@ -243,7 +249,7 @@ chmod 600 /etc/yggdrasil/*/*.env
 ([cli.md](../../cli.md#on-a-machine-without-a-store)).
 
 **With the variables store** ([variables.md](../../variables.md)), the same templates are `vars import`
-input and nothing is copied into `/etc/yggdrasil` by hand. On the VPS, once:
+input and nothing is copied into `/etc/yggdrasil` by hand. On the server, once:
 
 ```bash
 cd /opt/yggdrasil
@@ -344,7 +350,7 @@ Each system is an API plus a Flutter web UI:
 
 | Task | How |
 |---|---|
-| Work on `develop` | `ygg env start development` on the VPS, then use `https://heimdall-dev.example.com` |
+| Work on `develop` | `ygg env start development` on the server, then use `https://heimdall-dev.example.com` |
 | Test a release | Push `release/x.y.z`, then `ygg env start homologation` |
 | Try a branch Jenkins doesn't deploy by itself | In Jenkins, the application's job → the branch (`develop`, `release/*` or `main`) → **Build with Parameters** → `DEPLOY_TO` `development`: deploys it and leaves development running |
 | Done for now | `ygg env stop development` (or `homologation`) |
@@ -359,7 +365,7 @@ What Jenkins does meanwhile:
 - The release pull request deploys production, which is always on, then merges and tags.
 
 **The console** (`https://yggdrasil.example.com`, or the Windows and Android apps with one host:
-that URL and the VPS's `YGGDRASIL_STATUS_TOKEN`) shows the VPS as one host with its three
+that URL and the server's `YGGDRASIL_STATUS_TOKEN`) shows the server as one host with its three
 environments. Each system card has a chip per environment, e.g. `Development · Stopped`,
 `Homologation · Stopped`, `Production · Up`; expanded, a section per environment lists its
 applications. `Stopped` is neutral, not a problem: it doesn't count for *Problems only*.

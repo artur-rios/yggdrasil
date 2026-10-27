@@ -156,7 +156,28 @@ as_root() { if ((EUID == 0)); then "$@"; else sudo "$@"; fi; }
 # apt-get without its own questions (tzdata's, say): they would read the menu's answers.
 apt_get() { as_root env DEBIAN_FRONTEND=noninteractive apt-get -q "$@" </dev/null; }
 has() { command -v "$1" >/dev/null 2>&1; }
-installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
+installed() {
+  if [[ -n "${INSTALLED_PACKAGES_LOADED:-}" ]]; then
+    [[ -n "${INSTALLED_PACKAGES[$1]-}" ]]
+    return
+  fi
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
+}
+# The installed packages of one machine check, from a single dpkg-query (installed_load): a check asks
+# about hundreds, a dpkg-query and a grep each otherwise, and installs nothing. A name counts as installed
+# when any of its instances is (an architecture of a multi-arch package), as dpkg-query's status of the name
+# says. Empty outside a check: check_machine loads it and clears it (installed_clear).
+declare -gA INSTALLED_PACKAGES=()
+INSTALLED_PACKAGES_LOADED=""
+installed_load() {
+  local name status
+  INSTALLED_PACKAGES=()
+  while IFS=$'\t' read -r name status; do
+    [[ "$status" == *"install ok installed"* ]] && INSTALLED_PACKAGES[$name]=1
+  done < <(dpkg-query -W -f='${Package}\t${Status}\n' 2>/dev/null || true)
+  INSTALLED_PACKAGES_LOADED=1
+}
+installed_clear() { INSTALLED_PACKAGES=() INSTALLED_PACKAGES_LOADED=""; }
 has_yaml() { has python3 && python3 -c 'import yaml' 2>/dev/null; }
 has_crypto() { has python3 && python3 -c 'import cryptography' 2>/dev/null; }
 docker_ok() { has docker && docker info >/dev/null 2>&1; }

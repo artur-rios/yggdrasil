@@ -381,6 +381,40 @@ public class CatalogLoaderTests
     // One system "sys" with one application "app"; `fields` supplies kind and anything else, each
     // further line indented by eight spaces to stay inside the application. `environments` is the
     // top-level list, one flow mapping per line.
+    // The git server, as scripts/catalog.py's forge() resolves it: GitHub without a forge block.
+    [Fact]
+    public void GivenNoForgeBlock_WhenParsed_ThenTheGitServerIsGitHub()
+    {
+        Assert.Equal("https://github.com", CatalogLoader.Parse(Minimal("kind: api")).ForgeUrl);
+    }
+
+    [Theory]
+    [InlineData("https://git.example.com", "https://git.example.com")]
+    [InlineData("https://git.example.com/", "https://git.example.com")]
+    [InlineData("  https://git.example.com/  ", "https://git.example.com")]
+    public void GivenAForgejoForge_WhenParsed_ThenItsUrlIsTheGitServer(string url, string expected)
+    {
+        var catalog = CatalogLoader.Parse($"forge:\n  type: forgejo\n  url: \"{url}\"\n" + Minimal("kind: api"));
+
+        Assert.Equal(expected, catalog.ForgeUrl);
+    }
+
+    [Fact]
+    public void GivenAGitHubForge_WhenParsed_ThenTheGitServerIsGitHub()
+    {
+        Assert.Equal("https://github.com", CatalogLoader.Parse("forge:\n  type: github\n" + Minimal("kind: api")).ForgeUrl);
+    }
+
+    [Theory]
+    [InlineData("forge:\n  type: forgejo\n", "forge.url: required with type forgejo")]
+    [InlineData("forge:\n  type: gitea\n  url: https://git.example.com\n", "forge.type: 'gitea' is not forgejo or github")]
+    public void GivenAForgeBlockThatCannotBeUsed_WhenParsed_ThenTheErrorNamesIt(string forge, string expected)
+    {
+        var error = Assert.Throws<CatalogException>(() => CatalogLoader.Parse(forge + Minimal("kind: api")));
+
+        Assert.Contains(expected, error.Message);
+    }
+
     private static string Minimal(string fields, bool withHealth = true, string environments = "- { id: dev, name: Dev }") => $"""
         owner: o
         environments:

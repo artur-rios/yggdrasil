@@ -84,7 +84,7 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
             application.Kind,
             StatusRules.ForApplication(observation.Docker, observation.Probe, now, target.OnDemand),
             Url(application, target.HostSuffix, options.Domain),
-            Repository(application, catalog.Owner),
+            Repository(application, catalog.Owner, catalog.ForgeUrl),
             container is null ? null : Deployment(container),
             container is null ? null : new ContainerInfo(container.State, container.Health, container.StartedAt, null),
             observation.Probe);
@@ -119,8 +119,12 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
         return application.Apex ? $"https://{domain}{application.Path}" : null;
     }
 
-    public static string? Repository(ApplicationDefinition application, string owner) =>
-        application.Repository is null ? null : $"https://github.com/{owner}/{application.Repository}";
+    /// <summary>
+    /// The repository's page on the git server: &lt;forgeUrl&gt;/&lt;owner&gt;/&lt;repository&gt; (the catalog's
+    /// <see cref="Catalog.ForgeUrl"/>: Forgejo's address, or GitHub's). A platform component has none.
+    /// </summary>
+    public static string? Repository(ApplicationDefinition application, string owner, string forgeUrl) =>
+        application.Repository is null ? null : $"{forgeUrl}/{owner}/{application.Repository}";
 
     private static DeploymentInfo Deployment(ContainerDetails container)
     {

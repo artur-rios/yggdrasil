@@ -72,8 +72,16 @@ FAKES = {
           fi
         done
     """,
+    # `dpkg-query -W -f=<format>` with no package lists every installed one, as `<name>\t<status>`, as a
+    # format of ${Package}\t${Status}\n gives.
     "dpkg-query": r"""
         package=${*: -1}
+        if [[ "$package" == -f=* ]]; then
+          while IFS= read -r name; do
+            [[ -n "$name" ]] && printf '%s\tinstall ok installed\n' "$name"
+          done <"$FAKE_STATE/installed"
+          exit 0
+        fi
         grep -qx -- "$package" "$FAKE_STATE/installed" || exit 1
         printf 'install ok installed'
     """,
@@ -163,7 +171,9 @@ FAKES = {
         fi
     """,
     "getent": r"""
-        if [[ "$1" == passwd ]]; then
+        if [[ "$1" == passwd && -z "${2:-}" ]]; then
+          cat "$YGG_SYSROOT/etc/passwd"
+        elif [[ "$1" == passwd ]]; then
           grep -- "^$2:" "$YGG_SYSROOT/etc/passwd" || exit 2
         elif [[ "$1" == group && "$2" == docker && -s "$FAKE_STATE/group" ]]; then
           IFS=: read -r gid members <"$FAKE_STATE/group"
