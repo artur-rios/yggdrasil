@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **The `platform` check runs the unit suite in parallel.** It took twenty minutes on its own, forty in Jenkins
+  next to the other checks, most of it `test_machine` starting short processes one test after another.
+  `scripts/run_tests.py` runs the same tests as `python3 -m unittest discover -s scripts`, with the same results,
+  in chunks on up to eight workers (`-j`, or `YGG_TEST_WORKERS`); `ci/platform.sh` and CONTRIBUTING.md use it.
+- **`machine check` starts far fewer processes.** A check asked `getent` for a user's uid or home over a thousand
+  times, `sudo -n true` almost as often and `dpkg-query` once per package. Within one check (which adds no user,
+  installs nothing and does not change sudo), each is now asked once, when it starts, and forgotten when it ends;
+  `passwd_field` splits the entry itself instead of with `cut`. Outside a check, and for anything a listing does not
+  hold, the system is asked as before. One check test went from 13 to 7.5 seconds; with the parallel runner the
+  whole unit suite takes about two minutes instead of twenty.
 - **setup.md explains the 403 at the end of every build.** The Gitea plugin posts a build status of its own with
   the read-only `forge-read` token, Forgejo refuses it, and the log ends with `Could not send notifications ...
   HTTP 403/Forbidden`. It is harmless (the pipeline posts the statuses that count with `forge-write`) and the plugin

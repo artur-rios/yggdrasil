@@ -109,9 +109,13 @@ every run; see [Versioning](#versioning) for the version they carry.
 
 ```bash
 shellcheck scripts/*.sh
-python3 -m unittest discover -s scripts -v
+python3 scripts/run_tests.py
 python3 scripts/catalog.py validate
 ```
+
+`scripts/run_tests.py` runs the same tests as `python3 -m unittest discover -s scripts -v`, in parallel: a few
+minutes instead of twenty (`-j` sets the number of workers; `-j 1` runs them one after another). Run a single
+module or test with unittest as usual (`python3 -m unittest test_machine` from `scripts/`).
 
 CI also validates `platform/compose.yml` and every stack in `stacks/` with `docker compose config`, using dummy values
 for each variable they require. Traefik's configuration is rendered first, as `platform.sh` does
