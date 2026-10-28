@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed check is red in Jenkins.** Each check's `sh` returned its exit status, so nothing failed the check's
+  parallel branch: Jenkins drew a failed check green, and only the build's end (`Failed: test`) and the forge's
+  `failure` status said otherwise. After posting the status, a failed check now marks its branch failed, with the
+  status's description as the reason. The build's result is untouched there: the other checks still run, and
+  the build fails once all have reported, as before.
+
 ## [0.9.3] - 2026-10-27
 
 ### Fixed

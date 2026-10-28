@@ -672,6 +672,20 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertRegex(code[lock:], r"error releasing \? \"Not releasing: \$\{failed\.join\(', '\)\} failed\.\"\s*"
                                       r": \"Failed: \$\{failed\.join\(', '\)\}\.\"")
 
+    def test_given_a_failed_check_when_it_has_reported_then_its_branch_is_red_and_the_build_waits_for_the_rest(self):
+        # The check's sh returns its status, so nothing failed its parallel branch: Jenkins drew a failed
+        # check green, and only the build's end said "Failed". After the status is posted (outside the node),
+        # catchError marks the branch failed and leaves the build's result alone: the other checks go on, and
+        # verify() fails the build once all have reported, as before.
+        body = self.lib.code[slice(*self.lib.functions["runCheck"])]
+        status = body.index("reportStatus(ctx.repo, state.sha, passed ? 'success' : 'failure', check.name, description)")
+        self.assertRegex(body[status:], r"^[^\n]*\n\s*if \(!passed\) \{\s*"
+                                        r"catchError\(buildResult: 'SUCCESS', stageResult: 'FAILURE'\) \{\s*"
+                                        r"error\(\"\$\{check\.name\}: \$\{printable\(description\)\}\"\)\s*\}\s*\}\s*"
+                                        r"return passed")
+        # Outside the node, where the status is posted: after the try around node('ci') has ended.
+        self.assertLess(body.index("catch (Exception failure)"), status)
+
     def test_given_warnings_when_the_build_is_marked_unstable_then_the_last_checked_commit_still_counts(self):
         # An UNSTABLE build (describe's warnings) passed its checks: the next push compares with it.
         body = self.lib.code[slice(*self.lib.functions["lastCheckedCommit"])]
