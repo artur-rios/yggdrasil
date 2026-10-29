@@ -170,6 +170,10 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 // root and can leave a link to anything on the agent (its own files, another workspace, @tmp with the env
 // files); archiveArtifacts can be told not to follow links, but junit, stash and the uploads cannot, so
 // this runs before them. .git is pruned (the Ant default excludes keep it out of every stash anyway).
+// Flutter's pub get links each desktop plugin from the pub cache, outside the checkout, under
+// <platform>/flutter/ephemeral/.plugin_symlinks: generated, git-ignored and never collected, so those
+// directories are removed first (rm removes the links, never what they point at). A .plugin_symlinks that is
+// itself a link is no directory, stays, and is refused like any other.
 @Field static final String LINK_GUARD = '''
 root=$(pwd -P)
 export root
@@ -182,6 +186,7 @@ if [ -n "${YGG_ANY_LINK:-}" ]; then
   fi
   exit 0
 fi
+find . -path ./.git -prune -o -type d -path '*/flutter/ephemeral/.plugin_symlinks' -prune -exec rm -rf {} +
 outside=$(find . -path ./.git -prune -o -type l -exec sh -c '
   for link; do
     case "$(realpath -m -- "$link")" in
@@ -749,6 +754,14 @@ boolean runCheck(Map ctx, Map state, Map check) {
   String description = passed ? 'Passed in Jenkins'
     : problem != null ? "Could not run: ${problem}" : "Failed in Jenkins (exit ${code})"
   reportStatus(ctx.repo, state.sha, passed ? 'success' : 'failure', check.name, description)
+  if (!passed) {
+    // Its sh returned the status, so nothing failed this parallel branch and Jenkins drew it green. Marked
+    // failed here; the build's result is left alone, so the other checks run on and verify() fails the build
+    // once all have reported.
+    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+      error("${check.name}: ${printable(description)}")
+    }
+  }
   return passed
 }
 

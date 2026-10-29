@@ -709,6 +709,20 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertRegex(code[lock:], r"error releasing \? \"Not releasing: \$\{failed\.join\(', '\)\} failed\.\"\s*"
                                       r": \"Failed: \$\{failed\.join\(', '\)\}\.\"")
 
+    def test_given_a_failed_check_when_it_has_reported_then_its_branch_is_red_and_the_build_waits_for_the_rest(self):
+        # The check's sh returns its status, so nothing failed its parallel branch: Jenkins drew a failed
+        # check green, and only the build's end said "Failed". After the status is posted (outside the node),
+        # catchError marks the branch failed and leaves the build's result alone: the other checks go on, and
+        # verify() fails the build once all have reported, as before.
+        body = self.lib.code[slice(*self.lib.functions["runCheck"])]
+        status = body.index("reportStatus(ctx.repo, state.sha, passed ? 'success' : 'failure', check.name, description)")
+        self.assertRegex(body[status:], r"^[^\n]*\n\s*if \(!passed\) \{\s*"
+                                        r"catchError\(buildResult: 'SUCCESS', stageResult: 'FAILURE'\) \{\s*"
+                                        r"error\(\"\$\{check\.name\}: \$\{printable\(description\)\}\"\)\s*\}\s*\}\s*"
+                                        r"return passed")
+        # Outside the node, where the status is posted: after the try around node('ci') has ended.
+        self.assertLess(body.index("catch (Exception failure)"), status)
+
     def test_given_warnings_when_the_build_is_marked_unstable_then_the_last_checked_commit_still_counts(self):
         # An UNSTABLE build (describe's warnings) passed its checks: the next push compares with it.
         body = self.lib.code[slice(*self.lib.functions["lastCheckedCommit"])]
@@ -768,6 +782,45 @@ class PipelineLibraryTests(unittest.TestCase):
             (app / "inside.xml").unlink()
             (app / "here").unlink()
             self.assertEqual(guard(YGG_ANY_LINK="1").returncode, 0)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("realpath"), "runs the embedded script with sh")
+    def test_given_flutters_plugin_links_when_the_collect_guard_runs_then_they_go_and_nothing_else_is_let_through(self):
+        # flutter pub get links each desktop plugin from the pub cache, outside the checkout, under
+        # <platform>/flutter/ephemeral/.plugin_symlinks: generated and git-ignored, never collected.
+        script = link_guard(self.lib)
+        with tempfile.TemporaryDirectory() as temp:
+            cache = pathlib.Path(temp) / "pub-cache" / "url_launcher_linux"
+            cache.mkdir(parents=True)
+            (cache / "kept").write_text("the plugin's own files\n")
+            app = pathlib.Path(temp) / "app"
+            for platform in ("linux", "windows"):
+                links = app / platform / "flutter" / "ephemeral" / ".plugin_symlinks"
+                links.mkdir(parents=True)
+                (links / "url_launcher").symlink_to(cache)
+
+            def guard():
+                return subprocess.run(["sh", "-c", script], cwd=app, capture_output=True, text=True, timeout=30,
+                                      env={**os.environ, "YGG_ANY_LINK": ""})
+
+            done = guard()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((app / "linux" / "flutter" / "ephemeral" / ".plugin_symlinks").exists())
+            self.assertFalse((app / "windows" / "flutter" / "ephemeral" / ".plugin_symlinks").exists())
+            # What the links pointed at is untouched: rm removes the links, it never follows them.
+            self.assertEqual((cache / "kept").read_text(), "the plugin's own files\n")
+
+            # A .plugin_symlinks that is itself a link out is no directory: refused like any other.
+            (app / "linux" / "flutter" / "ephemeral" / ".plugin_symlinks").symlink_to(cache.parent)
+            done = guard()
+            self.assertEqual(done.returncode, 3, done.stderr)
+            self.assertIn(".plugin_symlinks", done.stderr)
+            # And the name alone lets nothing through elsewhere.
+            (app / "linux" / "flutter" / "ephemeral" / ".plugin_symlinks").unlink()
+            (app / "results" / ".plugin_symlinks").mkdir(parents=True)
+            (app / "results" / ".plugin_symlinks" / "secret").symlink_to(cache / "kept")
+            done = guard()
+            self.assertEqual(done.returncode, 3, done.stderr)
+            self.assertIn("results/.plugin_symlinks/secret", done.stderr)
 
     def test_given_the_release_path_when_read_then_it_still_runs_under_the_application_lock(self):
         # test_catalog pins the same; the release pull request's checks run inside it too.
