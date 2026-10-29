@@ -749,6 +749,14 @@ boolean runCheck(Map ctx, Map state, Map check) {
   String description = passed ? 'Passed in Jenkins'
     : problem != null ? "Could not run: ${problem}" : "Failed in Jenkins (exit ${code})"
   reportStatus(ctx.repo, state.sha, passed ? 'success' : 'failure', check.name, description)
+  if (!passed) {
+    // Its sh returned the status, so nothing failed this parallel branch and Jenkins drew it green. Marked
+    // failed here; the build's result is left alone, so the other checks run on and verify() fails the build
+    // once all have reported.
+    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+      error("${check.name}: ${printable(description)}")
+    }
+  }
   return passed
 }
 
