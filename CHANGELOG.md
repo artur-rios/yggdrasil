@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A Flutter repository's check results are collected.** `flutter pub get` links each desktop plugin from the pub
+  cache, outside the checkout (`<platform>/flutter/ephemeral/.plugin_symlinks`), and the pipeline refuses to collect
+  anything from a checkout with a link that leads out of it: every Flutter repository's check (alexandria-ui,
+  cerberus-ui, chimera, fortuna-ui, heimdall-ui, maestro, orpheus) ended unstable, its test results and archives not
+  collected, and a release build's files would have been refused the same way. The pipeline's link guard now
+  removes those generated directories first; a `.plugin_symlinks` that is itself a link, and every other link out,
+  are refused as before.
+- **The docs say what a missing check credential does.** moving-repositories.md and the library template said a
+  check without `reportgenerator-license` falls back to the free report; Jenkins cannot start it at all (`Could not
+  find credentials entry`), and a `renovate/*` build is refused a check with credentials.
 - **A failed check is red in Jenkins.** Each check's `sh` returned its exit status, so nothing failed the check's
   parallel branch: Jenkins drew a failed check green, and only the build's end (`Failed: test`) and the forge's
   `failure` status said otherwise. After posting the status, a failed check now marks its branch failed, with the
