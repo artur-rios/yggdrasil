@@ -35,8 +35,9 @@ name: yggdrasil
 # Variables used only by a profile (Jenkins, agent) are not marked required here, because Compose
 # interpolates the whole file whatever the active profiles are: an agent-only host would otherwise have to
 # define the controller's GitHub App settings. scripts/platform.sh checks them per profile instead.
-# DOCKER_SOCKET, PROMETHEUS_CONFIG_FILE, YGG_TRAEFIK_CONFIG_FILE and YGG_TRAEFIK_CONFIG_HASH are exported by
-# scripts/platform.sh, not set in the env file.
+# DOCKER_SOCKET, PROMETHEUS_CONFIG_FILE, YGG_TRAEFIK_CONFIG_FILE, YGG_TRAEFIK_CONFIG_HASH,
+# YGG_JENKINS_CREDENTIALS_FILE and YGG_JENKINS_CREDENTIALS_HASH are exported by scripts/platform.sh, not set in
+# the env file.
 
 x-logging: &logging
   # Docker's default json-file driver never rotates. Alloy reads the same files, so rotation here is
@@ -363,7 +364,8 @@ services:
       # The configuration files of this installation's git server, comma-separated: scripts/platform.sh
       # picks them from catalog.yaml (casc.yaml, then casc.forgejo.yaml or casc.github.yaml, and
       # casc.github-app.yaml when the GitHub App is used, casc.github-read.yaml on GitHub when the read-only
-      # App is set, casc.nuget.yaml when the NuGet key is). The default is GitHub, as without a forge block.
+      # App is set, casc.nuget.yaml when the NuGet key is, casc.credentials.yaml when JENKINS_CREDENTIALS_DIR
+      # holds credentials). The default is GitHub, as without a forge block.
       CASC_JENKINS_CONFIG: ${YGG_CASC_CONFIG:-/etc/jenkins/casc.yaml,/etc/jenkins/casc.github.yaml,/etc/jenkins/casc.github-app.yaml}
       JENKINS_URL: ${JENKINS_URL:-}
       JENKINS_ADMIN_ID: ${JENKINS_ADMIN_ID:-admin}
@@ -419,11 +421,20 @@ services:
       - ${FORGE_WEBHOOK_SECRET_FILE:-/dev/null}:/run/secrets/forge-webhook-secret:ro
       # The nuget.org API key, read by casc.nuget.yaml (the libraries' packages); /dev/null when unset.
       - ${NUGET_API_KEY_FILE:-/dev/null}:/run/secrets/nuget-api-key:ro
+      # The repositories' own credentials (JENKINS_CREDENTIALS_DIR, one file per id), and the configuration
+      # scripts/platform.sh renders from them, which reads each from this directory; /dev/null for both when
+      # there are none.
+      - ${YGG_JENKINS_CREDENTIALS_FILE:-/dev/null}:/etc/jenkins/casc.credentials.yaml:ro
+      - ${JENKINS_CREDENTIALS_DIR:-/dev/null}:/run/secrets/jenkins-credentials:ro
       - jenkins:/var/jenkins_home
     networks:
       - edge
       - telemetry
     labels:
+      # The hash of the repositories' credentials (scripts/platform.sh: the rendered casc.credentials.yaml and
+      # each secret file's size and time, never its content). The file's path is the same at every run, so
+      # this is what makes `up` recreate the controller, which reads its credentials only when it starts.
+      yggdrasil.credentials-hash: ${YGG_JENKINS_CREDENTIALS_HASH:-}
       traefik.enable: "true"
       traefik.http.routers.jenkins.rule: Host(`jenkins.${DOMAIN}`)
       traefik.http.routers.jenkins.entrypoints: websecure
