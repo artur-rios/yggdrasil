@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Flutter repository's check results are collected.** `flutter pub get` links each desktop plugin from the pub
+  cache, outside the checkout (`<platform>/flutter/ephemeral/.plugin_symlinks`), and the pipeline refuses to collect
+  anything from a checkout with a link that leads out of it: every Flutter repository's check (alexandria-ui,
+  cerberus-ui, chimera, fortuna-ui, heimdall-ui, maestro, orpheus) ended unstable, its test results and archives not
+  collected, and a release build's files would have been refused the same way. The pipeline's link guard now
+  removes those generated directories first; a `.plugin_symlinks` that is itself a link, and every other link out,
+  are refused as before.
+- **The docs say what a missing check credential does.** moving-repositories.md and the library template said a
+  check without `reportgenerator-license` falls back to the free report; Jenkins cannot start it at all (`Could not
+  find credentials entry`), and a `renovate/*` build is refused a check with credentials.
+
 ## [0.9.3] - 2026-10-27
 
 ### Fixed
