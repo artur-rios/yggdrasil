@@ -7,6 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-29
+
+### Fixed
+
+- **A site deploys without variables.** `deploy.sh` stops an application that has no variables in an environment,
+  as never configured on that machine. Every static site (the docs sites, personal-page, personal-blog,
+  personal-lab-site, under-construction-template, tech-craftsmen-company-page) reads none, so none of them could
+  deploy: `heimdall-docs has no variables in production in the variables store`. An application whose Compose files
+  read no variables of their own now deploys with none: no `env_file`, and no `${NAME}` but the ones `deploy.sh`
+  sets. One that reads some (an API, heimdall-ui, github-readme-stats) is stopped as before.
+- **A refused branch name is red in Jenkins.** The Branch policy stage posted `failure` to the forge but returned
+  normally, so Jenkins drew it green, and the build failed with every stage green. It now marks its stage failed
+  after posting the status, as a failed check does since 0.9.4. The checks still run, and the build fails once
+  they have reported, as before.
+
 ## [0.9.4] - 2026-10-29
 
 ### Fixed
@@ -1014,7 +1029,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/artur-rios/yggdrasil/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/artur-rios/yggdrasil/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/artur-rios/yggdrasil/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/artur-rios/yggdrasil/compare/v0.9.1...v0.9.2

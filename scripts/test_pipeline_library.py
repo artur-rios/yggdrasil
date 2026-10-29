@@ -723,6 +723,21 @@ class PipelineLibraryTests(unittest.TestCase):
         # Outside the node, where the status is posted: after the try around node('ci') has ended.
         self.assertLess(body.index("catch (Exception failure)"), status)
 
+    def test_given_a_failed_branch_policy_when_it_has_reported_then_its_stage_is_red_and_the_checks_still_run(self):
+        # Its sh returns the status too, so Jenkins drew a refused branch name green. After the status, catchError
+        # marks the stage failed and leaves the build's result alone: verify() still runs the checks, and the
+        # build fails once they have reported.
+        body = self.lib.code[slice(*self.lib.functions["branchPolicy"])]
+        status = body.index("reportStatus(ctx.repo, state.sha, passed ? 'success' : 'failure', 'branch-policy', reason)")
+        self.assertRegex(body[status:], r"^[^\n]*\n\s*if \(!passed\) \{\s*(//[^\n]*\n\s*)*"
+                                        r"catchError\(buildResult: 'SUCCESS', stageResult: 'FAILURE'\) \{\s*"
+                                        r"error\(\"branch-policy: \$\{printable\(reason\)\}\"\)\s*\}\s*\}\s*\}\s*"
+                                        r"return passed")
+        self.assertLess(body.index("catch (Exception problem)"), status)
+        verify = self.lib.code[slice(*self.lib.functions["verify"])]
+        self.assertRegex(verify, r"if \(!branchPolicy\(ctx, state\)\) \{\s*failed << 'branch-policy'\s*\}\s*"
+                                 r"failed\.addAll\(runChecks\(ctx, state\)\)")
+
     def test_given_warnings_when_the_build_is_marked_unstable_then_the_last_checked_commit_still_counts(self):
         # An UNSTABLE build (describe's warnings) passed its checks: the next push compares with it.
         body = self.lib.code[slice(*self.lib.functions["lastCheckedCommit"])]

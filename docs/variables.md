@@ -444,7 +444,10 @@ an env file, to use files again: delete `vars.db` and the scripts read the files
   `APP_ENV_FILE` and Compose's `--env-file` point at it, and the directory is removed when the script
   exits, whether the deploy succeeded or not. An application with no variables at all in that
   environment is not deployed, as a missing env file was not: `deploy.sh` stops and names
-  `ygg config <application> <environment>`. Without `vars.db` it reads
+  `ygg config <application> <environment>`. The exception is an application whose Compose files read no
+  variables of their own (no `env_file`, and no `${NAME}` but the ones `deploy.sh` sets: `APP_DIR`,
+  `IMAGE_TAG`, `GIT_COMMIT`, `YGG_ENVIRONMENT`, `YGG_PUBLIC_HOST`, `YGG_PUBLIC_PATH`, `YGG_APEX_HOST`), as a
+  static site's: there is nothing to configure, so it deploys with none, with or without a store. Without `vars.db` it reads
   `<secrets>/<environment>/<application>.env` with a one-line notice pointing here.
 - **The deploy lock** is a file per application and environment,
   `<secrets>/locks/<application>-<environment>.lock`, created `0664` when missing and opened

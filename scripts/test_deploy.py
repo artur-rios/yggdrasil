@@ -149,10 +149,10 @@ class DeployTests(unittest.TestCase):
         path = self.state / name
         return path.read_text() if path.exists() else ""
 
-    def deploy(self, version=None, environment=ENVIRONMENT, **env):
+    def deploy(self, version=None, environment=ENVIRONMENT, stack=STACK, **env):
         version = version or f"2.0.0-{self.commit}"
-        return subprocess.run(["bash", str(DEPLOY), environment, STACK, str(self.app), version],
-                              env=dict(self.env, PROJECT_UNDER_TEST=f"{STACK}-{environment}", **env), capture_output=True, text=True)
+        return subprocess.run(["bash", str(DEPLOY), environment, stack, str(self.app), version],
+                              env=dict(self.env, PROJECT_UNDER_TEST=f"{stack}-{environment}", **env), capture_output=True, text=True)
 
     def compose_calls(self, command):
         return [line for line in self.read("calls").splitlines()
@@ -330,8 +330,8 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(lock.stat().st_mtime, 1_000_000_000)
         self.assertEqual(self.read("up1.lock").strip(), "75")
 
-    def use_store(self, values):
-        """Moves this test's env files into a variables store holding `values` for every environment."""
+    def use_store(self, values, stack=STACK):
+        """Moves this test's env files into a variables store holding `values` for `stack` in every environment."""
         sys.path.insert(0, str(ROOT / "scripts"))
         import vars as v
         secrets = pathlib.Path(self.env["YGG_SECRETS_DIR"])
@@ -339,7 +339,7 @@ class DeployTests(unittest.TestCase):
         with v.Store.open(secrets) as store:
             for environment in (ENVIRONMENT, ON_DEMAND):
                 for key, value in values.items():
-                    store.set(f"app:{STACK}@{environment}", key, value, None, "set")
+                    store.set(f"app:{stack}@{environment}", key, value, None, "set")
                 (secrets / environment / f"{STACK}.env").unlink()
 
     def test_given_a_store_when_deployed_then_compose_reads_the_rendered_file_and_it_is_removed(self):
@@ -368,6 +368,47 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"{STACK} has no variables in {ENVIRONMENT}", result.stderr)
         self.assertIn(f"scripts/ygg.sh config {STACK} {ENVIRONMENT}", result.stderr)
+        self.assertNotIn("compose", self.read("calls"))
+
+    def given_a_site(self, stack="heimdall-docs"):
+        # A static site: its stack reads only what deploy.sh sets (the image tag, the host and path, the commit).
+        self.given("services", "web")
+        self.given("repositories", stack)
+        return stack
+
+    def env_files_used(self):
+        return {line.split("--env-file ")[1].split(" ")[0] for line in self.read("calls").splitlines()
+                if "--env-file" in line}
+
+    def test_given_a_store_without_variables_for_a_site_that_reads_none_when_deployed_then_it_deploys(self):
+        # deploy.sh stops an application with no variables as never configured on this machine; a site whose stack
+        # reads none of its own has nothing to configure, so it deploys with an empty set.
+        site = self.given_a_site()
+        self.use_store({})
+        result = self.deploy(environment="production", stack=site)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("ups").strip(), "1")
+        self.assertIn(f"{site} reads no variables of its own", result.stderr)
+        self.assertTrue(self.env_files_used())
+        self.assertTrue(all(not pathlib.Path(p).exists() for p in self.env_files_used()))
+
+    def test_given_no_store_and_no_env_file_for_a_site_that_reads_none_when_deployed_then_it_deploys(self):
+        site = self.given_a_site()
+        result = self.deploy(environment="production", stack=site)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("ups").strip(), "1")
+        self.assertIn(f"{site} reads no variables of its own", result.stderr)
+        self.assertNotIn("move to the variables store", result.stderr)
+        self.assertTrue(all(not pathlib.Path(p).exists() for p in self.env_files_used()))
+
+    def test_given_a_store_without_variables_for_a_site_that_hands_them_to_its_container_then_it_stops(self):
+        # github-readme-stats' stack hands the whole set to the container (env_file: ${APP_ENV_FILE}): its token
+        # and whitelist. With none set it was never configured here, as before.
+        site = self.given_a_site("github-readme-stats")
+        self.use_store({})
+        result = self.deploy(environment="production", stack=site)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{site} has no variables in production", result.stderr)
         self.assertNotIn("compose", self.read("calls"))
 
     @unittest.skipIf(os.geteuid() == 0 or os.access("/run/yggdrasil", os.W_OK), "this user writes /run/yggdrasil")
