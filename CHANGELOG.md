@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-29
+
+### Fixed
+
+- **The repositories' Jenkins credentials survive a restart.** The docs said to create `reportgenerator-license` and
+  the signing keys in the Jenkins UI. But the controller replaces its whole list of system credentials with the
+  configured ones at every start, so they were gone after the next `scripts/platform.sh up` that recreated it, and
+  every check that binds them failed (`Could not find credentials entry with ID 'reportgenerator-license'`). They are
+  now files: one per credential in the directory `JENKINS_CREDENTIALS_DIR` (`platform.env`) names, the file named by
+  the id. `scripts/platform.sh` checks each file (a catalog id, not empty, no trailing newline, readable by the
+  controller) with the new `scripts/jenkins_credentials.py`, and configures one secret text credential for each.
+  Adding, removing or changing a file recreates the controller at the next `up`. How to write them:
+  [hosts.md, Repository credentials](docs/hosts.md#repository-credentials).
+
 ## [0.9.5] - 2026-10-29
 
 ### Fixed
@@ -1029,7 +1043,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/artur-rios/yggdrasil/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/artur-rios/yggdrasil/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/artur-rios/yggdrasil/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/artur-rios/yggdrasil/compare/v0.9.2...v0.9.3

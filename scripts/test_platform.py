@@ -51,6 +51,9 @@ class PlatformTests(unittest.TestCase):
                           'echo "FORGE_JENKINS_USER=${FORGE_JENKINS_USER:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "GITHUB_READ_APP_KEY_FILE=${GITHUB_READ_APP_KEY_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "NUGET_API_KEY_FILE=${NUGET_API_KEY_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "JENKINS_CREDENTIALS_DIR=${JENKINS_CREDENTIALS_DIR:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "YGG_JENKINS_CREDENTIALS_FILE=${YGG_JENKINS_CREDENTIALS_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "YGG_JENKINS_CREDENTIALS_HASH=${YGG_JENKINS_CREDENTIALS_HASH:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
                           '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
                           '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
@@ -480,6 +483,65 @@ class PlatformTests(unittest.TestCase):
             self.assertRegex(calls, r"YGG_CASC_CONFIG=/etc/jenkins/casc\.yaml,[^\n]*,/etc/jenkins/casc\.nuget\.yaml\n")
             # Compose reads the setting from the env file itself; platform.sh leaves it alone.
             self.assertNotIn("NUGET_API_KEY_FILE=/dev/null", calls)
+
+    def credentials_dir(self, **files):
+        directory = self.temp / "jenkins-credentials"
+        directory.mkdir(exist_ok=True)
+        directory.chmod(0o755)
+        for name, value in files.items():
+            path = directory / name.replace("_", "-")
+            path.write_text(value)
+            path.chmod(0o644)
+        return directory
+
+    def test_given_no_credentials_directory_when_up_then_jenkins_reads_no_repository_credentials(self):
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertNotIn("casc.credentials.yaml", calls)
+        # Nothing to mount: /dev/null, not a path Docker would create as a directory.
+        self.assertIn("JENKINS_CREDENTIALS_DIR=/dev/null\n", calls)
+        self.assertIn("YGG_JENKINS_CREDENTIALS_FILE=/dev/null\n", calls)
+
+    def test_given_a_credentials_directory_when_up_then_jenkins_reads_them_from_a_file_kept_with_the_secrets(self):
+        # The controller replaces its system credentials with the configured ones at every start, so a credential
+        # made in the UI is gone after the next up: the repositories' are configured from their files instead.
+        directory = self.credentials_dir(reportgenerator_license="the-key")
+        result = self.up(self.JENKINS + self.GITHUB_APP + f"JENKINS_CREDENTIALS_DIR={directory}\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertRegex(calls, r"YGG_CASC_CONFIG=/etc/jenkins/casc\.yaml,[^\n]*,/etc/jenkins/casc\.credentials\.yaml\n")
+        live = self.secrets / "jenkins-credentials.yaml"
+        self.assertIn(f"YGG_JENKINS_CREDENTIALS_FILE={live}\n", calls)
+        self.assertNotIn("JENKINS_CREDENTIALS_DIR=/dev/null", calls)
+        self.assertIn('id: "reportgenerator-license"', live.read_text())
+        self.assertNotIn("the-key", live.read_text())
+        # The controller reads it as "other", like the secrets themselves.
+        self.assertEqual(live.stat().st_mode & 0o777, 0o644)
+        self.assertRegex(calls, r"YGG_JENKINS_CREDENTIALS_HASH=[0-9a-f]{64}\n")
+
+    def test_given_a_changed_credential_when_up_then_the_hash_changes_so_jenkins_is_recreated(self):
+        # The rendered file only names the ids: a new secret under the same id changes nothing in it, so the hash
+        # also covers each file's size and modification time (never its content).
+        directory = self.credentials_dir(reportgenerator_license="old")
+        settings = self.JENKINS + self.GITHUB_APP + f"JENKINS_CREDENTIALS_DIR={directory}\n"
+        self.assertEqual(self.up(settings).returncode, 0)
+        first = re.search(r"YGG_JENKINS_CREDENTIALS_HASH=(\w+)", self.docker_calls()).group(1)
+        path = directory / "reportgenerator-license"
+        path.write_text("a newer key")
+        os.utime(path, (path.stat().st_atime, path.stat().st_mtime + 5))
+        self.log.unlink()
+        self.assertEqual(self.up(settings).returncode, 0)
+        second = re.search(r"YGG_JENKINS_CREDENTIALS_HASH=(\w+)", self.docker_calls()).group(1)
+        self.assertNotEqual(first, second)
+
+    def test_given_a_credential_the_catalog_does_not_name_when_up_then_it_stops_before_docker(self):
+        directory = self.credentials_dir(reportgenerator_licence="the-key")
+        result = self.up(self.JENKINS + self.GITHUB_APP + f"JENKINS_CREDENTIALS_DIR={directory}\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("reportgenerator-licence", result.stderr)
+        self.assertEqual(self.docker_calls(), "")
+        self.assertFalse((self.secrets / "jenkins-credentials.yaml").exists())
 
     def test_given_a_forgejo_catalog_when_up_then_the_read_only_github_app_is_not_configured(self):
         # Forgejo's ci identity is forge-read; github-read is a GitHub installation's.
