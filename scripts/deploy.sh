@@ -52,7 +52,9 @@
 # (default /etc/yggdrasil). Start that file from the application repository's own env template;
 # examples for the sample applications are in docs/examples/docker-desktop-and-vps/env/. Its path is
 # exported as APP_ENV_FILE, for stacks that hand the whole file to the container (env_file:, as the
-# stacks scripts/ygg.sh generates do).
+# stacks scripts/ygg.sh generates do). An application with no variables is stopped as never configured on
+# this machine, unless its Compose files read none of their own (a static site's read only what this script
+# sets): that one deploys with none.
 #
 # Sites: YGG_PUBLIC_HOST (<host><hostSuffix>.<domain>, or the bare domain for an apex site) and
 # YGG_PUBLIC_PATH (the application's path) are exported for the stack files, which may use them
@@ -97,6 +99,37 @@ on_demand=$(option onDemand)
 [[ "$version" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid version '$version'"
 project="$stack-$environment"
 tag="$environment-$version"
+
+stack_files=()
+if [[ -f "$root/stacks/$stack.yml" ]]; then
+  stack_files+=("$root/stacks/$stack.yml")
+elif [[ -f "$app_dir/docker-compose.yml" ]]; then
+  stack_files+=("$app_dir/docker-compose.yml")
+else
+  die "neither stacks/$stack.yml nor $app_dir/docker-compose.yml exists"
+fi
+[[ -f "$root/stacks/$stack.$mode.yml" ]] && stack_files+=("$root/stacks/$stack.$mode.yml")
+[[ -f "$root/stacks/$stack.$environment.yml" ]] && stack_files+=("$root/stacks/$stack.$environment.yml")
+
+# Whether the Compose files read variables of the application's own: an env_file, or a ${NAME} this script
+# does not set below (APP_ENV_FILE counts: it is how a stack hands the whole set to the container). A static
+# site's stack reads only what this script sets (its image tag, host, path and commit), so it has nothing to
+# configure, and no variables are needed to deploy it. Comment lines are left out; $${NAME} is Compose's
+# escape for a literal ${NAME}, which reads nothing.
+reads_own_variables() {
+  local name env_files
+  # A count, not grep -q: grep -q exits at its match, and the grep before it then dies on a broken pipe, which
+  # pipefail would take for "none".
+  env_files=$(grep -hv '^[[:space:]]*#' "${stack_files[@]}" | grep -cE '(^|[[:space:]])env_file:' || true)
+  ((env_files == 0)) || return 0
+  while read -r name; do
+    [[ "$name" =~ ^(APP_DIR|YGG_ENVIRONMENT|YGG_PUBLIC_HOST|YGG_PUBLIC_PATH|YGG_APEX_HOST|GIT_COMMIT|IMAGE_TAG|API_IMAGE_TAG)$ ]] \
+      || return 0
+  done < <(grep -hv '^[[:space:]]*#' "${stack_files[@]}" | grep -oE '(^|[^$])[$][{][A-Za-z_][A-Za-z0-9_]*' \
+             | sed -E 's/.*[$][{]//' | sort -u)
+  return 1
+}
+
 # The application's variables: rendered from the variables store when this machine has one
 # (docs/variables.md), else today's env file. The rendered file lives in a private directory and is
 # removed when this script exits.
@@ -122,9 +155,17 @@ if [[ -f "$secrets/vars.db" ]]; then
   (umask 077 && python3 "$root/scripts/vars.py" render "$stack" "$environment" >"$env_file") \
     || die "could not render the variables of $stack in $environment"
   # As without a store, where a missing env file stops the deploy: an application with nothing set
-  # here was never configured on this machine.
-  [[ -s "$env_file" ]] \
-    || die "$stack has no variables in $environment in the variables store: set them with scripts/ygg.sh config $stack $environment (or scripts/ygg.sh vars set $stack@$environment KEY=value)"
+  # here was never configured on this machine -- unless its stack reads nothing of its own.
+  if [[ ! -s "$env_file" ]]; then
+    reads_own_variables \
+      && die "$stack has no variables in $environment in the variables store: set them with scripts/ygg.sh config $stack $environment (or scripts/ygg.sh vars set $stack@$environment KEY=value)"
+    echo "deploy: $stack reads no variables of its own; deploying it with none" >&2
+  fi
+elif [[ ! -e "$secrets/$environment/$stack.env" ]] && ! reads_own_variables; then
+  # Compose's --env-file wants a file: an empty one, removed when this script exits.
+  env_file=$(mktemp)
+  cleanup_paths+=("$env_file")
+  echo "deploy: $stack reads no variables of its own; deploying it with none" >&2
 else
   env_file="$secrets/$environment/$stack.env"
   [[ -f "$env_file" && -r "$env_file" ]] || die "missing or unreadable env file $env_file: create it (docs/setup.md step 11); under Jenkins it must be readable by the user running the agent's engine"
@@ -155,15 +196,7 @@ elif command -v flock >/dev/null 2>&1; then
 fi
 
 files=()
-if [[ -f "$root/stacks/$stack.yml" ]]; then
-  files+=(-f "$root/stacks/$stack.yml")
-elif [[ -f "$app_dir/docker-compose.yml" ]]; then
-  files+=(-f "$app_dir/docker-compose.yml")
-else
-  die "neither stacks/$stack.yml nor $app_dir/docker-compose.yml exists"
-fi
-[[ -f "$root/stacks/$stack.$mode.yml" ]] && files+=(-f "$root/stacks/$stack.$mode.yml")
-[[ -f "$root/stacks/$stack.$environment.yml" ]] && files+=(-f "$root/stacks/$stack.$environment.yml")
+for stack_file in "${stack_files[@]}"; do files+=(-f "$stack_file"); done
 
 # Read by the Compose files. Shell variables win over the env file, so the tag cannot be overridden
 # by a stale value left in it. API_IMAGE_TAG is the name the API repositories' own Compose files use.
