@@ -118,13 +118,18 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 // the fields of a planned check (scripts/pipeline_config.py validates the same; this is a second look,
 // next to where the values are used). All are full matches (==~).
 @Field static final String CATALOG_ID = '[a-z0-9]+(-[a-z0-9]+)*'
+// A repositories entry's id is its repository's name, which catalog.py (REPOSITORY) lets have dots and capitals
+// (reveal.js); never `.`, `..` or a leading `-`.
+@Field static final String REPOSITORY_ID = '[A-Za-z0-9_][A-Za-z0-9._-]{0,99}'
 @Field static final String COMMIT = '[0-9a-f]{40}'
 @Field static final String CHECK_NAME = '[a-z0-9][a-z0-9._-]*'
 @Field static final String ENV_VAR = '[A-Za-z_][A-Za-z0-9_]*'
 @Field static final String IMAGE = '[A-Za-z0-9][A-Za-z0-9._/:@-]*'
-// A status context: a check's name, branch-policy, deploy/<environment>, or a GitHub Actions check
-// named in the catalog ("Console (Windows)").
-@Field static final String STATUS_CONTEXT = '[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,99}'
+// A status context: a check's name, branch-policy, deploy/<environment>, or a GitHub Actions check named in the
+// catalog (".NET build, coverage and process lifecycle (windows-latest)"): printable ASCII, at most 100
+// characters, no space at either end. catalog.py validates actionsChecks with the same rule (STATUS_CONTEXT). It
+// only ever travels in a JSON body or an environment variable, never in a shell command.
+@Field static final String STATUS_CONTEXT = '[!-~]([ -~]{0,98}[!-~])?'
 @Field static final String WEB_URL = 'https://[^\\s"\'<>]+'
 // Seconds between two looks at GitHub Actions (checks and workflow runs), and at GitHub for a tag the
 // mirror is pushing; how long a release tag gets to reach GitHub (publish-release.sh's GITHUB_TAG_WAIT
@@ -285,7 +290,7 @@ def call(Map config = [:]) {
 // repositoryModel), owner, repository (this repository's name)]. Fails unless `app` is a catalog id of an
 // application or a repositories entry.
 Map catalogContext(String app) {
-  if (!(app ==~ CATALOG_ID)) {
+  if (!(app ==~ CATALOG_ID || app ==~ REPOSITORY_ID)) {
     error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
   }
   Map catalog = loadCatalog()
