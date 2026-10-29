@@ -118,6 +118,9 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 // the fields of a planned check (scripts/pipeline_config.py validates the same; this is a second look,
 // next to where the values are used). All are full matches (==~).
 @Field static final String CATALOG_ID = '[a-z0-9]+(-[a-z0-9]+)*'
+// A repositories entry's id is its repository's name, which catalog.py (REPOSITORY) lets have dots and capitals
+// (reveal.js); never `.`, `..` or a leading `-`.
+@Field static final String REPOSITORY_ID = '[A-Za-z0-9_][A-Za-z0-9._-]{0,99}'
 @Field static final String COMMIT = '[0-9a-f]{40}'
 @Field static final String CHECK_NAME = '[a-z0-9][a-z0-9._-]*'
 @Field static final String ENV_VAR = '[A-Za-z_][A-Za-z0-9_]*'
@@ -280,7 +283,7 @@ def call(Map config = [:]) {
 // repositoryModel), owner, repository (this repository's name)]. Fails unless `app` is a catalog id of an
 // application or a repositories entry.
 Map catalogContext(String app) {
-  if (!(app ==~ CATALOG_ID)) {
+  if (!(app ==~ CATALOG_ID || app ==~ REPOSITORY_ID)) {
     error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
   }
   Map catalog = loadCatalog()

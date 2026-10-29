@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A repository whose name has a dot is checked.** The pipeline library refused any job name but an application's
+  id (lowercase letters, digits and dashes), while `scripts/catalog.py` lets a `repositories` entry's id be its
+  repository's name, dots included: every build of `reveal.js` failed in its first second with "is not a catalog
+  id", before it posted any status, so its pull request never showed a check. The library now accepts a
+  repository's name too, though never `.`, `..` or one starting with `-`.
+
 ## [0.9.3] - 2026-10-27
 
 ### Fixed

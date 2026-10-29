@@ -33,6 +33,8 @@ import subprocess
 import tempfile
 import unittest
 
+import catalog as catalog_module
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIBRARY = ROOT / "jenkins" / "library" / "vars" / "yggdrasilPipeline.groovy"
 
@@ -321,6 +323,24 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIsNotNone(re.search(r"def call\(Map config = \[:\]\)", self.lib.code), "call(Map config = [:])")
         self.assertIn("config.stack ?:", self.lib.code)
         self.assertIn("env.JOB_NAME", self.lib.code)
+
+    def test_given_every_catalog_id_when_the_library_checks_its_job_name_then_it_accepts_it(self):
+        # catalogContext checks the job's name, an application's or a repositories entry's id, before it
+        # reads the catalog. catalog.py lets a repositories entry's id be any repository name, dots included
+        # (reveal.js), and the library used to allow only an application's: every build of such a job failed
+        # in its first second, before any status.
+        body = self.lib.code[slice(*self.lib.functions["catalogContext"])]
+        self.assertIn("app ==~ CATALOG_ID || app ==~ REPOSITORY_ID", body)
+        patterns = [re.compile(field_literal(self.lib, name)[1]) for name in ("CATALOG_ID", "REPOSITORY_ID")]
+        catalog = catalog_module.load()
+        ids = ([application["id"] for system in catalog["systems"] for application in system.get("applications") or []]
+               + [entry["id"] for entry in catalog["repositories"]])
+        self.assertIn("reveal.js", ids)
+        for job in ids:
+            self.assertTrue(any(pattern.fullmatch(job) for pattern in patterns), f"'{job}' is refused")
+        # Still a single path segment: never one that walks the job tree or a path.
+        for job in (".", "..", "a/b", "", "-x"):
+            self.assertFalse(any(pattern.fullmatch(job) for pattern in patterns), f"'{job}' is accepted")
 
     def test_given_a_basic_repository_when_the_branch_policy_runs_then_it_passes_without_running_anything(self):
         # entry.rules is describe's: the repository's model. Under "basic" there is no branching model, so
