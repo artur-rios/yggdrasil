@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A site deploys without variables.** `deploy.sh` stops an application that has no variables in an environment,
+  as never configured on that machine. Every static site (the docs sites, personal-page, personal-blog,
+  personal-lab-site, under-construction-template, tech-craftsmen-company-page) reads none, so none of them could
+  deploy: `heimdall-docs has no variables in production in the variables store`. An application whose Compose files
+  read no variables of their own now deploys with none: no `env_file`, and no `${NAME}` but the ones `deploy.sh`
+  sets. One that reads some (an API, heimdall-ui, github-readme-stats) is stopped as before.
 - **A refused branch name is red in Jenkins.** The Branch policy stage posted `failure` to the forge but returned
   normally, so Jenkins drew it green, and the build failed with every stage green. It now marks its stage failed
   after posting the status, as a failed check does since 0.9.4. The checks still run, and the build fails once
