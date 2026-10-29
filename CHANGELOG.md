@@ -7,6 +7,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-29
+
+### Fixed
+
+- **`ygg` no longer refuses a host's own environment now and then.** It checked whether a name was in a list with
+  `printf '%s\n' <list> | grep -q`. Under pipefail that fails at random on a match: printf writes one line at a
+  time, grep exits at the match, and printf's next line dies on a broken pipe. `ygg env`, `ygg deploy` and the
+  others could then stop with "'homologation' (ENVIRONMENTS …) is not an environment in catalog.yaml", and the
+  `platform` check failed three times on the CI agent while 0.9.4 was being prepared. host.sh now looks names up in bash
+  (`in_list`), and a test keeps `printf | grep -q` out of the scripts.
+- **A Flutter repository's check results are collected.** `flutter pub get` links each desktop plugin from the pub
+  cache, outside the checkout (`<platform>/flutter/ephemeral/.plugin_symlinks`), and the pipeline refuses to collect
+  anything from a checkout with a link that leads out of it: every Flutter repository's check (alexandria-ui,
+  cerberus-ui, chimera, fortuna-ui, heimdall-ui, maestro, orpheus) ended unstable, its test results and archives not
+  collected, and a release build's files would have been refused the same way. The pipeline's link guard now
+  removes those generated directories first; a `.plugin_symlinks` that is itself a link, and every other link out,
+  are refused as before.
+- **The docs say what a missing check credential does.** moving-repositories.md and the library template said a
+  check without `reportgenerator-license` falls back to the free report; Jenkins cannot start it at all (`Could not
+  find credentials entry`), and a `renovate/*` build is refused a check with credentials.
+- **A failed check is red in Jenkins.** Each check's `sh` returned its exit status, so nothing failed the check's
+  parallel branch: Jenkins drew a failed check green, and only the build's end (`Failed: test`) and the forge's
+  `failure` status said otherwise. After posting the status, a failed check now marks its branch failed, with the
+  status's description as the reason. The build's result is untouched there: the other checks still run, and
+  the build fails once all have reported, as before.
+- **A repository whose name has a dot is checked.** The pipeline library refused any job name but an application's
+  id (lowercase letters, digits and dashes), while `scripts/catalog.py` lets a `repositories` entry's id be its
+  repository's name, dots included: every build of `reveal.js` failed in its first second with "is not a catalog
+  id", before it posted any status, so its pull request never showed a check. The library now accepts a
+  repository's name too, though never `.`, `..` or one starting with `-`.
+- **Every GitHub Actions check the catalog names is copied.** A pull request's `actionsChecks` are reported as
+  statuses, and the library refused a status name that started with anything but a letter or digit or had a comma
+  in it. chimera's `.NET project evaluation (windows-latest)` stopped its build after four of its nine copied checks,
+  which were left pending for good. A status name is now any printable ASCII up to 100 characters with no space at
+  either end, and `scripts/catalog.py` validates `actionsChecks` with that same rule, so a name the pipeline could
+  not report is a catalog error rather than a stuck pull request.
+
 ## [0.9.3] - 2026-10-27
 
 ### Fixed
@@ -977,7 +1014,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/artur-rios/yggdrasil/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/artur-rios/yggdrasil/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/artur-rios/yggdrasil/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/artur-rios/yggdrasil/compare/v0.9.0...v0.9.1

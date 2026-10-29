@@ -62,6 +62,9 @@ HOST_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z")
 HOST_SUFFIX = re.compile(r"^([a-z0-9-]*[a-z0-9])?\Z")
 HOST_PORT = re.compile(r"^[A-Za-z0-9.-]+:[0-9]{1,5}\Z")
 REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+\Z")
+# A GitHub Actions job name, which the pipeline library reports as a status context (its STATUS_CONTEXT, the same
+# rule): printable ASCII, at most 100 characters, no space at either end.
+STATUS_CONTEXT = re.compile(r"^[!-~]([ -~]{0,98}[!-~])?\Z")
 # A git server user name (Forgejo and GitHub both accept letters, digits, dots, dashes and underscores).
 USER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 # A GitHub user name, or the bot login of a GitHub App (my-app[bot]).
@@ -487,7 +490,8 @@ def _check_list_errors(where, entry):
                   "Jenkins credential ids (letters, digits, '.', '_' and '-')")
     for key, valid, what in (
         ("checks", _text, "the checks Jenkins reports, none empty"),
-        ("actionsChecks", _text, "GitHub Actions job names, none empty"),
+        ("actionsChecks", lambda v: isinstance(v, str) and STATUS_CONTEXT.match(v),
+         "GitHub Actions job names (printable ASCII, at most 100 characters, no space at either end)"),
         ("credentials", *credential),
         ("releaseCredentials", *credential),
     ):

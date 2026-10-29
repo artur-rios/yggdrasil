@@ -75,8 +75,10 @@ were prepared and left unpushed until now.
 **Create the credentials and variables a branch needs before its first check or release uses them.** The Jenkins
 credentials are in [hosts.md, section 6](hosts.md#6-credentials): `reportgenerator-license` (every library, cerberus-api,
 fortuna-api, heimdall-api), the four `heimdall-ui-android-*`, `maestro-signing-key` and `maestro-signing-public-key`,
-and the four `orpheus-android-*`, all **secret text** under exactly those ids. Without `reportgenerator-license` the
-`coverage` check falls back to the free report and says so. One more is not made in Jenkins but on the DevOps Server:
+and the four `orpheus-android-*`, all **secret text** under exactly those ids. A check that names a credential Jenkins
+does not have cannot start (`Could not find credentials entry with ID 'reportgenerator-license'`): create
+`reportgenerator-license` before the first pull request of a library, cerberus-api, fortuna-api or
+heimdall-api. One more is not made in Jenkins but on the DevOps Server:
 the nuget.org API key the libraries' tags push with, the file `NUGET_API_KEY_FILE` names in `platform.env`, which the
 controller turns into the credential `nuget-api-key` ([cutover.md, 2.3](cutover.md#23-forgejo-the-controller-and-the-agents);
 [setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget)). Without it a library's tag build packs, then fails

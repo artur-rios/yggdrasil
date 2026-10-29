@@ -156,6 +156,9 @@ as_root() { if ((EUID == 0)); then "$@"; else sudo "$@"; fi; }
 # apt-get without its own questions (tzdata's, say): they would read the menu's answers.
 apt_get() { as_root env DEBIAN_FRONTEND=noninteractive apt-get -q "$@" </dev/null; }
 has() { command -v "$1" >/dev/null 2>&1; }
+# in_list <word> <item>...: whether the word is one of the items. In bash, not `printf | grep -q`: grep
+# exits at its match, printf's next line then fails with a broken pipe, and pipefail fails the lookup.
+in_list() { local word=$1 item; shift; for item; do [[ "$item" == "$word" ]] && return 0; done; return 1; }
 installed() {
   if [[ -n "${INSTALLED_PACKAGES_LOADED:-}" ]]; then
     [[ -n "${INSTALLED_PACKAGES[$1]-}" ]]
@@ -281,30 +284,31 @@ host_environments() {
   fi
   IFS=', ' read -r -a listed <<<"$configured"
   for environment in "${listed[@]}"; do
-    [[ -z "$environment" ]] || printf '%s\n' "${known[@]}" | grep -Fqx "$environment" \
+    [[ -z "$environment" ]] || in_list "$environment" "${known[@]}" \
       || die "'$environment' ($source) is not an environment in catalog.yaml"
   done
   for environment in "${known[@]}"; do
-    printf '%s\n' "${listed[@]}" | grep -Fqx "$environment" && host_envs+=("$environment")
+    in_list "$environment" "${listed[@]}" && host_envs+=("$environment")
   done
   return 0
 }
 
-on_this_host() { printf '%s\n' "${host_envs[@]}" | grep -Fqx "$1"; }
+on_this_host() { in_list "$1" "${host_envs[@]}"; }
 
 # pick_environment <variable> <question> [<given>] [<app>]: one of the host's environments (those
 # the application deploys to, given one): the given one, checked; the only one; or asked.
 pick_environment() {
-  local _variable=$1 _question=$2 _given=${3:-} _app=${4:-} _environment _candidates=()
+  local _variable=$1 _question=$2 _given=${3:-} _app=${4:-} _environment _candidates=() _deploys=()
   host_environments
+  [[ -z "$_app" ]] || mapfile -t _deploys < <(catalog environments "$_app")
   for _environment in "${host_envs[@]}"; do
-    if [[ -z "$_app" ]] || catalog environments "$_app" | grep -Fqx "$_environment"; then
+    if [[ -z "$_app" ]] || in_list "$_environment" "${_deploys[@]}"; then
       _candidates+=("$_environment")
     fi
   done
   if [[ -n "$_given" ]]; then
     on_this_host "$_given" || die "'$_given' is not an environment of this host ($(IFS=,; echo "${host_envs[*]}"))"
-    printf '%s\n' "${_candidates[@]}" | grep -Fqx "$_given" || die "'$_app' does not deploy to $_given (catalog.yaml)"
+    in_list "$_given" "${_candidates[@]}" || die "'$_app' does not deploy to $_given (catalog.yaml)"
     printf -v "$_variable" '%s' "$_given"
   elif ((${#_candidates[@]} == 1)); then
     printf -v "$_variable" '%s' "${_candidates[0]}"
@@ -317,9 +321,10 @@ pick_environment() {
 
 # The applications of the catalog that deploy to an environment.
 applications_in() {
-  local app
+  local app deploys
   for app in $(catalog applications --deployable); do
-    catalog environments "$app" | grep -Fqx "$1" && echo "$app"
+    mapfile -t deploys < <(catalog environments "$app")
+    in_list "$1" "${deploys[@]}" && echo "$app"
   done
   return 0
 }
@@ -989,7 +994,7 @@ git_server_step() {
 add_application() {
   need_catalog
   local id name kind system system_name="" system_description="" repository own service port path
-  local probe="" host="" metrics="" arguments="" checks="" systems pick build_args=() mode environment
+  local probe="" host="" metrics="" arguments="" checks="" systems taken pick build_args=() mode environment
   title "Set up a new application"
   say "An API, a web front end or a worker, from its own repository. This adds it to catalog.yaml,"
   say "writes its stack files, creates its env file on this host and can deploy it here."
@@ -1008,7 +1013,8 @@ add_application() {
   if [[ "$pick" == "a new system" ]]; then
     while true; do
       ask_match system "New system id" "$ID_PATTERN" "lowercase letters, digits and dashes" "${id%-*}"
-      catalog systems | cut -f1 | grep -Fqx "$system" || break
+      mapfile -t taken < <(catalog systems | cut -f1)
+      in_list "$system" "${taken[@]}" || break
       warn "'$system' already exists: pick it from the list instead."
     done
     ask system_name "System display name" "$system"

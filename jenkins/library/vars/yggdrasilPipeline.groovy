@@ -118,13 +118,18 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 // the fields of a planned check (scripts/pipeline_config.py validates the same; this is a second look,
 // next to where the values are used). All are full matches (==~).
 @Field static final String CATALOG_ID = '[a-z0-9]+(-[a-z0-9]+)*'
+// A repositories entry's id is its repository's name, which catalog.py (REPOSITORY) lets have dots and capitals
+// (reveal.js); never `.`, `..` or a leading `-`.
+@Field static final String REPOSITORY_ID = '[A-Za-z0-9_][A-Za-z0-9._-]{0,99}'
 @Field static final String COMMIT = '[0-9a-f]{40}'
 @Field static final String CHECK_NAME = '[a-z0-9][a-z0-9._-]*'
 @Field static final String ENV_VAR = '[A-Za-z_][A-Za-z0-9_]*'
 @Field static final String IMAGE = '[A-Za-z0-9][A-Za-z0-9._/:@-]*'
-// A status context: a check's name, branch-policy, deploy/<environment>, or a GitHub Actions check
-// named in the catalog ("Console (Windows)").
-@Field static final String STATUS_CONTEXT = '[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,99}'
+// A status context: a check's name, branch-policy, deploy/<environment>, or a GitHub Actions check named in the
+// catalog (".NET build, coverage and process lifecycle (windows-latest)"): printable ASCII, at most 100
+// characters, no space at either end. catalog.py validates actionsChecks with the same rule (STATUS_CONTEXT). It
+// only ever travels in a JSON body or an environment variable, never in a shell command.
+@Field static final String STATUS_CONTEXT = '[!-~]([ -~]{0,98}[!-~])?'
 @Field static final String WEB_URL = 'https://[^\\s"\'<>]+'
 // Seconds between two looks at GitHub Actions (checks and workflow runs), and at GitHub for a tag the
 // mirror is pushing; how long a release tag gets to reach GitHub (publish-release.sh's GITHUB_TAG_WAIT
@@ -165,6 +170,10 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 // root and can leave a link to anything on the agent (its own files, another workspace, @tmp with the env
 // files); archiveArtifacts can be told not to follow links, but junit, stash and the uploads cannot, so
 // this runs before them. .git is pruned (the Ant default excludes keep it out of every stash anyway).
+// Flutter's pub get links each desktop plugin from the pub cache, outside the checkout, under
+// <platform>/flutter/ephemeral/.plugin_symlinks: generated, git-ignored and never collected, so those
+// directories are removed first (rm removes the links, never what they point at). A .plugin_symlinks that is
+// itself a link is no directory, stays, and is refused like any other.
 @Field static final String LINK_GUARD = '''
 root=$(pwd -P)
 export root
@@ -177,6 +186,7 @@ if [ -n "${YGG_ANY_LINK:-}" ]; then
   fi
   exit 0
 fi
+find . -path ./.git -prune -o -type d -path '*/flutter/ephemeral/.plugin_symlinks' -prune -exec rm -rf {} +
 outside=$(find . -path ./.git -prune -o -type l -exec sh -c '
   for link; do
     case "$(realpath -m -- "$link")" in
@@ -280,7 +290,7 @@ def call(Map config = [:]) {
 // repositoryModel), owner, repository (this repository's name)]. Fails unless `app` is a catalog id of an
 // application or a repositories entry.
 Map catalogContext(String app) {
-  if (!(app ==~ CATALOG_ID)) {
+  if (!(app ==~ CATALOG_ID || app ==~ REPOSITORY_ID)) {
     error "'${printable(app)}' is not a catalog id: the job must be named after an application or a repositories entry"
   }
   Map catalog = loadCatalog()
@@ -744,6 +754,14 @@ boolean runCheck(Map ctx, Map state, Map check) {
   String description = passed ? 'Passed in Jenkins'
     : problem != null ? "Could not run: ${problem}" : "Failed in Jenkins (exit ${code})"
   reportStatus(ctx.repo, state.sha, passed ? 'success' : 'failure', check.name, description)
+  if (!passed) {
+    // Its sh returned the status, so nothing failed this parallel branch and Jenkins drew it green. Marked
+    // failed here; the build's result is left alone, so the other checks run on and verify() fails the build
+    // once all have reported.
+    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+      error("${check.name}: ${printable(description)}")
+    }
+  }
   return passed
 }
 
