@@ -156,6 +156,9 @@ as_root() { if ((EUID == 0)); then "$@"; else sudo "$@"; fi; }
 # apt-get without its own questions (tzdata's, say): they would read the menu's answers.
 apt_get() { as_root env DEBIAN_FRONTEND=noninteractive apt-get -q "$@" </dev/null; }
 has() { command -v "$1" >/dev/null 2>&1; }
+# in_list <word> <item>...: whether the word is one of the items. In bash, not `printf | grep -q`: grep
+# exits at its match, printf's next line then fails with a broken pipe, and pipefail fails the lookup.
+in_list() { local word=$1 item; shift; for item; do [[ "$item" == "$word" ]] && return 0; done; return 1; }
 installed() {
   if [[ -n "${INSTALLED_PACKAGES_LOADED:-}" ]]; then
     [[ -n "${INSTALLED_PACKAGES[$1]-}" ]]
@@ -281,16 +284,16 @@ host_environments() {
   fi
   IFS=', ' read -r -a listed <<<"$configured"
   for environment in "${listed[@]}"; do
-    [[ -z "$environment" ]] || printf '%s\n' "${known[@]}" | grep -Fqx "$environment" \
+    [[ -z "$environment" ]] || in_list "$environment" "${known[@]}" \
       || die "'$environment' ($source) is not an environment in catalog.yaml"
   done
   for environment in "${known[@]}"; do
-    printf '%s\n' "${listed[@]}" | grep -Fqx "$environment" && host_envs+=("$environment")
+    in_list "$environment" "${listed[@]}" && host_envs+=("$environment")
   done
   return 0
 }
 
-on_this_host() { printf '%s\n' "${host_envs[@]}" | grep -Fqx "$1"; }
+on_this_host() { in_list "$1" "${host_envs[@]}"; }
 
 # pick_environment <variable> <question> [<given>] [<app>]: one of the host's environments (those
 # the application deploys to, given one): the given one, checked; the only one; or asked.
@@ -298,13 +301,13 @@ pick_environment() {
   local _variable=$1 _question=$2 _given=${3:-} _app=${4:-} _environment _candidates=()
   host_environments
   for _environment in "${host_envs[@]}"; do
-    if [[ -z "$_app" ]] || catalog environments "$_app" | grep -Fqx "$_environment"; then
+    if [[ -z "$_app" ]] || in_list "$_environment" $(catalog environments "$_app"); then
       _candidates+=("$_environment")
     fi
   done
   if [[ -n "$_given" ]]; then
     on_this_host "$_given" || die "'$_given' is not an environment of this host ($(IFS=,; echo "${host_envs[*]}"))"
-    printf '%s\n' "${_candidates[@]}" | grep -Fqx "$_given" || die "'$_app' does not deploy to $_given (catalog.yaml)"
+    in_list "$_given" "${_candidates[@]}" || die "'$_app' does not deploy to $_given (catalog.yaml)"
     printf -v "$_variable" '%s' "$_given"
   elif ((${#_candidates[@]} == 1)); then
     printf -v "$_variable" '%s' "${_candidates[0]}"
@@ -319,7 +322,7 @@ pick_environment() {
 applications_in() {
   local app
   for app in $(catalog applications --deployable); do
-    catalog environments "$app" | grep -Fqx "$1" && echo "$app"
+    in_list "$1" $(catalog environments "$app") && echo "$app"
   done
   return 0
 }
@@ -1008,7 +1011,7 @@ add_application() {
   if [[ "$pick" == "a new system" ]]; then
     while true; do
       ask_match system "New system id" "$ID_PATTERN" "lowercase letters, digits and dashes" "${id%-*}"
-      catalog systems | cut -f1 | grep -Fqx "$system" || break
+      in_list "$system" $(catalog systems | cut -f1) || break
       warn "'$system' already exists: pick it from the list instead."
     done
     ask system_name "System display name" "$system"

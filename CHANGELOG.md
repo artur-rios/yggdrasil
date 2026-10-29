@@ -11,6 +11,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`ygg` no longer refuses a host's own environment now and then.** It checked whether a name was in a list with
+  `printf '%s\n' <list> | grep -q`. Under pipefail that fails at random on a match: printf writes one line at a
+  time, grep exits at the match, and printf's next line dies on a broken pipe. `ygg env`, `ygg deploy` and the
+  others could then stop with "'homologation' (ENVIRONMENTS …) is not an environment in catalog.yaml", and the
+  `platform` check failed three times on the CI agent while 0.9.4 was being prepared. host.sh now looks names up in bash
+  (`in_list`), and a test keeps `printf | grep -q` out of the scripts.
 - **A Flutter repository's check results are collected.** `flutter pub get` links each desktop plugin from the pub
   cache, outside the checkout (`<platform>/flutter/ephemeral/.plugin_symlinks`), and the pipeline refuses to collect
   anything from a checkout with a link that leads out of it: every Flutter repository's check (alexandria-ui,
