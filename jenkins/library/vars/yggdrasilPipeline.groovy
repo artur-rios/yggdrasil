@@ -677,6 +677,14 @@ boolean branchPolicy(Map ctx, Map state) {
       echo printable(reason)
     }
     reportStatus(ctx.repo, state.sha, passed ? 'success' : 'failure', 'branch-policy', reason)
+    if (!passed) {
+      // Its sh returned the status, so nothing failed this stage and Jenkins drew it green. Marked failed
+      // here, as a failed check is (runCheck); the build's result is left alone, so the checks still run and
+      // the build fails once they have reported.
+      catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+        error("branch-policy: ${printable(reason)}")
+      }
+    }
   }
   return passed
 }

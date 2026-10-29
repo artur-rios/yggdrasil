@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refused branch name is red in Jenkins.** The Branch policy stage posted `failure` to the forge but returned
+  normally, so Jenkins drew it green, and the build failed with every stage green. It now marks its stage failed
+  after posting the status, as a failed check does since 0.9.4. The checks still run, and the build fails once
+  they have reported, as before.
+
 ## [0.9.4] - 2026-10-29
 
 ### Fixed
