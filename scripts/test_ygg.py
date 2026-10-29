@@ -279,5 +279,40 @@ class VariablesStoreTests(EnvironmentCommandTests):
         self.assertEqual(self.ygg("vars", "get", "platform", "DOMAIN").stdout, "example.com\n")
 
 
+class ListLookupTests(unittest.TestCase):
+    """host.sh's in_list, and no lookup left that pipes printf into grep -q.
+
+    Under pipefail, `printf '%s\\n' "${list[@]}" | grep -q` fails now and then on a match: printf writes a
+    line at a time, grep exits at its match, and the line after it dies on a broken pipe. On the CI agent
+    that refused a host's own environments ("'homologation' ... is not an environment in catalog.yaml").
+    """
+
+    HOST = SCRIPT.parent / "host.sh"
+
+    def in_list(self, *arguments):
+        definition = next(line for line in self.HOST.read_text(encoding="utf-8").splitlines()
+                          if line.startswith("in_list() {"))
+        return subprocess.run(["bash", "-c", f'set -euo pipefail; {definition}\nin_list "$@"', "in_list", *arguments],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL).returncode
+
+    @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
+    def test_given_a_word_in_the_list_when_looked_up_then_it_is_found_wherever_it_is(self):
+        for items in (["homologation", "production"], ["development", "homologation"], ["homologation"]):
+            self.assertEqual(self.in_list("homologation", *items), 0, items)
+
+    @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
+    def test_given_a_word_not_in_the_list_when_looked_up_then_it_is_not_found(self):
+        self.assertEqual(self.in_list("prod", "production", "homologation"), 1)
+        self.assertEqual(self.in_list("*", "production"), 1)  # matched literally, not as a pattern
+        self.assertEqual(self.in_list("production"), 1)
+
+    def test_given_the_scripts_when_read_then_no_printf_pipes_into_grep_q(self):
+        for script in sorted(SCRIPT.parent.glob("*.sh")):
+            for number, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+                if not line.lstrip().startswith("#"):
+                    self.assertNotRegex(line, r"\bprintf\b[^|]*\|\s*grep\s+-\w*q",
+                                        f"{script.name}:{number}: use in_list, not printf | grep -q")
+
+
 if __name__ == "__main__":
     unittest.main()
