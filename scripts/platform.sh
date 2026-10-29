@@ -197,6 +197,42 @@ YGG_CASC_CONFIG="/etc/jenkins/casc.yaml,/etc/jenkins/casc.$forge_type.yaml"
 [[ -z "$uses_github_app" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.github-app.yaml"
 [[ -z "$uses_github_read" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.github-read.yaml"
 [[ -z "$nuget_key_file" ]] || YGG_CASC_CONFIG+=",/etc/jenkins/casc.nuget.yaml"
+# The repositories' own credentials (reportgenerator-license, the signing keys), from JENKINS_CREDENTIALS_DIR: one
+# file per credential id, checked and turned into casc.credentials.yaml by scripts/jenkins_credentials.py. Not made
+# in the UI: the controller replaces its whole list of system credentials with the configured ones at every start,
+# so one made there is gone after the next up that recreates the controller. Rendered for every command (Compose
+# interpolates every mount); `up` keeps it as <secrets>/jenkins-credentials.yaml once its checks pass, mode 644 since
+# the controller reads it as "other". Its hash, with each secret file's size and modification time (never its
+# content: a hash of a short password can be guessed from), is a label on the controller (compose.yml), so a
+# changed credential recreates it.
+credentials_dir=$(setting JENKINS_CREDENTIALS_DIR)
+credentials_rendered="" YGG_JENKINS_CREDENTIALS_FILE=/dev/null YGG_JENKINS_CREDENTIALS_HASH=""
+if [[ -n "$credentials_dir" ]]; then
+  [[ "$credentials_dir" == /* ]] \
+    || die "JENKINS_CREDENTIALS_DIR in $env_file must be an absolute path, not '$credentials_dir'"
+  if [[ "$command" == up ]]; then
+    credentials_into=$secrets
+  else
+    [[ -n "$render_dir" ]] || run_dir
+    credentials_into=$render_dir
+  fi
+  credentials_rendered=$(mktemp "$credentials_into/.jenkins-credentials.yaml.XXXXXX") \
+    || die "cannot write the credentials' configuration in $credentials_into (is it yours? run platform.sh as ygg)"
+  cleanup_paths+=("$credentials_rendered")
+  python3 "$root/scripts/jenkins_credentials.py" "$credentials_dir" >"$credentials_rendered" \
+    || die "JENKINS_CREDENTIALS_DIR ($credentials_dir) cannot be used, see above"
+  if [[ -s "$credentials_rendered" ]]; then
+    chmod 644 "$credentials_rendered"
+    YGG_CASC_CONFIG+=",/etc/jenkins/casc.credentials.yaml"
+    YGG_JENKINS_CREDENTIALS_HASH=$({ cat "$credentials_rendered"; stat -c '%n %s %Y' "$credentials_dir"/*; } | sha256sum | cut -d' ' -f1)
+    YGG_JENKINS_CREDENTIALS_FILE=$credentials_rendered
+    [[ "$command" == up ]] && YGG_JENKINS_CREDENTIALS_FILE=$secrets/jenkins-credentials.yaml
+  else
+    credentials_rendered=""
+  fi
+fi
+[[ -n "$credentials_rendered" ]] || export JENKINS_CREDENTIALS_DIR=/dev/null
+export YGG_JENKINS_CREDENTIALS_FILE YGG_JENKINS_CREDENTIALS_HASH
 export FORGE_URL FORGE_JENKINS_USER YGG_CASC_CONFIG
 # Without an App there is no key to mount: /dev/null, not a path Docker would create as a directory.
 [[ -n "$uses_github_app" ]] || export GITHUB_APP_KEY_FILE=/dev/null
@@ -278,6 +314,11 @@ case "$command" in
     # The agent's deploy locks (scripts/deploy.sh): the agent's container root is this user.
     install -d -m 700 "$secrets/locks"
     publish_traefik_config
+    if [[ -n "$credentials_rendered" ]]; then
+      mv -f "$credentials_rendered" "$secrets/jenkins-credentials.yaml"
+    else
+      rm -f "$secrets/jenkins-credentials.yaml"
+    fi
     compose up --detach --build --remove-orphans --wait
     compose ps
     if [[ -n "$from_store" ]]; then
