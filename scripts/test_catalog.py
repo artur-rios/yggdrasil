@@ -826,6 +826,16 @@ class RepositoryTests(unittest.TestCase):
         self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks=["test", ""])))
         self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks="test")))
 
+    def test_given_actions_checks_the_pipeline_cannot_report_when_validated_then_each_is_an_error(self):
+        # The pipeline library reports each name as a status context (its STATUS_CONTEXT): printable ASCII,
+        # at most 100 characters, no space at either end.
+        for name in (" Safari", "Safari ", "tab	here", "x" * 101, "Testes – Windows"):
+            self.assertTrue(any(".actionsChecks" in e for e in self.app_errors(actionsChecks=[name])), repr(name))
+
+    def test_given_actions_checks_with_dots_and_commas_when_validated_then_they_are_accepted(self):
+        names = [".NET build, coverage and process lifecycle (windows-latest)", "Native (windows)", "x" * 100]
+        self.assertEqual([e for e in self.app_errors(actionsChecks=names) if ".actionsChecks" in e], [])
+
     def test_given_the_cli_when_asked_for_the_repositories_then_it_prints_their_ids(self):
         v = catalog(repositories=[{"id": "dotnet-util"}, {"id": "reveal.js"}])
         self.assertEqual(run_cli(v, "repositories"), (0, "dotnet-util\nreveal.js\n", ""))

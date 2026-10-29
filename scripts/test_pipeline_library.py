@@ -342,6 +342,23 @@ class PipelineLibraryTests(unittest.TestCase):
         for job in (".", "..", "a/b", "", "-x"):
             self.assertFalse(any(pattern.fullmatch(job) for pattern in patterns), f"'{job}' is accepted")
 
+    def test_given_every_actions_check_in_the_catalog_when_reported_then_it_is_a_status_context(self):
+        # copyActionsChecks reports each actionsChecks name as a status, and reportStatus refuses a context
+        # STATUS_CONTEXT does not match. chimera's ".NET project evaluation (windows-latest)" did not (a dot
+        # first, and a comma in another): the build stopped after four of its nine pending statuses and left
+        # them pending. catalog.py validates the names with the same rule, so a name the library would refuse
+        # is a catalog error instead.
+        context = field_literal(self.lib, "STATUS_CONTEXT")[1]
+        self.assertEqual(f"^{context}\Z", catalog_module.STATUS_CONTEXT.pattern)
+        pattern = re.compile(context)
+        catalog = catalog_module.load()
+        entries = ([application for system in catalog["systems"] for application in system.get("applications") or []]
+                   + catalog["repositories"])
+        names = [name for entry in entries for name in entry.get("actionsChecks") or []]
+        self.assertIn(".NET build, coverage and process lifecycle (windows-latest)", names)
+        for name in names + ["branch-policy", "deploy/production", "Console (Windows)"]:
+            self.assertIsNotNone(pattern.fullmatch(name), f"'{name}' is refused")
+
     def test_given_a_basic_repository_when_the_branch_policy_runs_then_it_passes_without_running_anything(self):
         # entry.rules is describe's: the repository's model. Under "basic" there is no branching model, so
         # the stage reports success for any pair of refs, before it checks out or runs branch-policy.sh or the

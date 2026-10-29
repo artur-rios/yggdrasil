@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   repository's name, dots included: every build of `reveal.js` failed in its first second with "is not a catalog
   id", before it posted any status, so its pull request never showed a check. The library now accepts a
   repository's name too, though never `.`, `..` or one starting with `-`.
+- **Every GitHub Actions check the catalog names is copied.** A pull request's `actionsChecks` are reported as
+  statuses, and the library refused a status name that started with anything but a letter or digit or had a comma
+  in it. chimera's `.NET project evaluation (windows-latest)` stopped its build after four of its nine copied checks,
+  which were left pending for good. A status name is now any printable ASCII up to 100 characters with no space at
+  either end, and `scripts/catalog.py` validates `actionsChecks` with that same rule, so a name the pipeline could
+  not report is a catalog error rather than a stuck pull request.
 
 ## [0.9.3] - 2026-10-27
 

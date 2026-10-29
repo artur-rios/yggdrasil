@@ -125,9 +125,11 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final String CHECK_NAME = '[a-z0-9][a-z0-9._-]*'
 @Field static final String ENV_VAR = '[A-Za-z_][A-Za-z0-9_]*'
 @Field static final String IMAGE = '[A-Za-z0-9][A-Za-z0-9._/:@-]*'
-// A status context: a check's name, branch-policy, deploy/<environment>, or a GitHub Actions check
-// named in the catalog ("Console (Windows)").
-@Field static final String STATUS_CONTEXT = '[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,99}'
+// A status context: a check's name, branch-policy, deploy/<environment>, or a GitHub Actions check named in the
+// catalog (".NET build, coverage and process lifecycle (windows-latest)"): printable ASCII, at most 100
+// characters, no space at either end. catalog.py validates actionsChecks with the same rule (STATUS_CONTEXT). It
+// only ever travels in a JSON body or an environment variable, never in a shell command.
+@Field static final String STATUS_CONTEXT = '[!-~]([ -~]{0,98}[!-~])?'
 @Field static final String WEB_URL = 'https://[^\\s"\'<>]+'
 // Seconds between two looks at GitHub Actions (checks and workflow runs), and at GitHub for a tag the
 // mirror is pushing; how long a release tag gets to reach GitHub (publish-release.sh's GITHUB_TAG_WAIT
