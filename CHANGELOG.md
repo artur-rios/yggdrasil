@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **file-tree-generator is a site of its own.** The fork's React app was a sixth Vercel project, which the
+  repository inventory missed. It is now the application `file-tree-generator` in the personal system, at
+  `file-tree.artur-rios.tech`, deployed from `main`, and its stacks are
+  `stacks/file-tree-generator.yml` and `.proxy.yml`, made from the site templates.
+
 ## [0.9.6] - 2026-10-29
 
 ### Fixed

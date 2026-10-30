@@ -684,6 +684,16 @@ systems:
         checks: []
         environments:
           production: { trigger: branch, branches: master }
+      # A fork of woochanleee/project-tree-generator, whose default branch is main; it was a Vercel project.
+      - id: file-tree-generator
+        name: File tree generator
+        kind: web
+        health: http://file-tree-generator:8080/healthz
+        domain: artur-rios.tech
+        host: file-tree
+        checks: []
+        environments:
+          production: { trigger: branch, branches: main }
 
   - id: tech-craftsmen
     name: Tech Craftsmen

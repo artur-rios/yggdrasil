@@ -1,0 +1,19 @@
+# File tree generator, file-tree-generator in catalog.yaml: templates/stacks/site.proxy.yml
+# with APPLICATION_ID replaced by its id. The template explains every line; keep the two in step.
+
+services:
+  web:
+    networks:
+      edge:
+        aliases: ["file-tree-generator.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.file-tree-generator-${YGG_ENVIRONMENT}.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh from the catalog; give the application a host and a domain}`)
+      - traefik.http.routers.file-tree-generator-${YGG_ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.file-tree-generator-${YGG_ENVIRONMENT}.middlewares=secure-headers@file
+      - traefik.http.services.file-tree-generator-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    external: true

@@ -346,7 +346,7 @@ class InventoryTests(Fixture):
 
 class KindTests(Fixture):
     def test_given_the_specs_table_when_a_repository_is_listed_then_its_kinds_come_from_the_table(self):
-        for name in ("heimdall-api", "dotnet-util", "maestro", "dotnet-common", "file-tree-generator",
+        for name in ("heimdall-api", "dotnet-util", "maestro", "dotnet-common", "gui-challenges", "file-tree-generator",
                      "some-experiment"):
             make_clone(self.root, name)
         rows = inv.inventory(self.root)
@@ -354,7 +354,9 @@ class KindTests(Fixture):
         self.assertEqual(["library", "site"], self.row("dotnet-util", rows).kinds)
         self.assertEqual(["ci"], self.row("maestro", rows).kinds)
         self.assertEqual(["archived"], self.row("dotnet-common", rows).kinds)
-        self.assertEqual(["fork"], self.row("file-tree-generator", rows).kinds)
+        self.assertEqual(["fork"], self.row("gui-challenges", rows).kinds)
+        # A fork that is a site too: its Vercel project, found after the cutover.
+        self.assertEqual(["site", "fork"], self.row("file-tree-generator", rows).kinds)
         self.assertEqual(["code only"], self.row("some-experiment", rows).kinds)
 
     def test_given_a_repository_of_several_kinds_when_listed_then_all_its_kinds_are_shown(self):
@@ -408,13 +410,13 @@ class KindTests(Fixture):
 
     def test_given_github_says_fork_or_archived_when_it_differs_from_the_spec_then_a_note_says_so(self):
         make_clone(self.root, "dotnet-common")
-        make_clone(self.root, "file-tree-generator")
+        make_clone(self.root, "hugo-theme-re-terminal")
         make_clone(self.root, "tidy")
         rows = inv.inventory(self.root, github=[github("dotnet-common", archived=False),
-                                                github("file-tree-generator", fork=True),
+                                                github("hugo-theme-re-terminal", fork=True),
                                                 github("tidy", fork=True, archived=True)])
         self.assertTrue(any("archived" in n for n in self.row("dotnet-common", rows).notes))
-        self.assertEqual([], self.row("file-tree-generator", rows).notes)
+        self.assertEqual([], self.row("hugo-theme-re-terminal", rows).notes)
         tidy = " ".join(self.row("tidy", rows).notes)
         self.assertIn("fork", tidy)
         self.assertIn("archived", tidy)
@@ -446,8 +448,8 @@ class KindTests(Fixture):
         self.assertEqual(12, len(inv.KINDS["ci"]))
         self.assertEqual(4, len(inv.KINDS["archived"]))
         self.assertEqual(9, len(inv.KINDS["fork"]))
-        # 19 Pages sites and 5 Vercel projects.
-        self.assertEqual(24, len(inv.KINDS["site"]))
+        # 19 Pages sites and 6 Vercel projects (the spec's 5, and file-tree-generator).
+        self.assertEqual(25, len(inv.KINDS["site"]))
 
 
 class RenderTests(Fixture):
