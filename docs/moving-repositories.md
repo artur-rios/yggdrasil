@@ -21,9 +21,9 @@ and what each repository needs from you besides ([section 3](#3-what-each-reposi
 | [3. What each repository needs from you](#3-what-each-repository-needs-from-you) | Credentials, variables, tags and things to delete, by group |
 | [4. Not done here](#4-not-done-here) | What the plan left to you |
 
-> **Status (2026-10-30):** 37 of the 38 branches are merged, from 2026-10-26 to 2026-10-29; artur-rios is left. Eight
-> repositories still need their first release: heimdall-ui, fortuna-api, fortuna-ui, chimera, alexandria-ui,
-> cerberus-ui, maestro and tech-craftsmen-company-page (whose `www.techcraftsmen.net` answers `404` until then). The
+> **Status (2026-10-30):** 37 of the 38 branches are merged, from 2026-10-26 to 2026-10-29; artur-rios is left. Chimera's
+> first release failed at its production deploy, and maestro has not had one. Heimdall-ui and
+> tech-craftsmen-company-page are deployed and tagged, but `release-resume` still has to publish their releases. The
 > six Vercel projects are still to delete. The checklist's [After the move](migration-checklist.md#after-the-move) has
 > each repository's state.
 

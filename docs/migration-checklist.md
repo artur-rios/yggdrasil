@@ -382,10 +382,10 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | Repository | First release, publish or deploy | Old host |
 |---|---|---|
 | heimdall-api | release `v4.2.0` (2026-10-30); its docs site deployed | Pages off |
-| heimdall-ui | **not yet** (the last, `v1.9.0`, is from before the move) | none |
-| fortuna-api | **not yet** (the last, `v4.0.1`, is from before the move) | none |
-| fortuna-ui | **not yet** (the last, `v1.1.0`, is from before the move) | none |
-| chimera | **not yet**: never released, and `chimera.techcraftsmen.net` answers `404` | none |
+| heimdall-ui | deployed and tagged `v1.10.0` (2026-10-30), but no release yet: run `release-resume` | none |
+| fortuna-api | release `v4.1.0` (2026-10-30) | none |
+| fortuna-ui | release `v1.1.1` (2026-10-30) | none |
+| chimera | **not yet**: `v0.1.0`'s production deploy failed on 2026-10-30 (pull request 128 is open), and `chimera.techcraftsmen.net` answers `404` | none |
 | yggdrasil | release `v0.9.0` (2026-10-26), then up to `v0.9.7` | none |
 | dotnet-configuration | `2.0.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
 | dotnet-data | release `2026.10.29`: nine `<package>@<version>` tags, each on nuget.org; docs site deployed | Pages off |
@@ -400,9 +400,9 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | dotnet-validation | `2.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
 | dotnet-webapi-util | `5.2.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
 | alexandria-api | none needed: the pull request's checks | none |
-| alexandria-ui | **not yet** (the last, `v0.1.1`, is from before the move) | none |
+| alexandria-ui | release `v1.0.0` (2026-10-30) | none |
 | cerberus-api | none needed: the pull request's checks | none |
-| cerberus-ui | **not yet**: never released | none |
+| cerberus-ui | release `v0.1.0` (2026-10-30) | none |
 | maestro | **not yet**: never released | none |
 | orpheus | release `v1.7.1` (2026-10-29); its docs site deployed | Pages off |
 | personal-lab | release `v1.13.1` (2026-10-29); `lab.artur-rios.tech` serves it | Pages off |
@@ -410,7 +410,7 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | coding-challenge-library | none needed: the pull request's checks | none |
 | reveal.js | none needed: the pull request's checks | none |
 | dotnet-libraries | deployed by the merge into `main` | Pages off |
-| tech-craftsmen-company-page | **not yet**: `www.techcraftsmen.net` and the bare domain answer `404` until its first release | Vercel: delete the project |
+| tech-craftsmen-company-page | deployed and tagged `v0.1.0` (2026-10-30), but no release yet: run `release-resume`; `www.techcraftsmen.net` answers, and the bare domain redirects to it | Vercel: delete the project |
 | personal-page | release `v1.2.1` (2026-10-30) | Vercel: delete the project |
 | personal-blog | deployed by the merge into `main` | Vercel: delete the project |
 | under-construction-template | deployed by the merge into `master` | Vercel: delete the project |

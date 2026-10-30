@@ -5,8 +5,9 @@
 > repositories, 0 checks failed), each with its GitHub copy as a push mirror. The per-repository moves of
 > [moving-repositories.md](moving-repositories.md) followed, from 2026-10-26 to 2026-10-29: 37 of the 38 prepared
 > branches are merged (artur-rios is left), and yggdrasil, heimdall-api, the twelve libraries, orpheus, personal-lab
-> and personal-page have each had a release on Jenkins since. What each repository still needs (eight first releases,
-> the Vercel projects) is in the checklist's [After the move](migration-checklist.md#after-the-move). Still to do
+> and personal-page have each had a release on Jenkins since, and on 2026-10-30 fortuna-api, fortuna-ui, alexandria-ui
+> and cerberus-ui did too. What each repository still needs (chimera's and maestro's first releases, heimdall-ui's and
+> the company page's release objects, the Vercel projects) is in the checklist's [After the move](migration-checklist.md#after-the-move). Still to do
 > here: the clean-up of [section 7](#7-clean-up), which a moved repository's release has unblocked, and the checks of
 > [section 8](#8-what-you-check-by-hand). The steps below are kept as they were run: the record, and a guide for
 > anyone repeating it.
