@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-10-29
+
 ### Added
 
 - **file-tree-generator is a site of its own.** The fork's React app was a sixth Vercel project, which the
@@ -1050,7 +1052,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.7...HEAD
+[0.9.7]: https://github.com/artur-rios/yggdrasil/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/artur-rios/yggdrasil/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/artur-rios/yggdrasil/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/artur-rios/yggdrasil/compare/v0.9.3...v0.9.4
