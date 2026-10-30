@@ -63,7 +63,8 @@ DEFAULT_OWNER = "artur-rios"
 # kinds are written. A repository can be of more than one kind; one in none of them is "code only" (the
 # spec's "every other repository"). The order here is the order kinds are shown in.
 #
-# The 24 sites are the 19 GitHub Pages sites and the 5 Vercel projects of the spec's "Sites" section: the
+# The 25 sites are the 19 GitHub Pages sites and the 6 Vercel projects (the spec's "Sites" section has 5; the
+# sixth, file-tree-generator, was found after the cutover and added by the owner's ruling): the
 # repositories that are a site (the three docs repositories, personal-blog, personal-page,
 # tech-craftsmen-company-page, personal-lab, under-construction-template, github-readme-stats) and the ones
 # that carry a docs site besides what they are (orpheus, heimdall-api, dotnet-libraries and the 12 libraries).
@@ -76,7 +77,7 @@ KINDS = {
            "ai-coding-skills", "coding-challenge-library", "dotnet-libraries", "reveal.js",
            "yggdrasil"),  # yggdrasil: the spec's Catalog section makes it a `repositories` entry (owner's ruling)
     "site": ("tech-craftsmen-company-page", "personal-page", "personal-blog", "personal-lab",
-             "under-construction-template", "github-readme-stats",
+             "under-construction-template", "github-readme-stats", "file-tree-generator",
              "heimdall-docs", "fortuna-docs", "alexandria-docs", "orpheus", "heimdall-api", "dotnet-libraries",
              "dotnet-configuration", "dotnet-data", "dotnet-extensions", "dotnet-jwt", "dotnet-logging",
              "dotnet-mediator", "dotnet-messaging", "dotnet-output", "dotnet-test-util", "dotnet-util",
@@ -89,10 +90,10 @@ KINDS = {
 }
 CODE_ONLY = "code only"
 
-# The 5 Vercel projects of the spec's Sites section. Vercel's git integration needs no vercel.json, so a site of
+# The 5 Vercel projects of the spec's Sites section, and file-tree-generator (found after the cutover). Vercel's git integration needs no vercel.json, so a site of
 # these with none is still a Vercel site: the Kind column says `site (Vercel)`, and the note stays as information.
 VERCEL_SITES = ("tech-craftsmen-company-page", "personal-page", "personal-blog", "under-construction-template",
-                "github-readme-stats")
+                "github-readme-stats", "file-tree-generator")
 
 # Kinds whose repositories have GitHub workflows today (a site's evidence is a Pages step or a vercel.json).
 KINDS_WITH_WORKFLOWS = ("application", "library", "ci")

@@ -225,7 +225,7 @@ class DesiredRulesTests(unittest.TestCase):
         import catalog
         modelled = {r.repo: r for r in rules.desired_rules(catalog.load())}
         for repo in ("heimdall-docs", "fortuna-docs", "alexandria-docs", "personal-blog",
-                     "under-construction-template", "github-readme-stats"):
+                     "under-construction-template", "github-readme-stats", "file-tree-generator"):
             with self.subTest(repo=repo):
                 self.assertEqual((modelled[repo].model, modelled[repo].main_mergers), ("basic", ()))
         # A site released like an application keeps the release model, and so does an application whose

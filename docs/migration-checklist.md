@@ -58,7 +58,7 @@ nearly every clone dirty; Windows git does not.
 | eocp-ecommerce-system-api | archived | archived |  |  | none |  | basic | clean (main) |  |  |  |
 | eocp-ecommerce-system-email-templates | archived | archived |  |  | none |  | basic | clean (main) |  |  |  |
 | eocp-ecommerce-system-ui | archived | archived |  |  | none |  | basic | clean (main) |  |  |  |
-| file-tree-generator | fork | fork |  |  | none |  | basic | clean (main) |  |  |  |
+| file-tree-generator | site (Vercel), fork | fork |  |  | none |  | basic | clean (main) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none) |  |  |
 | fortuna-api | application | plain | audit.yml/audit on ubuntu-latest → check audit<br>branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>check-openapi.yml/check on ubuntu-latest → check check<br>native-core.yml/msrv on ubuntu-latest → check msrv<br>native-core.yml/build on ubuntu-latest → check build<br>native-core.yml/build on windows-latest stays (Actions)<br>tests.yml/test on ubuntu-latest → check test<br>tests.yml/docker on ubuntu-latest → check docker | `GITHUB_TOKEN`, `REPORTGENERATOR_LICENSE` | none | nuget, cargo, github-actions, docker → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@2b3ff9f | 2026-10-28 |
 | fortuna-docs | site | plain | deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages) |  | Pages |  | basic | clean (main) |  | `feature/move-to-forgejo`@c7249a7 | 2026-10-27 |
 | fortuna-ui | application | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build.yml/web on ubuntu-latest → check web<br>build.yml/android on ubuntu-latest → check android<br>build.yml/windows on windows-latest stays (Actions)<br>build.yml/linux on ubuntu-latest → check linux<br>check-generated.yml/api-client-drift on ubuntu-latest → check api-client-drift<br>check-generated.yml/header-drift on ubuntu-latest → check header-drift<br>check-generated.yml/bindings-drift on ubuntu-latest → check bindings-drift<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@ccbfb6f | 2026-10-27 |
@@ -345,7 +345,7 @@ them to Forgejo as they are (on 2026-10-26).
 | eocp-ecommerce-system-api | archived: as dotnet-common |
 | eocp-ecommerce-system-email-templates | archived: as dotnet-common |
 | eocp-ecommerce-system-ui | archived: as dotnet-common |
-| file-tree-generator | fork without workflows: a plain repository on Forgejo; upstream changes are fetched by hand |
+| file-tree-generator | fork without workflows: a plain repository on Forgejo; upstream changes are fetched by hand. It also had a Vercel project, which the inventory missed: after the cutover it became the application `file-tree-generator` (`file-tree.artur-rios.tech`), deployed from `main` |
 | gui-challenges | fork without workflows, and no local clone: as file-tree-generator |
 | hugo-theme-nuno | fork without workflows, and no local clone: as file-tree-generator (personal-lab's Dockerfile fetches it by commit) |
 | hugo-theme-re-terminal | fork without workflows: as file-tree-generator |
