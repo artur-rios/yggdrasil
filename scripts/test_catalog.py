@@ -1185,7 +1185,7 @@ class RealCatalogTests(unittest.TestCase):
 
     def test_given_every_site_when_its_stack_files_are_read_then_they_are_the_templates_with_its_id(self):
         sites = [app for _, app in c.applications(self.catalog, deployable=True) if app.get("domain")]
-        self.assertEqual(len(sites), 24)
+        self.assertEqual(len(sites), 25)
         for app in sites:
             proxy = ("site-path.proxy.yml" if app.get("path") else
                      "site-apex-redirect.proxy.yml" if app.get("apex") else "site.proxy.yml")
