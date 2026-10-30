@@ -365,3 +365,64 @@ them to Forgejo as they are (on 2026-10-26).
 | sicp-exercises | code only: as algorithm-practice |
 | tabnews | code only: as algorithm-practice |
 | user-management-api | code only: as algorithm-practice |
+
+## After the move
+
+Written by hand, and kept when the table is regenerated. As it stood on 2026-10-30.
+
+**Do not regenerate the table any more.** It records each repository's GitHub workflows as they were before its move.
+The tool reads the workflows the clone has checked out, and a moved repository's `develop` holds the trimmed ones, so a
+run replaces the record with what is left: heimdall-api's *Jobs* goes empty, alexandria-api's branch model reads
+`basic`, and yggdrasil's `pipeline-live` reads as a check. Fill the *Moved* cell by hand instead.
+
+*Moved* is the date the move pull request was merged on Forgejo. What came after it, for each repository with a prepared
+branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and for file-tree-generator, a site since
+0.9.7:
+
+| Repository | First release, publish or deploy | Old host |
+|---|---|---|
+| heimdall-api | release `v4.2.0` (2026-10-30); its docs site deployed | Pages off |
+| heimdall-ui | **not yet** (the last, `v1.9.0`, is from before the move) | none |
+| fortuna-api | **not yet** (the last, `v4.0.1`, is from before the move) | none |
+| fortuna-ui | **not yet** (the last, `v1.1.0`, is from before the move) | none |
+| chimera | **not yet**: never released, and `chimera.techcraftsmen.net` answers `404` | none |
+| yggdrasil | release `v0.9.0` (2026-10-26), then up to `v0.9.7` | none |
+| dotnet-configuration | `2.0.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-data | release `2026.10.29`: nine `<package>@<version>` tags, each on nuget.org; docs site deployed | Pages off |
+| dotnet-extensions | `1.4.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-jwt | `1.4.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-logging | `2.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-mediator | `2.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-messaging | `1.4.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-output | `3.3.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-test-util | `5.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-util | `2.2.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-validation | `2.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-webapi-util | `5.2.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| alexandria-api | none needed: the pull request's checks | none |
+| alexandria-ui | **not yet** (the last, `v0.1.1`, is from before the move) | none |
+| cerberus-api | none needed: the pull request's checks | none |
+| cerberus-ui | **not yet**: never released | none |
+| maestro | **not yet**: never released | none |
+| orpheus | release `v1.7.1` (2026-10-29); its docs site deployed | Pages off |
+| personal-lab | release `v1.13.1` (2026-10-29); `lab.artur-rios.tech` serves it | Pages off |
+| ai-coding-skills | none needed: the pull request's checks | none |
+| coding-challenge-library | none needed: the pull request's checks | none |
+| reveal.js | none needed: the pull request's checks | none |
+| dotnet-libraries | deployed by the merge into `main` | Pages off |
+| tech-craftsmen-company-page | **not yet**: `www.techcraftsmen.net` and the bare domain answer `404` until its first release | Vercel: delete the project |
+| personal-page | release `v1.2.1` (2026-10-30) | Vercel: delete the project |
+| personal-blog | deployed by the merge into `main` | Vercel: delete the project |
+| under-construction-template | deployed by the merge into `master` | Vercel: delete the project |
+| github-readme-stats | deployed by the merge into `master`; the `Top Langs` card answers | Vercel: delete the project |
+| heimdall-docs | deployed by the merge into `main` | Pages off |
+| fortuna-docs | deployed by the merge into `main` | Pages off |
+| alexandria-docs | deployed by the merge into `main` | Pages off |
+| artur-rios | **not moved yet** (the branch is unpushed) | none |
+| file-tree-generator | deployed from `main` (`file-tree.artur-rios.tech`) | Vercel: delete the project |
+
+"Pages off" means GitHub's Pages API answers `404` for the repository. Every site in the table is served through
+Cloudflare with no Vercel headers. Whether each Vercel project is deleted was not checked: Vercel's dashboard shows
+it. Once all of a zone's Vercel names are gone, its `CAA` record follows
+([moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)). The `CAA` records
+both zones publish now look like Cloudflare's default set, without the DNS-01-only Let's Encrypt record.

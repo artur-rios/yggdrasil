@@ -21,6 +21,12 @@ and what each repository needs from you besides ([section 3](#3-what-each-reposi
 | [3. What each repository needs from you](#3-what-each-repository-needs-from-you) | Credentials, variables, tags and things to delete, by group |
 | [4. Not done here](#4-not-done-here) | What the plan left to you |
 
+> **Status (2026-10-30):** 37 of the 38 branches are merged, from 2026-10-26 to 2026-10-29; artur-rios is left. Eight
+> repositories still need their first release: heimdall-ui, fortuna-api, fortuna-ui, chimera, alexandria-ui,
+> cerberus-ui, maestro and tech-craftsmen-company-page (whose `www.techcraftsmen.net` answers `404` until then). The
+> six Vercel projects are still to delete. The checklist's [After the move](migration-checklist.md#after-the-move) has
+> each repository's state.
+
 ## 0. Before the first branch
 
 **The cutover was carried out on 2026-10-26.** The old server became the
@@ -239,15 +245,12 @@ dry run prints `would create CAA <zone>: ...` for the zone whose flag you droppe
 ### Step 6: tick the checklist
 
 In [migration-checklist.md](migration-checklist.md), fill the repository's **Moved** cell with the date (for example
-`2026-11-02`). Regenerating the checklist keeps it:
+`2026-11-02`) by hand, and its row of [After the move](migration-checklist.md#after-the-move) once its first release,
+publish or deploy is done and its old host is off.
 
-```bash
-python scripts/repo_inventory.py D:/Repositories --output docs/migration-checklist.md
-```
-
-Run it with Windows Python and git (WSL reads the clones' line endings as changes). It updates the facts, keeps the
-*Prepared branch* and *Moved* columns and the hand-written sections, and shows the clones as they are now: a clone that
-is on its move branch lists the trimmed workflows, so switch back to `develop` before running it.
+Do not regenerate the checklist (`scripts/repo_inventory.py`) once a move is merged: the tool reads the workflows the
+clone has checked out, and a moved repository's `develop` holds the trimmed ones, so the run would replace that
+repository's record of its GitHub jobs with what is left of them.
 
 ## 2. The branches, in order
 
