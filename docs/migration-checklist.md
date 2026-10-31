@@ -385,7 +385,7 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | heimdall-ui | deployed and tagged `v1.10.0` (2026-10-30), but no release yet: run `release-resume` | none |
 | fortuna-api | release `v4.1.0` (2026-10-30) | none |
 | fortuna-ui | release `v1.1.1` (2026-10-30) | none |
-| chimera | **not yet**: `v0.1.0`'s production deploy failed on 2026-10-30 (pull request 128 is open), and `chimera.techcraftsmen.net` answers `404` | none |
+| chimera | release `v0.1.0` (2026-10-30, once its production variables were set), then `v0.1.1` (2026-10-31) | none |
 | yggdrasil | release `v0.9.0` (2026-10-26), then up to `v0.9.7` | none |
 | dotnet-configuration | `2.0.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
 | dotnet-data | release `2026.10.29`: nine `<package>@<version>` tags, each on nuget.org; docs site deployed | Pages off |
@@ -423,6 +423,8 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 
 "Pages off" means GitHub's Pages API answers `404` for the repository. Every site in the table is served through
 Cloudflare with no Vercel headers. Whether each Vercel project is deleted was not checked: Vercel's dashboard shows
-it. Once all of a zone's Vercel names are gone, its `CAA` record follows
-([moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)). The `CAA` records
-both zones publish now look like Cloudflare's default set, without the DNS-01-only Let's Encrypt record.
+it. Both zones have their `CAA` record since 2026-10-31
+([moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)): techcraftsmen.net's
+from an earlier run, artur-rios.tech's made by `cloudflare_dns.py` once its three hand-made `CAA` records were
+deleted. What the zones publish is Cloudflare's own set, without the DNS-01-only entry
+([hosts.md, DNS records](hosts.md#dns-records)).
