@@ -410,7 +410,7 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | coding-challenge-library | none needed: the pull request's checks | none |
 | reveal.js | none needed: the pull request's checks | none |
 | dotnet-libraries | deployed by the merge into `main` | Pages off |
-| tech-craftsmen-company-page | deployed and tagged `v0.1.0` (2026-10-30), but no release yet: run `release-resume`; `www.techcraftsmen.net` answers, and the bare domain redirects to it | Vercel: delete the project |
+| tech-craftsmen-company-page | release `v0.1.0`: deployed and tagged 2026-10-30, published 2026-10-31 by `release-resume` once the tag had reached GitHub; `www.techcraftsmen.net` answers, and the bare domain redirects to it | Vercel: delete the project |
 | personal-page | release `v1.2.1` (2026-10-30) | Vercel: delete the project |
 | personal-blog | deployed by the merge into `main` | Vercel: delete the project |
 | under-construction-template | deployed by the merge into `master` | Vercel: delete the project |
