@@ -403,7 +403,7 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | alexandria-ui | release `v1.0.0` (2026-10-30) | none |
 | cerberus-api | none needed: the pull request's checks | none |
 | cerberus-ui | release `v0.1.0` (2026-10-30) | none |
-| maestro | **not yet**: never released | none |
+| maestro | release `v0.1.0` (2026-10-31), its first, once its signing key was made and its GitHub copy given the Windows workflow's settings | none |
 | orpheus | release `v1.7.1` (2026-10-29); its docs site deployed | Pages off |
 | personal-lab | release `v1.13.1` (2026-10-29); `lab.artur-rios.tech` serves it | Pages off |
 | ai-coding-skills | none needed: the pull request's checks | none |

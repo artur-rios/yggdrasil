@@ -21,9 +21,10 @@ and what each repository needs from you besides ([section 3](#3-what-each-reposi
 | [3. What each repository needs from you](#3-what-each-repository-needs-from-you) | Credentials, variables, tags and things to delete, by group |
 | [4. Not done here](#4-not-done-here) | What the plan left to you |
 
-> **Status (2026-10-31):** 37 of the 38 branches are merged, from 2026-10-26 to 2026-10-29; artur-rios is left. Maestro
-> has not had its first release. Both zones have their `CAA` record; the six Vercel projects are still to delete. The
-> checklist's [After the move](migration-checklist.md#after-the-move) has each repository's state.
+> **Status (2026-10-31):** 37 of the 38 branches are merged, from 2026-10-26 to 2026-10-29; artur-rios is left. Every
+> merged repository has had its first release, publish or deploy. Both zones have their `CAA` record; the six Vercel
+> projects are still to delete. The checklist's [After the move](migration-checklist.md#after-the-move) has each
+> repository's state.
 
 ## 0. Before the first branch
 
