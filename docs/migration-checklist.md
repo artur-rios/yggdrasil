@@ -33,7 +33,7 @@ nearly every clone dirty; Windows git does not.
 | alexandria-docs | site | plain | deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages) |  | Pages |  | basic | clean (main) |  | `feature/move-to-forgejo`@8347506 | 2026-10-27 |
 | alexandria-ui | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/analyze on ubuntu-latest → check analyze<br>ci.yml/test on windows-latest stays (Actions)<br>ci.yml/test on ubuntu-latest → check test<br>ci.yml/integration on windows-latest stays (Actions)<br>ci.yml/integration on ubuntu-latest → check integration<br>ci.yml/build on windows-latest stays (Actions)<br>ci.yml/build on ubuntu-latest → check build<br>release.yml/on-main on ubuntu-latest → release (release.build)<br>release.yml/windows on windows-latest stays (Actions)<br>release.yml/linux on ubuntu-latest → release (release.build)<br>release.yml/release on ubuntu-latest → release (release.build) |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@d8691c5 | 2026-10-27 |
 | algorithm-practice | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| artur-rios | code only | plain |  |  | none |  | basic | clean (main) |  | `feature/move-to-forgejo`@644bac5 |  |
+| artur-rios | code only | plain |  |  | none |  | basic | clean (main) |  | `feature/move-to-forgejo`@644bac5 | 2026-10-31 |
 | ballz | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
 | cerberus-api | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>tests.yml/test on ubuntu-latest → check test<br>tests.yml/docker on ubuntu-latest → check docker | `REPORTGENERATOR_LICENSE` | none | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@0a0d512 | 2026-10-27 |
 | cerberus-ui | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build.yml/gate on ubuntu-latest → check gate<br>build.yml/web on ubuntu-latest → check web<br>build.yml/android on ubuntu-latest → check android<br>build.yml/windows on windows-latest stays (Actions)<br>build.yml/linux on ubuntu-latest → check linux<br>check-generated.yml/drift on ubuntu-latest → check drift<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test<br>ci.yml/web-bundle on ubuntu-latest → check web-bundle |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@93f5b36 | 2026-10-27 |
@@ -365,3 +365,67 @@ them to Forgejo as they are (on 2026-10-26).
 | sicp-exercises | code only: as algorithm-practice |
 | tabnews | code only: as algorithm-practice |
 | user-management-api | code only: as algorithm-practice |
+
+## After the move
+
+Written by hand, and kept when the table is regenerated. As it stood on 2026-10-31.
+
+**Do not regenerate the table any more.** It records each repository's GitHub workflows as they were before its move.
+The tool reads the workflows the clone has checked out, and a moved repository's `develop` holds the trimmed ones, so a
+run replaces the record with what is left: heimdall-api's *Jobs* goes empty, alexandria-api's branch model reads
+`basic`, and yggdrasil's `pipeline-live` reads as a check. Fill the *Moved* cell by hand instead.
+
+*Moved* is the date the move pull request was merged on Forgejo. What came after it, for each repository with a prepared
+branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and for file-tree-generator, a site since
+0.9.7:
+
+| Repository | First release, publish or deploy | Old host |
+|---|---|---|
+| heimdall-api | release `v4.2.0` (2026-10-30); its docs site deployed | Pages off |
+| heimdall-ui | release `v1.10.0`: deployed and tagged 2026-10-30, published 2026-10-31 by `release-resume` once the Android signing credentials were made again (a new key) | none |
+| fortuna-api | release `v4.1.0` (2026-10-30) | none |
+| fortuna-ui | release `v1.1.1` (2026-10-30) | none |
+| chimera | release `v0.1.0` (2026-10-30, once its production variables were set), then `v0.1.1` (2026-10-31) | none |
+| yggdrasil | release `v0.9.0` (2026-10-26), then up to `v0.9.7` | none |
+| dotnet-configuration | `2.0.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-data | release `2026.10.29`: nine `<package>@<version>` tags, each on nuget.org; docs site deployed | Pages off |
+| dotnet-extensions | `1.4.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-jwt | `1.4.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-logging | `2.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-mediator | `2.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-messaging | `1.4.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-output | `3.3.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-test-util | `5.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-util | `2.2.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-validation | `2.0.1` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| dotnet-webapi-util | `5.2.0` (2026-10-29), on nuget.org; docs site deployed | Pages off |
+| alexandria-api | none needed: the pull request's checks | none |
+| alexandria-ui | release `v1.0.0` (2026-10-30) | none |
+| cerberus-api | none needed: the pull request's checks | none |
+| cerberus-ui | release `v0.1.0` (2026-10-30) | none |
+| maestro | release `v0.1.0` (2026-10-31), its first, once its signing key was made and its GitHub copy given the Windows workflow's settings | none |
+| orpheus | release `v1.7.1` (2026-10-29); its docs site deployed | Pages off |
+| personal-lab | release `v1.13.1` (2026-10-29); `lab.artur-rios.tech` serves it | Pages off |
+| ai-coding-skills | none needed: the pull request's checks | none |
+| coding-challenge-library | none needed: the pull request's checks | none |
+| reveal.js | none needed: the pull request's checks | none |
+| dotnet-libraries | deployed by the merge into `main` | Pages off |
+| tech-craftsmen-company-page | release `v0.1.0`: deployed and tagged 2026-10-30, published 2026-10-31 by `release-resume` once the tag had reached GitHub; `www.techcraftsmen.net` answers, and the bare domain redirects to it | Vercel: project deleted |
+| personal-page | release `v1.2.1` (2026-10-30) | Vercel: project deleted |
+| personal-blog | deployed by the merge into `main` | Vercel: project deleted |
+| under-construction-template | deployed by the merge into `master` | Vercel: project deleted |
+| github-readme-stats | deployed by the merge into `master`; the `Top Langs` card answers | Vercel: project deleted |
+| heimdall-docs | deployed by the merge into `main` | Pages off |
+| fortuna-docs | deployed by the merge into `main` | Pages off |
+| alexandria-docs | deployed by the merge into `main` | Pages off |
+| artur-rios | none needed: it has no CI. Merged with one more commit, `55c443b`: the README names no Forgejo address, since the server asks visitors to sign in. The `Top Langs` card answers from `readme-stats.techcraftsmen.net` | none |
+| file-tree-generator | deployed from `main` (`file-tree.artur-rios.tech`) | Vercel: project deleted |
+
+"Pages off" means GitHub's Pages API answers `404` for the repository. Every site in the table is served through
+Cloudflare with no Vercel headers. The six Vercel projects were deleted on 2026-10-31, in Vercel's dashboard; the two
+`vercel.app` addresses the repositories had named (the old `Top Langs` card's and the placeholder's) answer `404`,
+`DEPLOYMENT_NOT_FOUND`. Both zones have their `CAA` record since 2026-10-31
+([moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)): techcraftsmen.net's
+from an earlier run, artur-rios.tech's made by `cloudflare_dns.py` once its three hand-made `CAA` records were
+deleted. What the zones publish is Cloudflare's own set, without the DNS-01-only entry
+([hosts.md, DNS records](hosts.md#dns-records)).
