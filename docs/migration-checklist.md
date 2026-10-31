@@ -382,7 +382,7 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | Repository | First release, publish or deploy | Old host |
 |---|---|---|
 | heimdall-api | release `v4.2.0` (2026-10-30); its docs site deployed | Pages off |
-| heimdall-ui | deployed and tagged `v1.10.0` (2026-10-30), but no release yet: run `release-resume` | none |
+| heimdall-ui | release `v1.10.0`: deployed and tagged 2026-10-30, published 2026-10-31 by `release-resume` once the Android signing credentials were made again (a new key) | none |
 | fortuna-api | release `v4.1.0` (2026-10-30) | none |
 | fortuna-ui | release `v1.1.1` (2026-10-30) | none |
 | chimera | release `v0.1.0` (2026-10-30, once its production variables were set), then `v0.1.1` (2026-10-31) | none |
