@@ -122,7 +122,10 @@ alone, so nothing legitimate is lost; without the record, whoever answers on por
 process on the DevOps Server that got there before Traefik, say) could pass Let's Encrypt's HTTP-01 check and get a
 certificate for `git.` or `jenkins.`.
 Without `validationmethods=dns-01` the record still limits issuance to Let's Encrypt, but no longer to the proof
-Traefik uses.
+Traefik uses. On Cloudflare with Universal SSL, that is how it ends up anyway: a zone with any `CAA` record also
+publishes Cloudflare's own, `0 issue "letsencrypt.org"` among them, and since any one record that allows an
+authority is enough, Let's Encrypt can still use HTTP-01
+([hosts.md, DNS records](hosts.md#dns-records)).
 
 Start with **DNS only**: nothing sits between you and the host while you set things up. The proxy is
 [step A7](#a7-optional-the-cloudflare-proxy), for the Application Server only.
