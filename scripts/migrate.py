@@ -900,9 +900,18 @@ def _bots_on_forgejo(ctx, failures):
     return present
 
 
-def _collaborator_permission(ctx, name, user):
+def _listed_collaborators(ctx, name):
+    """The logins of the repository's collaborators, casefolded."""
+    return {user.get("login", "").casefold()
+            for user in _paged(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/collaborators")}
+
+
+def _collaborator_permission(ctx, name, user, listed):
     """What the user has on the repository as a collaborator (`read`, `write`, `admin`), or None when
-    they are not one: Forgejo answers 404, or `none`."""
+    they are not one. `listed` (the repository's collaborators, casefolded) decides who is one: on a public
+    repository the permission endpoint answers `read` for anyone, collaborator or not, as verify knows."""
+    if user.casefold() not in listed:
+        return None
     try:
         answer = ctx.forgejo.request(
             "GET", f"/repos/{ctx.forgejo_owner}/{name}/collaborators/{urllib.parse.quote(user, safe='')}/permission")
@@ -920,8 +929,9 @@ def _collaborators_one(ctx, name, bots):
     try:
         if _on_forgejo(ctx, name) is None:
             return _report(ctx, f"{name}: not on Forgejo: run import first")
+        listed = _listed_collaborators(ctx, name)
         for user, wanted in bots:
-            current = _collaborator_permission(ctx, name, user)
+            current = _collaborator_permission(ctx, name, user, listed)
             if current == wanted:
                 print(f"{name}: {user}: already {wanted}", flush=True)
                 continue
@@ -1134,14 +1144,13 @@ def _check_collaborators(ctx, name):
     """The bots are collaborators (Forgejo's list of them) with the permission of bot_permissions. The list
     decides who is one: the permission endpoint answers `read` for anyone on a public repository. The
     permission is asked of the ones who are in the list, where it is what the collaborator has."""
-    listed = {user.get("login", "").casefold()
-              for user in _paged(ctx.forgejo, f"/repos/{ctx.forgejo_owner}/{name}/collaborators")}
+    listed = _listed_collaborators(ctx, name)
     problems = []
     for user, wanted in bot_permissions(ctx):
         if user.casefold() not in listed:
             problems.append(f"{user}: not a collaborator")
             continue
-        current = _collaborator_permission(ctx, name, user)
+        current = _collaborator_permission(ctx, name, user, listed)
         if current != wanted:
             problems.append(f"{user}: has {current or 'none'}, wants {wanted}")
     if problems:

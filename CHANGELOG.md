@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`migrate.py collaborators` adds `jenkins-ci` on a public repository.** It asked Forgejo's permission endpoint
+  whether each bot was a collaborator, and on a public repository that endpoint answers `read` for anyone, so
+  `jenkins-ci` (which is to have `read`) was reported `already read` and never added; `verify` then failed it as
+  `not a collaborator`. It now reads the repository's list of collaborators first, as `verify` does. Run
+  `collaborators` again to add the account.
+
 ## [0.9.7] - 2026-10-29
 
 ### Added
