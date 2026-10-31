@@ -33,7 +33,7 @@ nearly every clone dirty; Windows git does not.
 | alexandria-docs | site | plain | deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages) |  | Pages |  | basic | clean (main) |  | `feature/move-to-forgejo`@8347506 | 2026-10-27 |
 | alexandria-ui | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/analyze on ubuntu-latest → check analyze<br>ci.yml/test on windows-latest stays (Actions)<br>ci.yml/test on ubuntu-latest → check test<br>ci.yml/integration on windows-latest stays (Actions)<br>ci.yml/integration on ubuntu-latest → check integration<br>ci.yml/build on windows-latest stays (Actions)<br>ci.yml/build on ubuntu-latest → check build<br>release.yml/on-main on ubuntu-latest → release (release.build)<br>release.yml/windows on windows-latest stays (Actions)<br>release.yml/linux on ubuntu-latest → release (release.build)<br>release.yml/release on ubuntu-latest → release (release.build) |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@d8691c5 | 2026-10-27 |
 | algorithm-practice | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| artur-rios | code only | plain |  |  | none |  | basic | clean (main) |  | `feature/move-to-forgejo`@644bac5 |  |
+| artur-rios | code only | plain |  |  | none |  | basic | clean (main) |  | `feature/move-to-forgejo`@644bac5 | 2026-10-31 |
 | ballz | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
 | cerberus-api | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>tests.yml/test on ubuntu-latest → check test<br>tests.yml/docker on ubuntu-latest → check docker | `REPORTGENERATOR_LICENSE` | none | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@0a0d512 | 2026-10-27 |
 | cerberus-ui | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build.yml/gate on ubuntu-latest → check gate<br>build.yml/web on ubuntu-latest → check web<br>build.yml/android on ubuntu-latest → check android<br>build.yml/windows on windows-latest stays (Actions)<br>build.yml/linux on ubuntu-latest → check linux<br>check-generated.yml/drift on ubuntu-latest → check drift<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test<br>ci.yml/web-bundle on ubuntu-latest → check web-bundle |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@93f5b36 | 2026-10-27 |
@@ -368,7 +368,7 @@ them to Forgejo as they are (on 2026-10-26).
 
 ## After the move
 
-Written by hand, and kept when the table is regenerated. As it stood on 2026-10-30.
+Written by hand, and kept when the table is regenerated. As it stood on 2026-10-31.
 
 **Do not regenerate the table any more.** It records each repository's GitHub workflows as they were before its move.
 The tool reads the workflows the clone has checked out, and a moved repository's `develop` holds the trimmed ones, so a
@@ -418,7 +418,7 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | heimdall-docs | deployed by the merge into `main` | Pages off |
 | fortuna-docs | deployed by the merge into `main` | Pages off |
 | alexandria-docs | deployed by the merge into `main` | Pages off |
-| artur-rios | **not moved yet** (the branch is unpushed) | none |
+| artur-rios | none needed: it has no CI. Merged with one more commit, `55c443b`: the README names no Forgejo address, since the server asks visitors to sign in. The `Top Langs` card answers from `readme-stats.techcraftsmen.net` | none |
 | file-tree-generator | deployed from `main` (`file-tree.artur-rios.tech`) | Vercel: delete the project |
 
 "Pages off" means GitHub's Pages API answers `404` for the repository. Every site in the table is served through

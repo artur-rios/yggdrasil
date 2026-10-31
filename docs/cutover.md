@@ -3,11 +3,11 @@
 > **Status:** the window (sections 0 to 5) was carried out on 2026-10-26 for this installation: the old server is
 > the Application Server, the DevOps Server was added, and all 61 repositories are on Forgejo (`verify`: 61
 > repositories, 0 checks failed), each with its GitHub copy as a push mirror. The per-repository moves of
-> [moving-repositories.md](moving-repositories.md) followed, from 2026-10-26 to 2026-10-29: 37 of the 38 prepared
-> branches are merged (artur-rios is left), and yggdrasil, heimdall-api, the twelve libraries, orpheus, personal-lab
+> [moving-repositories.md](moving-repositories.md) followed, from 2026-10-26 to 2026-10-31: the 38 prepared branches
+> are merged (artur-rios last), and yggdrasil, heimdall-api, the twelve libraries, orpheus, personal-lab
 > and personal-page have each had a release on Jenkins since, and on 2026-10-30 fortuna-api, fortuna-ui, alexandria-ui
 > and cerberus-ui did too, chimera on 2026-10-30 and 10-31, and heimdall-ui, the company page and maestro on
-> 2026-10-31. What is left of the moves (artur-rios, the Vercel projects) is in the checklist's
+> 2026-10-31. What is left of the moves (the Vercel projects) is in the checklist's
 > [After the move](migration-checklist.md#after-the-move). Still to do here: the clean-up of
 > [section 7](#7-clean-up), which a moved repository's release has unblocked, and the checks of
 > [section 8](#8-what-you-check-by-hand). The steps below are kept as they were run: the record, and a guide for
