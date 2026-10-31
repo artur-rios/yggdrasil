@@ -410,20 +410,21 @@ branch ([moving-repositories.md](moving-repositories.md), steps 4 and 5), and fo
 | coding-challenge-library | none needed: the pull request's checks | none |
 | reveal.js | none needed: the pull request's checks | none |
 | dotnet-libraries | deployed by the merge into `main` | Pages off |
-| tech-craftsmen-company-page | release `v0.1.0`: deployed and tagged 2026-10-30, published 2026-10-31 by `release-resume` once the tag had reached GitHub; `www.techcraftsmen.net` answers, and the bare domain redirects to it | Vercel: delete the project |
-| personal-page | release `v1.2.1` (2026-10-30) | Vercel: delete the project |
-| personal-blog | deployed by the merge into `main` | Vercel: delete the project |
-| under-construction-template | deployed by the merge into `master` | Vercel: delete the project |
-| github-readme-stats | deployed by the merge into `master`; the `Top Langs` card answers | Vercel: delete the project |
+| tech-craftsmen-company-page | release `v0.1.0`: deployed and tagged 2026-10-30, published 2026-10-31 by `release-resume` once the tag had reached GitHub; `www.techcraftsmen.net` answers, and the bare domain redirects to it | Vercel: project deleted |
+| personal-page | release `v1.2.1` (2026-10-30) | Vercel: project deleted |
+| personal-blog | deployed by the merge into `main` | Vercel: project deleted |
+| under-construction-template | deployed by the merge into `master` | Vercel: project deleted |
+| github-readme-stats | deployed by the merge into `master`; the `Top Langs` card answers | Vercel: project deleted |
 | heimdall-docs | deployed by the merge into `main` | Pages off |
 | fortuna-docs | deployed by the merge into `main` | Pages off |
 | alexandria-docs | deployed by the merge into `main` | Pages off |
 | artur-rios | none needed: it has no CI. Merged with one more commit, `55c443b`: the README names no Forgejo address, since the server asks visitors to sign in. The `Top Langs` card answers from `readme-stats.techcraftsmen.net` | none |
-| file-tree-generator | deployed from `main` (`file-tree.artur-rios.tech`) | Vercel: delete the project |
+| file-tree-generator | deployed from `main` (`file-tree.artur-rios.tech`) | Vercel: project deleted |
 
 "Pages off" means GitHub's Pages API answers `404` for the repository. Every site in the table is served through
-Cloudflare with no Vercel headers. Whether each Vercel project is deleted was not checked: Vercel's dashboard shows
-it. Both zones have their `CAA` record since 2026-10-31
+Cloudflare with no Vercel headers. The six Vercel projects were deleted on 2026-10-31, in Vercel's dashboard; the two
+`vercel.app` addresses the repositories had named (the old `Top Langs` card's and the placeholder's) answer `404`,
+`DEPLOYMENT_NOT_FOUND`. Both zones have their `CAA` record since 2026-10-31
 ([moving-repositories.md, step 5](moving-repositories.md#step-5-switch-the-old-host-off-sites)): techcraftsmen.net's
 from an earlier run, artur-rios.tech's made by `cloudflare_dns.py` once its three hand-made `CAA` records were
 deleted. What the zones publish is Cloudflare's own set, without the DNS-01-only entry
