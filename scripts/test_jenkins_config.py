@@ -92,9 +92,10 @@ class JenkinsJobTests(unittest.TestCase):
         # A name two entries share would make the second silently replace the first.
         self.assertIn("more than one job named", script)
 
-    def test_given_the_job_dsl_when_read_then_a_job_is_not_shown_under_its_repositorys_name(self):
+    def test_given_the_job_dsl_when_read_then_a_job_is_shown_under_its_own_name(self):
         # Entries can share a repository (heimdall-api and heimdall-api-docs): the job's own name tells them apart.
-        self.assertNotIn("displayName", job_dsl())
+        # With no display name, a multibranch job shows the one its source reports, the repository's.
+        self.assertRegex(job_dsl(), r"multibranchPipelineJob\(entry\.name\) \{\s*(//[^\n]*\s*)*displayName\(entry\.name\)")
 
     def test_given_the_job_dsl_when_read_then_the_source_follows_the_forge_type_with_github_as_the_default(self):
         script = job_dsl()
