@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Each Jenkins job shows its own name, this time.** 0.9.8 stopped setting the jobs' display name, but a
+  multibranch job without one shows the name its source reports, which is the repository's, so `heimdall-api-docs`,
+  the libraries' `-docs` jobs, `orpheus-docs` and `personal-lab-site` still looked like the job of their
+  repository. The Job DSL now sets each job's display name to its name. Restart the controller after the update
+  (`docker restart yggdrasil-jenkins-1`): Jenkins applies the Job DSL only when it starts.
+
 ## [0.9.8] - 2026-11-01
 
 ### Fixed

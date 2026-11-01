@@ -160,9 +160,10 @@ jobs:
         def heads = (['develop', 'main', 'PR-*', 'release/*'] + (entry.basic ? ['master'] : []) + entry.globs +
                      (entry.ownerTag ? [entry.tags] : []))
           .unique().collect { globToRegex(it) }.join('|')
-        // The job shows its own name, which is unique: two entries can share a repository
-        // (heimdall-api and heimdall-api-docs), so its name is not the repository's.
         multibranchPipelineJob(entry.name) {
+          // Its own name, which is unique: two entries can share a repository (heimdall-api and
+          // heimdall-api-docs). Without one, the job shows the name its source reports, the repository's.
+          displayName(entry.name)
           branchSources {
             branchSource {
               source {
