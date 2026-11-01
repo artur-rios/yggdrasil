@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-11-01
+
+### Fixed
+
+- **Each Jenkins job shows its own name.** Every job was shown under its repository's name, so two catalog entries
+  that share a repository looked the same in Jenkins: `heimdall-api` and `heimdall-api-docs`, `orpheus` and
+  `orpheus-docs`, `personal-lab` and `personal-lab-site`. A job now shows its name, the application's or the
+  `repositories` entry's id, which is unique. The jobs keep their names, so their builds and webhooks are unchanged.
+- **`migrate.py collaborators` adds `jenkins-ci` on a public repository.** It asked Forgejo's permission endpoint
+  whether each bot was a collaborator, and on a public repository that endpoint answers `read` for anyone, so
+  `jenkins-ci` (which is to have `read`) was reported `already read` and never added; `verify` then failed it as
+  `not a collaborator`. It now reads the repository's list of collaborators first, as `verify` does. Run
+  `collaborators` again to add the account.
+
 ## [0.9.7] - 2026-10-29
 
 ### Added
@@ -1052,7 +1066,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/artur-rios/yggdrasil/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/artur-rios/yggdrasil/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/artur-rios/yggdrasil/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/artur-rios/yggdrasil/compare/v0.9.4...v0.9.5

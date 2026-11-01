@@ -160,6 +160,19 @@ certificate for `git.` or `jenkins.`. The DevOps Server also keeps its other use
 ports below 1024 ([the low ports](#etcsystemdsystemuser-uidsliced50-yggdrasil-portsconf-devops-server)); the record
 covers what that can't.
 
+**Behind Cloudflare the record is not what the zone publishes.** With Universal SSL on, a zone that has any `CAA`
+record publishes Cloudflare's own set, for the authorities of its edge certificates
+([Cloudflare, CAA records](https://developers.cloudflare.com/ssl/edge-certificates/caa-records/)): `issue` and
+`issuewild` for `letsencrypt.org`, `pki.goog`, `digicert.com`, `comodoca.com` and `ssl.com`, with no
+`validationmethods`. The set is not in the dashboard, only in `dig CAA <zone>`. On 2026-10-31 both zones had the
+record above in the dashboard (`cloudflare_dns.py`: right) and published only Cloudflare's set: the
+`validationmethods=dns-01` entry was not in the answer at all, and Cloudflare's `0 issue "letsencrypt.org"` stood in
+its place. `CAA` records add up, so any one that allows an authority lets it issue
+([Let's Encrypt, CAA](https://letsencrypt.org/docs/caa/)): Let's Encrypt still issues over HTTP-01, and the four other
+authorities may issue too. The record changes nothing a certificate authority sees, and the low ports remain the guard
+for `git.` and `jenkins.`. Cloudflare's page says its set is not added with Advanced Certificate Manager (a paid
+plan).
+
 Something that gets its certificates over HTTP-01 is refused by that record too. `artur-rios.tech`'s `www.` and
 `blog.`, and `techcraftsmen.net`'s company page (`www.` and the bare domain), are served by Vercel until their sites
 move, and Vercel renews their certificates through Let's Encrypt over HTTP-01, so those zones' `CAA` waits:
@@ -388,9 +401,9 @@ without this, a check in `ci`'s engine could publish `-p 80:80 -p 443:443`, take
 restarts, and pass Let's Encrypt's HTTP-01 check for `git.` or `jenkins.`. The rule is on the user's slice, so it
 covers the user's engine and every container in it, a container binding port 80 inside its own network
 included: such a check must listen on 1024 or above. `ygg check` shows a "low ports" row per user. The
-[`CAA` record](#dns-records) closes the same door at the certificate authority, once it exists: while the company
-page is still on Vercel, techcraftsmen.net carries no CAA record (`--skip-caa techcraftsmen.net`), and this rule is
-the only guard for `git.` and `jenkins.`.
+[`CAA` record](#dns-records) was to close the same door at the certificate authority, but the zones publish
+Cloudflare's own `CAA` set in its place, which allows Let's Encrypt over HTTP-01 ([DNS records](#dns-records)), so
+this rule is the guard for `git.` and `jenkins.`.
 
 > **To verify on the real host:** that the rule takes effect on a running slice after `systemctl daemon-reload`
 > (or only once the user's manager restarts: `sudo systemctl restart user@<uid>`), and that it refuses the

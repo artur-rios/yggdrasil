@@ -2,10 +2,16 @@
 
 > **Status:** the window (sections 0 to 5) was carried out on 2026-10-26 for this installation: the old server is
 > the Application Server, the DevOps Server was added, and all 61 repositories are on Forgejo (`verify`: 61
-> repositories, 0 checks failed), each with its GitHub copy as a push mirror. Still to do: the per-repository moves
-> of [moving-repositories.md](moving-repositories.md), one repository at a time, and the clean-up of
-> [section 7](#7-clean-up), which waits for the first moved repository's release. The steps below are kept as they
-> were run: the record, and a guide for anyone repeating it.
+> repositories, 0 checks failed), each with its GitHub copy as a push mirror. The per-repository moves of
+> [moving-repositories.md](moving-repositories.md) followed, from 2026-10-26 to 2026-10-31: the 38 prepared branches
+> are merged (artur-rios last), and yggdrasil, heimdall-api, the twelve libraries, orpheus, personal-lab
+> and personal-page have each had a release on Jenkins since, and on 2026-10-30 fortuna-api, fortuna-ui, alexandria-ui
+> and cerberus-ui did too, chimera on 2026-10-30 and 10-31, and heimdall-ui, the company page and maestro on
+> 2026-10-31; the six Vercel projects are deleted. Each repository's state after its move is in the checklist's
+> [After the move](migration-checklist.md#after-the-move). Still to do here: the clean-up of
+> [section 7](#7-clean-up), which a moved repository's release has unblocked, and the checks of
+> [section 8](#8-what-you-check-by-hand). The steps below are kept as they were run: the record, and a guide for
+> anyone repeating it.
 >
 > **What the window turned up, fixed since** (a repeat of it with the current release does not meet them):
 > - The `renovate` token needs `read:user` and `read:organization` too, or Renovate stops at `Authentication
