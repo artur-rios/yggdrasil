@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-11-02
+
 ### Added
 
 - **artur-rios.com points to personal-page.** `artur-rios.com` and `www.artur-rios.com` redirect permanently, keeping
@@ -1085,7 +1087,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.10...HEAD
+[0.9.10]: https://github.com/artur-rios/yggdrasil/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/artur-rios/yggdrasil/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/artur-rios/yggdrasil/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/artur-rios/yggdrasil/compare/v0.9.6...v0.9.7
