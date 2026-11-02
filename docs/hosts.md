@@ -100,16 +100,17 @@ Other things to know:
 
 ## 2. Domains and Cloudflare
 
-There are two domains, both zones on Cloudflare:
+There are three domains, each a zone on Cloudflare:
 
 | Domain | Used for |
 |---|---|
 | `techcraftsmen.net` | The applications and APIs, the platform's names, and the DevOps Server's `git.` and `jenkins.` |
 | `artur-rios.tech` | Static and docs sites |
+| `artur-rios.com` | Nothing of its own: it and `www.` redirect to personal-page, `www.artur-rios.tech` ([A domain that only redirects](#a-domain-that-only-redirects)) |
 
 Substitute your own. A server serves `DOMAIN` and, if you set it, `EXTRA_DOMAINS`
 (comma-separated) in its `platform.env`. The Application Server sets `DOMAIN=techcraftsmen.net` and
-`EXTRA_DOMAINS=artur-rios.tech`. The DevOps Server sets only `DOMAIN=techcraftsmen.net`. Traefik asks
+`EXTRA_DOMAINS=artur-rios.tech,artur-rios.com`. The DevOps Server sets only `DOMAIN=techcraftsmen.net`. Traefik asks
 Let's Encrypt for one certificate per domain, covering the domain and `*.` the domain, using the
 DNS-01 challenge through Cloudflare's API. DNS-01 never goes through the proxy, so renewals keep
 working with the proxy on.
@@ -195,12 +196,49 @@ dashboards are `traefik-dev.<DOMAIN>` and `grafana-dev.<DOMAIN>`. Those two name
 DNS-only records pointing at the DevOps Server (the table above), because the wildcard would send them
 to the Application Server. The certificate already covers them: it is for `*.<DOMAIN>`.
 
+### A domain that only redirects
+
+`artur-rios.com` serves nothing of its own: `artur-rios.com` and `www.artur-rios.com` answer with a permanent
+redirect to `https://www.artur-rios.tech`, keeping the path, so personal-page keeps one address. The redirect is a
+Traefik file router, [artur-rios-com.yml](../platform/traefik/dynamic/artur-rios-com.yml), not a catalog entry:
+the catalog gives an application one `domain`, and the stacks of its three environments would each claim the same
+two names. Setting a domain like it up, in this order (the certificate fails until the token reaches the zone, and
+the Application Server takes 443 only through Cloudflare's proxy):
+
+1. **The zone** (Cloudflare dashboard, and the registrar if it is not Cloudflare). Add the domain and point its
+   name servers at Cloudflare ([dns.md A2](dns.md#a2-move-its-dns-to-cloudflare)), then set **SSL/TLS → Full
+   (strict)** on it.
+2. **The token** (Cloudflare dashboard, *My Profile → API Tokens*). Edit the token in `acme.env` and add a *Zone
+   Resources* row for the new zone. The value does not change, so no server's `acme.env` does.
+3. **The records** (your PC). `scripts/cloudflare_dns.py` makes the same records on it as on the others (`@` and `*`
+   proxied to the Application Server, and the `CAA`): run it as in [DNS records](#dns-records), `--dry-run`
+   first.
+4. **The certificate** (the Application Server, as `ygg`). Add the domain to `EXTRA_DOMAINS` and bring the platform
+   up, so Traefik orders its wildcard certificate:
+
+   ```bash
+   cd /opt/yggdrasil && git pull
+   ygg vars set platform EXTRA_DOMAINS=artur-rios.tech,artur-rios.com
+   scripts/platform.sh up
+   ```
+
+   The `git pull` brings the redirect file too; Traefik watches its folder.
+5. **Check it** (your PC). Both answer `301` with `Location: https://www.artur-rios.tech/about`:
+
+   ```bash
+   curl -sI https://artur-rios.com/about
+   curl -sI https://www.artur-rios.com/about
+   ```
+
+The DevOps Server reads the same `dynamic` folder, but no record of the domain points at it, so the router never
+answers there.
+
 ### Cloudflare settings
 
 | Setting | Value | Why |
 |---|---|---|
-| SSL/TLS mode | **Full (strict)** | Cloudflare checks the Application Server's certificate too. *Flexible* makes every page loop (`ERR_TOO_MANY_REDIRECTS`), and *Full* (without strict) accepts any certificate. Set it on both zones. |
-| API token | **Zone → Zone → Read** and **Zone → DNS → Edit**, on both zones (one *Zone Resources* row for each) | Traefik proves domain control with it. Put it in `acme.env` on each server. [dns.md A4](dns.md#a4-create-the-api-token) |
+| SSL/TLS mode | **Full (strict)** | Cloudflare checks the Application Server's certificate too. *Flexible* makes every page loop (`ERR_TOO_MANY_REDIRECTS`), and *Full* (without strict) accepts any certificate. Set it on every zone. |
+| API token | **Zone → Zone → Read** and **Zone → DNS → Edit**, on every zone (one *Zone Resources* row for each) | Traefik proves domain control with it. Put it in `acme.env` on each server. [dns.md A4](dns.md#a4-create-the-api-token) |
 | Cache Rule | **Bypass cache** for the APIs and for the status API | See below |
 
 **Caching.** Cloudflare caches static file extensions by default. A JSON response is not cached by
@@ -692,7 +730,7 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 | `github-read`: a second, read-only GitHub App (contents, metadata, pull requests, commit statuses), `GITHUB_READ_APP_ID`, `GITHUB_READ_APP_KEY_FILE` | The Jenkins controller; optional, GitHub installations only; bound for the CI agent's checkout and status reads | Read the repositories. Without it the CI agent uses `github-app`, whose token can write: an accepted risk, and every build log says so | now: [setup.md 9.2](setup.md#92-the-env-files-first-pass) |
 | Jenkins agent secrets | Each agent's env file: `/etc/yggdrasil-ci/agent.env`, `/etc/yggdrasil-release/agent.env`, and the deploy agent's `JENKINS_AGENT_SECRET` in `platform.env` | Connect as that agent | now: [setup.md 9.8](setup.md#98-the-ci-and-release-agents) |
 | Application secrets, platform passwords | `/etc/yggdrasil` of the machine that uses them (`platform.env`, `<environment>/<application>.env`, or the [variables store](variables.md)) | As today | now |
-| Cloudflare API token (DNS edit on the `techcraftsmen.net` and `artur-rios.tech` zones only) | `acme.env` on each machine | Prove domain control for certificates; edit those two zones' DNS records | now |
+| Cloudflare API token (DNS edit on the `techcraftsmen.net`, `artur-rios.tech` and `artur-rios.com` zones only) | `acme.env` on each machine | Prove domain control for certificates; edit those three zones' DNS records | now |
 | `reportgenerator-license`: secret text, the ReportGenerator license key (`REPORTGENERATOR_LICENSE` on GitHub) | A file named by the id in `JENKINS_CREDENTIALS_DIR` on the DevOps Server (mode 644, no trailing newline), which the controller reads as secret text at every start. Used by the `credentials` of the 12 libraries (dotnet-configuration to dotnet-webapi-util), cerberus-api, heimdall-api and fortuna-api, and of the docs sites whose deploy runs their coverage check (each library's `-docs` and heimdall-api-docs). Bound only into the check that names it, never on `renovate/*` builds | Unlock ReportGenerator's pro reports in the `test`/`coverage` checks | later: create it before the first build |
 | `nuget-api-key`: the nuget.org API key, `NUGET_API_KEY_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`); optional. The id is fixed and bound only on the release agent, in the step that pushes a library's packages (`scripts/nuget-push.sh`), where no repository code runs. No check or release build can bind it | Publish the owner's packages. It is on `dotnet`'s command line inside the push container | now: [setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget) |
 | `heimdall-ui-android-keystore`: secret text, the Android keystore, base64-encoded (`HEIMDALL_UI_KEYSTORE_BASE64` on GitHub) | A file named by the id in `JENKINS_CREDENTIALS_DIR` on the DevOps Server (mode 644, no trailing newline), which the controller reads as secret text at every start. Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Hold the key that signs Heimdall web's Android package | later: create it before the first release build |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Applies the DNS records of both domains through Cloudflare's API (docs/hosts.md, "DNS records").
+"""Applies the DNS records of the three domains through Cloudflare's API (docs/hosts.md, "DNS records").
 
     read -rs CF_DNS_API_TOKEN && export CF_DNS_API_TOKEN      # the token, then Enter: never on a command line
     python3 scripts/cloudflare_dns.py [--dry-run] \\
@@ -7,7 +7,7 @@
 
 The owner runs it once when building the two machines and again at the cutover, to point the domains
 at the new apps machine; run with the old apps address it is the rollback. It makes, on each of
-techcraftsmen.net and artur-rios.tech:
+techcraftsmen.net, artur-rios.tech and artur-rios.com:
 
   A (and AAAA)   the bare domain and `*`     the apps machine   proxied (orange cloud)
   CAA            the bare domain             0 issue "letsencrypt.org; validationmethods=dns-01"
@@ -29,7 +29,7 @@ Every record it makes carries the comment `yggdrasil`; that comment is how it kn
   * Every other record of the zone is not looked at. Note that a specific record wins over the wildcard:
     an old `www` or `blog` CNAME (to Vercel, say) keeps answering until you delete it.
 
---skip-caa <zone> (repeatable, one of the two zones) leaves that zone's CAA record out: it is neither created,
+--skip-caa <zone> (repeatable, one of the three zones) leaves that zone's CAA record out: it is neither created,
 updated nor reported, and the run says "CAA skipped on <zone> (--skip-caa)". It is for a zone whose names still
 get certificates another way: artur-rios.tech, while Vercel serves www. and blog. with certificates it renews
 through Let's Encrypt over HTTP-01, which the CAA's validationmethods=dns-01 would refuse. Drop the flag once
@@ -38,7 +38,7 @@ those sites have moved.
 --dry-run still reads from Cloudflare (so it needs the token) but sends no write; it prints what a real
 run would change. The token (CF_DNS_API_TOKEN, the name acme.env uses) goes only in the Authorization
 header (rules.Api), never in a process argument, a URL, an error or the output. It needs Zone > Zone >
-Read and Zone > DNS > Edit on both zones, as the Traefik token does.
+Read and Zone > DNS > Edit on the three zones, as the Traefik token does.
 
 Exit status: 0 done, 1 something was reported or failed, 2 usage (bad address, no token).
 """
@@ -54,7 +54,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import rules  # noqa: E402  (scripts/rules.py: Api, ApiError)
 
 API_BASE = "https://api.cloudflare.com"
-ZONES = ("techcraftsmen.net", "artur-rios.tech")
+# artur-rios.com only redirects to personal-page (platform/traefik/dynamic/artur-rios-com.yml).
+ZONES = ("techcraftsmen.net", "artur-rios.tech", "artur-rios.com")
 DEV_ZONE = "techcraftsmen.net"
 DEV_NAMES = ("git", "jenkins", "traefik-dev", "grafana-dev")
 COMMENT = "yggdrasil"
