@@ -1,4 +1,4 @@
-"""Tests for scripts/cloudflare_dns.py (the DNS records of both domains).   python3 -m unittest discover -s scripts"""
+"""Tests for scripts/cloudflare_dns.py (the DNS records of the three domains).   python3 -m unittest discover -s scripts"""
 
 import contextlib
 import io
@@ -116,7 +116,7 @@ def run(fake, argv=ARGS, environ=ENV):
 class DesiredRecordsTests(unittest.TestCase):
     def test_given_both_addresses_when_desired_then_apps_names_are_proxied_and_dev_names_are_not(self):
         wanted = wanted_by_key(apps6=APPS6, dev6=DEV6)
-        for zone in ("techcraftsmen.net", "artur-rios.tech"):
+        for zone in ("techcraftsmen.net", "artur-rios.tech", "artur-rios.com"):
             for name in (zone, f"*.{zone}"):
                 for type_, address in (("A", APPS), ("AAAA", APPS6)):
                     self.assertEqual(wanted[(type_, name)]["content"], address)
@@ -127,25 +127,27 @@ class DesiredRecordsTests(unittest.TestCase):
                 self.assertEqual(record["content"], address)
                 self.assertFalse(record["proxied"], f"{type_} {host}")
 
-    def test_given_the_second_zone_when_desired_then_it_has_no_dev_names(self):
+    def test_given_the_other_zones_when_desired_then_they_have_no_dev_names(self):
         wanted = wanted_by_key(apps6=APPS6, dev6=DEV6)
-        names = {name for _, name in wanted if name.endswith("artur-rios.tech")}
-        self.assertEqual(names, {"artur-rios.tech", "*.artur-rios.tech"})
+        for zone in ("artur-rios.tech", "artur-rios.com"):
+            names = {name for _, name in wanted if name.endswith(zone)}
+            self.assertEqual(names, {zone, f"*.{zone}"})
 
     def test_given_no_ipv6_addresses_when_desired_then_there_are_no_aaaa_records(self):
         self.assertEqual({t for t, _ in wanted_by_key()}, {"A", "CAA"})
 
     def test_given_only_the_apps_ipv6_when_desired_then_only_apps_names_get_aaaa(self):
         names = {n for t, n in wanted_by_key(apps6=APPS6) if t == "AAAA"}
-        self.assertEqual(names, {"techcraftsmen.net", "*.techcraftsmen.net", "artur-rios.tech", "*.artur-rios.tech"})
+        self.assertEqual(names, {"techcraftsmen.net", "*.techcraftsmen.net", "artur-rios.tech", "*.artur-rios.tech",
+                                 "artur-rios.com", "*.artur-rios.com"})
 
     def test_given_the_zones_when_desired_then_each_has_one_caa_record_on_the_bare_domain(self):
         wanted = wanted_by_key()
-        for zone in ("techcraftsmen.net", "artur-rios.tech"):
+        for zone in ("techcraftsmen.net", "artur-rios.tech", "artur-rios.com"):
             record = wanted[("CAA", zone)]
             self.assertEqual(record["data"], CAA)
             self.assertNotIn("content", record)
-        self.assertEqual(len([k for k in wanted if k[0] == "CAA"]), 2)
+        self.assertEqual(len([k for k in wanted if k[0] == "CAA"]), 3)
 
     def test_given_any_record_when_desired_then_it_carries_the_yggdrasil_comment(self):
         for record in cloudflare_dns.desired_records(APPS, APPS6, DEV, DEV6):
@@ -225,7 +227,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(status, 0)
         methods = {m for m, _, _ in fake.writes()}
         self.assertEqual(methods, {"PUT"})
-        self.assertEqual(len(fake.writes()), 4)  # the bare domain and `*`, on both zones
+        self.assertEqual(len(fake.writes()), 6)  # the bare domain and `*`, on the three zones
         self.assertEqual({r["id"] for z in fake.records.values() for r in z}, ids)
         self.assertEqual(fake.find("techcraftsmen.net", "*.techcraftsmen.net", "A")[0]["content"], "198.51.100.77")
         self.assertEqual(fake.find("techcraftsmen.net", "git.techcraftsmen.net", "A")[0]["content"], DEV)
@@ -403,7 +405,7 @@ class SkipCaaTests(unittest.TestCase):
         self.assertEqual(fake.find("artur-rios.tech", "artur-rios.tech", "CAA"), [])
         self.assertEqual(len(fake.find("techcraftsmen.net", "techcraftsmen.net", "CAA")), 1)
         self.assertIn("CAA skipped on artur-rios.tech (--skip-caa)", out.splitlines())
-        self.assertIn("0 of 9 records already right", out)
+        self.assertIn("0 of 12 records already right", out)
 
     def test_given_a_caa_made_by_hand_on_a_skipped_zone_when_run_then_it_is_not_reported(self):
         fake = FakeCloudflare()
@@ -431,7 +433,8 @@ class SkipCaaTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(out.count("CAA skipped on artur-rios.tech (--skip-caa)"), 1)
         self.assertEqual(out.count("CAA skipped on techcraftsmen.net (--skip-caa)"), 1)
-        self.assertFalse([c for c in fake.writes() if c[2] and c[2].get("type") == "CAA"])
+        caa = [c[2]["name"] for c in fake.writes() if c[2] and c[2].get("type") == "CAA"]
+        self.assertEqual(caa, ["artur-rios.com"])  # the zone not skipped
 
     def test_given_a_dry_run_with_skip_caa_when_run_then_the_skip_is_said_and_nothing_is_sent(self):
         fake = FakeCloudflare()
@@ -500,8 +503,8 @@ class CommandTests(unittest.TestCase):
         fake.refuse_zones = True
         status, _, err = run(fake)
         self.assertEqual(status, 1)
-        self.assertEqual(err.count("403 Forbidden"), 2)
-        self.assertEqual(len(fake.calls), 2)  # one lookup per zone, then nothing more
+        self.assertEqual(err.count("403 Forbidden"), 3)
+        self.assertEqual(len(fake.calls), 3)  # one lookup per zone, then nothing more
         self.assertNotIn(TOKEN, err)
 
     def test_given_the_real_client_when_built_then_the_token_is_only_in_the_authorization_header(self):
