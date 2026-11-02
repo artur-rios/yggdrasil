@@ -12,6 +12,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 STACKS = ROOT / "stacks"
 MIDDLEWARES = ROOT / "platform" / "traefik" / "dynamic" / "middlewares.yml"
+ARTUR_RIOS_COM = ROOT / "platform" / "traefik" / "dynamic" / "artur-rios-com.yml"
 PLATFORM = ROOT / "platform" / "compose.yml"
 EXAMPLES = ROOT / "docs" / "examples" / "docker-desktop-and-vps" / "env"
 UI_STACKS = ("heimdall-ui.proxy.yml", "fortuna-ui.proxy.yml")
@@ -105,6 +106,20 @@ class EdgeTests(unittest.TestCase):
         for name, key, value in chains:
             with self.subTest(service=name, label=key):
                 self.assertIn("secure-headers@file", value.split(","))
+
+    def test_given_artur_rios_com_when_requested_then_it_redirects_permanently_to_the_personal_page(self):
+        http = yaml.safe_load(ARTUR_RIOS_COM.read_text())["http"]
+        router = http["routers"]["artur-rios-com"]
+        self.assertEqual(router["rule"], "Host(`artur-rios.com`) || Host(`www.artur-rios.com`)")
+        self.assertEqual(router["entryPoints"], ["websecure"])
+        self.assertEqual(router["middlewares"], ["secure-headers", "artur-rios-com-redirect"])
+        self.assertIn("secure-headers", middlewares())
+        redirect = http["middlewares"]["artur-rios-com-redirect"]["redirectRegex"]
+        self.assertTrue(redirect["permanent"])
+        for url, target in (("https://artur-rios.com/", "https://www.artur-rios.tech/"),
+                            ("https://www.artur-rios.com/about?x=1", "https://www.artur-rios.tech/about?x=1")):
+            with self.subTest(url=url):
+                self.assertEqual(re.sub(redirect["regex"], redirect["replacement"].replace("${1}", r"\1"), url), target)
 
     def test_heimdall_auth_router(self):
         stack = labels("heimdall-api.proxy.yml")

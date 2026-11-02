@@ -1,0 +1,23 @@
+# artur-rios.com and www.artur-rios.com redirect, permanently and keeping the path, to personal-page's
+# www.artur-rios.tech. The site stays on its one address; this domain only points to it. Watched: an edit
+# applies without a restart.
+#
+# The Application Server serves the domain (EXTRA_DOMAINS, which gets its certificate) and its records point
+# there (scripts/cloudflare_dns.py). The DevOps Server reads this folder too, but no name of the domain
+# reaches it, so the router never answers there.
+
+http:
+  routers:
+    artur-rios-com:
+      rule: Host(`artur-rios.com`) || Host(`www.artur-rios.com`)
+      entryPoints: [websecure]
+      middlewares: [secure-headers, artur-rios-com-redirect]
+      # Every request is redirected, so no service is ever reached.
+      service: noop@internal
+
+  middlewares:
+    artur-rios-com-redirect:
+      redirectRegex:
+        regex: ^https?://[^/]+(.*)
+        replacement: https://www.artur-rios.tech${1}
+        permanent: true

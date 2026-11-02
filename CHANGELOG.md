@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **artur-rios.com points to personal-page.** `artur-rios.com` and `www.artur-rios.com` redirect permanently, keeping
+  the path, to `https://www.artur-rios.tech`: a Traefik file router,
+  [artur-rios-com.yml](platform/traefik/dynamic/artur-rios-com.yml). `scripts/cloudflare_dns.py` makes the zone's
+  records as it does the other two's. The Application Server serves the domain once it is in `EXTRA_DOMAINS`
+  (`ygg vars set platform EXTRA_DOMAINS=artur-rios.tech,artur-rios.com`, then `platform.sh up`), after the zone is on
+  Cloudflare and the token reaches it: [hosts.md, A domain that only redirects](docs/hosts.md#a-domain-that-only-redirects).
+
 ## [0.9.9] - 2026-11-01
 
 ### Fixed
