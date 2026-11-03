@@ -176,6 +176,29 @@ class GatherTests(SyncTestCase):
         self.assertIn("link", err)
         self.assertFalse((self.out / "0").exists())
 
+    def test_given_an_embedded_repository_under_a_from_when_gathered_then_it_is_refused(self):
+        embedded = self.app / "docs" / "req" / "embedded"
+        embedded.mkdir()
+        git(embedded, "init", "--quiet")
+        write(embedded, "file.txt", "inside\n")
+
+        code, _, err = self.gather()
+
+        self.assertEqual(code, 1)
+        self.assertIn(".git", err)
+        self.assertIn("docs/req/embedded/.git", err)
+        self.assertFalse((self.out / "manifest.json").exists())
+        self.assertFalse((self.out / "0").exists(), "nothing is staged")
+
+    def test_given_a_git_file_under_a_from_when_gathered_then_it_is_refused(self):
+        write(self.app, "out/report/vendor/.GIT", "gitdir: ../nowhere\n")
+
+        code, _, err = self.gather()
+
+        self.assertEqual(code, 1)
+        self.assertIn("git data", err)
+        self.assertFalse((self.out / "0").exists())
+
     def link(self, path, target, directory=False):
         try:
             os.symlink(target, path, target_is_directory=directory)
@@ -354,6 +377,17 @@ class PushTests(SyncTestCase):
         self.assertIn("link", err)
         self.assertEqual(self.main_sha(), before)
 
+    def test_given_a_staged_git_file_when_pushed_then_it_is_refused(self):
+        write(self.out, "1/sub/.git", "gitdir: ../nowhere\n")
+        before = self.main_sha()
+
+        code, _, err = self.push()
+
+        self.assertEqual(code, 1)
+        self.assertIn("git data", err)
+        self.assertIn("1/sub/.git", err)
+        self.assertEqual(self.main_sha(), before)
+
     def test_given_a_missing_staged_entry_when_pushed_then_it_fails_and_nothing_changes(self):
         shutil.rmtree(self.out / "1")
         before = self.main_sha()
@@ -374,8 +408,8 @@ class PushTests(SyncTestCase):
 
 
 class MessageTests(SyncTestCase):
-    def message_lines(self, *extra):
-        code, out, err = self.run_sync("message", REPOSITORY, self.app, *extra)
+    def message_lines(self):
+        code, out, err = self.run_sync("message", REPOSITORY, self.app, self.spec)
         self.assertEqual(code, 0, err)
         return out.splitlines()
 
@@ -402,7 +436,7 @@ class MessageTests(SyncTestCase):
     def test_given_a_spec_when_the_message_is_made_then_it_lists_the_paths_and_the_source(self):
         sha = self.commit("release: v4.3.0 (#12)")
 
-        lines = self.message_lines(self.spec)
+        lines = self.message_lines()
 
         self.assertEqual(
             lines,
@@ -417,16 +451,23 @@ class MessageTests(SyncTestCase):
         )
 
     def test_given_no_repository_in_app_dir_when_the_message_is_made_then_it_fails(self):
-        code, _, err = self.run_sync("message", REPOSITORY, self.tmp)
+        code, _, err = self.run_sync("message", REPOSITORY, self.tmp, self.spec)
 
         self.assertEqual(code, 1)
         self.assertTrue(err.startswith("sync: "))
+
+    def test_given_no_spec_when_the_message_is_made_then_it_is_a_usage_error(self):
+        code, out, err = self.run_sync("message", REPOSITORY, self.app)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("usage", err)
 
 
 class CommandLineTests(unittest.TestCase):
     def test_given_a_wrong_command_line_when_run_then_it_exits_with_usage_and_no_traceback(self):
         script = pathlib.Path(sync.__file__)
-        for argv in ([], ["nope"], ["gather", "only-one"]):
+        for argv in ([], ["nope"], ["gather", "only-one"], ["message", "repo", "dir"]):
             with self.subTest(argv=argv):
                 result = subprocess.run(
                     ["python3" if shutil.which("python3") else "python", str(script), *argv],

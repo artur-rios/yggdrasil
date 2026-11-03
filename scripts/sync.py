@@ -2,7 +2,7 @@
 """Copies paths of a repository into another catalog repository, the `sync` section of its yggdrasil.yml.
 
     python3 scripts/sync.py gather <spec.json> <app-dir> <out-dir>
-    python3 scripts/sync.py message <source-repo> <app-dir> [<spec-or-manifest.json>]
+    python3 scripts/sync.py message <source-repo> <app-dir> <spec.json>
     python3 scripts/sync.py push <out-dir> <target-url> <message-file>
 
 Each command exits 0, or 1 with `sync: <message>` on stderr. The spec is the validated section as a JSON file,
@@ -14,18 +14,19 @@ and each is replaced wholesale: a file deleted at the source disappears from the
 gather copies every `from` to <out-dir>/<i> (i: the path's position in the spec) and writes
 <out-dir>/manifest.json, {"paths": [...]}, the spec's paths in order. It runs where the repository's own code
 runs (the CI agent), so it checks everything before copying anything: a `from` that is missing, that holds
-no file, or that is or sits under a symbolic link (a link could name a file outside the checkout, such as a
+no file, that holds a path named .git (a nested repository cannot be replicated: git would store a bare
+gitlink), or that is or sits under a symbolic link (a link could name a file outside the checkout, such as a
 credential) fails the build.
 
 message prints the commit message: `docs: sync <source-repo> <version>`, where the version is `v<x.y.z>` when
 the subject of <app-dir>'s HEAD is a release merge (`release: vX.Y.Z ...`, what mergeAndTag gives) and the
-7-character commit otherwise, then a blank line, a `- <from> -> <to>` line per path of the file given (a spec
-or a manifest) and `Source: <source-repo>@<full commit>`.
+7-character commit otherwise, then a blank line, a `- <from> -> <to>` line per path of the spec (a manifest
+works too) and `Source: <source-repo>@<full commit>`.
 
 push runs where the forge's write token is: the publish agent, which holds nothing else the repository's code
 could reach and runs no command the repository names, only this script and git. <out-dir> arrives as a stash
 and is not trusted: push uses the manifest's entries only (so a message.txt beside them is never copied),
-rechecks them (a `to` that is not a plain relative path, or a link in what was staged, is refused) and never
+rechecks them (a `to` that is not a plain relative path, or a link or a .git in what was staged, is refused) and never
 writes outside its clone. It clones the target's `main` (depth 1), replaces each `to` with its staged copy,
 commits what changed with the message of <message-file> and pushes. Nothing to commit is success, and says
 so. A push the target rejects (main moved since the clone) starts again from a fresh clone, 3 attempts in
@@ -104,6 +105,16 @@ def links_in(path):
     return found
 
 
+def git_data_in(path):
+    """Every file or directory named .git (any case) under `path`: a nested repository would be committed as a
+    bare gitlink, its files never reaching the target, and a .git file is dropped by git add."""
+    found = []
+    if path.is_dir() and not path.is_symlink():
+        for directory, names, files in os.walk(path):
+            found += [pathlib.Path(directory, name) for name in names + files if name.lower() == ".git"]
+    return found
+
+
 def holds_a_file(path):
     return path.is_file() or any(files for _, _, files in os.walk(path))
 
@@ -128,6 +139,10 @@ def gather(spec, app, out):
         inside = links_in(here)
         if inside:
             raise SyncError(f"{source} holds a link: {inside[0].relative_to(app).as_posix()}")
+        # Nor can a nested repository be replicated: git add would store it as a gitlink.
+        nested = git_data_in(here)
+        if nested:
+            raise SyncError(f"{source} holds git data: {nested[0].relative_to(app).as_posix()}")
         # An empty `from` would delete the whole `to` in the target, a build that produced nothing.
         if not holds_a_file(here):
             raise SyncError(f"{source} holds no file")
@@ -167,13 +182,12 @@ def git_output(directory, *args):
     return result.stdout.strip()
 
 
-def message(repository, app, paths_file=None):
+def message(repository, app, paths_file):
     full = git_output(app, "rev-parse", "HEAD")
     release = RELEASE.match(git_output(app, "log", "-1", "--format=%s", "HEAD"))
     version = f"v{release.group(1)}" if release else full[:7]
     lines = [f"docs: sync {repository} {version}", ""]
-    if paths_file:
-        lines += [f"- {source} -> {target}" for source, target in read_paths(paths_file)] + [""]
+    lines += [f"- {source} -> {target}" for source, target in read_paths(paths_file)] + [""]
     lines.append(f"Source: {repository}@{full}")
     return "\n".join(lines) + "\n"
 
@@ -278,6 +292,9 @@ def push(out, url, message_file):
         inside = links_in(staged)
         if inside:
             raise SyncError(f"the staged copy for {target} holds a link: {inside[0].relative_to(out).as_posix()}")
+        nested = git_data_in(staged)
+        if nested:
+            raise SyncError(f"the staged copy for {target} holds git data: {nested[0].relative_to(out).as_posix()}")
         if not holds_a_file(staged):
             raise SyncError(f"the staged copy for {target} holds no file")
     env = git_environment()
@@ -295,7 +312,7 @@ def push(out, url, message_file):
 # ---- The command line ----
 
 USAGE = (
-    "usage: sync.py gather <spec.json> <app-dir> <out-dir> | message <source-repo> <app-dir> [<spec.json>]"
+    "usage: sync.py gather <spec.json> <app-dir> <out-dir> | message <source-repo> <app-dir> <spec.json>"
     " | push <out-dir> <target-url> <message-file>"
 )
 
@@ -305,7 +322,7 @@ def main(argv):
     try:
         if command == "gather" and len(args) == 3:
             gather(*args)
-        elif command == "message" and len(args) in (2, 3):
+        elif command == "message" and len(args) == 3:
             sys.stdout.write(message(*args))
         elif command == "push" and len(args) == 3:
             print(push(*args))
