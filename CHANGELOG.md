@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-11-03
+
 ### Added
 
 - **A repository can copy files into another one on pushes to `main`.** A `sync` section in `yggdrasil.yml` names
@@ -1139,7 +1141,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.11...HEAD
+[0.9.11]: https://github.com/artur-rios/yggdrasil/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/artur-rios/yggdrasil/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/artur-rios/yggdrasil/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/artur-rios/yggdrasil/compare/v0.9.7...v0.9.8
