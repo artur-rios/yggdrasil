@@ -1092,7 +1092,8 @@ class RealCatalogTests(unittest.TestCase):
                 if "site" in kinds:
                     sites = [app for app in applications.values()
                              if (app.get("repository") or app["id"]) == name and app.get("domain")]
-                    self.assertEqual(len(sites), 1, sites)
+                    # heimdall-api's own docs site is retired (heimdall-docs has its docs); the checklist keeps the row.
+                    self.assertEqual(len(sites), 0 if name == "heimdall-api" else 1, sites)
                 # The branch model the repository had on GitHub (a branch-policy workflow or not), where a
                 # repositories entry decides it.
                 deciding = self.entries[name][0]
@@ -1185,7 +1186,7 @@ class RealCatalogTests(unittest.TestCase):
 
     def test_given_every_site_when_its_stack_files_are_read_then_they_are_the_templates_with_its_id(self):
         sites = [app for _, app in c.applications(self.catalog, deployable=True) if app.get("domain")]
-        self.assertEqual(len(sites), 25)
+        self.assertEqual(len(sites), 24)
         for app in sites:
             proxy = ("site-path.proxy.yml" if app.get("path") else
                      "site-apex-redirect.proxy.yml" if app.get("apex") else "site.proxy.yml")
@@ -1195,10 +1196,9 @@ class RealCatalogTests(unittest.TestCase):
                         (TEMPLATES / template).read_text(encoding="utf-8").replace("APPLICATION_ID", app["id"]))
                     actual = c.yaml.safe_load((ROOT / "stacks" / name).read_text(encoding="utf-8"))
                     web = actual["services"]["web"]
-                    # The two additions a site's stack may make: its own Dockerfile's name (a repository whose
-                    # Dockerfile is another image's) and its variables handed to the container.
-                    if web.get("build", {}).pop("dockerfile", None) is not None:
-                        self.assertEqual(app["id"], "heimdall-api-docs")
+                    # The one addition a site's stack may make: its variables handed to the container. No site
+                    # names its own Dockerfile now: each builds the repository's.
+                    self.assertNotIn("dockerfile", web.get("build", {}))
                     if web.pop("env_file", None) is not None:
                         self.assertEqual(app["id"], "github-readme-stats")
                     # The docs index's proxy stack adds the router that redirects the docs host's root to it (decision 5

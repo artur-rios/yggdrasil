@@ -338,21 +338,6 @@ systems:
           - heimdall-ui-android-keystore-password
           - heimdall-ui-android-key-alias
           - heimdall-ui-android-key-password
-      # The API's docs site, from the same repository (one yggdrasil.yml: its deploy takes the coverage
-      # report from a check of the API's, deploy.inputs). The repository's Dockerfile is the API's, so
-      # the site's is docs.Dockerfile (stacks/heimdall-api-docs.yml).
-      - id: heimdall-api-docs
-        name: Heimdall API docs
-        kind: web
-        repository: heimdall-api
-        health: http://heimdall-api-docs:8080/healthz
-        domain: artur-rios.tech
-        host: docs
-        path: /heimdall-api
-        checks: []
-        credentials: [reportgenerator-license] # its deploy runs a check of the API's that binds it
-        environments:
-          production: { trigger: branch, branches: main }
       - id: heimdall-docs
         name: Heimdall docs
         kind: web
