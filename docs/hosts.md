@@ -233,6 +233,13 @@ the Application Server takes 443 only through Cloudflare's proxy):
 The DevOps Server reads the same `dynamic` folder, but no record of the domain points at it, so the router never
 answers there.
 
+A path can redirect the same way. `docs.artur-rios.tech/heimdall-api`, heimdall-api's retired docs site, redirects
+permanently, page by page, to the same content on heimdall-docs: one Traefik file router,
+[heimdall-api-docs.yml](../platform/traefik/dynamic/heimdall-api-docs.yml), with a middleware for each page it maps
+(the table is in the file's header). A page keeps its query string, and anything the file does not name, the old
+site's root included, goes to `https://docs.artur-rios.tech/heimdall-docs/docs/api/`. The domain is already served,
+so only the `git pull` is needed: Traefik watches the folder.
+
 ### Cloudflare settings
 
 | Setting | Value | Why |

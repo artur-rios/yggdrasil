@@ -13,6 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 STACKS = ROOT / "stacks"
 MIDDLEWARES = ROOT / "platform" / "traefik" / "dynamic" / "middlewares.yml"
 ARTUR_RIOS_COM = ROOT / "platform" / "traefik" / "dynamic" / "artur-rios-com.yml"
+HEIMDALL_API_DOCS = ROOT / "platform" / "traefik" / "dynamic" / "heimdall-api-docs.yml"
 PLATFORM = ROOT / "platform" / "compose.yml"
 EXAMPLES = ROOT / "docs" / "examples" / "docker-desktop-and-vps" / "env"
 UI_STACKS = ("heimdall-ui.proxy.yml", "fortuna-ui.proxy.yml")
@@ -120,6 +121,87 @@ class EdgeTests(unittest.TestCase):
                             ("https://www.artur-rios.com/about?x=1", "https://www.artur-rios.tech/about?x=1")):
             with self.subTest(url=url):
                 self.assertEqual(re.sub(redirect["regex"], redirect["replacement"].replace("${1}", r"\1"), url), target)
+
+    def test_given_the_retired_heimdall_api_site_when_requested_then_each_page_redirects_to_heimdall_docs(self):
+        http = yaml.safe_load(HEIMDALL_API_DOCS.read_text())["http"]
+        router = http["routers"]["heimdall-api-docs"]
+        self.assertEqual(router["rule"], "Host(`docs.artur-rios.tech`)"
+                                         " && (Path(`/heimdall-api`) || PathPrefix(`/heimdall-api/`))")
+        self.assertEqual(router["entryPoints"], ["websecure"])
+        self.assertEqual(router["service"], "noop@internal")
+        chain = [f"heimdall-api-docs-{n}" for n in range(1, 17)]
+        self.assertEqual(router["middlewares"], ["secure-headers", *chain])
+        self.assertIn("secure-headers", middlewares())
+        self.assertEqual(list(http["middlewares"]), chain)
+
+        new = "https://docs.artur-rios.tech/heimdall-docs"
+        github = "https://github.com/artur-rios/heimdall-api/blob/main"
+        cases = (
+            # One per row of the path map, in its order.
+            ("/heimdall-api/coverage-report/index.html", f"{new}/api/coverage-report/index.html"),
+            ("/heimdall-api/coverage-report/a/b.html?x=1", f"{new}/api/coverage-report/a/b.html?x=1"),
+            ("/heimdall-api/openapi/heimdall.json", f"{new}/api/openapi/heimdall.json"),
+            ("/heimdall-api/docs/overview/", f"{new}/docs/overview/"),
+            ("/heimdall-api/docs/architecture/", f"{new}/docs/architecture/"),
+            ("/heimdall-api/docs/domain-model/", f"{new}/docs/architecture/domain-model/"),
+            ("/heimdall-api/docs/getting-started/", f"{new}/docs/installation/"),
+            ("/heimdall-api/docs/environments-and-deployment/",
+             f"{new}/docs/installation/environments-and-deployment/"),
+            ("/heimdall-api/docs/api-reference/", f"{new}/docs/api/reference/"),
+            ("/heimdall-api/docs/api-explorer/", f"{new}/docs/api/explorer/"),
+            ("/heimdall-api/docs/operations/", f"{new}/docs/api/operations/"),
+            ("/heimdall-api/docs/flows/", f"{new}/docs/api/flows/"),
+            ("/heimdall-api/docs/flows/two-factor/?x=1", f"{new}/docs/api/flows/two-factor/?x=1"),
+            ("/heimdall-api/docs/requirements/", f"{new}/docs/api/requirements/"),
+            ("/heimdall-api/docs/requirements/vision-document/",
+             f"{new}/docs/api/requirements/documents/vision-document/"),
+            ("/heimdall-api/docs/requirements/operations--infrastructure-document/?x=1",
+             f"{new}/docs/api/requirements/documents/operations--infrastructure-document/?x=1"),
+            ("/heimdall-api/docs/changelog/", f"{github}/CHANGELOG.md"),
+            ("/heimdall-api/docs/contributing/", f"{github}/CONTRIBUTING.md"),
+            # The catch-all, the site's root included.
+            ("/heimdall-api", f"{new}/docs/api/"),
+            ("/heimdall-api/", f"{new}/docs/api/"),
+            ("/heimdall-api/?x=1", f"{new}/docs/api/?x=1"),
+            ("/heimdall-api/nothing/here/", f"{new}/docs/api/"),
+            ("/heimdall-api/index.xml", f"{new}/docs/api/"),
+            ("/heimdall-api/docs/overview/index.xml", f"{new}/docs/api/"),
+            ("/heimdall-api/docs/overview/_print/", f"{new}/docs/api/"),
+            ("/heimdall-api/docs/requirements/index.xml", f"{new}/docs/api/"),
+            ("/heimdall-api/docs/requirements/vision-document/_print/", f"{new}/docs/api/"),
+            ("/heimdall-api/docs/flowsx/", f"{new}/docs/api/"),
+            # The /docs/ pages match with or without their trailing slash.
+            ("/heimdall-api/docs/overview", f"{new}/docs/overview/"),
+            ("/heimdall-api/docs/overview?x=1", f"{new}/docs/overview/?x=1"),
+            ("/heimdall-api/docs/domain-model", f"{new}/docs/architecture/domain-model/"),
+            ("/heimdall-api/docs/flows", f"{new}/docs/api/flows/"),
+            ("/heimdall-api/docs/requirements", f"{new}/docs/api/requirements/"),
+            ("/heimdall-api/docs/requirements/vision-document",
+             f"{new}/docs/api/requirements/documents/vision-document/"),
+            ("/heimdall-api/docs/changelog", f"{github}/CHANGELOG.md"),
+        )
+        for path, target in cases:
+            for scheme in ("https", "http"):
+                url = f"{scheme}://docs.artur-rios.tech{path}"
+                with self.subTest(url=url):
+                    for name in chain:
+                        redirect = http["middlewares"][name]["redirectRegex"]
+                        self.assertTrue(redirect["permanent"], name)
+                        if re.search(redirect["regex"], url):
+                            replacement = re.sub(r"[$][{](\d+)[}]", r"\\\1", redirect["replacement"])
+                            self.assertEqual(re.sub(redirect["regex"], replacement, url), target)
+                            break
+                    else:
+                        self.fail(f"no middleware matches {url}")
+
+        # The router rule matches the site's root and what is under it, and no other path.
+        def routed(path):
+            return path == "/heimdall-api" or path.startswith("/heimdall-api/")
+
+        for path in ("/heimdall-api", "/heimdall-api/", "/heimdall-api/docs/overview/"):
+            self.assertTrue(routed(path), path)
+        for path in ("/heimdall-apix/", "/heimdall-apix", "/heimdall-api-docs/", "/", "/heimdall-docs/docs/api/"):
+            self.assertFalse(routed(path), path)
 
     def test_heimdall_auth_router(self):
         stack = labels("heimdall-api.proxy.yml")

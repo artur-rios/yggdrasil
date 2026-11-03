@@ -12,7 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **The `heimdall-api-docs` application.** Heimdall's documentation moved to the heimdall-docs site, so heimdall-api's
   own docs site (`docs.artur-rios.tech/heimdall-api`) is retired: its catalog entry, `stacks/heimdall-api-docs.yml`
   and `stacks/heimdall-api-docs.proxy.yml` are gone, and no site builds a `docs.Dockerfile` now. `heimdall-api`'s own
-  entry is unchanged. The running site and its Jenkins job stay until you remove them, in this order:
+  entry is unchanged. Every old address redirects permanently, page by page, to its page on heimdall-docs (the
+  changelog and contributing pages to GitHub), keeping the query string and sending anything unnamed to the API
+  section's landing page: a Traefik file router,
+  [heimdall-api-docs.yml](platform/traefik/dynamic/heimdall-api-docs.yml). The running site and its Jenkins job stay
+  until you remove them, in this order:
   1. Merge heimdall-docs#7, and check that its pages are live.
   2. Release yggdrasil.
   3. On the Application Server, as `ygg`, stop the site: `docker compose -p heimdall-api-docs-production down`.
@@ -20,7 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   4. Run `cd /opt/yggdrasil && git pull`, which brings the redirect file.
   5. Delete the `heimdall-api-docs` job in Jenkins. The Job DSL in
      [casc.yaml](platform/jenkins/controller/casc.yaml) does not set `removedJobAction`, so it keeps its default,
-     which ignores a job the script no longer defines: the job stays in Jenkins until it is deleted by hand.
+     which ignores a job the script no longer defines: the job stays in Jenkins until it is deleted by hand. A build
+     of it before then fails cleanly, which is expected: its deploy finds no catalog entry.
   6. Check with `curl -sI https://docs.artur-rios.tech/heimdall-api/docs/overview/`, which should give a 301 to
      `/heimdall-docs/docs/overview/`.
 

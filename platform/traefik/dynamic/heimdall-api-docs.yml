@@ -1,0 +1,145 @@
+# docs.artur-rios.tech/heimdall-api, the retired docs site of heimdall-api, redirects permanently, page by page, to
+# the same content on the heimdall-docs site (docs.artur-rios.tech/heimdall-docs). Old links, bookmarks and search
+# results keep working. It is a file router, not a catalog entry, because no application serves the address any more:
+# the catalog entry is gone, and the redirect needs no container. Watched: an edit applies without a restart.
+#
+# The Application Server serves docs.artur-rios.tech already, for heimdall-docs and the other sites, so the name
+# and its certificate need nothing new. The DevOps Server reads this folder too, but no name of the domain reaches
+# it, so the router never answers there.
+#
+# The middlewares are a chain in the order of the table below, and the first whose regex matches answers. The query
+# string is kept where the target is a page of the new site (a browser re-applies the fragment itself). Each regex
+# is anchored on the whole URL, so the last one, the catch-all, takes only what the others did not: a page's own
+# subpaths (index.xml, _print/), unknown paths and the old site's root, which go to the API section's landing page.
+#
+#       Old path (after /heimdall-api)         New page (under /heimdall-docs)
+#    1  /coverage-report/<rest>                /api/coverage-report/<rest>
+#    2  /openapi/heimdall.json                 /api/openapi/heimdall.json
+#    3  /docs/overview/                        /docs/overview/
+#    4  /docs/architecture/                    /docs/architecture/
+#    5  /docs/domain-model/                    /docs/architecture/domain-model/
+#    6  /docs/getting-started/                 /docs/installation/
+#    7  /docs/environments-and-deployment/     /docs/installation/environments-and-deployment/
+#    8  /docs/api-reference/                   /docs/api/reference/
+#    9  /docs/api-explorer/                    /docs/api/explorer/
+#   10  /docs/operations/                      /docs/api/operations/
+#   11  /docs/flows/<rest>                     /docs/api/flows/<rest>
+#   12  /docs/requirements/                    /docs/api/requirements/
+#   13  /docs/requirements/<slug>/             /docs/api/requirements/documents/<slug>/
+#   14  /docs/changelog/                       https://github.com/artur-rios/heimdall-api/blob/main/CHANGELOG.md
+#   15  /docs/contributing/                    https://github.com/artur-rios/heimdall-api/blob/main/CONTRIBUTING.md
+#   16  anything else                          /docs/api/
+#
+# The /docs/ pages match with or without their trailing slash. The last group of a regex is the query string,
+# which a request without one leaves empty.
+
+http:
+  routers:
+    heimdall-api-docs:
+      rule: Host(`docs.artur-rios.tech`) && (Path(`/heimdall-api`) || PathPrefix(`/heimdall-api/`))
+      entryPoints: [websecure]
+      middlewares:
+        - secure-headers
+        - heimdall-api-docs-1
+        - heimdall-api-docs-2
+        - heimdall-api-docs-3
+        - heimdall-api-docs-4
+        - heimdall-api-docs-5
+        - heimdall-api-docs-6
+        - heimdall-api-docs-7
+        - heimdall-api-docs-8
+        - heimdall-api-docs-9
+        - heimdall-api-docs-10
+        - heimdall-api-docs-11
+        - heimdall-api-docs-12
+        - heimdall-api-docs-13
+        - heimdall-api-docs-14
+        - heimdall-api-docs-15
+        - heimdall-api-docs-16
+      # Every request is redirected, so no service is ever reached.
+      service: noop@internal
+
+  middlewares:
+    heimdall-api-docs-1:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/coverage-report/(.*)$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/api/coverage-report/${1}
+        permanent: true
+    heimdall-api-docs-2:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/openapi/heimdall\.json(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/api/openapi/heimdall.json${1}
+        permanent: true
+    heimdall-api-docs-3:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/overview/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/overview/${1}
+        permanent: true
+    heimdall-api-docs-4:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/architecture/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/architecture/${1}
+        permanent: true
+    heimdall-api-docs-5:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/domain-model/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/architecture/domain-model/${1}
+        permanent: true
+    heimdall-api-docs-6:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/getting-started/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/installation/${1}
+        permanent: true
+    heimdall-api-docs-7:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/environments-and-deployment/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/installation/environments-and-deployment/${1}
+        permanent: true
+    heimdall-api-docs-8:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/api-reference/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/reference/${1}
+        permanent: true
+    heimdall-api-docs-9:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/api-explorer/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/explorer/${1}
+        permanent: true
+    heimdall-api-docs-10:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/operations/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/operations/${1}
+        permanent: true
+    # The flows index and each flow under it: the rest is the flow's slug, with its trailing slash if it had one.
+    heimdall-api-docs-11:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/flows(?:/([^?]*))?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/flows/${1}${2}
+        permanent: true
+    heimdall-api-docs-12:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/requirements/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/requirements/${1}
+        permanent: true
+    # A document's slug is lowercase letters, digits and hyphens, so index.xml and _print/ fall through.
+    heimdall-api-docs-13:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/requirements/([a-z0-9-]+)/?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/requirements/documents/${1}/${2}
+        permanent: true
+    # The two files live in GitHub, so the query string is dropped.
+    heimdall-api-docs-14:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/changelog/?(?:\?.*)?$
+        replacement: https://github.com/artur-rios/heimdall-api/blob/main/CHANGELOG.md
+        permanent: true
+    heimdall-api-docs-15:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api/docs/contributing/?(?:\?.*)?$
+        replacement: https://github.com/artur-rios/heimdall-api/blob/main/CONTRIBUTING.md
+        permanent: true
+    heimdall-api-docs-16:
+      redirectRegex:
+        regex: ^https?://[^/]+/heimdall-api(?:/[^?]*)?(\?.*)?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/${1}
+        permanent: true
