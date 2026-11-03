@@ -311,9 +311,10 @@ def validate_against(config, entry, runs=None, releasing=None, syncing=None):
     `publish` sections, and the credentials of release.build and release.finalize, are that entry's alone,
     and every other job skips them (None: no entry releases, so the sections are judged against this one,
     and refused). `syncing`: when this job is the one that syncs (syncs()), the repositories of the catalog
-    (the names `sync.repository` may take); the `sync` section is judged only then, for the target (another
-    repository of the catalog, never the source) and the inputs (checks of the file with an `archive`). None:
-    this job does not sync, and the section is another entry's to judge."""
+    (the names `sync.repository` may take), each -> its model (catalog.repository_model()); the `sync`
+    section is judged only then, for the target (another repository of the catalog, never the source, under
+    basic rules: a release-model main takes no direct push) and the inputs (checks of the file with an
+    `archive`). None: this job does not sync, and the section is another entry's to judge."""
     if config is None:
         return []
     errors = []
@@ -350,6 +351,9 @@ def validate_against(config, entry, runs=None, releasing=None, syncing=None):
                           "another one")
         elif sync.get("repository") not in syncing:
             errors.append(f"sync.repository: '{sync.get('repository')}' is not a repository in catalog.yaml")
+        elif syncing[sync["repository"]] != "basic":
+            errors.append(f"sync.repository: '{sync['repository']}' is not a basic repository (rules: "
+                          f"{syncing[sync['repository']]}): its main accepts no direct push")
         for name in sync.get("inputs") or []:
             if name not in checks:
                 errors.append(f"sync.inputs: '{name}' is not a check in {CONFIG_FILE}")
@@ -609,7 +613,8 @@ def describe(catalog, job_id, repo_dir):
     # repository reads the same file and leaves the section alone.
     syncing = config is not None and "sync" in config and syncs(catalog, entry)
     errors = validate_against(config, entry, job_checks(config, entry, repository_checks, syncing), releasing,
-                              set(cat.repository_entries(catalog)) if syncing else None)
+                              {name: cat.repository_model(catalog, name) for name in cat.repository_entries(catalog)}
+                              if syncing else None)
     return {"entry": entry, "config": config, "errors": errors, "warnings": unclaimed_checks(config, entries),
             "repositoryChecks": repository_checks, "syncs": syncing}
 

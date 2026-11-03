@@ -34,7 +34,8 @@ CATALOG = {
     "repositories": [
         {"id": "dotnet-util", "release": "owner-tag", "tags": "[0-9]*", "checks": ["unit"],
          "credentials": ["nuget-key"]},
-        {"id": "shop-specs", "checks": ["lint"]},
+        # basic rules: its main takes pushes, so the sync tests copy into it.
+        {"id": "shop-specs", "checks": ["lint"], "rules": "basic"},
     ],
 }
 
@@ -536,6 +537,23 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("its own repository", errors[0])
 
+    def test_given_a_sync_to_a_release_model_repository_when_validated_then_it_is_an_error(self):
+        # A release-model main takes no direct push: the sync would fail on the first push to main after the
+        # merge. dotnet-util is a repositories entry with the default rules, shop-api an application that
+        # releases.
+        self.assertEqual(self.describe(text=SYNC_FILE.replace("shop-specs", "dotnet-util"))["errors"],
+                         ["sync.repository: 'dotnet-util' is not a basic repository (rules: release): its main "
+                          "accepts no direct push"])
+        errors = self.describe("shop-site", FRONTEND_FILE.replace("shop-specs", "shop-api"))["errors"]
+        self.assertEqual(errors, ["sync.repository: 'shop-api' is not a basic repository (rules: release): its "
+                                  "main accepts no direct push"])
+        # A repositories entry with basic rules, or an application that only deploys on branches, is a target.
+        value = catalog()
+        value["repositories"][0]["rules"] = "basic"
+        self.assertEqual(self.describe(text=SYNC_FILE.replace("shop-specs", "dotnet-util"), value=value)["errors"],
+                         [])
+        self.assertEqual(self.describe(text=SYNC_FILE.replace("shop-specs", "shop-frontend"))["errors"], [])
+
     def test_given_sync_inputs_that_are_not_archived_checks_when_validated_then_it_is_an_error(self):
         errors = self.describe(text=sync_inputs_of(SYNC_FILE, "x"))["errors"]
         self.assertEqual(errors, ["sync.inputs: 'x' is not a check in yggdrasil.yml"])
@@ -673,7 +691,8 @@ class EntryTests(unittest.TestCase):
         # policy of the pipeline checks a pull request only under "release".
         self.assertEqual(pc.entry_for(catalog(), "shop-site")["rules"], "basic")
         self.assertEqual(pc.entry_for(catalog(), "shop-api")["rules"], "release")
-        self.assertEqual(pc.entry_for(catalog(), "shop-specs")["rules"], "release")
+        # A repositories entry without `rules` takes the release model.
+        self.assertEqual(pc.entry_for(catalog(), "dotnet-util")["rules"], "release")
 
     def test_given_a_repository_entry_with_basic_rules_when_described_then_its_rules_are_basic(self):
         value = catalog()
