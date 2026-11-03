@@ -289,8 +289,10 @@ The file is also checked against the catalog entry of the repository (the applic
 - `release`, `publish` and the release's credentials are judged only for the repository's **releasing** entry; the
   other entries sharing the file (a library's docs site) skip them. When no entry of the repository releases, every
   one is judged on them, so the file cannot declare a release nobody makes.
-- `sync` is judged only for the repository's deciding entry, the one job that runs it; the other entries sharing
-  the file skip it ([below](#copying-files-into-another-repository-sync)).
+- `sync`'s `repository` and `inputs` are judged against the catalog only for the repository's deciding entry, the
+  one job that runs it; the other entries sharing the file skip them. Its shape (the required fields and the
+  `paths` rules) is the file's, like any field's, and a mistake there fails every job of the repository
+  ([below](#copying-files-into-another-repository-sync)).
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
 (`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,
@@ -377,14 +379,20 @@ sync:
 | `inputs` | `[]` | Checks whose archives hold some of the files, as `deploy.inputs` does for an image: each must be a check of the file with an `archive`. On a push that syncs they run even when their result could be reused or their `paths` skipped them, and their archives are unpacked over the checkout before anything is copied. |
 | `paths` | required | At least one `{from, to}`. `from` is a file or a directory of the checkout (with the inputs' archives in it); `to` is where it lands in `repository`. |
 
-`describe` refuses, before anything runs (and only for the deciding entry's job: the others leave the section to
-it):
+`describe` refuses, before anything runs, in every job of the repository (the section's shape, as for any field
+of the file):
 
-- a `repository` that is this one, or not a repository of the catalog;
-- an input that is not a check of the file, or has no `archive`;
+- a missing `repository` or `paths`, or an empty `paths`;
 - a `from` or `to` that is not a relative path of plain names joined by `/` (letters, digits, `.`, `_` and `-`),
   or has a `.`, `..` or `.git` part (in any case);
 - a `to` that is another one or lies inside another (`a` and `a/b`): each is replaced as a whole.
+
+and in the deciding entry's job alone (the others leave the target and the inputs to it):
+
+- a `repository` that is this one, or not a repository of the catalog;
+- a `repository` that is not under basic rules (an application that releases, or a `repositories` entry without
+  `rules: basic`): its `main` accepts no direct push;
+- an input that is not a check of the file, or has no `archive`.
 
 When the sync runs, the build fails, naming the path, and nothing is pushed, for:
 
@@ -394,17 +402,21 @@ When the sync runs, the build fails, naming the path, and nothing is pushed, for
 - a `from` that is a symbolic link, sits under one or holds one: a link could copy a file of the agent;
 - a `from` that holds a `.git`: git would store a nested repository as a bare link to one of its commits.
 
-Each `to` is **replaced wholesale** by its `from`: a file deleted at the source is deleted in the target, and
-nothing outside the `to` paths changes. The files are gathered on the CI agent; the commit and the push are made
-on the publish agent with the write credential, by `scripts/sync.py push` and git alone, so nothing of the
-repository runs where that credential is. A sync that changes nothing commits nothing and succeeds (`sync:
-nothing to change`). A push the target refuses (its `main` moved in the meantime) starts again from a fresh
-clone, three attempts in all.
+Each `to` is **replaced wholesale** by its `from`: a file deleted at the source is deleted in the target, a file
+a `.gitignore` names is copied all the same, and nothing outside the `to` paths changes. The `to` paths belong to
+the sync: an edit made by hand under one in the target is overwritten by the next sync. A `from` of the checkout
+is copied whole, dotfiles included, but the files Ant's default excludes name (`.gitignore`, `.gitattributes`,
+`.DS_Store` and other version-control and editor files) never leave a check in its archive (the archive is
+stashed as for `deploy.inputs`), so a sync input does not carry them. The files are gathered on the CI agent;
+the commit and the push are made on the publish agent with the write credential, by `scripts/sync.py push` and
+git alone, so nothing of the repository runs where that credential is. A sync that changes nothing commits
+nothing and succeeds (`sync: nothing to change`). A push the target refuses (its `main` moved in the meantime)
+starts again from a fresh clone, three attempts in all.
 
 The commit goes **directly to the target's `main`**, without a pull request, so the target must accept direct
 pushes from the account behind the write credential (`forge.jenkinsUser`; on GitHub, the GitHub App). A
 `rules: basic` repository does: its `main` refuses only force pushes and deletion. Under the release model `main`
-takes changes only through pull requests, and the push is refused.
+takes changes only through pull requests, so `describe` refuses such a target.
 
 A sync that fails **fails the build of `main`**, and the push's deploys, which come after it, do not run. It
 undoes nothing: a release is merged, tagged and published by its release pull request's build, before the push
