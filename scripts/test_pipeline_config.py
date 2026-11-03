@@ -27,6 +27,8 @@ CATALOG = {
              "releaseCredentials": ["sign-key"]},
             {"id": "shop-site", "name": "Site", "kind": "web", "health": "http://shop-site:8080/healthz",
              "repository": "shop-frontend", "environments": {"dev": {}}},
+            {"id": "shop-admin", "name": "Admin", "kind": "web", "health": "http://shop-admin:8080/healthz",
+             "repository": "shop-frontend", "environments": {"dev": {}}},
         ]},
     ],
     "repositories": [
@@ -80,6 +82,16 @@ publish:
     image: mcr.microsoft.com/dotnet/sdk:10.0
     run: ci/pack.sh
     packages: "out/*.nupkg"
+"""
+
+# A sync section: shop-specs gets unit's archive (out/**) and a docs directory of the source.
+SYNC = """\
+sync:
+  repository: shop-specs
+  inputs: [unit]
+  paths:
+    - {from: out/report, to: static/report}
+    - {from: docs/req, to: content/req}
 """
 
 
@@ -224,6 +236,63 @@ class LoadTests(unittest.TestCase):
         # yaml.safe_load must be in use: a python tag may not construct objects.
         with self.assertRaises(pc.ConfigError):
             parsed("checks: !!python/object/apply:os.getcwd []\n")
+
+    def test_given_a_sync_section_when_loaded_then_it_is_returned(self):
+        config = parsed(FULL + SYNC)
+        self.assertEqual(config["sync"]["repository"], "shop-specs")
+        self.assertEqual(config["sync"]["inputs"], ["unit"])
+        self.assertEqual(config["sync"]["paths"][0], {"from": "out/report", "to": "static/report"})
+
+    def test_given_a_sync_without_repository_or_paths_when_loaded_then_each_is_named(self):
+        with self.assertRaises(pc.ConfigError) as caught:
+            parsed("sync: {}\n")
+        self.assertEqual(sorted(caught.exception.errors), ["sync.paths: required", "sync.repository: required"])
+        # [] would copy nothing: say so in the file, as for a check's paths.
+        with self.assertRaises(pc.ConfigError) as caught:
+            parsed("sync: {repository: shop-specs, paths: []}\n")
+        self.assertEqual(len(caught.exception.errors), 1, caught.exception.errors)
+        self.assertTrue(caught.exception.errors[0].startswith("sync.paths: must list at least one"))
+
+    def test_given_a_sync_of_the_wrong_shape_when_loaded_then_each_names_its_field(self):
+        for text, field in (
+            ("sync: shop-specs\n", "sync"),
+            ("sync: {repository: [a], paths: [{from: a, to: b}]}\n", "sync.repository"),
+            ("sync: {repository: r, inputs: unit, paths: [{from: a, to: b}]}\n", "sync.inputs"),
+            ("sync: {repository: r, paths: {from: a, to: b}}\n", "sync.paths"),
+            ("sync: {repository: r, paths: [a/b]}\n", "sync.paths[0]"),
+            ("sync: {repository: r, paths: [{from: a}]}\n", "sync.paths[0].to"),
+            ("sync: {repository: r, paths: [{to: a}]}\n", "sync.paths[0].from"),
+            ("sync: {repository: r, paths: [{from: a, to: b, mode: x}]}\n", "sync.paths[0].mode"),
+            ("sync: {repository: r, branch: main, paths: [{from: a, to: b}]}\n", "sync.branch"),
+            ("sync: {repository: r, paths: [{from: 3, to: b}]}\n", "sync.paths[0].from"),
+        ):
+            with self.subTest(field=field), self.assertRaises(pc.ConfigError) as caught:
+                parsed(text)
+            self.assertIn(field, str(caught.exception))
+
+    def test_given_unsafe_or_overlapping_paths_when_loaded_then_each_is_refused(self):
+        # The second item is the bad one, so the message must name its index.
+        for value in ("/abs", "a/../b", "..", ".", "a//b", "a\\b", ".git/x", "x/.git", ".GIT/x", "", "a\n", "a b",
+                      "a/"):
+            for field, other in (("from", "to"), ("to", "from")):
+                item = {field: value, other: "fine"}
+                with self.subTest(value=value, field=field), self.assertRaises(pc.ConfigError) as caught:
+                    parsed("sync: {repository: r, paths: [{from: ok, to: ok}, " + json.dumps(item) + "]}\n")
+                self.assertEqual(len(caught.exception.errors), 1, caught.exception.errors)
+                self.assertTrue(caught.exception.errors[0].startswith(f"sync.paths[1].{field}: "),
+                                caught.exception.errors)
+        for first, second in (("site", "site/api"), ("site/api", "site"), ("site", "site"), ("a/b", "a/b/c/d")):
+            with self.subTest(first=first, second=second), self.assertRaises(pc.ConfigError) as caught:
+                parsed(f"sync: {{repository: r, paths: [{{from: a, to: {first}}}, {{from: b, to: {second}}}]}}\n")
+            self.assertEqual(len(caught.exception.errors), 1, caught.exception.errors)
+            self.assertIn("overlap", caught.exception.errors[0])
+
+    def test_given_safe_paths_when_loaded_then_they_are_accepted(self):
+        # A name that only starts like another is not inside it, and dots are fine inside a name.
+        text = ("sync: {repository: r, paths: [{from: out/report.v2, to: site}, {from: .github, to: site-api},"
+                " {from: docs/a_b-c, to: site.old/x}, {from: a..b, to: .gitignore.d}]}\n")
+        self.assertEqual(len(parsed(text)["sync"]["paths"]), 4)
+
 
 
 class TemplateTests(unittest.TestCase):
@@ -423,6 +492,161 @@ class ValidateAgainstTests(unittest.TestCase):
                                      "dotnet-util"), [])
 
 
+# shop-api's file with a sync: unit's archive goes to shop-specs. shop-api is the only entry of its repository.
+SYNC_FILE = FULL.split("publish:")[0] + SYNC
+# shop-frontend has two entries, shop-site (the deciding one: nothing releases, no repositories entry, first of the
+# catalog) and shop-admin. build is the one check of the file, archived.
+FRONTEND_FILE = "checks:\n  build: {image: x, run: y, archive: \"out/**\"}\n" + SYNC.replace("[unit]", "[build]")
+
+
+def sync_inputs_of(text, name):
+    """`text` with the one input `name` for its sync (the deploy inputs of FULL stay as they are)."""
+    return text.replace("sync:\n  repository: shop-specs\n  inputs: [unit]\n",
+                        f"sync:\n  repository: shop-specs\n  inputs: [{name}]\n")
+
+
+class SyncTests(unittest.TestCase):
+    """A sync section is the deciding entry of its repository's alone: only that job copies files on a push to
+    main, so only it is judged on the section and the checks it names."""
+
+    def describe(self, job="shop-api", text=SYNC_FILE, value=None):
+        return pc.describe(catalog() if value is None else value, job, repo(text))
+
+    def plan(self, job, text, *flags):
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-plan-"))
+        (directory / "statuses").write_text("", encoding="utf-8")
+        return run_cli("plan", job, str(repo(text)), "--statuses", str(directory / "statuses"), "--changed", "-",
+                       "--branch", "main", *flags)
+
+    def test_given_a_valid_sync_when_validated_then_there_are_no_errors(self):
+        document = self.describe()
+        self.assertEqual((document["errors"], document["warnings"]), ([], []))
+        self.assertTrue(document["syncs"])
+
+    def test_given_a_sync_to_an_unknown_or_its_own_repository_when_validated_then_it_is_an_error(self):
+        self.assertEqual(self.describe(text=SYNC_FILE.replace("shop-specs", "nope"))["errors"],
+                         ["sync.repository: 'nope' is not a repository in catalog.yaml"])
+        errors = self.describe(text=SYNC_FILE.replace("shop-specs", "shop-api"))["errors"]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("its own repository", errors[0])
+        # A repository of the catalog that is not an entry's id is a target too: shop-frontend is two apps'.
+        self.assertEqual(self.describe(text=SYNC_FILE.replace("shop-specs", "shop-frontend"))["errors"], [])
+        # The source is the job's repository, not its id: shop-site builds shop-frontend.
+        errors = self.describe("shop-site", FRONTEND_FILE.replace("shop-specs", "shop-frontend"))["errors"]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("its own repository", errors[0])
+
+    def test_given_sync_inputs_that_are_not_archived_checks_when_validated_then_it_is_an_error(self):
+        errors = self.describe(text=sync_inputs_of(SYNC_FILE, "x"))["errors"]
+        self.assertEqual(errors, ["sync.inputs: 'x' is not a check in yggdrasil.yml"])
+        errors = self.describe(text=sync_inputs_of(SYNC_FILE, "lint"))["errors"]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("sync.inputs: 'lint'", errors[0])
+        self.assertIn("has no archive", errors[0])
+        # inputs are optional: a sync of the repository's own files alone needs no check.
+        self.assertEqual(self.describe(text=sync_inputs_of(SYNC_FILE, "").replace("  inputs: []\n", ""))["errors"], [])
+
+    def test_given_the_deciding_entry_when_described_then_it_syncs_and_another_entry_does_not(self):
+        self.assertTrue(self.describe("shop-site", FRONTEND_FILE)["syncs"])
+        self.assertFalse(self.describe("shop-admin", FRONTEND_FILE)["syncs"])
+        # Without a sync section nobody syncs, deciding entry or not; nor does a repository without a file.
+        for job in ("shop-site", "shop-admin"):
+            with self.subTest(job=job):
+                self.assertFalse(self.describe(job, "checks:\n  build: {image: x, run: y}\n")["syncs"])
+        self.assertFalse(pc.describe(catalog(), "shop-site", repo())["syncs"])
+
+    def test_given_an_invalid_file_when_described_then_it_does_not_sync(self):
+        document = self.describe(text="sync: {}\n")
+        self.assertEqual((document["config"], document["syncs"]), (None, False))
+
+    def test_given_a_sync_of_another_entry_when_validated_then_this_job_is_not_judged_on_it(self):
+        # Only the deciding entry syncs: for shop-admin the section may even name what does not exist.
+        text = FRONTEND_FILE.replace("shop-specs", "nope").replace("[build]", "[x]")
+        self.assertEqual(self.describe("shop-admin", text)["errors"], [])
+        self.assertEqual(len(self.describe("shop-site", text)["errors"]), 2)
+
+    def test_given_sync_input_credentials_when_validated_then_the_syncing_entry_must_allow_them(self):
+        text = FRONTEND_FILE.replace("y, archive", "y, credentials: {TOKEN: nuget-key}, archive")
+        errors = self.describe("shop-site", text)["errors"]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("checks.build.credentials.TOKEN", errors[0])
+        self.assertIn("shop-site", errors[0])
+        # The entry that does not sync never runs it, so it need not allow it.
+        self.assertEqual(self.describe("shop-admin", text)["errors"], [])
+        # Allowed by the syncing entry: fine.
+        value = catalog()
+        value["systems"][0]["applications"][1]["credentials"] = ["nuget-key"]
+        self.assertEqual(self.describe("shop-site", text, value)["errors"], [])
+        # Without the sync, no entry runs the check: its credential is nobody's to judge.
+        self.assertEqual(self.describe("shop-site", text.split("sync:")[0])["errors"], [])
+
+    def test_given_a_sync_input_no_entry_checks_when_described_then_it_is_not_unclaimed(self):
+        # The deciding entry runs the sync inputs on main, as an application runs its deploy inputs.
+        text = SYNC_FILE.replace("checks:\n", "checks:\n  site: {image: x, run: y, archive: out/**}\n")
+        self.assertEqual(self.describe(text=sync_inputs_of(text, "site"))["warnings"], [])
+        self.assertEqual(self.describe(text=text)["warnings"],
+                         ["checks.site is not in any catalog entry of shop-api: it never runs"])
+
+    def test_given_syncing_when_planned_then_the_sync_inputs_are_needed_after_the_checks(self):
+        config = {"checks": {name: {"image": "x", "run": "y"} for name in ("unit", "lint", "site", "docs", "pages")},
+                  "deploy": {"inputs": ["site"]},
+                  "sync": {"repository": "r", "inputs": ["docs", "lint", "pages", "docs"], "paths": []}}
+        entry = {"id": "shop-api", "checks": ["unit", "lint"]}
+        # The entry's checks, then the inputs not among them, each once, in the file's order.
+        self.assertEqual(pc.needed_checks(config, entry, syncing=True), ["unit", "lint", "docs", "pages"])
+        self.assertEqual(pc.needed_checks(config, entry), ["unit", "lint"])
+        # The deploy inputs come before the sync inputs.
+        self.assertEqual(pc.needed_checks(config, entry, deploying=True, syncing=True),
+                         ["unit", "lint", "site", "docs", "pages"])
+        self.assertEqual(pc.needed_checks(config, entry, release_checks=["pages"], syncing=True),
+                         ["pages", "docs", "lint"])
+        # No sync section: nothing to add.
+        self.assertEqual(pc.needed_checks({"checks": config["checks"]}, entry, syncing=True), ["unit", "lint"])
+        config["sync"]["inputs"].append("e2e")
+        with self.assertRaises(pc.ConfigError) as caught:
+            pc.needed_checks(config, entry, syncing=True)
+        self.assertIn("e2e", str(caught.exception))
+
+    def test_given_syncing_when_checks_are_planned_then_the_sync_inputs_are_planned_too(self):
+        config = {"checks": copy.deepcopy(CHECKS), "sync": {"repository": "r", "inputs": ["unit"], "paths": []}}
+        entry = {"id": "shop-api", "checks": ["lint"]}
+        self.assertEqual([e["name"] for e in pc.plan_checks(config, entry, [], None, "main", "jenkins")], ["lint"])
+        planned = pc.plan_checks(config, entry, [], None, "main", "jenkins", syncing=True)
+        self.assertEqual([e["name"] for e in planned], ["lint", "unit"])
+
+    def test_given_the_syncing_flag_when_the_cli_plans_then_the_inputs_are_in_the_plan(self):
+        text = ("checks:\n  unit: {image: x, run: y}\n  lint: {image: x, run: y}\n"
+                "  docs: {image: x, run: y, archive: out/**}\n  site: {image: x, run: y, archive: out/**}\n"
+                "deploy:\n  inputs: [docs]\n"
+                "sync: {repository: shop-specs, inputs: [site], paths: [{from: out, to: static}]}\n")
+
+        def names(*flags):
+            status, out, err = self.plan("shop-api", text, *flags)
+            self.assertEqual((status, err), (0, ""))
+            return [entry["name"] for entry in json.loads(out)]
+
+        self.assertEqual(names(), ["unit", "lint"])
+        self.assertEqual(names("--syncing"), ["unit", "lint", "site"])
+        self.assertEqual(names("--deploying"), ["unit", "lint", "docs"])
+        # The flags in either order, the deploy inputs first.
+        self.assertEqual(names("--deploying", "--syncing"), ["unit", "lint", "docs", "site"])
+        self.assertEqual(names("--syncing", "--deploying"), ["unit", "lint", "docs", "site"])
+        # The flag twice is a usage error.
+        self.assertEqual(run_cli("plan", "shop-api", "/tmp", "--statuses", "a", "--changed", "-", "--branch", "b",
+                                 "--syncing", "--syncing")[0], 2)
+
+    def test_given_the_syncing_flag_when_a_job_that_does_not_sync_plans_then_it_is_refused(self):
+        # --syncing is the deciding entry's alone, as --release is the releasing job's: it is not widened.
+        status, out, err = self.plan("shop-admin", FRONTEND_FILE, "--syncing")
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("shop-admin does not sync", err)
+        # The deciding entry plans the same file without it as before.
+        status, out, err = self.plan("shop-site", FRONTEND_FILE)
+        self.assertEqual((status, err, json.loads(out)), (0, "", []))
+        status, out, err = self.plan("shop-site", FRONTEND_FILE, "--syncing")
+        self.assertEqual((status, err, [e["name"] for e in json.loads(out)]), (0, "", ["build"]))
+
+
 class EntryTests(unittest.TestCase):
     def test_given_a_library_entry_when_described_then_it_is_owner_tagged_with_its_pattern(self):
         self.assertEqual(pc.entry_for(catalog(), "dotnet-util"), {
@@ -481,7 +705,7 @@ class CliTests(unittest.TestCase):
         status, out, err = run_cli("describe", "dotnet-util", str(repo("checks:\n  unit: {image: x, run: y}\n")))
         self.assertEqual((status, err), (0, ""))
         document = json.loads(out)  # one document, nothing else on stdout
-        self.assertEqual(set(document), {"entry", "config", "errors", "warnings", "repositoryChecks"})
+        self.assertEqual(set(document), {"entry", "config", "errors", "warnings", "repositoryChecks", "syncs"})
         self.assertEqual((document["warnings"], document["repositoryChecks"]), ([], ["unit"]))
         self.assertEqual(document["entry"]["release"], "owner-tag")
         self.assertEqual(document["config"]["checks"]["unit"]["run"], "y")
