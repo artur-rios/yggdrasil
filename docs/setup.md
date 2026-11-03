@@ -1000,9 +1000,10 @@ forgejo_user generate-access-token --username jenkins --token-name jenkins --sco
 | `jenkins-ci` (the name is fixed) | **Read** collaborator | `read:repository`, `read:user` and `read:organization` (`--scopes read:repository,read:user,read:organization`) | `FORGE_READ_TOKEN_FILE`, the credential `forge-read` |
 | `renovate` | **Write** collaborator | `write:repository`, `write:issue`, `read:user` and `read:organization` (`--scopes write:repository,write:issue,read:user,read:organization`) | `RENOVATE_TOKEN` of [9.9](#99-renovate) |
 
-`forge-write` changes the git server: statuses, merges, tags, releases, uploads. Jenkins binds it on the
+`forge-write` changes the git server: statuses, merges, tags, releases, uploads, syncs. Jenkins binds it on the
 controller, to post statuses, and on the **publish agent** (`forge.publishAgent`: the deploy agent of the last
-release environment, unless you set it) for the steps that merge, tag, release and upload. The `ci` and
+release environment, unless you set it) for the steps that merge, tag, release and upload, and for the push of a
+[`sync`](catalog.md#copying-files-into-another-repository-sync) to another repository's `main`. The `ci` and
 `release` agents and the checks never hold it: they read with `forge-read`.
 
 Both Jenkins tokens need `read:user` and `read:organization` besides their repository scope: when Jenkins scans a

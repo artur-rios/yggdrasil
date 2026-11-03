@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **A repository can copy files into another one on pushes to `main`.** A `sync` section in `yggdrasil.yml` names
+  another repository of the catalog and the paths to copy (`{from, to}`), from the checkout or from the archives of
+  the checks it lists in `inputs`. On a push to `main` whose checks all passed, the job of the repository's deciding
+  entry replaces each `to` wholesale with its `from` and pushes one commit, `docs: sync <repository> <version>`,
+  directly to the target's `main`. The target must be a basic repository (a `repositories` entry with
+  `rules: basic`, or an application that only deploys on branches), whose `main` takes the publish account's
+  direct pushes; `describe` refuses any other. An unchanged sync commits nothing. The files are gathered on the
+  CI agent and pushed from the publish agent, where only `scripts/sync.py push` and git run with the write
+  credential. A missing or empty `from`, a link or a nested `.git` fails the build of `main`, which then deploys
+  nothing; a release already published stays as it is:
+  [catalog.md, Copying files into another repository](docs/catalog.md#copying-files-into-another-repository-sync).
+
 ### Removed
 
 - **The `heimdall-api-docs` application.** Heimdall's documentation moved to the heimdall-docs site, so heimdall-api's
