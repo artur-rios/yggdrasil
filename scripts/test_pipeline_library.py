@@ -662,7 +662,7 @@ class PipelineLibraryTests(unittest.TestCase):
         start, end = self.lib.functions["planChecks"]
         self.assertRegex(self.lib.code[start:end],
                          r"List wanted = neededChecks\(state\.entry, state\.config, deploying,\s*"
-                         r"releasing \? state\.repositoryChecks as List : null\)\s*"
+                         r"releasing \? state\.repositoryChecks as List : null, syncing && state\.syncs\)\s*"
                          r"String problem = planProblem\(planned, state\.entry\) \?: planCoverage\(planned, wanted\)")
         start, end = self.lib.functions["planCoverage"]
         body = self.lib.code[start:end]
@@ -694,12 +694,12 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("\"YGG_RELEASING=${releasing ? '1' : ''}\"", body)
         self.assertRegex(body, r'if \[ -n "\$YGG_RELEASING" \]; then set -- "\$@" --release; fi')
         self.assertRegex(body, r"neededChecks\(state\.entry, state\.config, deploying,\s*"
-                               r"releasing \? state\.repositoryChecks as List : null\)")
+                               r"releasing \? state\.repositoryChecks as List : null, ")
         body = lib.code[slice(*lib.functions["neededChecks"])]
         self.assertRegex(body, r"releaseChecks != null \? releaseChecks : \(entry\.checks \?: \[\]\)")
         body = lib.code[slice(*lib.functions["prepare"])]
         self.assertIn("state.repositoryChecks = document.repositoryChecks", body)
-        self.assertIn("planChecks(ctx, state, mode, deploying, releasing)", body)
+        self.assertIn("planChecks(ctx, state, mode, deploying, releasing, ", body)
         body = lib.code[slice(*lib.functions["describeCheckout"])]
         self.assertIn("repositoryChecks: document.repositoryChecks", body)
 
@@ -865,6 +865,102 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("List inputs = state.config != null ? deployInputs(state.config) : []", body)
         self.assertRegex(body, r"deployTo\(app, environment, version, state\.sha, false, ctx\.repo, inputs, null, note\)")
         self.assertNotIn("ctx.repo, [], null, note)", body)
+
+    def test_given_the_sync_when_read_then_its_push_runs_only_on_the_publish_agent_with_the_write_token(self):
+        # The push is the only step of a sync that holds the write token, and nothing of the repository runs
+        # next to it: the files arrive as a stash, and only sync.py push (and the git it calls) runs there.
+        lib = self.lib
+        publish = lib.call_blocks("onPublishAgent")
+        pushes = [m.start() for m in re.finditer(r"sync\.py push", lib.code)]
+        self.assertTrue(pushes, "sync.py push is never run")
+        for offset in pushes:
+            where = f"line {lib.line(offset)}"
+            blocks = [(start, end) for start, end in publish if start <= offset <= end]
+            self.assertEqual(len(blocks), 1, f"{where}: sync.py push outside a closure given to onPublishAgent")
+            (start, end), = blocks
+            call = lib.code.rindex("onPublishAgent(", 0, start)
+            self.assertEqual(lib.code[call:start].strip(), "onPublishAgent(ctx, true, false)", where)
+            self.assertEqual(lib.function_at(offset), "syncRepository", where)
+            # Its one script is the push: no check, no command of the repository's file.
+            scripts = [m.end() for m in re.finditer(r"\bsh\b\s*(\(\s*)?(script\s*:\s*)?", lib.masked[start:end])]
+            self.assertEqual(len(scripts), 1, f"{where}: the push's closure runs more than the push")
+            quote, script = lib.string_at(start + scripts[0])
+            self.assertEqual(quote, "'", where)
+            self.assertTrue(script.startswith("python3 yggdrasil/scripts/sync.py push "), where)
+            reached = lib.reachable(start, end)
+            for forbidden in ("runCheck", "withCheckCredentials", "checkoutCommit", "tool", "toolStatus"):
+                self.assertNotIn(forbidden, reached, f"{where}: the push's closure reaches {forbidden}")
+            closure = lib.code[start:end]
+            self.assertIn("unstash 'sync-files'", closure, where)
+            self.assertIn('"YGG_SYNC_URL=${env.FORGE_URL}/${env.GITHUB_OWNER}/${repository}.git"', closure, where)
+        # The target is checked before it reaches a URL.
+        body = lib.code[slice(*lib.functions["syncRepository"])]
+        self.assertIn("!(repository ==~ REPOSITORY_ID)", body)
+        self.assertLess(body.index("!(repository ==~ REPOSITORY_ID)"), body.index("YGG_SYNC_URL"))
+
+    def test_given_the_sync_when_read_then_gathering_runs_on_the_ci_agent_without_the_write_token(self):
+        # The files are gathered where the repository's code runs anyway, with the read credential only, and
+        # cross to the publish agent as a stash (with the commit message, written next to them).
+        lib = self.lib
+        self.assertRegex(lib.code, r"void syncRepository\(Map ctx, Map state\)")
+        start, end = lib.functions["syncRepository"]
+        body = lib.code[start:end]
+        self.assertIn('stage("Sync to ${repository}")', body)
+        self.assertNotRegex(body, r"withForgeToken\(\s*'write'")
+        ci = [(s, e) for label, s, e in lib.node_blocks() if label == "'ci'" and start < s < end]
+        self.assertEqual(len(ci), 1, "syncRepository has one node('ci') block")
+        gathers = [m.start() for m in re.finditer(r"sync\.py gather", lib.code)]
+        self.assertTrue(gathers, "sync.py gather is never run")
+        for offset in gathers:
+            self.assertTrue(lib.inside(offset, ci), f"line {lib.line(offset)}: sync.py gather outside syncRepository's node('ci')")
+        (s, e), = ci
+        block = lib.code[s:e]
+        code = lib.code_reached(s, e, leaving_out=("forgeCredential", "withForgeToken"))
+        self.assertEqual(set(re.findall(r"withForgeToken\(\s*'(\w+)'", code)), {"read"})
+        self.assertNotIn("onPublishAgent", lib.reachable(s, e))
+        self.assertLess(block.index("checkoutCommit(ctx, state.sha)"), block.index('unstash "check-${name}"'))
+        self.assertLess(block.index('unstash "check-${name}"'), block.index("sync.py gather"))
+        self.assertIn("for (String name : syncInputs(state.config))", block)
+        self.assertRegex(block, r'sync\.py message "\$YGG_REPO" app "\$YGG_TMP/sync\.json" >"\$YGG_SYNC_DIR/message\.txt"')
+        self.assertIn('"YGG_REPO=${ctx.repo}"', block)
+        self.assertLess(block.index("sync.py gather"), block.index("stash name: 'sync-files'"))
+        # The push comes after, on the publish agent.
+        self.assertLess(body.index("node('ci')"), body.index("onPublishAgent(ctx, true, false)"))
+        body = lib.code[slice(*lib.functions["syncInputs"])]
+        self.assertIn(".archive", body)
+
+    def test_given_a_branch_build_when_read_then_it_syncs_only_on_main_after_the_checks(self):
+        # A push to main whose checks all passed, for the job describe says syncs: never a pull request, another
+        # branch, or a DEPLOY_TO build (which runs no check).
+        lib = self.lib
+        body = lib.code[slice(*lib.functions["branchBuild"])]
+        self.assertIn("boolean syncing = branch == 'main' && !deployToParameter", body)
+        self.assertIn("prepare(ctx, 'push', targets as boolean, false, syncing)", body)
+        self.assertRegex(body, r"if \(syncing && state\.syncs\) \{\s*syncRepository\(ctx, state\)\s*\}")
+        self.assertEqual(body.count("syncRepository("), 1, "one call, behind the guard")
+        failed = body.index('error "Failed: ${failed.join(\', \')}. Nothing is deployed."')
+        self.assertLess(failed, body.index("syncRepository("))
+        self.assertLess(body.index("syncRepository("), body.index("if (!targets)"))
+        callers = {lib.function_at(m.start()) for m in re.finditer(r"(?<!void )\bsyncRepository\(", lib.masked)}
+        self.assertEqual(callers, {"branchBuild"})
+        # describe's syncs, kept by prepare.
+        self.assertIn("syncs: document.syncs == true", lib.code[slice(*lib.functions["describeCheckout"])])
+        self.assertIn("state.syncs = document.syncs", lib.code[slice(*lib.functions["prepare"])])
+
+    def test_given_syncing_when_planned_then_sync_inputs_are_forced_to_run(self):
+        # Their archives are what the sync copies: a reused or skipped check would leave no stash.
+        lib = self.lib
+        body = lib.code[slice(*lib.functions["planChecks"])]
+        self.assertIn("\"YGG_SYNCING=${syncing ? '1' : ''}\"", body)
+        self.assertRegex(body, r'if \[ -n "\$YGG_SYNCING" \]; then set -- "\$@" --syncing; fi')
+        self.assertRegex(body, r"neededChecks\(state\.entry, state\.config, deploying,\s*"
+                               r"releasing \? state\.repositoryChecks as List : null, syncing && state\.syncs\)")
+        self.assertRegex(body, r"if \(syncing && state\.syncs\) \{\s*List inputs = syncInputs\(state\.config\)\s*"
+                               r"for \(Map check : planned\) \{\s*if \(check\.name in inputs && check\.action != 'run'\) \{\s*"
+                               r"check\.action = 'run'")
+        body = lib.code[slice(*lib.functions["neededChecks"])]
+        self.assertRegex(body, r"if \(syncing\) \{\s*names\.addAll\(\(\(config\.sync \?: \[:\]\)\.inputs \?: \[\]\) as List\)")
+        self.assertIn("planChecks(ctx, state, mode, deploying, releasing, syncing)", lib.code[slice(*lib.functions["prepare"])])
 
 
 class ReleaseLibraryTests(unittest.TestCase):

@@ -61,7 +61,10 @@
 //                               packages that stopped half way (releaseResume)
 //   push to develop, main or release/* (and master, under the basic rules), with yggdrasil.yml
 //                            -> the checks, then the branch's deploys only if every check passed; a
-//                               check named in deploy.inputs hands its archive to the image build
+//                               check named in deploy.inputs hands its archive to the image build. On
+//                               main, before the deploys, the job that syncs (yggdrasil.yml's sync, the
+//                               repository's deciding entry) copies its files into another repository of
+//                               the catalog and pushes them to its main (syncRepository)
 //   branch pushed            -> every environment with trigger: branch whose `branches` glob matches
 //   "Build with Parameters"  -> DEPLOY_TO: one environment with trigger: manual or branch (on a
 //                               discovered branch), whatever the branch would trigger; no checks
@@ -83,8 +86,8 @@
 // ./yggdrasil in the workspace), so a deploy or a check by hand runs the same code: deploy.sh,
 // branch-policy.sh, run-check.sh, pipeline_config.py, forge.sh (the git server's interface for Forgejo
 // and GitHub alike), github.sh (GitHub Actions), publish-release.sh with release_notes.py (a release and
-// its notes) and nuget-push.sh (a library's packages). YGG_GITHUB_SH, in an agent's environment (set by
-// the live tests only), replaces scripts/github.sh.
+// its notes), nuget-push.sh (a library's packages) and sync.py (a sync). YGG_GITHUB_SH, in an agent's
+// environment (set by the live tests only), replaces scripts/github.sh.
 //
 // Credentials, the rules this file keeps (scripts/test_pipeline_library.py checks them):
 //   - the forge's own credential ids are named in forgeCredential() only;
@@ -92,8 +95,8 @@
 //     on GitHub the ci agent reads with github-read when it is configured;
 //   - the write credential is bound by reportStatus(), which posts from the controller, outside any
 //     node(), and by onPublishAgent(), on the publish agent (forge.publishAgent: merges, tags, releases,
-//     uploads), the one agent that also gets the GitHub App for a release. Neither the ci nor the
-//     release agent ever holds either: checkouts and reads there use the read credential, and the
+//     uploads, a sync's push), the one agent that also gets the GitHub App for a release. Neither the ci
+//     nor the release agent ever holds either: checkouts and reads there use the read credential, and the
 //     release agent's builds and finalize steps only the ids release.build.credentials and
 //     release.finalize.credentials name (allow-listed against the entry's `releaseCredentials`, never its
 //     checks' `credentials`). Files cross between the agents as stashes;
@@ -104,6 +107,9 @@
 //     the NuGet key (withCheckCredentials);
 //   - the NuGet key (nuget-api-key) is bound by withNugetKey() only, on the release agent, around
 //     scripts/nuget-push.sh and nothing else: no repository code runs in that step (pushPackages);
+//   - a sync's files are gathered on the ci agent with the read credential and cross to the publish agent
+//     as a stash, where only scripts/sync.py push and the git it runs have the write token: no repository
+//     code, and no command its file names (syncRepository);
 //   - no value reaches a shell script through Groovy interpolation: every `sh` script is a single-
 //     quoted literal, and values go in as environment variables (withEnv), quoted "$VAR" there.
 
@@ -390,6 +396,9 @@ void branchBuild(Map ctx, List plan) {
   String app = ctx.app
   String branch = env.BRANCH_NAME
   boolean deployToParameter = params.DEPLOY_TO as boolean
+  // A push to main copies yggdrasil.yml's sync into its repository once every check passed, when this job is
+  // the one that syncs (describe's syncs). Never another branch, and never a DEPLOY_TO build: it runs no check.
+  boolean syncing = branch == 'main' && !deployToParameter
   List targets = deployToParameter
     ? plan.findAll { it.id == params.DEPLOY_TO && it.trigger in ['manual', 'branch'] }
     : plan.findAll { it.trigger == 'branch' && matchesAny(it.branches, branch) }
@@ -400,7 +409,7 @@ void branchBuild(Map ctx, List plan) {
   String checkedSha = null
   // "Build with Parameters" deploys without checks, as it always did.
   if (!deployToParameter && (branch in checkedBranches(ctx.rules) || branch.startsWith('release/'))) {
-    Map state = prepare(ctx, 'push', targets as boolean)
+    Map state = prepare(ctx, 'push', targets as boolean, false, syncing)
     checkedSha = state.sha
     if (state.config != null) {
       List failed = runChecks(ctx, state)
@@ -410,6 +419,9 @@ void branchBuild(Map ctx, List plan) {
       // The next push compares its changes with this commit (lastCheckedCommit).
       env.YGG_CHECKED_COMMIT = state.sha
       inputs = deployInputs(state.config)
+      if (syncing && state.syncs) {
+        syncRepository(ctx, state)
+      }
     }
   }
 
@@ -423,21 +435,84 @@ void branchBuild(Map ctx, List plan) {
   }
 }
 
+// Stage Sync to <repository>, on a push to main whose checks passed, for the job that syncs (describe's
+// syncs): yggdrasil.yml's sync.paths copied into another repository of the catalog and pushed to its main
+// (scripts/sync.py). In two halves, so the write token never sits next to the repository's code:
+//   - on the ci agent, with the read credential: the checked commit in ./app, the archives of sync.inputs
+//     (stashed by their checks, check-<name>) unstashed over it, then `sync.py gather` (each `from` staged;
+//     a missing or empty one, a link or a nested .git fails the build) and `sync.py message` (the commit
+//     message) into the scratch directory, stashed as sync-files;
+//   - on the publish agent, with the write token: sync-files unstashed and `sync.py push` -- it and git
+//     alone, nothing of the repository and no command its file names -- which commits only what changed
+//     and retries a push the target refused.
+// The target's name, validated by pipeline_config.py, is looked at again before it goes into a URL. A
+// failure fails the build of main; nothing that came before (a release merged, tagged and published) is
+// undone.
+void syncRepository(Map ctx, Map state) {
+  String repository = state.config.sync.repository
+  if (!(repository ==~ REPOSITORY_ID)) {
+    error "sync.repository: '${printable(repository)}' is not a repository name"
+  }
+  requirePublishAgent(ctx)
+  stage("Sync to ${repository}") {
+    node('ci') {
+      try {
+        checkoutCommit(ctx, state.sha)
+        dir('app') {
+          for (String name : syncInputs(state.config)) {
+            unstash "check-${name}"
+          }
+        }
+        String tmp = scratch()
+        dir(tmp) {
+          writeFile file: 'sync.json', text: JsonOutput.toJson(state.config.sync)
+        }
+        withEnv(["YGG_TMP=${tmp}", "YGG_SYNC_DIR=${tmp}/sync-files", "YGG_REPO=${ctx.repo}"]) {
+          sh(script: '''
+            rm -rf "$YGG_SYNC_DIR"
+            python3 yggdrasil/scripts/sync.py gather "$YGG_TMP/sync.json" app "$YGG_SYNC_DIR"
+            python3 yggdrasil/scripts/sync.py message "$YGG_REPO" app "$YGG_TMP/sync.json" >"$YGG_SYNC_DIR/message.txt"
+          ''')
+        }
+        // Every file, dotfiles too: Ant's default excludes would leave out a .gitignore or .gitattributes of a
+        // copied tree (gather refused any .git already).
+        dir("${tmp}/sync-files") {
+          stash name: 'sync-files', useDefaultExcludes: false
+        }
+      } finally {
+        cleanScratch()
+        cleanWs()
+      }
+    }
+    onPublishAgent(ctx, true, false) {
+      String staged = "${scratch()}/sync-files"
+      dir(staged) {
+        unstash 'sync-files'
+      }
+      withEnv(["YGG_SYNC_DIR=${staged}", "YGG_SYNC_URL=${env.FORGE_URL}/${env.GITHUB_OWNER}/${repository}.git"]) {
+        sh(script: 'python3 yggdrasil/scripts/sync.py push "$YGG_SYNC_DIR" "$YGG_SYNC_URL" "$YGG_SYNC_DIR/message.txt"')
+      }
+    }
+  }
+}
+
 // ---- yggdrasil.yml, the plan ----
 
 // On the ci agent: checks out the commit, describes the repository (pipeline_config.py describe) and,
 // for a pull request into develop or main or a push to develop, main or release/* (master too, under the
 // basic rules: checkedBranches), plans its checks.
-// Returns [sha, entry, config (null without yggdrasil.yml), plan (null when not planned)]. A file the
-// catalog does not allow (an unknown field, a credential not in the entry's `credentials`, ...) fails
-// the build here, before anything of it runs.
+// Returns [sha, entry, config (null without yggdrasil.yml), syncs (describe's: this job runs the file's
+// sync), plan (null when not planned)]. A file the catalog does not allow (an unknown field, a credential
+// not in the entry's `credentials`, ...) fails the build here, before anything of it runs.
 //
 // mode: 'pull-request' (changes against the target branch) or 'push' (against the last commit whose
 // checks passed). deploying: the build deploys afterwards, so the checks named in deploy.inputs run
 // even when they could be reused or skipped -- their archive goes into the image. releasing: a release
 // pull request of the job that releases, which runs every check main requires of the repository
-// (describe's repositoryChecks) instead of its own entry's.
-Map prepare(Map ctx, String mode, boolean deploying = false, boolean releasing = false) {
+// (describe's repositoryChecks) instead of its own entry's. syncing: a push to main, which syncs
+// afterwards when the job is the one that syncs (state.syncs), so sync.inputs run the same way -- their
+// archives are what the sync copies.
+Map prepare(Map ctx, String mode, boolean deploying = false, boolean releasing = false, boolean syncing = false) {
   // The build's commit, known before any checkout: every ci step fetches exactly this one.
   Map state = [sha: buildCommit()]
   stage('Read yggdrasil.yml') {
@@ -448,10 +523,11 @@ Map prepare(Map ctx, String mode, boolean deploying = false, boolean releasing =
         state.entry = document.entry
         state.config = document.config
         state.repositoryChecks = document.repositoryChecks
+        state.syncs = document.syncs
         if (state.config != null) {
           String tmp = scratch()
           withEnv(["YGG_TMP=${tmp}", "YGG_JOB=${ctx.app}", "YGG_CATALOG=${tmp}/catalog.yaml"]) {
-            state.plan = planChecks(ctx, state, mode, deploying, releasing)
+            state.plan = planChecks(ctx, state, mode, deploying, releasing, syncing)
           }
         }
       } finally {
@@ -466,8 +542,8 @@ Map prepare(Map ctx, String mode, boolean deploying = false, boolean releasing =
 // On an agent, with the repository checked out in ./app (the ci agent for a build's checks, the release
 // agent for actions-release): pipeline_config.py describe against the controller's catalog -- the one
 // the job was created from, not the checkout's copy, written to the scratch directory as catalog.yaml,
-// where planChecks reads it too. Returns the document ([entry, config]); a file the catalog does not
-// allow fails the build.
+// where planChecks reads it too. Returns the document ([entry, config, repositoryChecks, syncs]); a file
+// the catalog does not allow fails the build.
 Map describeCheckout(Map ctx) {
   String tmp = scratch()
   dir(tmp) {
@@ -497,17 +573,19 @@ Map describeCheckout(Map ctx) {
     if (document.warnings) {
       unstable("yggdrasil.yml: ${(document.warnings as List).size()} warning(s), above")
     }
-    described = [entry: document.entry, config: document.config, repositoryChecks: document.repositoryChecks]
+    described = [entry: document.entry, config: document.config, repositoryChecks: document.repositoryChecks,
+                 syncs: document.syncs == true]
   }
   return described
 }
 
 // Inside prepare(): the commit's statuses (who already checked what) and the changed files, then
-// pipeline_config.py plan (--deploying when the build deploys). Returns the plan, checked again here
-// (planProblem, planCoverage). The plan holds this job's checks only: its catalog entry's `checks`, and
-// deploy.inputs when it deploys. yggdrasil.yml serves every catalog entry of the repository (a library and
-// its docs site), so its other checks are another job's: they neither run nor report here.
-List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean releasing = false) {
+// pipeline_config.py plan (--deploying when the build deploys, --syncing on a push to main: plan adds the
+// sync.inputs only for the job that syncs). Returns the plan, checked again here (planProblem,
+// planCoverage). The plan holds this job's checks only: its catalog entry's `checks`, deploy.inputs when it
+// deploys and sync.inputs when it syncs. yggdrasil.yml serves every catalog entry of the repository (a
+// library and its docs site), so its other checks are another job's: they neither run nor report here.
+List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean releasing = false, boolean syncing = false) {
   String diffMode = 'none'
   String diffBase = ''
   String branch
@@ -525,7 +603,8 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean rele
     }
   }
   withEnv(["YGG_REPO=${ctx.repo}", "YGG_SHA=${state.sha}", "YGG_DIFF_MODE=${diffMode}", "YGG_DIFF_BASE=${diffBase}",
-           "YGG_BRANCH=${branch}", "YGG_DEPLOYING=${deploying ? '1' : ''}", "YGG_RELEASING=${releasing ? '1' : ''}"]) {
+           "YGG_BRANCH=${branch}", "YGG_DEPLOYING=${deploying ? '1' : ''}", "YGG_RELEASING=${releasing ? '1' : ''}",
+           "YGG_SYNCING=${syncing ? '1' : ''}"]) {
     withForgeToken('read') {
       // Without the statuses nothing is reused: every check runs, which is the safe way to be wrong.
       sh(script: '''
@@ -550,6 +629,7 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean rele
       set --
       if [ -n "$YGG_DEPLOYING" ]; then set -- "$@" --deploying; fi
       if [ -n "$YGG_RELEASING" ]; then set -- "$@" --release; fi
+      if [ -n "$YGG_SYNCING" ]; then set -- "$@" --syncing; fi
       python3 yggdrasil/scripts/pipeline_config.py plan "$YGG_JOB" app --statuses "$YGG_TMP/statuses" \\
         --changed "$changed" --branch "$YGG_BRANCH" "$@" >"$YGG_TMP/plan.json"
     ''', returnStatus: true)
@@ -559,7 +639,7 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean rele
   }
   List planned = parseJson(readScratch(scratch(), 'plan.json')) as List
   List wanted = neededChecks(state.entry, state.config, deploying,
-                             releasing ? state.repositoryChecks as List : null)
+                             releasing ? state.repositoryChecks as List : null, syncing && state.syncs)
   String problem = planProblem(planned, state.entry) ?: planCoverage(planned, wanted)
   if (problem) {
     error "The plan of the checks is not usable: ${problem}"
@@ -574,6 +654,15 @@ List planChecks(Map ctx, Map state, String mode, boolean deploying, boolean rele
       if (check.name in inputs && check.action != 'run') {
         check.action = 'run'
         check.reason = 'run: a deploy input, its archive goes into the image'
+      }
+    }
+  }
+  if (syncing && state.syncs) {
+    List inputs = syncInputs(state.config)
+    for (Map check : planned) {
+      if (check.name in inputs && check.action != 'run') {
+        check.action = 'run'
+        check.reason = 'run: a sync input, its archive is copied to another repository'
       }
     }
   }
@@ -2969,12 +3058,16 @@ String planProblem(List planned, Map entry) {
 
 // The checks this job needs (pipeline_config.py needed_checks): its catalog entry's `checks` (on the
 // releasing job's release pull request, `releaseChecks`: every entry's of the repository), then, when the
-// build deploys, the deploy.inputs not among them. Each once, in that order.
+// build deploys, the deploy.inputs not among them, then, when it syncs, the sync.inputs not among those.
+// Each once, in that order.
 @NonCPS
-List neededChecks(Map entry, Map config, boolean deploying, List releaseChecks = null) {
+List neededChecks(Map entry, Map config, boolean deploying, List releaseChecks = null, boolean syncing = false) {
   List names = new ArrayList((releaseChecks != null ? releaseChecks : (entry.checks ?: [])) as List)
   if (deploying) {
     names.addAll(((config.deploy ?: [:]).inputs ?: []) as List)
+  }
+  if (syncing) {
+    names.addAll(((config.sync ?: [:]).inputs ?: []) as List)
   }
   return names.unique()
 }
@@ -3015,6 +3108,15 @@ String planCoverage(List planned, List wanted) {
 @NonCPS
 List deployInputs(Map config) {
   List names = ((config.deploy ?: [:]).inputs ?: []) as List
+  Map checks = (config.checks ?: [:]) as Map
+  return names.findAll { name -> checks[name] instanceof Map && checks[name].archive }
+}
+
+// The checks whose archives a sync copies from: sync.inputs, those that have an archive (pipeline_config.py
+// sync_inputs; describe refuses the others).
+@NonCPS
+List syncInputs(Map config) {
+  List names = ((config.sync ?: [:]).inputs ?: []) as List
   Map checks = (config.checks ?: [:]) as Map
   return names.findAll { name -> checks[name] instanceof Map && checks[name].archive }
 }

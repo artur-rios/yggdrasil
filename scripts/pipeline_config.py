@@ -3,10 +3,10 @@
 
     python3 scripts/pipeline_config.py describe <job-id> <repo-dir>
     python3 scripts/pipeline_config.py plan <job-id> <repo-dir> --statuses <file> --changed <file|-> --branch <name>
-                                            [--deploying] [--release]
+                                            [--deploying] [--release] [--syncing]
 
-describe prints one JSON document on stdout, {"entry", "config", "errors", "warnings", "repositoryChecks"},
-and exits 1 when there are errors (or the job is unknown):
+describe prints one JSON document on stdout, {"entry", "config", "errors", "warnings", "repositoryChecks",
+"syncs"}, and exits 1 when there are errors (or the job is unknown):
 
     entry    the catalog's view of the job (an application's id or a repositories entry's id): kind,
              id, repository, credentials, checks, actionsChecks, release (deploy, owner-tag or none)
@@ -18,17 +18,21 @@ and exits 1 when there are errors (or the job is unknown):
              catalog entry of the repository runs (see unclaimed_checks)
     repositoryChecks  the checks main requires of the repository, every catalog entry's
              (catalog.repository_checks): what a release pull request's releasing job runs
+    syncs    whether this job copies files into another repository on a push to main: the file has a
+             `sync` section and the job is the repository's deciding entry (see syncs())
 
 One yggdrasil.yml serves every catalog entry of its repository (a library's `repositories` entry and its
 docs application, say: two Jenkins jobs). Each job runs only its own entry's `checks`, plus the checks
-deploy.inputs names when it deploys; the file's other checks are another entry's, and that job leaves
-them alone (no run, no status).
+deploy.inputs names when it deploys and the sync.inputs when it syncs; the file's other checks are
+another entry's, and that job leaves them alone (no run, no status). Only the repository's deciding entry
+syncs (catalog.repository_entries: the first), so the `sync` section is judged for that job alone.
 
 plan prints a JSON list, one entry per check the job needs (needed_checks): name, action (run, reuse or
 skip), reason, image, run, docker, credentials, junit and archive. --statuses is `forge.sh get-statuses`
 output, --changed lists the changed files one per line ("-": unknown, every check runs), --deploying says
 the build deploys afterwards (deploy.inputs are needed too), --release that it is a release pull request
-of the job that releases (every entry's checks are needed: it deploys production before it merges). The
+of the job that releases (every entry's checks are needed: it deploys production before it merges),
+--syncing that the build syncs afterwards (sync.inputs are needed too; only the job that syncs). The
 flags come last, in any order. See plan_checks(); exit 1 when the file is invalid.
 
 A repository without a yggdrasil.yml is not an error: it behaves as it did before the file existed
@@ -47,6 +51,9 @@ fields, all optional, and unknown keys are errors at every level:
                         validate: {image, run},
                         finalize: {image, run, files, credentials}}
     publish:           {nuget: {image, run, packages}}
+    sync:              {repository, inputs, paths: [{from, to}]}
+                       on a push to main, copy the `from` paths (of the checkout, or of the archive of an
+                       input: a check with an archive) to the `to` paths of another catalog repository
 
 Reference: docs/catalog.md ("Repository pipeline file"). Needs PyYAML.
 """
@@ -72,6 +79,8 @@ ENV_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # A check's name: the status context, a file name for its results. Lowercase, so "Unit" and "unit"
 # cannot be two checks the server treats as one.
 CHECK_NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
+# A path of a sync: relative, `/`-separated, plain names only (no empty part, no backslash, no whitespace).
+SYNC_PATH = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*")
 # A Docker image reference: [registry[:port]/]path[:tag][@digest]. No whitespace, and it cannot start
 # with '-' (it would be read as an option of `docker run`). The registry decides whether it exists.
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*")
@@ -130,6 +139,36 @@ def _credentials(where, value, errors):
             errors.append(f"{where}.{name}: a Jenkins credential id (letters, digits, '.', '_' and '-')")
 
 
+def _sync_path(where, value, errors):
+    """A `from` or a `to`: relative to the repository's root and unable to leave it (no `.` or `..` part), and
+    never inside .git, in any case (a case-insensitive checkout would take .GIT for it)."""
+    if (not isinstance(value, str) or not SYNC_PATH.fullmatch(value)
+            or any(part in (".", "..") or part.lower() == ".git" for part in value.split("/"))):
+        errors.append(f"{where}: a relative path of plain names joined by '/' (letters, digits, '.', '_' and '-'; "
+                      "no '.', '..' or '.git' part)")
+
+
+def _sync_paths(where, value, errors):
+    """A list of {from, to}, at least one, where no `to` is another or inside another: each `to` is replaced
+    wholesale, so one inside another would be overwritten by (or overwrite) it."""
+    if not isinstance(value, list):
+        errors.append(f"{where}: a list of {{from, to}} mappings")
+        return
+    if not value:
+        errors.append(f"{where}: must list at least one {{from, to}} (leave sync out to copy nothing)")
+        return
+    targets = []
+    for index, item in enumerate(value):
+        before = len(errors)
+        _section(f"{where}[{index}]", item, {"from": (_sync_path, True), "to": (_sync_path, True)}, errors)
+        if len(errors) == before:
+            for earlier, other in targets:
+                if item["to"] == other or item["to"].startswith(other + "/") or other.startswith(item["to"] + "/"):
+                    errors.append(f"{where}[{index}].to: '{item['to']}' overlaps {where}[{earlier}].to ('{other}'): "
+                                  "a path is replaced as a whole")
+            targets.append((index, item["to"]))
+
+
 # Each section: field -> (validator, required). A section is a mapping of exactly these fields.
 CHECK = {"image": (_image, True), "run": (_text, True), "docker": (_flag, False),
          "credentials": (_credentials, False), "paths": (_globs, False), "junit": (_text, False),
@@ -151,6 +190,8 @@ SECTIONS = {
                      "credentials": (_credentials, False)},
     },
     "publish": {"nuget": {"image": (_image, True), "run": (_text, True), "packages": (_text, False)}},
+    # The target is judged against the catalog (validate_against), the inputs against the file's checks.
+    "sync": {"repository": (_text, True), "inputs": (_texts, False), "paths": (_sync_paths, True)},
 }
 
 
@@ -256,7 +297,7 @@ def entry_for(catalog, job_id):
     raise ConfigError(f"'{job_id}' is not an application or a repository in catalog.yaml")
 
 
-def validate_against(config, entry, runs=None, releasing=None):
+def validate_against(config, entry, runs=None, releasing=None, syncing=None):
     """What the catalog does not allow this job to do, as sentences (empty when fine): a credential of a
     check it runs outside the entry's `credentials`, a release build's or finalize step's outside its
     `releaseCredentials` (each list only for its own context), a catalog check the file does not define,
@@ -269,7 +310,11 @@ def validate_against(config, entry, runs=None, releasing=None):
     to allow. `releasing`: the id of the repository's entry that releases, when one does; the `release` and
     `publish` sections, and the credentials of release.build and release.finalize, are that entry's alone,
     and every other job skips them (None: no entry releases, so the sections are judged against this one,
-    and refused)."""
+    and refused). `syncing`: when this job is the one that syncs (syncs()), the repositories of the catalog
+    (the names `sync.repository` may take), each -> its model (catalog.repository_model()); the `sync`
+    section is judged only then, for the target (another repository of the catalog, never the source, under
+    basic rules: a release-model main takes no direct push) and the inputs (checks of the file with an
+    `archive`). None: this job does not sync, and the section is another entry's to judge."""
     if config is None:
         return []
     errors = []
@@ -299,6 +344,22 @@ def validate_against(config, entry, runs=None, releasing=None):
     for name in (config.get("deploy") or {}).get("inputs") or []:
         if name not in checks:
             errors.append(f"deploy.inputs: '{name}' is not a check in {CONFIG_FILE}")
+    if syncing is not None:
+        sync = config.get("sync") or {}
+        if sync.get("repository") == entry["repository"]:
+            errors.append(f"sync.repository: '{entry['repository']}' is its own repository: a sync copies into "
+                          "another one")
+        elif sync.get("repository") not in syncing:
+            errors.append(f"sync.repository: '{sync.get('repository')}' is not a repository in catalog.yaml")
+        elif syncing[sync["repository"]] != "basic":
+            errors.append(f"sync.repository: '{sync['repository']}' is not a basic repository (rules: "
+                          f"{syncing[sync['repository']]}): its main accepts no direct push")
+        for name in sync.get("inputs") or []:
+            if name not in checks:
+                errors.append(f"sync.inputs: '{name}' is not a check in {CONFIG_FILE}")
+            elif not checks[name].get("archive"):
+                errors.append(f"sync.inputs: '{name}' has no archive (the files a sync copies come from the "
+                              "archives of its inputs)")
 
     if not judges_release:
         return errors
@@ -311,17 +372,37 @@ def validate_against(config, entry, runs=None, releasing=None):
     return errors
 
 
-def job_checks(config, entry, repository_checks):
+def job_checks(config, entry, repository_checks, syncing=False):
     """Every check this job can run, the ones whose credentials its entry must allow: its catalog `checks`;
-    for an application, the deploy.inputs too (a deploy runs them); and for the application that releases
+    for an application, the deploy.inputs too (a deploy runs them); for the application that releases
     (release deploy), `repository_checks`, every entry's, which its release pull request runs (needed_checks()
-    with release_checks). A repositories entry never deploys: no deploy inputs."""
+    with release_checks); and, when it is `syncing` (syncs()), the sync inputs. A repositories entry never
+    deploys: no deploy inputs."""
     names = list(entry["checks"])
     if entry["kind"] == "application":
         names += ((config or {}).get("deploy") or {}).get("inputs") or []
     if entry["release"] == "deploy":
         names += list(repository_checks)
+    if syncing:
+        names += sync_inputs(config)
     return set(names)
+
+
+def syncs(catalog, entry):
+    """Whether `entry` (entry_for()) is the one that runs its repository's sync: the deciding entry, the
+    first of catalog.repository_entries, so a repository's other jobs never copy anything (and a platform
+    component, in no deployable entry, has no job to). Whether the file has a `sync` section is another
+    matter."""
+    entries = cat.repository_entries(catalog).get(entry["repository"]) or []
+    return bool(entries) and entries[0]["id"] == entry["id"]
+
+
+def sync_inputs(config):
+    """The `sync.inputs` that are checks of the file with an `archive`, in the file's order: the ones whose
+    archives a sync can copy from (validate_against() names the others)."""
+    checks = (config or {}).get("checks") or {}
+    return [name for name in ((config or {}).get("sync") or {}).get("inputs") or []
+            if (checks.get(name) or {}).get("archive")]
 
 
 def _described(entry):
@@ -339,12 +420,15 @@ def unclaimed_checks(config, entries):
     """The warnings for the checks of the file that no job of the repository ever runs: one sentence per
     check that none of `entries` (entries_of()) names in its catalog `checks`. A check deploy.inputs names
     is claimed too when an application is among them, since that job runs it whenever it deploys; a
-    `repositories` entry never deploys, so its file's inputs alone claim nothing."""
+    `repositories` entry never deploys, so its file's inputs alone claim nothing. The sync inputs are claimed
+    too: the repository's deciding entry runs them on main."""
     if not config:
         return []
     claimed = {name for entry in entries for name in entry["checks"]}
     if any(entry["kind"] == "application" for entry in entries):
         claimed.update((config.get("deploy") or {}).get("inputs") or [])
+    if entries:
+        claimed.update(sync_inputs(config))
     repository = entries[0]["repository"] if entries else "this repository"
     return [f"checks.{name} is not in any catalog entry of {repository}: it never runs"
             for name in (config.get("checks") or {}) if name not in claimed]
@@ -407,15 +491,18 @@ def glob_match(glob, path):
     return _glob_regex(glob).fullmatch(path) is not None
 
 
-def needed_checks(config, entry, deploying=False, release_checks=None):
+def needed_checks(config, entry, deploying=False, release_checks=None, syncing=False):
     """The checks this job runs, each once: its catalog entry's `checks` in their order (on a release pull
     request of the releasing job, `release_checks` instead: every entry's of the repository), then, when
-    the build deploys, the deploy.inputs not among them, in theirs. Raises ConfigError for a name the file
-    does not define: a required status that never comes blocks the merge, and on a push the deploy
-    would go out without it (validate_against() says the same with the rest of the file's problems)."""
+    the build deploys, the deploy.inputs not among them, in theirs, then, when it syncs, the sync.inputs
+    not among those. Raises ConfigError for a name the file does not define: a required status that never
+    comes blocks the merge, and on a push the deploy would go out without it (validate_against() says the
+    same with the rest of the file's problems)."""
     names = list(entry["checks"] if release_checks is None else release_checks)
     if deploying:
         names += ((config or {}).get("deploy") or {}).get("inputs") or []
+    if syncing:
+        names += ((config or {}).get("sync") or {}).get("inputs") or []
     names = list(dict.fromkeys(names))
     defined = (config or {}).get("checks") or {}
     missing = [name for name in names if name not in defined]
@@ -425,9 +512,11 @@ def needed_checks(config, entry, deploying=False, release_checks=None):
     return names
 
 
-def plan_checks(config, entry, statuses, changed, branch, jenkins_user, deploying=False, release_checks=None):
+def plan_checks(config, entry, statuses, changed, branch, jenkins_user, deploying=False, release_checks=None,
+                syncing=False):
     """What to do with each check this job needs (needed_checks(): `entry`'s catalog checks, or
-    `release_checks` on a release pull request, then the deploy inputs when `deploying`), in that order.
+    `release_checks` on a release pull request, then the deploy inputs when `deploying`, then the sync inputs
+    when `syncing`), in that order.
     The file's other checks are not planned: another catalog entry of the repository runs them, or nobody
     does (describe warns). A list of
 
@@ -455,7 +544,7 @@ def plan_checks(config, entry, statuses, changed, branch, jenkins_user, deployin
     latest = {context: (state, creator) for context, state, creator in statuses}
     no_secrets = branch.startswith("renovate/")
     planned = []
-    for name in needed_checks(config, entry, deploying, release_checks):
+    for name in needed_checks(config, entry, deploying, release_checks, syncing):
         check = config["checks"][name]
         state, creator = latest.get(name, (None, None))
         paths = check.get("paths") or []
@@ -517,26 +606,34 @@ def describe(catalog, job_id, repo_dir):
         config = load_config(repo_dir)
     except ConfigError as error:
         return {"entry": entry, "config": None, "errors": error.errors, "warnings": [],
-                "repositoryChecks": repository_checks}
+                "repositoryChecks": repository_checks, "syncs": False}
     releasing = next((e["id"] for e in cat.repository_entries(catalog).get(entry["repository"], []) if e["releases"]),
                      None)
-    errors = validate_against(config, entry, job_checks(config, entry, repository_checks), releasing)
-    return {"entry": entry, "config": config, "errors": errors,
-            "warnings": unclaimed_checks(config, entries), "repositoryChecks": repository_checks}
+    # Only the deciding entry copies files, so only it is judged on the section: another job of the
+    # repository reads the same file and leaves the section alone.
+    syncing = config is not None and "sync" in config and syncs(catalog, entry)
+    errors = validate_against(config, entry, job_checks(config, entry, repository_checks, syncing), releasing,
+                              {name: cat.repository_model(catalog, name) for name in cat.repository_entries(catalog)}
+                              if syncing else None)
+    return {"entry": entry, "config": config, "errors": errors, "warnings": unclaimed_checks(config, entries),
+            "repositoryChecks": repository_checks, "syncs": syncing}
 
 
 PLAN_OPTIONS = ("--statuses", "--changed", "--branch")
 # plan's flags, after the options: --deploying, the build deploys afterwards, so the checks deploy.inputs
 # names are needed too; --release, a release pull request of the job that releases, so every check main
-# requires of the repository is (it deploys production before it merges).
-PLAN_FLAGS = ("--deploying", "--release")
+# requires of the repository is (it deploys production before it merges); --syncing, the build syncs afterwards,
+# so the checks sync.inputs names are needed too.
+PLAN_FLAGS = ("--deploying", "--release", "--syncing")
 
 
-def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch, deploying=False, release=False):
+def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch, deploying=False, release=False,
+         syncing=False):
     """The list `plan` prints: plan_checks() for the job's file, with the catalog's Jenkins user. A file
     that is invalid, or breaks the catalog's rules, is a ConfigError naming every problem, and so is
-    `release` for a job that does not release. `changed_file` lists one path per line, or is "-" when the
-    changes are unknown."""
+    `release` for a job that does not release. `syncing` is the build's wish (a push to main): it adds the sync
+    inputs only for the job that syncs (describe's `syncs`), and nothing for any other, or for a file without
+    a sync section. `changed_file` lists one path per line, or is "-" when the changes are unknown."""
     document = describe(catalog, job_id, repo_dir)
     if document["errors"]:
         raise ConfigError(document["errors"])
@@ -551,7 +648,7 @@ def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch, deployi
         changed = [line for line in lines if line]
     return plan_checks(document["config"], document["entry"], statuses, changed, branch,
                        cat.forge(catalog)["jenkinsUser"], deploying,
-                       document["repositoryChecks"] if release else None)
+                       document["repositoryChecks"] if release else None, syncing and document["syncs"])
 
 
 def _command(argv):
@@ -569,7 +666,8 @@ def _command(argv):
             and sorted(words[3::2]) == sorted(PLAN_OPTIONS):
         options = dict(zip(words[3::2], words[4::2]))
         return lambda catalog: plan(catalog, words[1], words[2], options["--statuses"], options["--changed"],
-                                    options["--branch"], "--deploying" in flags, "--release" in flags)
+                                    options["--branch"], "--deploying" in flags, "--release" in flags,
+                                    "--syncing" in flags)
     return None
 
 
