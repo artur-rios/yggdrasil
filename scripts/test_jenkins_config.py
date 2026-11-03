@@ -93,7 +93,7 @@ class JenkinsJobTests(unittest.TestCase):
         self.assertIn("more than one job named", script)
 
     def test_given_the_job_dsl_when_read_then_a_job_is_shown_under_its_own_name(self):
-        # Entries can share a repository (heimdall-api and heimdall-api-docs): the job's own name tells them apart.
+        # Entries can share a repository (orpheus and orpheus-docs): the job's own name tells them apart.
         # With no display name, a multibranch job shows the one its source reports, the repository's.
         self.assertRegex(job_dsl(), r"multibranchPipelineJob\(entry\.name\) \{\s*(//[^\n]*\s*)*displayName\(entry\.name\)")
 

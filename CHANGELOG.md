@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Removed
+
+- **The `heimdall-api-docs` application.** Heimdall's documentation moved to the heimdall-docs site, so heimdall-api's
+  own docs site (`docs.artur-rios.tech/heimdall-api`) is retired: its catalog entry, `stacks/heimdall-api-docs.yml`
+  and `stacks/heimdall-api-docs.proxy.yml` are gone, and no site builds a `docs.Dockerfile` now. `heimdall-api`'s own
+  entry is unchanged. The running site and its Jenkins job stay until you remove them, in this order:
+  1. Merge heimdall-docs#7, and check that its pages are live.
+  2. Release yggdrasil.
+  3. On the Application Server, as `ygg`, stop the site: `docker compose -p heimdall-api-docs-production down`.
+     Confirm the project name with `docker compose ls` first.
+  4. Run `cd /opt/yggdrasil && git pull`, which brings the redirect file.
+  5. Delete the `heimdall-api-docs` job in Jenkins. The Job DSL in
+     [casc.yaml](platform/jenkins/controller/casc.yaml) does not set `removedJobAction`, so it keeps its default,
+     which ignores a job the script no longer defines: the job stays in Jenkins until it is deleted by hand.
+  6. Check with `curl -sI https://docs.artur-rios.tech/heimdall-api/docs/overview/`, which should give a 301 to
+     `/heimdall-docs/docs/overview/`.
+
 ## [0.9.10] - 2026-11-02
 
 ### Added

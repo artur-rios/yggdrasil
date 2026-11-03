@@ -161,8 +161,8 @@ jobs:
                      (entry.ownerTag ? [entry.tags] : []))
           .unique().collect { globToRegex(it) }.join('|')
         multibranchPipelineJob(entry.name) {
-          // Its own name, which is unique: two entries can share a repository (heimdall-api and
-          // heimdall-api-docs). Without one, the job shows the name its source reports, the repository's.
+          // Its own name, which is unique: two entries can share a repository (orpheus and
+          // orpheus-docs). Without one, the job shows the name its source reports, the repository's.
           displayName(entry.name)
           branchSources {
             branchSource {
