@@ -635,12 +635,16 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(run_cli("plan", "shop-api", "/tmp", "--statuses", "a", "--changed", "-", "--branch", "b",
                                  "--syncing", "--syncing")[0], 2)
 
-    def test_given_the_syncing_flag_when_a_job_that_does_not_sync_plans_then_it_is_refused(self):
-        # --syncing is the deciding entry's alone, as --release is the releasing job's: it is not widened.
+    def test_given_the_syncing_flag_when_a_job_that_does_not_sync_plans_then_it_adds_nothing(self):
+        # The build passes --syncing on every main build, before it knows whether the job syncs: for another
+        # entry of the repository, a file without a sync section, or no file at all, it changes nothing.
         status, out, err = self.plan("shop-admin", FRONTEND_FILE, "--syncing")
-        self.assertEqual((status, out), (1, ""))
-        self.assertIn("shop-admin does not sync", err)
-        # The deciding entry plans the same file without it as before.
+        self.assertEqual((status, err, json.loads(out)), (0, "", []))
+        status, out, err = self.plan("shop-site", FRONTEND_FILE.split("sync:")[0], "--syncing")
+        self.assertEqual((status, err, json.loads(out)), (0, "", []))
+        status, out, err = self.plan("shop-site", None, "--syncing")
+        self.assertEqual((status, err, json.loads(out)), (0, "", []))
+        # The deciding entry adds its sync inputs, and only when asked.
         status, out, err = self.plan("shop-site", FRONTEND_FILE)
         self.assertEqual((status, err, json.loads(out)), (0, "", []))
         status, out, err = self.plan("shop-site", FRONTEND_FILE, "--syncing")

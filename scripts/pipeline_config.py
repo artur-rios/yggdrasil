@@ -626,8 +626,9 @@ def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch, deployi
          syncing=False):
     """The list `plan` prints: plan_checks() for the job's file, with the catalog's Jenkins user. A file
     that is invalid, or breaks the catalog's rules, is a ConfigError naming every problem, and so is
-    `release` for a job that does not release, or `syncing` for one that does not sync. `changed_file` lists
-    one path per line, or is "-" when the changes are unknown."""
+    `release` for a job that does not release. `syncing` is the build's wish (a push to main): it adds the sync
+    inputs only for the job that syncs (describe's `syncs`), and nothing for any other, or for a file without
+    a sync section. `changed_file` lists one path per line, or is "-" when the changes are unknown."""
     document = describe(catalog, job_id, repo_dir)
     if document["errors"]:
         raise ConfigError(document["errors"])
@@ -635,10 +636,6 @@ def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch, deployi
         # Only the releasing application deploys before the merge; any other job keeps its own checks.
         raise ConfigError(f"--release: {job_id} does not release (no trigger: release environment): "
                           "it runs its own catalog checks")
-    if syncing and not document["syncs"]:
-        # Only the deciding entry of a file with a sync section copies files; any other keeps its own checks.
-        raise ConfigError(f"--syncing: {job_id} does not sync (no sync section in {CONFIG_FILE}, or another entry "
-                          "of its repository is the one that syncs)")
     statuses = read_statuses(_read(statuses_file, "statuses"))
     changed = None
     if changed_file != "-":
@@ -646,7 +643,7 @@ def plan(catalog, job_id, repo_dir, statuses_file, changed_file, branch, deployi
         changed = [line for line in lines if line]
     return plan_checks(document["config"], document["entry"], statuses, changed, branch,
                        cat.forge(catalog)["jenkinsUser"], deploying,
-                       document["repositoryChecks"] if release else None, syncing)
+                       document["repositoryChecks"] if release else None, syncing and document["syncs"])
 
 
 def _command(argv):
