@@ -13,21 +13,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   own docs site (`docs.artur-rios.tech/heimdall-api`) is retired: its catalog entry, `stacks/heimdall-api-docs.yml`
   and `stacks/heimdall-api-docs.proxy.yml` are gone, and no site builds a `docs.Dockerfile` now. `heimdall-api`'s own
   entry is unchanged. Every old address redirects permanently, page by page, to its page on heimdall-docs (the
-  changelog and contributing pages to GitHub), keeping the query string and sending anything unnamed to the API
-  section's landing page: a Traefik file router,
+  changelog and contributing pages to GitHub), sending anything unnamed to the API section's landing page: a page of
+  the new site keeps its query string, and the two GitHub targets drop it. It is a Traefik file router,
   [heimdall-api-docs.yml](platform/traefik/dynamic/heimdall-api-docs.yml). The running site and its Jenkins job stay
-  until you remove them, in this order:
-  1. Merge heimdall-docs#7, and check that its pages are live.
-  2. Release yggdrasil.
+  until you remove them, in this order, each step with its check:
+  1. Merge heimdall-docs#7. Check that its pages are live: `curl -s -o /dev/null -w '%{http_code}\n'
+     https://docs.artur-rios.tech/heimdall-docs/docs/api/requirements/documents/vision-document/` gives `200`.
+  2. Release yggdrasil. Check that `main` has the release and holds `platform/traefik/dynamic/heimdall-api-docs.yml`.
   3. On the Application Server, as `ygg`, stop the site: `docker compose -p heimdall-api-docs-production down`.
-     Confirm the project name with `docker compose ls` first.
-  4. Run `cd /opt/yggdrasil && git pull`, which brings the redirect file.
-  5. Delete the `heimdall-api-docs` job in Jenkins. The Job DSL in
-     [casc.yaml](platform/jenkins/controller/casc.yaml) does not set `removedJobAction`, so it keeps its default,
-     which ignores a job the script no longer defines: the job stays in Jenkins until it is deleted by hand. A build
-     of it before then fails cleanly, which is expected: its deploy finds no catalog entry.
-  6. Check with `curl -sI https://docs.artur-rios.tech/heimdall-api/docs/overview/`, which should give a 301 to
-     `/heimdall-docs/docs/overview/`.
+     Confirm the project name with `docker compose ls` first. Check that `docker compose ls` no longer lists
+     `heimdall-api-docs-production`. The site's images stay on the host; to free them (optional), remove the
+     `<environment>-<version>` tags `deploy.sh` left:
+     `docker image ls --format '{{.Repository}}:{{.Tag}}' heimdall-api-docs | xargs -r docker image rm`, and check
+     that `docker image ls heimdall-api-docs` is empty.
+  4. On the Application Server, as `ygg`, bring the update: `cd /opt/yggdrasil && git pull`, which brings the redirect
+     file and the catalog without the entry. Traefik watches the folder, so the redirect applies at once. The status
+     API mounts `catalog.yaml` as a single file and keeps the old one until it restarts, so run
+     `docker restart yggdrasil-status-1`. Check the redirect with a GET, as a HEAD request gets a `308`:
+     `curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://docs.artur-rios.tech/heimdall-api/docs/overview/`
+     should give `301 https://docs.artur-rios.tech/heimdall-docs/docs/overview/`. The console no longer lists
+     `heimdall-api-docs`.
+  5. On the DevOps Server, as `ygg`, run `cd /opt/yggdrasil && git pull`, and `docker restart yggdrasil-status-1`
+     where it runs the status API. The Jenkins controller reads that server's own `/opt/yggdrasil/catalog.yaml`, so
+     pull it before the next step: a controller that restarts on the old catalog creates the job again. Check that
+     `grep -c heimdall-api-docs /opt/yggdrasil/catalog.yaml` gives `0`.
+  6. Delete the `heimdall-api-docs` job in Jenkins. The jobs are defined in the top-level `jobs:` of
+     [casc.yaml](platform/jenkins/controller/casc.yaml), a Job DSL script that Jenkins runs when it starts and that
+     has no `removedJobAction` (there is no seed job): it only creates the jobs it defines and never touches one it
+     no longer defines, so the job stays in Jenkins until it is deleted by hand. A build of it before then fails
+     cleanly, which is expected: its deploy finds no catalog entry. Check that the job is gone from Jenkins' list.
+     Restarting the controller (`docker restart yggdrasil-jenkins-1`, on the DevOps Server) is optional, as it reads the
+     catalog only when it starts; if you do, check that the job is still gone.
 
 ## [0.9.10] - 2026-11-02
 

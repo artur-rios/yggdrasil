@@ -223,11 +223,12 @@ the Application Server takes 443 only through Cloudflare's proxy):
    ```
 
    The `git pull` brings the redirect file too; Traefik watches its folder.
-5. **Check it** (your PC). Both answer `301` with `Location: https://www.artur-rios.tech/about`:
+5. **Check it** (your PC). Both answer `301` and redirect to `https://www.artur-rios.tech/about`. Use a GET, as
+   Traefik answers a HEAD request (`curl -I`) to a permanent redirect with `308`:
 
    ```bash
-   curl -sI https://artur-rios.com/about
-   curl -sI https://www.artur-rios.com/about
+   curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://artur-rios.com/about
+   curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://www.artur-rios.com/about
    ```
 
 The DevOps Server reads the same `dynamic` folder, but no record of the domain points at it, so the router never
@@ -236,9 +237,10 @@ answers there.
 A path can redirect the same way. `docs.artur-rios.tech/heimdall-api`, heimdall-api's retired docs site, redirects
 permanently, page by page, to the same content on heimdall-docs: one Traefik file router,
 [heimdall-api-docs.yml](../platform/traefik/dynamic/heimdall-api-docs.yml), with a middleware for each page it maps
-(the table is in the file's header). A page keeps its query string, and anything the file does not name, the old
-site's root included, goes to `https://docs.artur-rios.tech/heimdall-docs/docs/api/`. The domain is already served,
-so only the `git pull` is needed: Traefik watches the folder.
+(the table is in the file's header). A page of the new site keeps its query string (the two GitHub targets drop
+it), and anything the file does not name, the old site's root included, goes to
+`https://docs.artur-rios.tech/heimdall-docs/docs/api/`. The domain is already served, so only the `git pull` is
+needed: Traefik watches the folder.
 
 ### Cloudflare settings
 

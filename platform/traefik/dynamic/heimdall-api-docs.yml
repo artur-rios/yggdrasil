@@ -13,7 +13,7 @@
 # subpaths (index.xml, _print/), unknown paths and the old site's root, which go to the API section's landing page.
 #
 #       Old path (after /heimdall-api)         New page (under /heimdall-docs)
-#    1  /coverage-report/<rest>                /api/coverage-report/<rest>
+#    1  /coverage-report[/<rest>]              /api/coverage-report/<rest>
 #    2  /openapi/heimdall.json                 /api/openapi/heimdall.json
 #    3  /docs/overview/                        /docs/overview/
 #    4  /docs/architecture/                    /docs/architecture/
@@ -23,7 +23,7 @@
 #    8  /docs/api-reference/                   /docs/api/reference/
 #    9  /docs/api-explorer/                    /docs/api/explorer/
 #   10  /docs/operations/                      /docs/api/operations/
-#   11  /docs/flows/<rest>                     /docs/api/flows/<rest>
+#   11  /docs/flows/<slug>/ or index.xml       /docs/api/flows/<slug>/ or index.xml
 #   12  /docs/requirements/                    /docs/api/requirements/
 #   13  /docs/requirements/<slug>/             /docs/api/requirements/documents/<slug>/
 #   14  /docs/changelog/                       https://github.com/artur-rios/heimdall-api/blob/main/CHANGELOG.md
@@ -62,8 +62,8 @@ http:
   middlewares:
     heimdall-api-docs-1:
       redirectRegex:
-        regex: ^https?://[^/]+/heimdall-api/coverage-report/(.*)$
-        replacement: https://docs.artur-rios.tech/heimdall-docs/api/coverage-report/${1}
+        regex: ^https?://[^/]+/heimdall-api/coverage-report(?:/(.*)|(\?.*))?$
+        replacement: https://docs.artur-rios.tech/heimdall-docs/api/coverage-report/${1}${2}
         permanent: true
     heimdall-api-docs-2:
       redirectRegex:
@@ -110,10 +110,11 @@ http:
         regex: ^https?://[^/]+/heimdall-api/docs/operations/?(\?.*)?$
         replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/operations/${1}
         permanent: true
-    # The flows index and each flow under it: the rest is the flow's slug, with its trailing slash if it had one.
+    # The flows index and each flow under it: the rest is a flow's slug, with its trailing slash if it had one, or
+    # index.xml, so a flow's _print/ and other subpaths fall through.
     heimdall-api-docs-11:
       redirectRegex:
-        regex: ^https?://[^/]+/heimdall-api/docs/flows(?:/([^?]*))?(\?.*)?$
+        regex: ^https?://[^/]+/heimdall-api/docs/flows(?:/([a-z0-9-]+/?|index\.xml)?)?(\?.*)?$
         replacement: https://docs.artur-rios.tech/heimdall-docs/docs/api/flows/${1}${2}
         permanent: true
     heimdall-api-docs-12:
