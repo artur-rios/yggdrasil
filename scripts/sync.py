@@ -27,10 +27,12 @@ push runs where the forge's write token is: the publish agent, which holds nothi
 could reach and runs no command the repository names, only this script and git. <out-dir> arrives as a stash
 and is not trusted: push uses the manifest's entries only (so a message.txt beside them is never copied),
 rechecks them (a `to` that is not a plain relative path, or a link or a .git in what was staged, is refused) and never
-writes outside its clone. It clones the target's `main` (depth 1), replaces each `to` with its staged copy,
-commits what changed with the message of <message-file> and pushes. Nothing to commit is success, and says
-so. A push the target rejects (main moved since the clone) starts again from a fresh clone, 3 attempts in
-all. The author and the committer are $FORGE_USER <$FORGE_USER@noreply.<host of $FORGE_URL>>.
+writes outside its clone, nor through a link of the target (a `to` under one is refused). It clones the
+target's `main` (depth 1), replaces each `to` with its staged copy, commits what changed (ignored files too:
+a `to` is replaced wholesale) with the message of <message-file> and pushes. Nothing to commit is success,
+and says so. A transfer under 1000 bytes a second for a minute gives up. A push the target rejects (main
+moved since the clone) starts again from a fresh clone, 3 attempts in all. The author and the committer are
+$FORGE_USER <$FORGE_USER@noreply.<host of $FORGE_URL>>.
 
 The token reaches git as git's own credential helper reads it, from $FORGE_USER and $FORGE_TOKEN in the
 environment: never an argument, the URL or the output. Needs git; stdlib only.
@@ -57,6 +59,9 @@ HELPER = '!f() { test "$1" = get || exit 0; echo "username=$FORGE_USER"; echo "p
 # Settings a clone of the target must not take from the machine: line endings or signing would change what
 # is committed.
 GIT_SETTINGS = ["-c", "core.autocrlf=false", "-c", "commit.gpgsign=false", "-c", "core.hooksPath="]
+# git has no network timeout: a stalled clone or push would hold the publish agent up to the build's limit.
+# Under 1000 bytes a second for a minute, it gives up (a clone fails the build, a push is retried).
+STALL_SETTINGS = ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60"]
 
 
 class SyncError(Exception):
@@ -206,11 +211,12 @@ def git_environment():
     return env
 
 
-def credential_settings():
+def transfer_settings():
+    """The settings of a clone or a push: the stall limit, and the credential helper when there is a token."""
     # An empty helper first drops the machine's own, so only ours answers.
     if os.environ.get("FORGE_USER") and os.environ.get("FORGE_TOKEN"):
-        return ["-c", "credential.helper=", "-c", f"credential.helper={HELPER}"]
-    return []
+        return [*STALL_SETTINGS, "-c", "credential.helper=", "-c", f"credential.helper={HELPER}"]
+    return list(STALL_SETTINGS)
 
 
 def scrub(text):
@@ -230,31 +236,47 @@ def git(clone, env, *args, settings=(), check=True):
 
 def push_head(clone, env):
     """Pushes the clone's HEAD to the target's main; Rejected when the target says no."""
-    result = git(clone, env, "push", "--quiet", "origin", "HEAD:main", settings=credential_settings(), check=False)
+    result = git(clone, env, "push", "--quiet", "origin", "HEAD:main", settings=transfer_settings(), check=False)
     if result.returncode != 0:
         raise Rejected(scrub(f"git push failed: {result.stderr.strip() or result.stdout.strip()}"))
 
 
 def replace_in_clone(clone, target, staged):
-    """Replaces <clone>/<target> by the staged file or directory, never writing outside the clone."""
+    """Replaces <clone>/<target> by the staged file or directory, never writing outside the clone or into its
+    .git. The last part is replaced, not followed."""
+    check_parents(clone, target)
     destination = clone / target
-    root = clone.resolve()
-    # The parents may be links of the target repository itself; the last part is replaced, not followed.
-    if not destination.parent.resolve().is_relative_to(root):
-        raise SyncError(f"`to` {target} would leave the clone")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if not destination.parent.resolve().is_relative_to(root):
-        raise SyncError(f"`to` {target} would leave the clone")
+    check_parents(clone, target)
     stage(staged, destination)
+
+
+def check_parents(clone, target):
+    """The parents of `target` in the clone are the directories they name: a link among them (the target
+    repository's own, such as `static -> .git`, which would have `static/config` replace the clone's
+    .git/config) is refused, not followed."""
+    root = clone.resolve()
+    parents = target.split("/")[:-1]
+    resolved = (clone / target).parent.resolve()
+    if os.path.normcase(resolved) != os.path.normcase(root.joinpath(*parents)):
+        here, link = clone, "/".join(parents)
+        for part in parents:
+            here = here / part
+            if here.is_symlink():
+                link = here.relative_to(clone).as_posix()
+                break
+        raise SyncError(f"`to` {target} sits under a link of the target: {link}")
+    if parents and parents[0].lower() == ".git":
+        raise SyncError(f"`to` {target} would write into the clone's .git")
 
 
 def attempt(entries, out, url, message_text, env):
     """One try on a fresh clone; the pushed commit, or None when nothing changed."""
     with tempfile.TemporaryDirectory(prefix="sync-") as parent:
         clone = pathlib.Path(parent) / "clone"
-        transfer = credential_settings()
         result = subprocess.run(
-            ["git", *GIT_SETTINGS, *transfer, "clone", "--quiet", "--depth", "1", "--branch", "main", "--", url, str(clone)],
+            ["git", *GIT_SETTINGS, *transfer_settings(),
+             "clone", "--quiet", "--depth", "1", "--branch", "main", "--", url, str(clone)],
             env=env, capture_output=True, text=True,
         )
         if result.returncode != 0:
@@ -263,7 +285,8 @@ def attempt(entries, out, url, message_text, env):
         for index, (_, target) in enumerate(entries):
             replace_in_clone(clone, target, out / str(index))
             targets.append(target)
-        git(clone, env, "add", "-A", "--", *targets)
+        # -f: a .gitignore (the target's, or one copied in) keeps nothing of a `to` out.
+        git(clone, env, "add", "-A", "-f", "--", *targets)
         if git(clone, env, "diff", "--cached", "--quiet", check=False).returncode == 0:
             return None
         message_file = pathlib.Path(parent) / "message"

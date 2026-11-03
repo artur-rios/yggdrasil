@@ -101,6 +101,15 @@ class SyncTestCase(unittest.TestCase):
     def target_files(self, ref="main"):
         return git(self.target, "ls-tree", "-r", "--name-only", ref).splitlines()
 
+    def change_target(self, change):
+        """One commit on the target's main, made by `change(clone)` in a fresh clone of it."""
+        clone = pathlib.Path(tempfile.mkdtemp(dir=self.tmp)) / "clone"
+        git(self.tmp, "clone", "--quiet", self.url, str(clone))
+        change(clone)
+        git(clone, "-c", "core.symlinks=true", "add", "-A")
+        git(clone, "commit", "--quiet", "-m", "docs: change the target")
+        git(clone, "push", "--quiet", "origin", "HEAD:main")
+
 
 class GatherTests(SyncTestCase):
     def test_given_files_when_gathered_then_each_from_is_staged_by_index_with_a_manifest(self):
@@ -266,6 +275,23 @@ class PushTests(SyncTestCase):
         self.assertEqual(changed, ["content/req/one.md"])
         self.assertEqual(self.target_file("README.md"), "target")
 
+    def test_given_ignored_files_when_pushed_then_they_reach_the_target(self):
+        # A `to` is replaced wholesale: neither a .gitignore copied in with the `from` nor the target's own
+        # keeps a file out.
+        write(self.app, "out/report/.gitignore", "*.map\n")
+        write(self.app, "out/report/app.js.map", "{}\n")
+        write(self.app, "docs/req/debug.log", "kept\n")
+        self.change_target(lambda clone: write(clone, ".gitignore", "*.log\n"))
+        shutil.rmtree(self.out)
+        self.gather()
+
+        code, _, err = self.push()
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.target_file("static/report/app.js.map"), "{}")
+        self.assertEqual(self.target_file("static/report/.gitignore"), "*.map")
+        self.assertEqual(self.target_file("content/req/debug.log"), "kept")
+
     def test_given_no_change_when_pushed_again_then_nothing_is_committed(self):
         self.push()
         pushed = self.main_sha()
@@ -337,6 +363,25 @@ class PushTests(SyncTestCase):
             self.assertTrue(any(part.startswith("credential.helper=!") for part in argv), argv)
             self.assertTrue(any("$FORGE_TOKEN" in part for part in argv), argv)
 
+    def test_given_a_transfer_when_pushing_then_git_gives_up_on_a_stalled_connection(self):
+        real_run = subprocess.run
+        recorded = []
+
+        def recording(*args, **kwargs):
+            recorded.append(args[0])
+            return real_run(*args, **kwargs)
+
+        with mock.patch("subprocess.run", side_effect=recording):
+            code, _, err = self.push()
+
+        self.assertEqual(code, 0, err)
+        # git has no timeout of its own: under 1000 bytes a second for a minute, it stops.
+        transfers = [argv for argv in recorded if "clone" in argv or "push" in argv]
+        self.assertEqual(len(transfers), 2)
+        for argv in transfers:
+            self.assertIn("http.lowSpeedLimit=1000", argv)
+            self.assertIn("http.lowSpeedTime=60", argv)
+
     def test_given_no_token_when_pushing_then_no_credential_helper_is_installed(self):
         real_run = subprocess.run
         recorded = []
@@ -362,6 +407,31 @@ class PushTests(SyncTestCase):
 
                 self.assertEqual(code, 1)
                 self.assertIn("sync:", err)
+                self.assertEqual(self.main_sha(), before)
+
+    def test_given_a_target_with_a_link_on_the_way_to_a_to_when_pushed_then_it_is_refused_before_writing(self):
+        # The target's own links: `linked -> .git` would have `linked/config` replace the clone's .git/config,
+        # `alias -> content` would write content/req through another name. Neither is followed.
+        try:
+            os.symlink("x", self.tmp / "probe")
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot make a symbolic link here: {error}")
+        # Git checks a link out as a plain file unless core.symlinks says otherwise (on Windows it does not).
+        os.environ.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.symlinks", "GIT_CONFIG_VALUE_0": "true"})
+        self.change_target(lambda clone: (os.symlink(".git", clone / "linked", target_is_directory=True),
+                                          os.symlink("content", clone / "alias", target_is_directory=True)))
+        before = self.main_sha()
+        for to in ("linked/config", "alias/req"):
+            with self.subTest(to=to):
+                manifest = {"paths": [{"from": "out/report", "to": to}]}
+                (self.out / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+                with mock.patch.object(sync, "stage", wraps=sync.stage) as stage:
+                    code, _, err = self.push()
+
+                self.assertEqual(code, 1)
+                self.assertIn("link", err)
+                stage.assert_not_called()
                 self.assertEqual(self.main_sha(), before)
 
     def test_given_a_staged_directory_with_a_link_when_pushed_then_it_is_refused(self):
