@@ -223,15 +223,24 @@ the Application Server takes 443 only through Cloudflare's proxy):
    ```
 
    The `git pull` brings the redirect file too; Traefik watches its folder.
-5. **Check it** (your PC). Both answer `301` with `Location: https://www.artur-rios.tech/about`:
+5. **Check it** (your PC). Both answer `301` and redirect to `https://www.artur-rios.tech/about`. Use a GET, as
+   Traefik answers a HEAD request (`curl -I`) to a permanent redirect with `308`:
 
    ```bash
-   curl -sI https://artur-rios.com/about
-   curl -sI https://www.artur-rios.com/about
+   curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://artur-rios.com/about
+   curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://www.artur-rios.com/about
    ```
 
 The DevOps Server reads the same `dynamic` folder, but no record of the domain points at it, so the router never
 answers there.
+
+A path can redirect the same way. `docs.artur-rios.tech/heimdall-api`, heimdall-api's retired docs site, redirects
+permanently, page by page, to the same content on heimdall-docs: one Traefik file router,
+[heimdall-api-docs.yml](../platform/traefik/dynamic/heimdall-api-docs.yml), with a middleware for each page it maps
+(the table is in the file's header). A page of the new site keeps its query string (the two GitHub targets drop
+it), and anything the file does not name, the old site's root included, goes to
+`https://docs.artur-rios.tech/heimdall-docs/docs/api/`. The domain is already served, so only the `git pull` is
+needed: Traefik watches the folder.
 
 ### Cloudflare settings
 
@@ -731,7 +740,7 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 | Jenkins agent secrets | Each agent's env file: `/etc/yggdrasil-ci/agent.env`, `/etc/yggdrasil-release/agent.env`, and the deploy agent's `JENKINS_AGENT_SECRET` in `platform.env` | Connect as that agent | now: [setup.md 9.8](setup.md#98-the-ci-and-release-agents) |
 | Application secrets, platform passwords | `/etc/yggdrasil` of the machine that uses them (`platform.env`, `<environment>/<application>.env`, or the [variables store](variables.md)) | As today | now |
 | Cloudflare API token (DNS edit on the `techcraftsmen.net`, `artur-rios.tech` and `artur-rios.com` zones only) | `acme.env` on each machine | Prove domain control for certificates; edit those three zones' DNS records | now |
-| `reportgenerator-license`: secret text, the ReportGenerator license key (`REPORTGENERATOR_LICENSE` on GitHub) | A file named by the id in `JENKINS_CREDENTIALS_DIR` on the DevOps Server (mode 644, no trailing newline), which the controller reads as secret text at every start. Used by the `credentials` of the 12 libraries (dotnet-configuration to dotnet-webapi-util), cerberus-api, heimdall-api and fortuna-api, and of the docs sites whose deploy runs their coverage check (each library's `-docs` and heimdall-api-docs). Bound only into the check that names it, never on `renovate/*` builds | Unlock ReportGenerator's pro reports in the `test`/`coverage` checks | later: create it before the first build |
+| `reportgenerator-license`: secret text, the ReportGenerator license key (`REPORTGENERATOR_LICENSE` on GitHub) | A file named by the id in `JENKINS_CREDENTIALS_DIR` on the DevOps Server (mode 644, no trailing newline), which the controller reads as secret text at every start. Used by the `credentials` of the 12 libraries (dotnet-configuration to dotnet-webapi-util), cerberus-api, heimdall-api and fortuna-api, and of the docs sites whose deploy runs their coverage check (each library's `-docs`). Bound only into the check that names it, never on `renovate/*` builds | Unlock ReportGenerator's pro reports in the `test`/`coverage` checks | later: create it before the first build |
 | `nuget-api-key`: the nuget.org API key, `NUGET_API_KEY_FILE` | The Jenkins controller (a file in `/etc/yggdrasil`); optional. The id is fixed and bound only on the release agent, in the step that pushes a library's packages (`scripts/nuget-push.sh`), where no repository code runs. No check or release build can bind it | Publish the owner's packages. It is on `dotnet`'s command line inside the push container | now: [setup.md, Owner tags and NuGet](setup.md#owner-tags-and-nuget) |
 | `heimdall-ui-android-keystore`: secret text, the Android keystore, base64-encoded (`HEIMDALL_UI_KEYSTORE_BASE64` on GitHub) | A file named by the id in `JENKINS_CREDENTIALS_DIR` on the DevOps Server (mode 644, no trailing newline), which the controller reads as secret text at every start. Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Hold the key that signs Heimdall web's Android package | later: create it before the first release build |
 | `heimdall-ui-android-keystore-password`: secret text, the keystore's password (`HEIMDALL_UI_KEYSTORE_PASSWORD` on GitHub) | A file named by the id in `JENKINS_CREDENTIALS_DIR` on the DevOps Server (mode 644, no trailing newline), which the controller reads as secret text at every start. Used by the `releaseCredentials` of heimdall-ui: bound only on its release build, on the release agent, never by a check | Open the keystore | later: create it before the first release build |

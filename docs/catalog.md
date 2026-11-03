@@ -188,7 +188,9 @@ and each entry's Jenkins job runs only:
 
 - the checks its catalog entry names in `checks`, in that order;
 - when the build deploys (a push that deploys, a release pull request of an application with a release
-  environment), the checks `deploy.inputs` names as well, after them ([below](#check-results-in-the-image-build-deployinputs)).
+  environment), the checks `deploy.inputs` names as well, after them ([below](#check-results-in-the-image-build-deployinputs));
+- on a push to `main`, for the job that runs the file's `sync`, the checks `sync.inputs` names, after those
+  ([below](#copying-files-into-another-repository-sync)).
 
 The file's other checks belong to another entry: this job neither runs them nor posts their status. A
 library's job runs `test` and `coverage`; its docs site's job (`checks: []`, `deploy.inputs: [coverage]`)
@@ -219,6 +221,10 @@ branchPolicy:                   # the branch policy check
   run: scripts/branch-policy.sh
 deploy:
   inputs: [unit]                # checks whose archives go into the image build
+sync:                           # on pushes to main: files copied into another repository of the catalog
+  repository: shop-docs
+  inputs: [unit]                # checks whose archives the files come from
+  paths: [{from: out/coverage, to: static/coverage}]
 release:                        # applications with a release environment, owner-tagged repositories
   build:   {image: debian:12, run: ci/release.sh, files: ["dist/*.zip"], credentials: {SIGN_KEY: sign-key}}
   windows: {workflow: windows.yml, files: ["Setup.exe"]}   # built by a GitHub Actions workflow
@@ -283,11 +289,16 @@ The file is also checked against the catalog entry of the repository (the applic
 - `release`, `publish` and the release's credentials are judged only for the repository's **releasing** entry; the
   other entries sharing the file (a library's docs site) skip them. When no entry of the repository releases, every
   one is judged on them, so the file cannot declare a release nobody makes.
+- `sync`'s `repository` and `inputs` are judged against the catalog only for the repository's deciding entry, the
+  one job that runs it; the other entries sharing the file skip them. Its shape (the required fields and the
+  `paths` rules) is the file's, like any field's, and a mistake there fails every job of the repository
+  ([below](#copying-files-into-another-repository-sync)).
 
 Read the entry and check a checkout with `python3 scripts/pipeline_config.py describe <job-id> <repo-dir>`
 (`job-id`: the application's id or the `repositories` entry's id). It prints one JSON document,
-`{"entry", "config", "errors", "warnings", "repositoryChecks"}`, where `config` is `null` when there is no
-file, `repositoryChecks` lists every check `main` requires of the repository (each catalog entry's), and it
+`{"entry", "config", "errors", "warnings", "repositoryChecks", "syncs"}`, where `config` is `null` when there is
+no file, `repositoryChecks` lists every check `main` requires of the repository (each catalog entry's), `syncs` says
+whether this job runs the file's `sync` (it has one, and the job is the repository's deciding entry), and it
 exits `1` when `errors` is not empty (`warnings` never changes the exit status). The entry has `kind` (`application`
 or `repository`), `id`, `repository`, `credentials`, `releaseCredentials`, `checks`, `actionsChecks`, `release` (`deploy` for an application with a release
 environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
@@ -295,15 +306,19 @@ environment, `owner-tag`, or `none`) and `tags` (`v*` for applications).
 ### Which checks run
 
 For a build of a branch the pipeline asks `python3 scripts/pipeline_config.py plan <job-id> <repo-dir>
---statuses <file> --changed <file|-> --branch <name> [--deploying] [--release]` what to do with each check
-the job needs, and gets a JSON list: `{name, action, reason, image, run, docker, credentials, junit,
+--statuses <file> --changed <file|-> --branch <name> [--deploying] [--release] [--syncing]` what to do with
+each check the job needs, and gets a JSON list: `{name, action, reason, image, run, docker, credentials, junit,
 archive}`. The checks are the entry's `checks` in catalog order (with `--release`, the releasing job's
 release pull request: `repositoryChecks` instead), then, with `--deploying`, the `deploy.inputs` not among
-them; each once, and nothing else of the file. `--release` for a job that does not release is an error.
+them, then, with `--syncing`, the `sync.inputs` not among those; each once, and nothing else of the file.
+`--release` for a job that does not release is an error. `--syncing` adds the sync inputs only for the job that
+syncs (`describe`'s `syncs`): for any other job, or a repository without the file, it adds nothing, so every
+build of `main` can pass it.
 
 - `--statuses` is the output of `forge.sh get-statuses` for the commit (`<context>`, `<state>`, `<creator>`,
   tab separated); `--changed` lists the changed files, one path per line, or is `-` when they are unknown;
-  `--deploying` says the build deploys afterwards; the flags come last, in any order.
+  `--deploying` says the build deploys afterwards, `--syncing` that it is a push to `main`, which syncs; the
+  flags come last, in any order.
 - **reuse**: the commit already has a `success` for the check created by `forge.jenkinsUser`. A success
   created by anyone else is not trusted, and neither is a failure or a pending: those checks `run`.
 - **skip**: the check has `paths`, the changed files are known and none matches. `*` stays in one directory,
@@ -315,7 +330,8 @@ them; each once, and nothing else of the file. `--release` for a job that does n
 Reuse works across the jobs of one repository: when two of its entries list the same check, a success one job
 posted counts for the other's build of the same commit. A deploy input is the exception when the build deploys:
 it runs anyway, since its archive goes into the image. So a library's docs site, which runs `coverage` only as its
-deploy input (its own `checks` are empty), always runs it, whatever the library's job posted.
+deploy input (its own `checks` are empty), always runs it, whatever the library's job posted. A sync input is the
+same on a push to `main` that syncs: its archive is what the sync copies.
 
 The branch policy is not a check of the file and is never reused. The command exits `1`, naming the
 problems, when the file is invalid or breaks the catalog rules above.
@@ -336,6 +352,92 @@ context of every stack, keeping their names (`DEPLOY_INPUTS_DIR`). A name that a
 repository stops the deploy before anything is copied: inputs never overwrite repository files (a directory
 may merge into one). Only `DEPLOY_TO` builds ("Build with Parameters", which run no check) deploy with none,
 so a stack that needs them cannot build there.
+
+### Copying files into another repository (`sync`)
+
+Some of a repository's files belong in another one too: an API's coverage report, its OpenAPI description and
+its requirements, published by a docs site that lives in its own repository. `sync` copies them there. On a
+**push to `main`** whose checks all passed, Jenkins copies each `from` of the repository to its `to` in another
+repository of the catalog, and pushes one commit to that repository's `main`. Nothing syncs on a pull request,
+on another branch or in a `DEPLOY_TO` build (which runs no check). Only the job of the repository's **deciding
+entry** ([One repository, several entries](#one-repository-several-entries)) syncs; the repository's other jobs
+build the same push without it. The sync runs after the checks and before the push's deploys.
+
+```yaml
+sync:
+  repository: heimdall-docs            # a repository of the catalog
+  inputs: [test]                       # checks whose archives are copied (the coverage report)
+  paths:                               # what is copied, from where to where
+    - { from: docs/coverage-report, to: static/api/coverage-report }   # from the `test` archive
+    - { from: docs/openapi/heimdall.json, to: static/api/openapi/heimdall.json }
+    - { from: docs/requirements, to: content/en/docs/api/requirements/documents }
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `repository` | required | Where the files go: another repository of the catalog (an application's `repository`, else its `id`, or a `repositories` entry's `id`), never this one. |
+| `inputs` | `[]` | Checks whose archives hold some of the files, as `deploy.inputs` does for an image: each must be a check of the file with an `archive`. On a push that syncs they run even when their result could be reused or their `paths` skipped them, and their archives are unpacked over the checkout before anything is copied. |
+| `paths` | required | At least one `{from, to}`. `from` is a file or a directory of the checkout (with the inputs' archives in it); `to` is where it lands in `repository`. |
+
+`describe` refuses, before anything runs, in every job of the repository (the section's shape, as for any field
+of the file):
+
+- a missing `repository` or `paths`, or an empty `paths`;
+- a `from` or `to` that is not a relative path of plain names joined by `/` (letters, digits, `.`, `_` and `-`),
+  or has a `.`, `..` or `.git` part (in any case);
+- a `to` that is another one or lies inside another (`a` and `a/b`): each is replaced as a whole.
+
+and in the deciding entry's job alone (the others leave the target and the inputs to it):
+
+- a `repository` that is this one, or not a repository of the catalog;
+- a `repository` that is not under basic rules (an application that releases, or a `repositories` entry without
+  `rules: basic`): its `main` accepts no direct push;
+- an input that is not a check of the file, or has no `archive`.
+
+When the sync runs, the build fails, naming the path, and nothing is pushed, for:
+
+- a `from` that does not exist in the checkout (nor in the inputs' archives);
+- a `from` that holds no file: an empty directory would empty its `to` in the target, which is what a build that
+  produced nothing looks like;
+- a `from` that is a symbolic link, sits under one or holds one: a link could copy a file of the agent;
+- a `from` that holds a `.git`: git would store a nested repository as a bare link to one of its commits.
+
+Each `to` is **replaced wholesale** by its `from`: a file deleted at the source is deleted in the target, a file
+a `.gitignore` names is copied all the same, and nothing outside the `to` paths changes. The `to` paths belong to
+the sync: an edit made by hand under one in the target is overwritten by the next sync. A `from` of the checkout
+is copied whole, dotfiles included, but the files Ant's default excludes name (`.gitignore`, `.gitattributes`,
+`.DS_Store` and other version-control and editor files) never leave a check in its archive (the archive is
+stashed as for `deploy.inputs`), so a sync input does not carry them. The files are gathered on the CI agent;
+the commit and the push are made on the publish agent with the write credential, by `scripts/sync.py push` and
+git alone, so nothing of the repository runs where that credential is. A sync that changes nothing commits
+nothing and succeeds (`sync: nothing to change`). A push the target refuses (its `main` moved in the meantime)
+starts again from a fresh clone, three attempts in all.
+
+The commit goes **directly to the target's `main`**, without a pull request, so the target must accept direct
+pushes from the account behind the write credential (`forge.jenkinsUser`; on GitHub, the GitHub App). A
+`rules: basic` repository does: its `main` refuses only force pushes and deletion. Under the release model `main`
+takes changes only through pull requests, so `describe` refuses such a target.
+
+A sync that fails **fails the build of `main`**, and the push's deploys, which come after it, do not run. It
+undoes nothing: a release is merged, tagged and published by its release pull request's build, before the push
+to `main` it makes is built. Build `main` again once the cause is fixed.
+
+The commit's author and committer are the write credential's user, with the address
+`<user>@noreply.<the git server's host>`. Its message:
+
+```text
+docs: sync heimdall-api v1.4.0
+
+- docs/coverage-report -> static/api/coverage-report
+- docs/openapi/heimdall.json -> static/api/openapi/heimdall.json
+- docs/requirements -> content/en/docs/api/requirements/documents
+
+Source: heimdall-api@<the full commit>
+```
+
+The version is `v<x.y.z>` when the source commit is a release merge (its subject starts with
+`release: v<x.y.z>`, as the merge of a release pull request's does), and the commit's first 7 characters
+otherwise (`docs: sync heimdall-api 3f9c2ab`).
 
 ## Templates for repositories
 
