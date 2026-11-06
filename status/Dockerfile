@@ -4,7 +4,7 @@
 # mounted at run time (/app/catalog.yaml) rather than baked in: the catalog changes more often than
 # this service, and an image that carried a stale copy would quietly disagree with Jenkins.
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.403@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e AS build
 WORKDIR /source
 
 # Restore on its own layer, keyed only by the files that decide it, so a source-only change reuses it.
@@ -19,7 +19,7 @@ RUN dotnet publish src/Yggdrasil.Status/Yggdrasil.Status.csproj \
 # Chiseled: no shell, no package manager, non-root (the image's "app" user, UID 1654) by default.
 # The service holds a token and sits on the edge network, so the less there is in the image the
 # better. The health check needs no curl: the service checks itself (--healthcheck).
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.13-noble-chiseled@sha256:5165aeeb688df15e869a56a7584bb94bf16a14e0b3ba77b49fcdbe350f6b8020 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.14-noble-chiseled@sha256:f2557fb81b1cfcfdfcde9d3bf247ed60b2cd38f00a88153f61e34737fab8ade7 AS final
 WORKDIR /app
 COPY --from=build /app .
 
