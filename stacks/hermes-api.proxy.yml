@@ -1,0 +1,31 @@
+# hermes-api in proxy environments: an overlay applied on top of the repository's own docker-compose.yml by
+# scripts/deploy.sh. Hermes has no public route, so unlike the other APIs this overlay has no Traefik labels: it removes
+# the host port and joins the two networks its callers use.
+#
+#   edge        the personal page and heimdall-api call it as hermes-api.<environment>:8080
+#   telemetry   Prometheus scrapes it as hermes-api.<environment>:9464
+#
+# One container per environment: the rate limit counters are held in memory, so a second one would double every limit.
+# No stacks/hermes-api.<environment>.yml may add replicas. The env file reaches the container through APP_ENV_FILE,
+# which deploy.sh sets and the repository's docker-compose.yml reads.
+
+services:
+  api:
+    ports: !reset []
+    networks:
+      default: {}
+      edge:
+        aliases: ["hermes-api.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+      telemetry:
+        aliases: ["hermes-api.${YGG_ENVIRONMENT:?YGG_ENVIRONMENT is set by scripts/deploy.sh}"]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+networks:
+  edge:
+    external: true
+  telemetry:
+    external: true

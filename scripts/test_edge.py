@@ -18,6 +18,7 @@ PLATFORM = ROOT / "platform" / "compose.yml"
 EXAMPLES = ROOT / "docs" / "examples" / "docker-desktop-and-vps" / "env"
 UI_STACKS = ("heimdall-ui.proxy.yml", "fortuna-ui.proxy.yml")
 API_STACKS = ("heimdall-api.proxy.yml", "fortuna-api.proxy.yml")
+INTERNAL_STACK = "hermes-api.proxy.yml"  # no public route, so no routers and no labels
 
 AUTH = "traefik.http.routers.heimdall-api-${YGG_ENVIRONMENT}-auth"
 AUTH_LIMIT = "traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit"
@@ -92,8 +93,27 @@ class EdgeTests(unittest.TestCase):
                 for label in chains:
                     self.assertTrue(label.endswith(".middlewares=secure-headers-ui@file"), label)
 
+    def internal_api(self):
+        return yaml.load((STACKS / INTERNAL_STACK).read_text(), Loader=ComposeLoader)["services"]["api"]
+
+    def test_given_the_internal_api_then_it_has_no_route(self):
+        self.assertNotIn("labels", self.internal_api())
+
+    def test_given_the_internal_api_then_it_publishes_no_port(self):
+        self.assertEqual(self.internal_api()["ports"], [])
+
+    def test_given_the_internal_api_then_it_joins_the_edge_and_telemetry_networks(self):
+        self.assertLessEqual({"edge", "telemetry"}, set(self.internal_api()["networks"]))
+
+    def test_given_the_internal_api_then_it_runs_one_container(self):
+        api = self.internal_api()
+        self.assertNotIn("deploy", api)
+        self.assertNotIn("scale", api)
+        self.assertEqual([path.name for path in STACKS.glob("hermes-api.*.yml")], [INTERNAL_STACK])
+
     def test_other_routers_keep_shared_headers(self):
-        stacks = sorted(path.name for path in STACKS.glob("*.proxy.yml") if path.name not in UI_STACKS)
+        stacks = sorted(path.name for path in STACKS.glob("*.proxy.yml")
+                        if path.name not in UI_STACKS and path.name != INTERNAL_STACK)
         self.assertIn("heimdall-api.proxy.yml", stacks)
         for stack in stacks:
             for label in labels(stack):
