@@ -67,6 +67,7 @@ nearly every clone dirty; Windows git does not.
 | heimdall-api | application, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs.yml/build on ubuntu-latest goes (Pages)<br>build-docs.yml/deploy on ubuntu-latest goes (Pages)<br>check-openapi.yml/check on ubuntu-latest → check check<br>tests.yml/test on ubuntu-latest → check test<br>tests.yml/docs calls build-docs.yml (judged there)<br>tests.yml/docker on ubuntu-latest → check docker | `GITHUB_TOKEN`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@23e1a61 | 2026-10-28 |
 | heimdall-docs | site | plain | deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages) |  | Pages |  | basic | clean (main) |  | `feature/move-to-forgejo`@d832794 | 2026-10-27 |
 | heimdall-ui | application | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build.yml/web on ubuntu-latest → check web<br>build.yml/linux on ubuntu-latest → check linux<br>build.yml/windows on windows-latest stays (Actions)<br>build.yml/android on ubuntu-latest → check android<br>check-api-client.yml/drift on ubuntu-latest → check drift<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test<br>ci.yml/build-web on ubuntu-latest → check build-web | `HEIMDALL_UI_KEYSTORE_BASE64`, `HEIMDALL_UI_KEYSTORE_PASSWORD`, `HEIMDALL_UI_KEY_ALIAS`, `HEIMDALL_UI_KEY_PASSWORD` | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@c99a397 | 2026-10-27 |
+| hermes-api | application | not on GitHub Actions | yggdrasil.yml/test on jenkins → check test<br>yggdrasil.yml/docker on jenkins → check docker |  | none | none | release |  | Created on Forgejo after the move: it had no GitHub workflows, so its jobs are its own checks |  |  |
 | hugo-theme-nuno | fork | fork |  |  | none |  | basic | missing |  |  |  |
 | hugo-theme-re-terminal | fork | fork |  |  | none |  | basic | clean (main) |  |  |  |
 | hugo-theme-rusty-typewriter | fork | fork |  |  | none |  | basic | clean (main) |  |  |  |
@@ -231,6 +232,8 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | heimdall-ui | `check-api-client.yml/drift on ubuntu-latest` | check `api-client-drift` (GitHub: `Regenerate and compare`) |
 | heimdall-ui | `ci.yml/analyze-and-test on ubuntu-latest` | check `analyze-and-test` |
 | heimdall-ui | `ci.yml/build-web on ubuntu-latest` | check `build-web` |
+| hermes-api | `yggdrasil.yml/test on jenkins` | check `test` |
+| hermes-api | `yggdrasil.yml/docker on jenkins` | check `docker` |
 | maestro | `ci.yml/windows-platform on windows-2025` | actionsCheck `windows-platform` |
 | maestro | `ci.yml/linux-platform on ubuntu-24.04` | check `linux-platform` |
 | maestro | `release.yml/windows-package on windows-2025` | release.windows |

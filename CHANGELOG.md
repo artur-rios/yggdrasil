@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Hermes API.** `hermes-api` is in the catalog with no `host`, and `stacks/hermes-api.proxy.yml` joins the edge and
+  telemetry networks with no Traefik labels and no published port: it is an internal service, one container per
+  environment.
+
 ## [0.9.11] - 2026-11-03
 
 ### Added

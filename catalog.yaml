@@ -349,6 +349,19 @@ systems:
         environments:
           production: { trigger: branch, branches: main }
 
+  - id: hermes
+    name: Hermes
+    description: Email delivery for internal services
+    applications:
+      # No host: Hermes has no public route. Its callers and Prometheus reach it over the internal aliases
+      # (stacks/hermes-api.proxy.yml).
+      - id: hermes-api
+        name: Hermes API
+        kind: api
+        health: http://hermes-api:8080/healthcheck
+        metrics: hermes-api:9464
+        checks: [test, docker]
+
   - id: fortuna
     name: Fortuna
     description: Personal finance
