@@ -1,0 +1,12 @@
+# Starts yggdrasil-security-signals@<environment>.service every fifteen minutes, the default window of Heimdall's
+# monitoring: nothing waits longer to be reported than it waited to be detected. Persistent: a machine that was off
+# at a quarter past runs it as soon as it is next on.
+[Unit]
+Description=Report Heimdall's new security signals for %i every fifteen minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -616,6 +616,69 @@ To update Renovate, change `RENOVATE_IMAGE` in `scripts/renovate.sh` to a newer 
 (`docker buildx imagetools inspect renovate/renovate:<version>`) in a pull request, after reading the release
 notes.
 
+### Heimdall's security signals
+
+Application Server only. `ygg install` (step `signals-timer`) copies [platform/systemd](../platform/systemd)'s
+`yggdrasil-security-signals@.service` and `.timer` into `~ygg/.config/systemd/user/`, as `ygg`, and enables
+`yggdrasil-security-signals@production.timer`, every fifteen minutes. The instance is the environment. Only production
+has a timer: outside it Hermes holds no Mailgun credentials, logs the message and answers `202`, so no alert would
+arrive.
+
+Each run is [`scripts/security-signals.sh`](../scripts/security-signals.sh) `run production`, on `ygg`'s rootless
+engine: a container on the `edge` network, sharing the volumes of `heimdall-api-production-api-1`, which reads the
+API's logs and mails the new signals through Hermes under its own client, `heimdall-signals`. The job is
+`platform/heimdall-signals/security_signals.py`, a copy of heimdall-api's `scripts/security_signals.py` at the commit
+pinned in the script. The operations guide of heimdall-docs says what it detects and what the alerts contain.
+
+**A failed run reaches a person through a heartbeat.** The job exits non-zero when it cannot deliver, and both breach
+notification clocks run from awareness, so that exit has to be heard. Mail from this machine cannot do it: there is no
+mail program, and Hermes may be what failed. So every run ends by sending its exit status, and nothing else, to a
+monitor outside this machine, which mails its owner:
+
+| What happens | What the monitor sees | Who hears |
+|---|---|---|
+| Delivered, or nothing to report | Ping with status `0` | Nobody needs to |
+| Hermes down, refused, or over a limit (exit 1), logs unreadable (2), API container missing (125) | Ping with that status | Mail, on the first failing ping |
+| Wrong setting, a changed copy of the job, no rootless engine (3) | Ping with status `3`, when the URL could be read | Mail, on the first failing ping |
+| No settings file or no URL, machine or engine down, timer disabled, a run killed by its timeout | No ping | Mail, after the period and grace time |
+
+What the job prints stays in `ygg`'s journal: it holds the signals, with user identifiers, and a monitor is a third
+party. A deploy that recreates the API container at the moment a run starts is reported as a failure, status 125, and
+the next run recovers.
+
+Set up the monitor once, per environment, before relying on it. On [healthchecks.io](https://healthchecks.io), create a
+check with **period 15 minutes and grace 15 minutes**, and copy its ping URL. Then put the job's settings in
+`/etc/yggdrasil/security-signals-production.env` (`ygg install` copies
+[env/security-signals.env.example](../env/security-signals.env.example) there, mode 600), as `ygg`:
+
+| Setting | Value |
+|---|---|
+| `HEIMDALL_SIGNAL_HERMES_API_KEY` | The key of the `heimdall-signals` client in this environment's Hermes, generated as hermes-api's README says |
+| `HEIMDALL_SIGNAL_ALERT_TO` | The one address on that client's recipient list |
+| `HEIMDALL_SIGNAL_HEARTBEAT_URL` | The monitor's ping URL. The status is added after it, as healthchecks.io takes it |
+
+`HERMES_BASE_URL` is not a setting: the script gives the job `http://hermes-api.<environment>:8080`, the alias on `edge`.
+
+To prove the path, once, after filling it in: run it by hand, then stop Hermes for one run and see the mail arrive.
+
+```bash
+systemctl --user start yggdrasil-security-signals@production.service   # as ygg
+journalctl --user -u yggdrasil-security-signals@production -n 20
+```
+
+`ygg check` reports the timer (`signals timer production`), which settings are empty but never what they hold (`signals
+settings production`) and how the last run ended (`last signals run production`). Those rows are for when you look: the
+heartbeat is what tells you when you don't.
+
+To update the job, in a pull request: copy the file from the new heimdall-api commit, then change `SIGNALS_COMMIT` and
+`SIGNALS_SHA256` in `scripts/security-signals.sh` together. A copy that does not match its checksum is refused and
+reported as a failed run. `SIGNALS_IMAGE` changes the way `RENOVATE_IMAGE` does.
+
+```bash
+git -C ../heimdall-api show <commit>:scripts/security_signals.py >platform/heimdall-signals/security_signals.py
+sha256sum platform/heimdall-signals/security_signals.py
+```
+
 ### The CI engines: the weekly prune
 
 DevOps Server only. Every build in `ci`'s and `release`'s rootless engines leaves images and build cache behind,
@@ -743,6 +806,8 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 | `forge-webhook`: the webhook secret, `FORGE_WEBHOOK_SECRET_FILE` | The Jenkins controller; the same value is `FORGE_WEBHOOK_SECRET` in the operator's shell for `rules.py` | Signs the webhooks `rules.py` creates. The Gitea plugin verifies no signature, so Jenkins checks nothing with it (a forged webhook only triggers a scan); it stays here as the one place the secret lives. Forgejo never shows it again: to change it, delete the hooks and run `rules.py` again | now: setup.md 9.7 |
 | Forgejo `renovate` bot token (`write:repository`, `write:issue`, `read:user`, `read:organization`), `RENOVATE_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Push `renovate/*` branches (and any unprotected branch) and open pull requests | now: [Renovate](#renovate-the-daily-run) |
 | GitHub fine-grained token (read-only, public repositories, no permissions; optional), `RENOVATE_GITHUB_COM_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Read the release notes and changelogs of GitHub-hosted dependencies without the anonymous rate limit | now: [Renovate](#renovate-the-daily-run) |
+| Hermes `heimdall-signals` client key, `HEIMDALL_SIGNAL_HERMES_API_KEY` | `ygg` (apps), `/etc/yggdrasil/security-signals-production.env` | Send mail from `heimdall-signals@` to the one alert address, 5 a minute and 200 a day | later: [Heimdall's security signals](#heimdalls-security-signals) |
+| Heartbeat ping URL, `HEIMDALL_SIGNAL_HEARTBEAT_URL` | `ygg` (apps), the same file | Report to the monitor that the job ran, or failed. Whoever has it can make a failing job look healthy | later: [Heimdall's security signals](#heimdalls-security-signals) |
 | Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
 | Forgejo owner token (`write:repository`; for the move, `read:user` too, which `migrate.py collaborators` needs to look the bots up), `FORGE_TOKEN` | The operator's shell, for a run of `python3 scripts/rules.py` or `scripts/migrate.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks; import the repositories, make their push mirrors, give the bots their access | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules), [cutover.md](cutover.md#24-the-owners-token) |

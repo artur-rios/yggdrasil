@@ -237,6 +237,7 @@ one-server layout on real hardware:
 | `scripts/pipeline_config.py`, `scripts/branch-policy.sh`, `scripts/run-check.sh` | A repository's `yggdrasil.yml` read and validated against the catalog; the branching model checked on a pull request; one check run in its container on a build agent ([docs/catalog.md](docs/catalog.md#repository-pipeline-file)) |
 | `scripts/publish-release.sh`, `scripts/release_notes.py`, `scripts/nuget-push.sh` | A release made on the git server (and its GitHub copy) with its files checked and its notes written; a library's NuGet packages pushed |
 | `scripts/renovate.sh` | One Renovate run against the catalog's repositories, by the `renovate` user on the DevOps Server |
+| `scripts/security-signals.sh` | Heimdall's security signal job for one environment, by `ygg` on the Application Server, every fifteen minutes, and the heartbeat that makes a failed run reach a person ([docs/hosts.md](docs/hosts.md#heimdalls-security-signals)) |
 | `scripts/rules.py` | Applies the branching model (protected branches, tags, required checks, webhooks) to every catalog repository, on Forgejo or GitHub |
 | `scripts/migrate.py`, `scripts/cloudflare_dns.py`, `scripts/volumes.sh`, `scripts/prove-machine.sh` | The move from one server on GitHub to the two servers: the repositories imported into Forgejo with their GitHub copies and push mirrors, the DNS records of the domains, the Docker volumes carried across, and the rootless setup proved on each machine ([docs/cutover.md](docs/cutover.md)) |
 | `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, the Jenkins controller and the deploy agent (`platform/build-agent.yml` is the CI and release agents') |
@@ -244,7 +245,7 @@ one-server layout on real hardware:
 | `github/rulesets.py` | Moved: runs `scripts/rules.py` with the same arguments |
 | `status/` | The status API (.NET 10) |
 | `console/` | The console (Flutter): web, Android, Windows |
-| `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads) |
+| `env/` | Templates for each host's `platform.env` and `acme.env` (what `vars import` reads), and the settings of the timers |
 | `templates/application/` | Files each application repository needs |
 | `docs/` | Catalog reference, setup guide, the two servers (`hosts.md`), the cutover runbook (`cutover.md`), the guide to moving each repository (`moving-repositories.md`, with `migration-checklist.md`), host helper, variables store, DNS and certificates, status API contract, worked example (`docs/examples/docker-desktop-and-vps/`) |
 
