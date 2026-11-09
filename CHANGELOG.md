@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The test of the security signal job's heartbeat works with no signals to report.**
+  [docs/hosts.md](docs/hosts.md#heimdalls-security-signals) said to stop Hermes for one run, which passes without
+  proving anything when there are no new signals, because the job then never calls it. It now blanks a setting for one
+  run, which always fails.
+
 ## [0.10.0] - 2026-11-09
 
 ### Added
