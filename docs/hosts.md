@@ -275,9 +275,8 @@ ranges change, `scripts/platform.sh up` (as `ygg`) makes Traefik trust the new o
 ### Client addresses
 
 Behind Cloudflare every connection comes from a Cloudflare address, and the visitor's own is in the
-`X-Forwarded-For` header. Rate limits count by client address (heimdall-api's sign-in limit, for
-one), so Traefik must see the real one. On the Application Server set `CLOUDFLARE_PROXIED=true` in
-`platform.env`. Then:
+`X-Forwarded-For` header. Traefik must trust that header to keep it. On the Application Server set
+`CLOUDFLARE_PROXIED=true` in `platform.env`. Then:
 
 - `ygg install` writes Cloudflare's ranges, one per line, to `/etc/yggdrasil/cloudflare-ips`.
 - `platform.sh` gives that file to `scripts/traefik_config.py`, which makes Traefik trust the
@@ -286,6 +285,15 @@ one), so Traefik must see the real one. On the Application Server set `CLOUDFLAR
 - With `CLOUDFLARE_PROXIED=true` and no `cloudflare-ips` file, `platform.sh up` stops and says
   to run `ygg install`. With `false` (the DevOps Server, whose clients connect directly) the file is
   not read.
+
+**Trusting the header is not enough for a rate limit.** Traefik's `ratelimit` middleware counts the
+connection's address unless it is told otherwise, and behind Cloudflare that is an edge address unrelated
+visitors share. So each limit in `stacks/` sets `sourcecriterion.ipstrategy.depth=1`, which counts the last
+entry of `X-Forwarded-For`: the visitor Cloudflare reports, whatever a client forged in front of it. Without
+a trusted Cloudflare in front there is no such entry, and every visitor shares one bucket
+([dns.md A7](dns.md#a7-optional-the-cloudflare-proxy)). heimdall-api's own sign-in limit is separate: it
+reads the last entry of the header Traefik sends on, the connection's address, so behind Cloudflare it
+counts a Cloudflare address.
 
 The trust check needs the TCP source address of the connection, which the engine's network mode
 keeps. See [Rootless Docker](#5-rootless-docker).
