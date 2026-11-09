@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Jenkins stops at once when a GitHub Actions run ends without starting a job.** A run that GitHub ends early (an
+  internal error, an invalid workflow) never creates its check, and `github.sh actions-status` took the missing check
+  for one not started yet, so the build waited out `checksTimeout`, an hour by default. The check now fails straight
+  away, with the run as its address and a log line that says to start the workflow again and then build again
+  ([docs/setup.md](docs/setup.md#github-actions-and-the-skip)).
+- **A GitHub-hosted release no longer passes or waits on a workflow that never ran.** `github.sh wait-checks` could
+  report that every check passed while a workflow on the commit had ended without starting a job, or wait out its
+  timeout when that workflow was the only one; it now fails at once. `github.sh publish-release` watched only the
+  draft release, so a failed packaging run cost its two-hour wait; it now stops as soon as that run fails, and the
+  draft stays private.
 - **The test of the security signal job's heartbeat works with no signals to report.**
   [docs/hosts.md](docs/hosts.md#heimdalls-security-signals) said to stop Hermes for one run, which passes without
   proving anything when there are no new signals, because the job then never calls it. It now blanks a setting for one
