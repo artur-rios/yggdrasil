@@ -1219,7 +1219,8 @@ class RealCatalogTests(unittest.TestCase):
                         self.assertEqual(added, {f"traefik.http.routers.{contact}.{key}" for key in
                                                  ("rule", "entrypoints", "middlewares", "service")} |
                                          {f"traefik.http.middlewares.{contact}-limit.ratelimit.{key}" for key in
-                                          ("average", "period", "burst", "sourcecriterion.ipstrategy.ipv6subnet")})
+                                          ("average", "period", "burst", "sourcecriterion.ipstrategy.depth",
+                                           "sourcecriterion.ipstrategy.ipv6subnet")})
                         web["labels"] = [label for label in web["labels"] if label.split("=", 1)[0] not in added]
                     self.assertEqual(actual, expected)
 

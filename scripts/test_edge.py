@@ -100,9 +100,10 @@ class EdgeTests(unittest.TestCase):
     def test_given_the_contact_route_then_it_is_limited_per_source(self):
         limit = "traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit"
         found = dict(label.split("=", 1) for label in labels("personal-page.proxy.yml"))
-        self.assertEqual(found[f"{limit}.average"], "3")
+        self.assertEqual(found[f"{limit}.average"], "1")
         self.assertEqual(found[f"{limit}.period"], "10m")
         self.assertEqual(found[f"{limit}.burst"], "3")
+        self.assertEqual(found[f"{limit}.sourcecriterion.ipstrategy.depth"], "1")
         self.assertEqual(found[f"{limit}.sourcecriterion.ipstrategy.ipv6subnet"], "56")
 
     def test_given_the_contact_route_then_every_unsafe_method_goes_through_the_limit(self):
