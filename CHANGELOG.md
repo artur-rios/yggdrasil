@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Heimdall's security signal job runs on a schedule, and a failed run reaches a person.** `ygg install` adds, on the
+  Application Server, a user timer of `ygg` that runs the job for production every fifteen minutes, on the `edge`
+  network and in the API's volumes, through Hermes's `heimdall-signals` client. Each run sends its exit status, and
+  nothing else, to a heartbeat monitor outside the machine, which mails its owner when a run fails or no ping arrives.
+  `ygg check` reports the timer, the settings and the last run.
 - **The personal page's contact form.** `stacks/personal-page.yml` hands the application's variables to the container,
   and `POST /api/contact` is limited per visitor to 3 requests at once and one more every 10 minutes, counted by the
   address Cloudflare reports, an IPv6 caller by its /56.
@@ -31,6 +36,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - On a machine with no Cloudflare proxy in front, or with `CLOUDFLARE_PROXIED=false`, heimdall-api's next deploy puts
   every caller of its credential routes in one bucket of 10 a minute. Turn the proxy on first
   ([docs/dns.md, A7](docs/dns.md#a7-optional-the-cloudflare-proxy)).
+- Heimdall's security signal job needs three things before its timer does anything useful, in this order: the
+  `heimdall-signals` client in production's Hermes (hermes-api's Operations & Infrastructure Document), a check on a
+  heartbeat monitor, and `/etc/yggdrasil/security-signals-production.env` filled in as `ygg`. Then `ygg install`.
+  `docs/hosts.md`, "Heimdall's security signals", has each step. Until the settings are filled in every run fails and
+  no ping is sent.
 - A deploy of `personal-page` now needs its variables, as any application with an `env_file` does. Before this release
   reaches a host, set them for each of its environments (`ygg vars set personal-page@<environment> ...`), or its deploys
   fail. The running site is not affected.

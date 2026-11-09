@@ -1,0 +1,21 @@
+# Heimdall's security signal job for one environment (scripts/security-signals.sh), a user unit of ygg on the
+# Application Server: the instance is the environment, so yggdrasil-security-signals@production.service reports
+# production's signals. Installed into ~ygg/.config/systemd/user/ by `ygg install` (step signals-timer) and started
+# by the timer next to it. Its settings are in $YGG_SECRETS_DIR/security-signals-<environment>.env
+# (env/security-signals.env.example).
+[Unit]
+Description=Report Heimdall's new security signals for %i
+# The job runs in ygg's rootless engine, which is the user unit docker.service: a catch-up run at boot (the timer
+# is Persistent) must wait for it.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# A user unit doesn't read ygg's .profile, which is where its shells get DOCKER_HOST: %t is the user's runtime
+# directory, where its rootless engine keeps the socket.
+Environment=DOCKER_HOST=unix://%t/docker.sock
+ExecStart=/opt/yggdrasil/scripts/security-signals.sh run %i
+# A run that hangs must not hold the next ones off for ever. It is killed before it reports, so the heartbeat
+# monitor sees a missed ping, which it alerts on as it does a failed one.
+TimeoutStartSec=10m

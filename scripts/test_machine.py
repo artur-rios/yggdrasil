@@ -1192,7 +1192,7 @@ class MachineRoleTests(unittest.TestCase):
     def test_given_role_apps_when_installed_then_only_yggs_secrets_are_made(self):
         self.install("apps")
         self.assertEqual(
-            sorted(p.name for p in self.etc("yggdrasil").iterdir()), ["acme.env", "cloudflare-ips", "platform.env"])
+            sorted(p.name for p in self.etc("yggdrasil").iterdir()), ["acme.env", "cloudflare-ips", "platform.env", "security-signals-production.env"])
         self.assertEqual(sorted(p.name for p in self.sysroot.joinpath("etc").glob("yggdrasil-*")), ["yggdrasil-role"])
 
     def test_given_role_apps_when_installed_then_security_updates_are_automatic(self):
@@ -1235,6 +1235,8 @@ class MachineRoleTests(unittest.TestCase):
                 self.backups_working()
                 if role == "dev":
                     self.renovate_working()
+                else:
+                    self.signals_working()
                 stdout, rows = self.rows(role)
                 bad = [line for line in rows if not line.startswith("  ok ")]
                 self.assertEqual(bad, [], stdout)
@@ -1989,6 +1991,119 @@ class MachineRoleTests(unittest.TestCase):
         self.assertFalse(self.row(rows, "client addresses ygg").startswith("  ok "), stdout)
         self.install("apps")
         self.assertEqual(self.override_of("ygg").read_text(), OVERRIDE)
+
+    # ---- The security signals timer ---------------------------------------------------------------
+
+    SIGNAL_UNITS = ("yggdrasil-security-signals@.service", "yggdrasil-security-signals@.timer")
+    SIGNAL_TIMER = "yggdrasil-security-signals@production.timer"
+
+    def signal_settings(self):
+        return self.etc("yggdrasil/security-signals-production.env")
+
+    def signals_working(self):
+        self.signal_settings().write_text(
+            "HEIMDALL_SIGNAL_HERMES_API_KEY=key-value\n"
+            "HEIMDALL_SIGNAL_ALERT_TO=owner@example.com\n"
+            "HEIMDALL_SIGNAL_HEARTBEAT_URL=https://hc-ping.example.com/uuid\n")
+        self.last_run("success")
+
+    def test_given_role_apps_when_installed_then_ygg_has_the_production_signals_timer_enabled(self):
+        self.install("apps")
+        for name in self.SIGNAL_UNITS:
+            self.assertEqual((self.unit_dir() / name).read_text(), self.repo_unit(name))
+        calls = self.calls()
+        enable = self.as_user("ygg", f"systemctl --user enable --now {self.SIGNAL_TIMER}")
+        self.assertIn(enable, calls)
+        self.assertLess(calls.index(self.as_user("ygg", "systemctl --user enable --now docker")), calls.index(enable))
+        self.assertLess(calls.index(self.as_user("ygg", "tee", str(self.unit_dir() / self.SIGNAL_UNITS[1]))), calls.index(enable))
+        self.assertEqual([c for c in calls if c.startswith("sudo") and "yggdrasil-security-signals" in c and " enable " in c], [enable])
+
+    def test_given_role_apps_when_installed_then_the_settings_are_the_closed_template(self):
+        self.install("apps")
+        env = pathlib.Path(__file__).resolve().parent.parent / "env"
+        self.assertEqual(self.signal_settings().read_text(), (env / "security-signals.env.example").read_text())
+        self.assertEqual(self.signal_settings().stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.owners()[str(self.signal_settings())], "ygg:ygg")
+
+    def test_given_a_machine_whose_secrets_are_already_right_when_installed_then_the_template_is_still_copied(self):
+        self.install("apps")
+        self.signal_settings().unlink()
+        stdout, rows = self.rows("apps")
+        self.assertIn("install copies", self.row(rows, "signals settings production"), stdout)
+        self.install("apps")
+        env = pathlib.Path(__file__).resolve().parent.parent / "env"
+        self.assertEqual(self.signal_settings().read_text(), (env / "security-signals.env.example").read_text())
+        self.assertEqual(self.signal_settings().stat().st_mode & 0o777, 0o600)
+
+    def test_given_settings_the_owner_filled_in_when_installed_again_then_they_are_kept(self):
+        self.install("apps")
+        self.signals_working()
+        before = self.signal_settings().read_text()
+        self.install("apps")
+        self.assertEqual(self.signal_settings().read_text(), before)
+
+    def test_given_role_dev_when_installed_then_there_is_no_signals_timer(self):
+        self.install("dev")
+        for name in self.SIGNAL_UNITS:
+            self.assertFalse((self.unit_dir() / name).exists(), name)
+        self.assertFalse([c for c in self.calls() if "yggdrasil-security-signals" in c])
+        self.assertFalse(self.signal_settings().exists())
+
+    def test_given_role_apps_when_installed_again_then_the_timer_is_not_touched(self):
+        self.install("apps")
+        def changes():
+            return [c for c in self.calls() if "yggdrasil-security-signals" in c and c.startswith("sudo -u")]
+        before = changes()
+        self.assertTrue(before)
+        self.install("apps")
+        self.assertEqual(changes(), before)
+
+    def test_given_working_signals_when_checked_then_the_three_rows_are_ok(self):
+        self.install("apps")
+        self.signals_working()
+        stdout, rows = self.rows("apps")
+        for name in ("signals timer production", "signals settings production", "last signals run production"):
+            self.assertTrue(self.row(rows, name).startswith("  ok "), stdout)
+
+    def test_given_a_changed_unit_when_checked_then_install_writes_the_checkouts_copy(self):
+        self.install("apps")
+        service = self.unit_dir() / self.SIGNAL_UNITS[0]
+        service.write_text("[Service]\nExecStart=/bin/true\n")
+        stdout, rows = self.rows("apps")
+        self.assertFalse(self.row(rows, "signals timer").startswith("  ok "), stdout)
+        self.install("apps")
+        self.assertEqual(service.read_text(), self.repo_unit(self.SIGNAL_UNITS[0]))
+
+    def test_given_the_template_untouched_when_checked_then_each_empty_setting_is_named(self):
+        self.install("apps")
+        self.last_run("success")
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "signals settings production")
+        self.assertFalse(line.startswith("  ok "), stdout)
+        for name in ("HEIMDALL_SIGNAL_HERMES_API_KEY", "HEIMDALL_SIGNAL_ALERT_TO", "HEIMDALL_SIGNAL_HEARTBEAT_URL"):
+            self.assertIn(name, line)
+
+    def test_given_filled_settings_when_checked_then_no_value_is_shown(self):
+        self.install("apps")
+        self.signals_working()
+        stdout, _ = self.rows("apps")
+        for value in ("key-value", "owner@example.com", "hc-ping.example.com"):
+            self.assertNotIn(value, stdout)
+
+    def test_given_no_settings_file_when_checked_then_it_is_reported_with_the_template(self):
+        self.install("apps")
+        self.signal_settings().unlink()
+        stdout, rows = self.rows("apps")
+        self.assertIn("env/security-signals.env.example", self.row(rows, "signals settings production"))
+
+    def test_given_a_failed_run_when_checked_then_it_is_a_warning_naming_the_journal(self):
+        self.install("apps")
+        self.signals_working()
+        self.last_run("exit-code")
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "last signals run production")
+        self.assertFalse(line.startswith("  ok "), stdout)
+        self.assertIn("journalctl --user -u yggdrasil-security-signals@production", line)
 
     # ---- The backup timer ------------------------------------------------------------------------
 
