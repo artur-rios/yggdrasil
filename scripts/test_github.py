@@ -696,6 +696,8 @@ class GitHubTests(unittest.TestCase):
         return json.loads(self.request("dispatches").split(" --data ", 1)[1].rsplit(" https://", 1)[0])
 
     def test_given_a_dispatch_when_its_run_appears_then_its_id_is_printed(self):
+        # It takes two looks, and bash counts whole seconds: with setUp's 1 s the clock can run out between them.
+        self.env["GITHUB_DISPATCH_TIMEOUT"] = "30"
         self.respond("dispatches", ("0:204", None))
         self.respond("runs",
                      (0, {"workflow_runs": [self.workflow_run(40, now(-3600))]}),  # an older release's run

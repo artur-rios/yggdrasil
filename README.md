@@ -239,6 +239,7 @@ one-server layout on real hardware:
 | `scripts/renovate.sh` | One Renovate run against the catalog's repositories, by the `renovate` user on the DevOps Server |
 | `scripts/security-signals.sh` | Heimdall's security signal job for one environment, by `ygg` on the Application Server, every fifteen minutes, and the heartbeat that makes a failed run reach a person ([docs/hosts.md](docs/hosts.md#heimdalls-security-signals)) |
 | `scripts/rules.py` | Applies the branching model (protected branches, tags, required checks, webhooks) to every catalog repository, on Forgejo or GitHub |
+| `scripts/prune_release_branches.py` | Deletes the released `release/*` branches Forgejo keeps, run by the owner: lifts the protection for the deletion and puts it back |
 | `scripts/migrate.py`, `scripts/cloudflare_dns.py`, `scripts/volumes.sh`, `scripts/prove-machine.sh` | The move from one server on GitHub to the two servers: the repositories imported into Forgejo with their GitHub copies and push mirrors, the DNS records of the domains, the Docker volumes carried across, and the rootless setup proved on each machine ([docs/cutover.md](docs/cutover.md)) |
 | `platform/` | One host's platform: Traefik, status API, console, Docker socket proxies, Prometheus, Loki, Alloy, Grafana, the Jenkins controller and the deploy agent (`platform/build-agent.yml` is the CI and release agents') |
 | `jenkins/Jenkinsfile.default`, `jenkins/library/` | The one Jenkinsfile every job runs (a repository's own is never read) and the pinned library it calls: checks, deploys, releases |

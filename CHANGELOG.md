@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/prune_release_branches.py` deletes the release branches Forgejo keeps.** Forgejo refuses to delete a
+  protected branch, so every `release/x.y.z` stayed behind after its release and had to be removed by hand. The owner
+  runs this instead (`--dry-run` to see what it would do). It deletes a branch only when no open pull request uses it,
+  its tip is in `main` and a version tag contains it, lifting the `release/*` protection of that repository only for
+  the deletion and putting it back.
+
 ## [0.10.1] - 2026-11-09
 
 ### Fixed

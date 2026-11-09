@@ -1582,9 +1582,13 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
   `delete-release-file` only) that there is no such release, tag or file.
 - **On Forgejo every `release/x.y.z` branch is kept after a release.** `release/*` is protected, and Forgejo
   refuses to delete a protected branch to everyone, the owner included: `delete-branch` exits `3`
-  (`forge: kept: release/x.y.z is protected`). Delete old release branches by hand, as the owner: remove the
-  `release/*` protection (the repository's **Settings → Branches**), delete the branches, then run
-  `python3 scripts/rules.py <repository>` to put the protection back.
+  (`forge: kept: release/x.y.z is protected`). Delete old release branches as the owner, with
+  `FORGE_TOKEN=<the owner's token> python3 scripts/prune_release_branches.py [--dry-run] [<repository>...]`. It
+  deletes a branch only when no open pull request uses it, its tip is in `main` and a version tag contains it, and
+  says why it kept any other. For each repository with something to delete it removes the `release/*` protection,
+  deletes the branches and puts the protection back, so non-owners can push to `release/*` for those moments. If the
+  protection cannot be put back the run stops and names the repository: `python3 scripts/rules.py <repository>`
+  restores it.
 - `merge-pr` on Forgejo waits when Forgejo answers "try again later": right after new commit statuses are
   posted Forgejo checks the pull request again in the background and refuses to merge meanwhile, so the
   command retries for about a minute (every 3 seconds, up to 20 times) before it fails. Any other refusal
@@ -1635,7 +1639,7 @@ git switch -c release/0.1.0 && git push -u origin release/0.1.0
    agent, and the release is published with them; without `release` the release has the notes only. On
    GitHub, a repository without a `yggdrasil.yml` instead gets a direct release, or with
    `releaseArtifacts: true` an immutable tag and private draft that its release-artifact workflow
-   publishes. Jenkins then deletes the branch (Forgejo keeps `release/*`: delete old ones by hand). The
+   publishes. Jenkins then deletes the branch (Forgejo keeps `release/*`: `scripts/prune_release_branches.py` deletes old ones). The
    console shows the version, commit and deploy time. Every step: [Releases](#releases).
 
 If a deploy fails, it rolls back to the previous image and the pull request stays open. A failure after
@@ -1893,7 +1897,7 @@ the repository's release lock:
    owner's tag can be a pre-release: an application's version comes from its `release/X.Y.Z` branch, which
    has no pre-release part.
 7. The **release branch is deleted**. Forgejo keeps it (`release/*` is protected, `delete-branch` exits `3`): a
-   note in the log, not a failure; delete old release branches by hand.
+   note in the log, not a failure; [`scripts/prune_release_branches.py`](#the-git-server-commands) deletes old ones.
 
 The order is the point: nothing is published before the files are validated and finalized, and the release is
 visible on GitHub only when it is whole.
