@@ -41,11 +41,13 @@
 #                              Cloudflare edge address that unrelated users share. It only works
 #                              behind the proxy: with no trusted Cloudflare in front there is no
 #                              such entry, and every source falls in that one global bucket. The
-#                              API's own limit is separate and reads the header Traefik sends on,
-#                              whose last entry is the connection's address. The edge network has
-#                              no IPv6 (scripts/platform.sh creates it without), so with an AAAA
-#                              record every IPv6 client would reach Traefik through Docker's port
-#                              proxy as one gateway address, in one bucket.
+#                              API's own limit is separate: HEIMDALL_CLOUDFLARE_PROXIED=true in the
+#                              environment's variables has it count the visitor too, and without
+#                              that it counts a Cloudflare address (docs/hosts.md, Client
+#                              addresses). The edge network has no IPv6 (scripts/platform.sh
+#                              creates it without), so with an AAAA record every IPv6 client would
+#                              reach Traefik through Docker's port proxy as one gateway address, in
+#                              one bucket.
 #
 # /metrics is on port 9464, which is on neither the router nor the host: Prometheus reaches it over
 # the telemetry network as heimdall-api.<environment>:9464.

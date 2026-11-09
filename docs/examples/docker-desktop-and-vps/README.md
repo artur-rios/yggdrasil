@@ -101,7 +101,7 @@ API token with **Zone → Zone → Read** and **Zone → DNS → Edit** on the z
 
 | Record | Points at | Proxy |
 |---|---|---|
-| `*.example.com` (name `*`) | The server's public IP | Either: **DNS only** to start, **Proxied** once the real certificate works ([dns.md A7](../../dns.md#a7-optional-the-cloudflare-proxy)), with `CLOUDFLARE_PROXIED=true` in `platform.env` from then on |
+| `*.example.com` (name `*`) | The server's public IP | Either: **DNS only** to start, **Proxied** once the real certificate works ([dns.md A7](../../dns.md#a7-optional-the-cloudflare-proxy)), with `CLOUDFLARE_PROXIED=true` in `platform.env` and `HEIMDALL_CLOUDFLARE_PROXIED=true` in heimdall-api's environments from then on |
 
 `heimdall-api-dev`, `heimdall-hml`, `fortuna`, `yggdrasil`, `jenkins` ... are all one label under
 `example.com`, so the record and Traefik's one `*.example.com` certificate cover them, and adding

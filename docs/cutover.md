@@ -1868,13 +1868,18 @@ the variable. A variable with an old name: `ygg vars set <application>@<environm
 The applications' names stay on the same address: the Application Server is the server they reach today (0.1). What
 changes is **how** they reach it: through Cloudflare's proxy, which they did not use (`A *` DNS only). From 5.5
 on that is the only way in: the firewall lets 80 and 443 in from Cloudflare's ranges only, and Traefik takes the
-visitor's address from Cloudflare's header (`CLOUDFLARE_PROXIED=true`), which heimdall-api's sign-in limit counts.
+visitor's address from Cloudflare's header (`CLOUDFLARE_PROXIED=true`).
 So the records of the bare domains and `*` turn **proxied**. The names that move are the DevOps Server's: `git.`,
 `jenkins.`, `traefik-dev.` and `grafana-dev.` (the DevOps Server's platform services; `cloudflare_dns.py`'s dev
 names), made in 1.5 and pointing at `<dev ip>` since 2.3. Proxied, the names also get 1.3's Full (strict), which
 the certificates of 5.5 pass, and 1.4's cache rule. And Cloudflare's limit on a request's size, 100 MB on the Free
 plan: a larger upload (an attachment to fortuna-api) is refused at the edge with `413`, where it reached the old server
 before.
+
+heimdall-api's sign-in limit and request log read the visitor's address only with
+`HEIMDALL_CLOUDFLARE_PROXIED=true` in its variables. Before the records turn proxied, set it in each environment
+(`ygg vars set heimdall-api@<environment> HEIMDALL_CLOUDFLARE_PROXIED=true`) and deploy a release that reads it.
+Without it they count a Cloudflare address, which unrelated users share.
 
 First, by hand in each zone's **DNS → Records**, the records the script leaves alone:
 
