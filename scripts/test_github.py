@@ -84,6 +84,18 @@ def check_run(name, status="completed", conclusion="success", **more):
             "started_at": "2026-10-23T10:00:00Z", "html_url": f"https://github.com/someone/app/runs/{name}", **more}
 
 
+def workflow_run(run_id, status="completed", conclusion="failure", workflow_id=1, **more):
+    """A workflow run as the actions/runs list gives it."""
+    return {"id": run_id, "workflow_id": workflow_id, "status": status, "conclusion": conclusion,
+            "html_url": f"https://github.com/someone/app/actions/runs/{run_id}", **more}
+
+
+def packaging_run(run_id, status="completed", conclusion="failure", tag="v1.2.3", created_at=None):
+    """A run of the packaging workflow, dispatched on a tag."""
+    return workflow_run(run_id, status=status, conclusion=conclusion, event="workflow_dispatch", head_branch=tag,
+                        created_at=created_at or now())
+
+
 def now(offset_seconds=0):
     return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -125,6 +137,7 @@ class GitHubTests(unittest.TestCase):
     def test_given_every_check_passed_when_waiting_then_it_succeeds(self):
         self.respond("check-suites", last=(0, SUITES_DONE))
         self.respond("check-runs", last=(0, runs(("branch-policy", "success"), ("test", "skipped"))))
+        self.respond("runs", last=(0, {"workflow_runs": []}))
         result = self.github("wait-checks", "app", "abc123", "60")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("passed", result.stdout)
@@ -139,6 +152,7 @@ class GitHubTests(unittest.TestCase):
     def test_given_github_fails_to_answer_once_when_waiting_then_it_asks_again(self):
         self.respond("check-suites", (22, {"message": "Server Error"}), last=(0, SUITES_DONE))
         self.respond("check-runs", last=(0, runs(("branch-policy", "success"))))
+        self.respond("runs", last=(0, {"workflow_runs": []}))
         result = self.github("wait-checks", "app", "abc123", "60")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Server Error", result.stderr)
@@ -152,6 +166,7 @@ class GitHubTests(unittest.TestCase):
     def test_given_any_request_when_made_then_the_token_travels_in_curls_config_not_its_arguments(self):
         self.respond("check-suites", last=(0, SUITES_DONE))
         self.respond("check-runs", last=(0, runs(("branch-policy", "success"))))
+        self.respond("runs", last=(0, {"workflow_runs": []}))
         self.respond("merge", (0, {"sha": "def456"}))
         for arguments in (("wait-checks", "app", "abc123", "60"), ("merge-pr", "app", "7", "abc123", "title")):
             self.assertEqual(self.github(*arguments).returncode, 0, arguments)
@@ -284,6 +299,133 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("timed out", result.stderr)
 
+    def publishing_a_draft(self, *drafts, **last):
+        self.respond("refs", (0, {"ref": "refs/tags/v1.2.3"}))
+        self.respond("releases", (0, {"id": 17, "draft": True, "html_url": "https://example/release/17"}))
+        self.respond("dispatches", (0, None))
+        states = {True: (0, {"tag_name": "v1.2.3", "draft": True, "html_url": "https://example/release/17"}),
+                  False: (0, {"tag_name": "v1.2.3", "draft": False, "html_url": "https://example/release/17"})}
+        self.respond("17", *[states[draft] for draft in drafts], last=states[last.get("last", True)])
+
+    def test_given_the_packaging_workflow_failed_when_publishing_then_it_stops_with_the_run_and_the_draft(self):
+        for conclusion in ("failure", "startup_failure", "cancelled"):
+            with self.subTest(conclusion=conclusion):
+                self.publishing_a_draft()
+                self.respond("runs", (0, {"workflow_runs": [packaging_run(90, conclusion=conclusion)]}))
+                for key in ("refs", "releases", "dispatches", "17", "runs"):
+                    (self.state / f"{key}.count").unlink(missing_ok=True)
+
+                result = self.github("publish-release", "app", "1.2.3", "abc123", "2")
+
+                self.assertEqual((result.returncode, result.stdout), (1, ""), result.stderr)
+                self.assertNotIn("timed out", result.stderr)
+                self.assertIn(conclusion, result.stderr)
+                self.assertIn("https://github.com/someone/app/actions/runs/90", result.stderr)
+                self.assertIn("https://example/release/17", result.stderr)
+                self.assertIn("/repos/someone/app/actions/workflows/release-artifacts.yml/runs?event=workflow_dispatch"
+                              "&branch=v1.2.3", self.request("runs"))
+
+    def test_given_the_packaging_workflow_still_running_when_publishing_then_it_waits_for_the_release(self):
+        self.publishing_a_draft(True, False)
+        self.respond("runs", last=(0, {"workflow_runs": [packaging_run(90, status="in_progress", conclusion=None)]}))
+        result = self.github("publish-release", "app", "1.2.3", "abc123", "60")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.state / "17.count").read_text().strip(), "2")
+
+    def test_given_the_packaging_workflow_succeeded_when_the_release_is_still_draft_then_it_keeps_looking(self):
+        self.publishing_a_draft(True, False)
+        self.respond("runs", last=(0, {"workflow_runs": [packaging_run(90, conclusion="success")]}))
+        self.assertEqual(self.github("publish-release", "app", "1.2.3", "abc123", "60").returncode, 0)
+
+    def test_given_a_failed_run_from_before_this_dispatch_when_publishing_then_it_does_not_count(self):
+        self.publishing_a_draft()
+        self.respond("runs", last=(0, {"workflow_runs": [packaging_run(80, created_at=now(-3600))]}))
+        result = self.github("publish-release", "app", "1.2.3", "abc123", "0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr)
+
+    def test_given_a_failed_run_of_another_tag_when_publishing_then_it_does_not_count(self):
+        self.publishing_a_draft()
+        self.respond("runs", last=(0, {"workflow_runs": [packaging_run(80, tag="v9.9.9")]}))
+        result = self.github("publish-release", "app", "1.2.3", "abc123", "0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr)
+
+    def test_given_github_not_answering_about_the_run_when_publishing_then_it_keeps_looking(self):
+        self.publishing_a_draft(True, False)
+        self.respond("runs", last=("22:500", {"message": "Server Error"}))
+        self.assertEqual(self.github("publish-release", "app", "1.2.3", "abc123", "60").returncode, 0)
+
+    # -- wait-checks: a workflow run that ended before it started a job never reports its checks ---------
+
+    def waiting_with(self, check_runs, *workflow_runs):
+        self.respond("check-suites", last=(0, SUITES_DONE))
+        self.respond("check-runs", last=(0, check_runs))
+        self.respond("runs", last=(0, {"workflow_runs": list(workflow_runs)}))
+        self.respond("jobs", last=(0, {"total_count": 0, "jobs": []}))
+
+    def assert_stopped_on_the_run(self, result, run_id):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("timed out", result.stderr)
+        self.assertIn("without starting a job", result.stderr)
+        self.assertIn(f"https://github.com/someone/app/actions/runs/{run_id}", result.stderr)
+
+    def test_given_the_only_run_ended_without_jobs_when_waiting_then_it_stops_at_once(self):
+        self.waiting_with(runs(), workflow_run(77))
+        self.assert_stopped_on_the_run(self.github("wait-checks", "app", "abc123", "2"), 77)
+
+    def test_given_branch_policy_passed_and_another_run_had_no_jobs_when_waiting_then_it_does_not_pass(self):
+        self.waiting_with(runs(("branch-policy", "success")), workflow_run(70, conclusion="success", workflow_id=1),
+                          workflow_run(77, workflow_id=2))
+        self.assert_stopped_on_the_run(self.github("wait-checks", "app", "abc123", "2"), 77)
+
+    def test_given_the_workflow_was_started_again_and_passed_when_waiting_then_it_passes(self):
+        self.waiting_with(runs(("branch-policy", "success")), workflow_run(77), workflow_run(78, conclusion="success"))
+        result = self.github("wait-checks", "app", "abc123", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("passed", result.stdout)
+
+    def test_given_a_suite_still_queued_when_waiting_then_the_runs_are_not_asked_about(self):
+        self.respond("check-suites", last=(0, {"check_suites": [{"app": {"slug": "github-actions"}, "status": "queued"}]}))
+        self.respond("check-runs", last=(0, runs()))
+        result = self.github("wait-checks", "app", "abc123", "0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr)
+        self.assertFalse((self.state / "runs.count").exists())
+
+    def assert_did_not_pass_unanswered(self, result):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("passed", result.stdout)
+        self.assertIn("did not answer", result.stderr)
+
+    def test_given_github_never_answering_about_the_runs_when_waiting_then_it_fails_without_passing(self):
+        self.waiting_with(runs(("branch-policy", "success")))
+        self.respond("runs", last=("22:500", {"message": "Server Error"}))
+        self.assert_did_not_pass_unanswered(self.github("wait-checks", "app", "abc123", "5"))
+        self.assertEqual((self.state / "runs.count").read_text().strip(), "5")
+
+    def test_given_github_never_answering_about_the_jobs_when_waiting_then_it_fails_without_passing(self):
+        self.waiting_with(runs(("branch-policy", "success")), workflow_run(77))
+        self.respond("jobs", last=("22:500", {"message": "Server Error"}))
+        self.assert_did_not_pass_unanswered(self.github("wait-checks", "app", "abc123", "5"))
+        self.assertEqual((self.state / "jobs.count").read_text().strip(), "5")
+
+    def test_given_github_missing_one_look_at_the_runs_when_waiting_then_it_looks_again_and_passes(self):
+        self.waiting_with(runs(("branch-policy", "success")))
+        self.respond("runs", ("22:500", {"message": "Server Error"}))
+        result = self.github("wait-checks", "app", "abc123", "5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("passed", result.stdout)
+        self.assertEqual((self.state / "runs.count").read_text().strip(), "2")
+
+    def test_given_time_running_out_while_github_does_not_answer_about_the_runs_when_waiting_then_it_times_out(self):
+        self.waiting_with(runs(("branch-policy", "success")))
+        self.respond("runs", last=("22:500", {"message": "Server Error"}))
+        result = self.github("wait-checks", "app", "abc123", "0")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("passed", result.stdout)
+        self.assertIn("timed out", result.stderr)
+
     # -- actions-status: one look at the GitHub Actions check runs of a commit --------------------------
 
     def look(self, *names, sha="abc123"):
@@ -374,6 +516,149 @@ class GitHubTests(unittest.TestCase):
         result = self.look("c3", "last")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.state / "check-runs.count").read_text().strip(), "2")
+
+    # -- actions-status: a workflow run that ended before it started a job never reports its check ------
+
+    def runs_on_commit(self, *workflow_runs):
+        self.respond("check-runs", (0, {"check_runs": []}))
+        self.respond("runs", (0, {"workflow_runs": list(workflow_runs)}))
+
+    def test_given_a_run_that_ended_without_jobs_when_looked_at_then_exit_1_with_the_run(self):
+        for conclusion in ("failure", "startup_failure", "cancelled"):
+            with self.subTest(conclusion=conclusion):
+                self.runs_on_commit(workflow_run(77, conclusion=conclusion))
+                self.respond("jobs", (0, {"total_count": 0, "jobs": []}))
+                for key in ("check-runs", "runs", "jobs"):
+                    (self.state / f"{key}.count").unlink(missing_ok=True)
+                result = self.look("windows")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stdout, "windows\tfailure\thttps://github.com/someone/app/actions/runs/77\n")
+                self.assertIn("windows", result.stderr)
+                self.assertIn(conclusion, result.stderr)
+                self.assertIn("without starting a job", result.stderr)
+                self.assertIn("https://github.com/someone/app/actions/runs/77", result.stderr)
+                self.assertTrue(self.request("runs").strip().endswith(
+                    "/repos/someone/app/actions/runs?head_sha=abc123&per_page=100"), self.request("runs"))
+                self.assertTrue(self.request("jobs").strip().endswith(
+                    "/repos/someone/app/actions/runs/77/jobs?per_page=1"), self.request("jobs"))
+
+    def test_given_one_of_several_checks_passed_and_the_other_run_had_no_jobs_when_looked_at_then_exit_1(self):
+        self.respond("check-runs", (0, {"check_runs": [check_run("test")]}))
+        self.respond("runs", (0, {"workflow_runs": [workflow_run(70, conclusion="success"), workflow_run(77)]}))
+        self.respond("jobs", (0, {"total_count": 0, "jobs": []}))
+        result = self.look("test", "windows")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["test\tsuccess\thttps://github.com/someone/app/runs/test",
+                                                      "windows\tfailure\thttps://github.com/someone/app/actions/runs/77"])
+
+    def test_given_a_failed_run_that_started_jobs_when_a_check_is_missing_then_exit_3(self):
+        self.runs_on_commit(workflow_run(77))
+        self.respond("jobs", (0, {"total_count": 1, "jobs": [{"name": "other"}]}))
+        result = self.look("windows")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.stdout, "windows\tpending\t\n")
+
+    def test_given_a_new_run_started_after_the_one_without_jobs_when_looked_at_then_exit_3(self):
+        # Someone started the workflow again: its check may still appear.
+        self.runs_on_commit(workflow_run(77), workflow_run(78, status="queued", conclusion=None))
+        self.respond("jobs", (0, {"total_count": 0, "jobs": []}))
+        result = self.look("windows")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.stdout, "windows\tpending\t\n")
+
+    def test_given_a_successful_run_without_jobs_when_a_check_is_missing_then_exit_3(self):
+        self.runs_on_commit(workflow_run(77, conclusion="skipped"))
+        self.respond("jobs", (0, {"total_count": 0, "jobs": []}))
+        self.assertEqual(self.look("windows").returncode, 3)
+
+    def test_given_no_run_on_the_commit_when_a_check_is_missing_then_exit_3(self):
+        self.runs_on_commit()
+        self.assertEqual(self.look("windows").returncode, 3)
+
+    def test_given_github_not_answering_about_runs_when_a_check_is_missing_then_exit_3(self):
+        # The extra look can only turn a pending check into a failure, never make the answer worse.
+        for status in ("22:500", "6"):
+            with self.subTest(status=status):
+                self.respond("check-runs", (0, {"check_runs": []}))
+                self.respond("runs", (status, {"message": "Server Error"}))
+                (self.state / "check-runs.count").unlink(missing_ok=True)
+                (self.state / "runs.count").unlink(missing_ok=True)
+                result = self.look("windows")
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertEqual((self.state / "runs.count").read_text().strip(), "1")
+
+    def test_given_github_not_answering_about_jobs_when_a_check_is_missing_then_exit_3(self):
+        self.runs_on_commit(workflow_run(77))
+        self.respond("jobs", ("22:500", {"message": "Server Error"}))
+        result = self.look("windows")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual((self.state / "jobs.count").read_text().strip(), "1")
+
+    def test_given_no_check_is_missing_when_looked_at_then_the_runs_are_not_asked_about(self):
+        self.respond("check-runs", (0, {"check_runs": [check_run("test", status="in_progress", conclusion=None)]}))
+        self.assertEqual(self.look("test").returncode, 3)
+        self.assertFalse((self.state / "runs.count").exists())
+
+    def test_given_the_workflow_was_started_again_and_a_check_is_missing_then_exit_3(self):
+        # The dead run is not the workflow's latest any more, so it says nothing about the check.
+        self.runs_on_commit(workflow_run(77), workflow_run(78, conclusion="success"))
+        self.respond("jobs", (0, {"total_count": 0, "jobs": []}))
+        result = self.look("windows")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.stdout, "windows\tpending\t\n")
+
+    def test_given_no_names_and_a_run_without_jobs_when_looked_at_then_exit_1_with_the_run(self):
+        self.respond("check-runs", (0, {"check_runs": [check_run("test")]}))
+        self.respond("runs", (0, {"workflow_runs": [workflow_run(70, conclusion="success", workflow_id=1),
+                                                    workflow_run(77, workflow_id=2)]}))
+        self.respond("jobs", (0, {"total_count": 0, "jobs": []}))
+        result = self.look()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["test\tsuccess\thttps://github.com/someone/app/runs/test",
+                                                      "workflow run\tfailure\thttps://github.com/someone/app/actions/runs/77"])
+        self.assertIn("without starting a job", result.stderr)
+
+    def test_given_no_names_and_no_checks_yet_and_a_run_without_jobs_when_looked_at_then_exit_1(self):
+        self.runs_on_commit(workflow_run(77))
+        self.respond("jobs", (0, {"total_count": 0, "jobs": []}))
+        result = self.look()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "workflow run\tfailure\thttps://github.com/someone/app/actions/runs/77\n")
+
+    def test_given_no_names_and_every_run_started_its_jobs_when_looked_at_then_exit_0(self):
+        self.respond("check-runs", (0, {"check_runs": [check_run("test")]}))
+        self.respond("runs", (0, {"workflow_runs": [workflow_run(70, conclusion="success")]}))
+        result = self.look()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.state / "runs.count").read_text().strip(), "1")
+
+    def test_given_no_names_and_github_not_answering_about_the_runs_when_all_else_passed_then_exit_2(self):
+        for status in ("22:500", "22:403", "6"):
+            with self.subTest(status=status):
+                self.respond("check-runs", (0, {"check_runs": [check_run("test")]}))
+                self.respond("runs", (status, {"message": "Server Error"}))
+                for key in ("check-runs", "runs"):
+                    (self.state / f"{key}.count").unlink(missing_ok=True)
+                result = self.look()
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("did not answer", result.stderr)
+
+    def test_given_no_names_and_github_not_answering_about_the_jobs_when_all_else_passed_then_exit_2(self):
+        self.respond("check-runs", (0, {"check_runs": [check_run("test")]}))
+        self.respond("runs", (0, {"workflow_runs": [workflow_run(77)]}))
+        self.respond("jobs", ("22:500", {"message": "Server Error"}))
+        result = self.look()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("did not answer", result.stderr)
+
+    def test_given_an_unanswered_job_look_and_another_run_without_jobs_when_looked_at_then_the_dead_run_wins(self):
+        # One run GitHub would not say about does not hide another it did say about.
+        self.respond("check-runs", (0, {"check_runs": []}))
+        self.respond("runs", (0, {"workflow_runs": [workflow_run(70, workflow_id=1), workflow_run(77, workflow_id=2)]}))
+        self.respond("jobs", ("22:500", {"message": "Server Error"}), (0, {"total_count": 0, "jobs": []}))
+        result = self.look("windows")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "windows\tfailure\thttps://github.com/someone/app/actions/runs/77\n")
 
     # -- wait-ref: until the mirror has pushed a tag or branch ------------------------------------------
 
