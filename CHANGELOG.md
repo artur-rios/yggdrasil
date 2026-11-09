@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-09
+
 ### Added
 
 - **Heimdall's security signal job runs on a schedule, and a failed run reaches a person.** `ygg install` adds, on the
@@ -1187,7 +1189,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.12...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/artur-rios/yggdrasil/compare/v0.9.12...v0.10.0
 [0.9.12]: https://github.com/artur-rios/yggdrasil/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/artur-rios/yggdrasil/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/artur-rios/yggdrasil/compare/v0.9.9...v0.9.10
