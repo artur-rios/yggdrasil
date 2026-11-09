@@ -137,6 +137,7 @@ class GitHubTests(unittest.TestCase):
     def test_given_every_check_passed_when_waiting_then_it_succeeds(self):
         self.respond("check-suites", last=(0, SUITES_DONE))
         self.respond("check-runs", last=(0, runs(("branch-policy", "success"), ("test", "skipped"))))
+        self.respond("runs", last=(0, {"workflow_runs": []}))
         result = self.github("wait-checks", "app", "abc123", "60")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("passed", result.stdout)
@@ -151,6 +152,7 @@ class GitHubTests(unittest.TestCase):
     def test_given_github_fails_to_answer_once_when_waiting_then_it_asks_again(self):
         self.respond("check-suites", (22, {"message": "Server Error"}), last=(0, SUITES_DONE))
         self.respond("check-runs", last=(0, runs(("branch-policy", "success"))))
+        self.respond("runs", last=(0, {"workflow_runs": []}))
         result = self.github("wait-checks", "app", "abc123", "60")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Server Error", result.stderr)
@@ -164,6 +166,7 @@ class GitHubTests(unittest.TestCase):
     def test_given_any_request_when_made_then_the_token_travels_in_curls_config_not_its_arguments(self):
         self.respond("check-suites", last=(0, SUITES_DONE))
         self.respond("check-runs", last=(0, runs(("branch-policy", "success"))))
+        self.respond("runs", last=(0, {"workflow_runs": []}))
         self.respond("merge", (0, {"sha": "def456"}))
         for arguments in (("wait-checks", "app", "abc123", "60"), ("merge-pr", "app", "7", "abc123", "title")):
             self.assertEqual(self.github(*arguments).returncode, 0, arguments)
@@ -390,6 +393,39 @@ class GitHubTests(unittest.TestCase):
         self.assertIn("timed out", result.stderr)
         self.assertFalse((self.state / "runs.count").exists())
 
+    def assert_did_not_pass_unanswered(self, result):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("passed", result.stdout)
+        self.assertIn("did not answer", result.stderr)
+
+    def test_given_github_never_answering_about_the_runs_when_waiting_then_it_fails_without_passing(self):
+        self.waiting_with(runs(("branch-policy", "success")))
+        self.respond("runs", last=("22:500", {"message": "Server Error"}))
+        self.assert_did_not_pass_unanswered(self.github("wait-checks", "app", "abc123", "5"))
+        self.assertEqual((self.state / "runs.count").read_text().strip(), "5")
+
+    def test_given_github_never_answering_about_the_jobs_when_waiting_then_it_fails_without_passing(self):
+        self.waiting_with(runs(("branch-policy", "success")), workflow_run(77))
+        self.respond("jobs", last=("22:500", {"message": "Server Error"}))
+        self.assert_did_not_pass_unanswered(self.github("wait-checks", "app", "abc123", "5"))
+        self.assertEqual((self.state / "jobs.count").read_text().strip(), "5")
+
+    def test_given_github_missing_one_look_at_the_runs_when_waiting_then_it_looks_again_and_passes(self):
+        self.waiting_with(runs(("branch-policy", "success")))
+        self.respond("runs", ("22:500", {"message": "Server Error"}))
+        result = self.github("wait-checks", "app", "abc123", "5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("passed", result.stdout)
+        self.assertEqual((self.state / "runs.count").read_text().strip(), "2")
+
+    def test_given_time_running_out_while_github_does_not_answer_about_the_runs_when_waiting_then_it_times_out(self):
+        self.waiting_with(runs(("branch-policy", "success")))
+        self.respond("runs", last=("22:500", {"message": "Server Error"}))
+        result = self.github("wait-checks", "app", "abc123", "0")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("passed", result.stdout)
+        self.assertIn("timed out", result.stderr)
+
     # -- actions-status: one look at the GitHub Actions check runs of a commit --------------------------
 
     def look(self, *names, sha="abc123"):
@@ -595,6 +631,34 @@ class GitHubTests(unittest.TestCase):
         result = self.look()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.state / "runs.count").read_text().strip(), "1")
+
+    def test_given_no_names_and_github_not_answering_about_the_runs_when_all_else_passed_then_exit_2(self):
+        for status in ("22:500", "22:403", "6"):
+            with self.subTest(status=status):
+                self.respond("check-runs", (0, {"check_runs": [check_run("test")]}))
+                self.respond("runs", (status, {"message": "Server Error"}))
+                for key in ("check-runs", "runs"):
+                    (self.state / f"{key}.count").unlink(missing_ok=True)
+                result = self.look()
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("did not answer", result.stderr)
+
+    def test_given_no_names_and_github_not_answering_about_the_jobs_when_all_else_passed_then_exit_2(self):
+        self.respond("check-runs", (0, {"check_runs": [check_run("test")]}))
+        self.respond("runs", (0, {"workflow_runs": [workflow_run(77)]}))
+        self.respond("jobs", ("22:500", {"message": "Server Error"}))
+        result = self.look()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("did not answer", result.stderr)
+
+    def test_given_an_unanswered_job_look_and_another_run_without_jobs_when_looked_at_then_the_dead_run_wins(self):
+        # One run GitHub would not say about does not hide another it did say about.
+        self.respond("check-runs", (0, {"check_runs": []}))
+        self.respond("runs", (0, {"workflow_runs": [workflow_run(70, workflow_id=1), workflow_run(77, workflow_id=2)]}))
+        self.respond("jobs", ("22:500", {"message": "Server Error"}), (0, {"total_count": 0, "jobs": []}))
+        result = self.look("windows")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "windows\tfailure\thttps://github.com/someone/app/actions/runs/77\n")
 
     # -- wait-ref: until the mirror has pushed a tag or branch ------------------------------------------
 

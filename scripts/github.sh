@@ -109,7 +109,6 @@ wait_checks() {
       sleep "$poll_seconds"
       continue
     fi
-    unanswered=0
 
     local pending_suites pending_runs failed policy
     pending_suites=$(jq '[.check_suites[] | select(.app.slug == "github-actions" and .status != "completed")] | length' <<<"$suites")
@@ -128,14 +127,27 @@ wait_checks() {
 
     # Nothing is left running. A run that ended before it started a job has no check to fail above, so
     # without this the wait would run out, or pass with that workflow never having run.
-    local dead dead_conclusion dead_url
-    if [[ "$pending_suites" -eq 0 && "$pending_runs" -eq 0 ]] && dead=$(run_without_jobs "$repo" "$sha"); then
+    local dead dead_conclusion dead_url dead_look=1
+    if [[ "$pending_suites" -eq 0 && "$pending_runs" -eq 0 ]]; then
+      dead_look=0
+      dead=$(run_without_jobs "$repo" "$sha") || dead_look=$?
+    fi
+    if ((dead_look == 0)); then
       IFS=$'\t' read -r dead_conclusion dead_url <<<"$dead"
       echo "github: checks failed on $sha:" >&2
       no_jobs_message "$dead_conclusion" "$dead_url" >&2
       echo >&2
       return 1
     fi
+    # Not knowing must not read as "none": a release could pass with a workflow that never ran.
+    if ((dead_look == 2)); then
+      unanswered=$((unanswered + 1))
+      ((unanswered < 5)) || die "GitHub did not answer $unanswered times in a row about the workflow runs on $sha"
+      ((SECONDS < deadline)) || die "timed out after ${timeout}s waiting for checks on $sha"
+      sleep "$poll_seconds"
+      continue
+    fi
+    unanswered=0
 
     if [[ "$policy" -gt 0 && "$pending_suites" -eq 0 && "$pending_runs" -eq 0 ]]; then
       echo "github: every GitHub Actions check on $sha passed:"
@@ -236,22 +248,30 @@ raw_api() {
 state_def='def state: if .status != "completed" then "pending" elif (.conclusion | IN("success", "skipped", "neutral")) then "success" else "failure" end;'
 
 # A workflow run can end before it starts a job (a GitHub internal error, an invalid workflow), and then its
-# checks never exist. Prints <conclusion> TAB <url> of such a run on <sha>, and returns 1 when there is none or
-# it can't tell. Every run on the commit must have ended, since a run still going may yet report the check, and
-# only a workflow's latest run counts: one started again has said all it will about the dead one.
+# checks never exist. Prints <conclusion> TAB <url> of such a run on <sha> (return 0); returns 1 when there is
+# none, and 2 when GitHub didn't say. Every run on the commit must have ended, since a run still going may yet
+# report the check, and only a workflow's latest run counts: one started again has said all it will about the
+# dead one.
 run_without_jobs() {
-  local repo=$1 sha=$2 list id conclusion url
-  raw_api GET "repos/$owner/$repo/actions/runs?head_sha=$sha&per_page=100" && [[ "$http_code" == 200 ]] || return 1
+  local repo=$1 sha=$2 list going id conclusion url total unknown=0
+  raw_api GET "repos/$owner/$repo/actions/runs?head_sha=$sha&per_page=100" && [[ "$http_code" == 200 ]] || return 2
   list=$http_body
-  jq -e '[.workflow_runs[]? | select(.status != "completed")] | length == 0' <<<"$list" >/dev/null || return 1
+  going=$(jq '[.workflow_runs[]? | select(.status != "completed")] | length' <<<"$list") || return 2
+  ((going == 0)) || return 1
   while IFS=$'\t' read -r id conclusion url; do
-    raw_api GET "repos/$owner/$repo/actions/runs/$id/jobs?per_page=1" && [[ "$http_code" == 200 ]] || continue
-    if jq -e '.total_count == 0' <<<"$http_body" >/dev/null; then
+    total=""
+    if raw_api GET "repos/$owner/$repo/actions/runs/$id/jobs?per_page=1" && [[ "$http_code" == 200 ]]; then
+      total=$(jq -r '.total_count // empty' <<<"$http_body") || total=""
+    fi
+    if [[ -z "$total" ]]; then
+      unknown=1
+    elif ((total == 0)); then
       printf '%s\t%s\n' "$conclusion" "$url"
       return 0
     fi
   done < <(jq -r "$state_def"' [.workflow_runs[]?] | group_by(.workflow_id) | map(max_by(.id)) | .[]
                                | select(state == "failure") | [.id, .conclusion, .html_url] | @tsv' <<<"$list")
+  ((unknown == 0)) || return 2
   return 1
 }
 
@@ -302,11 +322,12 @@ actions_status() {
        else $names | map(. as $n | ($latest | map(select(.name == $n)) | first) // {name: $n, missing: true}) end)
     | .[] | [.name, (if .missing then "pending" else state end), (if .missing then "missing" else (.conclusion // "-") end), (.html_url // "")] | @tsv' <<<"$runs")
 
-  local dead="" dead_conclusion="" dead_url=""
+  local dead="" dead_conclusion="" dead_url="" dead_look=1
   # Asked only when it can change the answer: a named check that isn't there, or, without names, when
   # nothing else is failed or pending, where a run that never started a job would otherwise pass unseen.
   if grep -q $'\tmissing\t' <<<"$lines" || { (($# == 0)) && ! grep -qE $'\t(pending|failure)\t' <<<"$lines"; }; then
-    dead=$(run_without_jobs "$repo" "$sha") || dead=""
+    dead_look=0
+    dead=$(run_without_jobs "$repo" "$sha") || { dead_look=$?; dead=""; }
     IFS=$'\t' read -r dead_conclusion dead_url <<<"$dead"
   fi
 
@@ -337,6 +358,10 @@ actions_status() {
   ((failed == 0)) || return 1
   # Without names, nothing running yet is not "everything passed": the mirror may have just pushed.
   ((pending == 0 && count > 0)) || return 3
+  if ((dead_look == 2)); then
+    echo "github: GitHub did not answer about the workflow runs on $sha" >&2
+    return 2
+  fi
 }
 
 # Waits until the mirror has pushed <ref> -- refs/tags/x, refs/heads/x, or a bare name, which is a tag.
