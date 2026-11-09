@@ -659,7 +659,10 @@ check with **period 15 minutes and grace 15 minutes**, and copy its ping URL. Th
 
 `HERMES_BASE_URL` is not a setting: the script gives the job `http://hermes-api.<environment>:8080`, the alias on `edge`.
 
-To prove the path, once, after filling it in: run it by hand, then stop Hermes for one run and see the mail arrive.
+To prove the path, once, after filling it in: run it by hand and see the check turn green. The first run reports every
+signal already in the logs, so an alert may arrive. Then blank `HEIMDALL_SIGNAL_ALERT_TO` for one run, see the monitor's
+mail arrive (status `3`), restore the address and run it again. Stopping Hermes proves nothing unless there are new
+signals: with none the job never calls it, and exits `0`.
 
 ```bash
 systemctl --user start yggdrasil-security-signals@production.service   # as ygg
