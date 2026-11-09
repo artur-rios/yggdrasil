@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # The Docker engine a yggdrasil script talks to: the invoking user's own rootless one. Sourced (not run)
-# by scripts/platform.sh, scripts/agent.sh, scripts/backup.sh, scripts/renovate.sh, scripts/volumes.sh and
-# scripts/prove-machine.sh, which define die() -- it prefixes the message with the script's name.
+# by scripts/platform.sh, scripts/agent.sh, scripts/backup.sh, scripts/renovate.sh, scripts/security-signals.sh,
+# scripts/volumes.sh and scripts/prove-machine.sh, which define die() -- it prefixes the message with the script's name.
 
 # What tars a volume (backup.sh) and untars one (volumes.sh): pinned by version and digest, like the
 # platform's images, so a night's backup or the day of the cutover never pulls whatever "latest" is then.

@@ -261,15 +261,23 @@ Behind the proxy the Application Server accepts 80 and 443 **only from Cloudflar
 ([hosts.md, the origin lock](hosts.md#the-origin-lock)). Webhooks and the Jenkins agents'
 WebSockets work through the proxy too.
 
-**Per-source limits and Cloudflare.** Heimdall's edge limit on its credential routes
-(`stacks/heimdall-api.proxy.yml`), like Heimdall's own, counts the client address Traefik sees. Behind the
-proxy every connection comes from a Cloudflare address, and the visitor's is in `X-Forwarded-For`. With
-`CLOUDFLARE_PROXIED=true`, Traefik trusts that header **from Cloudflare's ranges only**
-(`<secrets>/cloudflare-ips`, written by `ygg install`), so each visitor has a bucket of their own. With
-`false` on a proxied machine, every user behind one Cloudflare address shares a bucket of 10 a minute.
-On a machine reached directly, rootless Docker keeps the client's address when the engine uses
-`slirp4netns` (which `ygg install` sets). IPv6 clients through rootless Docker have not been checked:
-give such a machine an `A` record only.
+**Per-source limits and Cloudflare.** Behind the proxy every connection comes from a Cloudflare address, and
+the visitor's is in `X-Forwarded-For`. The limits at the edge (Heimdall's credential routes in
+`stacks/heimdall-api.proxy.yml`, the personal page's contact form in `stacks/personal-page.proxy.yml`) need two
+things to count each visitor apart. With `CLOUDFLARE_PROXIED=true`, Traefik trusts that header **from
+Cloudflare's ranges only** (`<secrets>/cloudflare-ips`, written by `ygg install`), and
+`sourcecriterion.ipstrategy.depth=1` on the limit counts its last entry. Without `depth` a limit counts the
+connection's address, an edge address unrelated visitors share.
+
+Those limits need the proxy on. With `false` on a proxied machine, or on a machine reached directly, there is
+no trusted entry to count, and every visitor shares one bucket: 10 a minute for all of Heimdall's sign-ins.
+
+Heimdall's own limit inside the API is separate. Behind the proxy it counts the visitor only with
+`HEIMDALL_CLOUDFLARE_PROXIED=true` in each environment's variables, and without that it counts a Cloudflare
+address ([hosts.md, Client addresses](hosts.md#client-addresses)). On a machine reached directly it counts the
+client, with or without the variable. There, rootless Docker keeps the client's address when the engine uses
+`slirp4netns` (which `ygg install` sets). IPv6 clients through rootless Docker have not been checked: give such
+a machine an `A` record only.
 
 ## Option B: DuckDNS, free
 

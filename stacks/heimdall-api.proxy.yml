@@ -34,12 +34,20 @@
 #                              would deny every caller at a lower cost. fortuna-api calls the API
 #                              over the alias, not through Traefik, so its users never share this
 #                              bucket (stacks/fortuna-api.proxy.yml).
-#                              Like the API's own limit, it counts the client address Traefik sees.
-#                              With the Cloudflare proxy on (docs/dns.md, A7), every user behind one
-#                              Cloudflare egress address shares a bucket. The edge network has no
-#                              IPv6 (scripts/platform.sh creates it without), so with an AAAA record
-#                              every IPv6 client would reach Traefik through Docker's port proxy as
-#                              one gateway address, in one bucket.
+#                              depth=1 counts the visitor Cloudflare reports, the last entry of
+#                              X-Forwarded-For, and a forged entry in front of it changes nothing.
+#                              Trusting the header (CLOUDFLARE_PROXIED=true, docs/dns.md, A7) is not
+#                              enough: without depth the limit counts the connection's address, a
+#                              Cloudflare edge address that unrelated users share. It only works
+#                              behind the proxy: with no trusted Cloudflare in front there is no
+#                              such entry, and every source falls in that one global bucket. The
+#                              API's own limit is separate: HEIMDALL_CLOUDFLARE_PROXIED=true in the
+#                              environment's variables has it count the visitor too, and without
+#                              that it counts a Cloudflare address (docs/hosts.md, Client
+#                              addresses). The edge network has no IPv6 (scripts/platform.sh
+#                              creates it without), so with an AAAA record every IPv6 client would
+#                              reach Traefik through Docker's port proxy as one gateway address, in
+#                              one bucket.
 #
 # /metrics is on port 9464, which is on neither the router nor the host: Prometheus reaches it over
 # the telemetry network as heimdall-api.<environment>:9464.
@@ -90,6 +98,7 @@ services:
       - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.average=10
       - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.period=1m
       - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.burst=10
+      - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.sourcecriterion.ipstrategy.depth=1
       - traefik.http.middlewares.heimdall-api-${YGG_ENVIRONMENT}-auth-limit.ratelimit.sourcecriterion.ipstrategy.ipv6subnet=56
       - traefik.http.services.heimdall-api-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
 

@@ -27,7 +27,7 @@ MACHINE_ROLES=(dev apps workstation)
 # The Ubuntu releases install knows, by VERSION_ID: the LTS releases. Docker's apt repository is picked
 # by the release's codename (host.sh), so a release is added here once that repository has it.
 MACHINE_UBUNTU_VERSIONS=(24.04 26.04)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer signals-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -474,6 +474,17 @@ machine_backup_unit_dir() { echo "$(passwd_field ygg 6)/.config/systemd/user"; }
 # systemd directory of the renovate user, which runs it in its own engine.
 MACHINE_RENOVATE_UNITS=(yggdrasil-renovate.service yggdrasil-renovate.timer)
 machine_renovate_unit_dir() { echo "$(passwd_field renovate 6)/.config/systemd/user"; }
+
+# ---- The security signals timer ------------------------------------------------------------------
+
+# The user units of Heimdall's security signal job (scripts/security-signals.sh), apps machine only, into ygg's own
+# systemd directory: ygg's engine runs the API whose logs it reads. One timer per environment that alerts. Only
+# production does: outside it Hermes holds no Mailgun credentials, logs the message and accepts it, so no alert would
+# arrive, and the on-demand environments would fail every fifteen minutes while they are stopped.
+MACHINE_SIGNALS_UNITS=(yggdrasil-security-signals@.service yggdrasil-security-signals@.timer)
+MACHINE_SIGNALS_ENVIRONMENTS=(production)
+machine_signals_unit_dir() { echo "$(passwd_field ygg 6)/.config/systemd/user"; }
+machine_signals_timer() { echo "yggdrasil-security-signals@$1.timer"; }
 
 # ---- Firewall -----------------------------------------------------------------------------------
 
@@ -1273,6 +1284,82 @@ machine_check_renovate_health() {
   fi
 }
 
+# machine_check_signals_timer: apps only. ygg's two units are the checkout's copies and each environment's timer is
+# enabled; asked of ygg itself (its home is closed to the admin), through sudo without a password.
+machine_check_signals_timer() {
+  [[ "$machine_current_role" == apps ]] || return 0
+  title "Security signals"
+  local dir unit held stale=() environment unit_state timer
+  if ! user_exists ygg; then
+    row missing "signals timer" "no ygg user yet: install creates it, then the timer of Heimdall's security signal job"
+    machine_need signals-timer
+    return 0
+  fi
+  if ! machine_can_read_as_users; then
+    row warn "signals timer" "the home of ygg is closed to you and sudo would ask for a password: not checked (run check with sudo)"
+    return 0
+  fi
+  dir=$(machine_signals_unit_dir)
+  for unit in "${MACHINE_SIGNALS_UNITS[@]}"; do
+    if ! held=$(read_as_user ygg cat "$dir/$unit" 2>/dev/null) || [[ "$held" != "$(<"$root/platform/systemd/$unit")" ]]; then
+      stale+=("$unit")
+    fi
+  done
+  if ((${#stale[@]})); then
+    row missing "signals timer" "$dir: ${stale[*]} not there or not the checkout's copy: install writes them"
+    machine_need signals-timer
+    return 0
+  fi
+  for environment in "${MACHINE_SIGNALS_ENVIRONMENTS[@]}"; do
+    timer=$(machine_signals_timer "$environment")
+    if ! unit_state=$(read_as_user ygg systemctl --user is-enabled "$timer" 2>/dev/null); then
+      row missing "signals timer $environment" "$timer is ${unit_state:-not enabled}: install enables it (every fifteen minutes)"
+      machine_need signals-timer
+    else
+      row ok "signals timer $environment" "$timer enabled for ygg, every fifteen minutes ($dir)"
+    fi
+    machine_check_signals_health "$environment"
+  done
+}
+
+# machine_check_signals_health <environment>: whether the job can work and did. Warnings for the owner, none is
+# install's to repair. A row says whether a setting is empty and never what it holds.
+machine_check_signals_health() {
+  local environment=$1 file name empty=() shown key value result="" started=""
+  file="$(secrets_dir_of ygg)/security-signals-$environment.env"
+  if ! read_as_user ygg test -f "$file" 2>/dev/null; then
+    row warn "signals settings $environment" "$file is not there: install copies env/security-signals.env.example, then fill it in, as ygg (docs/hosts.md): every run fails, and nobody is told, until then"
+    machine_need signals-timer
+  else
+    for name in HEIMDALL_SIGNAL_HERMES_API_KEY HEIMDALL_SIGNAL_ALERT_TO HEIMDALL_SIGNAL_HEARTBEAT_URL; do
+      read_as_user ygg grep -q "^$name=." "$file" 2>/dev/null || empty+=("$name")
+    done
+    if ((${#empty[@]})); then
+      row warn "signals settings $environment" "${empty[*]} empty in $file (docs/hosts.md): every run fails until then, and without the heartbeat nobody is told"
+    else
+      row ok "signals settings $environment" "$file, with its key, address and heartbeat"
+    fi
+  fi
+
+  if shown=$(read_as_user ygg systemctl --user show "yggdrasil-security-signals@$environment.service" -p Result -p ExecMainStartTimestamp 2>/dev/null); then
+    while IFS='=' read -r key value; do
+      case $key in
+        Result) result=$value ;;
+        ExecMainStartTimestamp) started=$value ;;
+      esac
+    done <<<"$shown"
+    if [[ -z "$started" || "$started" == n/a ]]; then
+      row warn "last signals run $environment" "never run yet: the timer runs it within fifteen minutes"
+    elif [[ "$result" == success ]]; then
+      row ok "last signals run $environment" "succeeded, started $started"
+    else
+      row warn "last signals run $environment" "failed (Result=${result:-unknown}), started $started: journalctl --user -u yggdrasil-security-signals@$environment, as ygg"
+    fi
+  else
+    row warn "last signals run $environment" "systemctl --user show failed as ygg: not checked"
+  fi
+}
+
 # Backups older than this are a warning: the timer runs every night, so a day and a half without one is
 # a night missed.
 MACHINE_BACKUP_MAX_AGE_HOURS=36
@@ -1373,6 +1460,7 @@ machine_step_text() {
     engines) echo "Give each service user ($(role_users "$machine_current_role" | paste -sd' ' -)) its own rootless Docker engine: linger on, slirp4netns network and port driver, started now and at boot, and DOCKER_HOST in its .profile." ;;
     prune-timer) echo "Install the weekly Docker prune for ${MACHINE_PRUNE_USERS[*]} (dev machine): the units yggdrasil-prune.service and .timer into each one's ~/.config/systemd/user (as that user), and enable the timer (Sundays at 03:00). Each prunes its own engine of what has not been used for a week." ;;
     backup-timer) echo "Install the nightly backup for ygg: the units yggdrasil-backup.service and .timer into $(machine_backup_unit_dir) (as ygg), and enable the timer (03:30). What is backed up, and where to, is in $(secrets_dir_of ygg)/backup.conf (env/backup.conf.example)." ;;
+    signals-timer) echo "Install Heimdall's security signal job for ygg (apps machine): the units yggdrasil-security-signals@.service and .timer into $(machine_signals_unit_dir) (as ygg), and enable the timer of ${MACHINE_SIGNALS_ENVIRONMENTS[*]} (every fifteen minutes). Its Hermes key, alert address and heartbeat URL go in $(secrets_dir_of ygg)/security-signals-<environment>.env (env/security-signals.env.example)." ;;
     renovate-timer) echo "Install the daily Renovate run for renovate (dev machine): the units yggdrasil-renovate.service and .timer into $(machine_renovate_unit_dir) (as renovate), and enable the timer (05:00). Its Forgejo token goes in $(secrets_dir_of renovate)/renovate.env (env/renovate.env.example)." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
   esac
@@ -1753,6 +1841,34 @@ step_renovate_timer() {
   done
   run_as_user renovate systemctl --user daemon-reload
   run_as_user renovate systemctl --user enable --now yggdrasil-renovate.timer
+}
+
+# The units are copied by ygg itself, into its own home, from the checkout. The settings template is copied here and
+# not by the secrets step, which does not run again on a machine whose secrets directory is already right. The timers
+# are enabled whether or not the settings are filled in yet: a run without them fails loudly in the journal instead of
+# being silently missing, and the check says what is empty.
+step_signals_timer() {
+  if ! user_exists ygg; then
+    warn "there is no ygg user yet: the timer of Heimdall's security signal job is left for the next install."
+    return 0
+  fi
+  local dir unit environment file template="$root/env/security-signals.env.example"
+  [[ -f "$template" ]] || die "$template is missing from the checkout"
+  for environment in "${MACHINE_SIGNALS_ENVIRONMENTS[@]}"; do
+    file="$(secrets_dir_of ygg)/security-signals-$environment.env"
+    as_root test -e "$file" || as_root install -m 600 -o ygg -g ygg "$template" "$file"
+  done
+  dir=$(machine_signals_unit_dir)
+  machine_wait_for_user_manager ygg
+  run_as_user ygg mkdir -p "$dir"
+  for unit in "${MACHINE_SIGNALS_UNITS[@]}"; do
+    [[ -f "$root/platform/systemd/$unit" ]] || die "$root/platform/systemd/$unit is missing from the checkout"
+    run_as_user ygg tee "$dir/$unit" <"$root/platform/systemd/$unit" >/dev/null
+  done
+  run_as_user ygg systemctl --user daemon-reload
+  for environment in "${MACHINE_SIGNALS_ENVIRONMENTS[@]}"; do
+    run_as_user ygg systemctl --user enable --now "$(machine_signals_timer "$environment")"
+  done
 }
 
 step_role_file() {

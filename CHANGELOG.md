@@ -7,6 +7,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-09
+
+### Added
+
+- **Heimdall's security signal job runs on a schedule, and a failed run reaches a person.** `ygg install` adds, on the
+  Application Server, a user timer of `ygg` that runs the job for production every fifteen minutes, on the `edge`
+  network and in the API's volumes, through Hermes's `heimdall-signals` client. Each run sends its exit status, and
+  nothing else, to a heartbeat monitor outside the machine, which mails its owner when a run fails or no ping arrives.
+  `ygg check` reports the timer, the settings and the last run.
+- **The personal page's contact form.** `stacks/personal-page.yml` hands the application's variables to the container,
+  and `POST /api/contact` is limited per visitor to 3 requests at once and one more every 10 minutes, counted by the
+  address Cloudflare reports, an IPv6 caller by its /56.
+
+### Fixed
+
+- **Heimdall's credential routes are limited per visitor behind Cloudflare.** The `heimdall-api-<environment>-auth-limit`
+  middleware counted the connection's address, a Cloudflare edge address that unrelated users share. It now counts the
+  visitor Cloudflare reports (`sourcecriterion.ipstrategy.depth=1`). [docs/hosts.md](docs/hosts.md#client-addresses) and
+  [docs/dns.md](docs/dns.md#a7-optional-the-cloudflare-proxy) no longer say that trusting the header is enough. Applies
+  to an environment once heimdall-api is redeployed there.
+- **The docs no longer say heimdall-api's own limit always counts a Cloudflare address.** A release of heimdall-api
+  that reads `HEIMDALL_CLOUDFLARE_PROXIED` counts the visitor there too, and logs the visitor's address.
+
+### Upgrading
+
+- Once a heimdall-api release that reads it reaches an environment behind Cloudflare, set
+  `ygg vars set heimdall-api@<environment> HEIMDALL_CLOUDFLARE_PROXIED=true` and deploy. Until then its own limit and
+  its request log keep using a Cloudflare address, as they do today.
+- On a machine with no Cloudflare proxy in front, or with `CLOUDFLARE_PROXIED=false`, heimdall-api's next deploy puts
+  every caller of its credential routes in one bucket of 10 a minute. Turn the proxy on first
+  ([docs/dns.md, A7](docs/dns.md#a7-optional-the-cloudflare-proxy)).
+- Heimdall's security signal job needs three things before its timer does anything useful, in this order: the
+  `heimdall-signals` client in production's Hermes (hermes-api's Operations & Infrastructure Document), a check on a
+  heartbeat monitor, and `/etc/yggdrasil/security-signals-production.env` filled in as `ygg`. Then `ygg install`.
+  `docs/hosts.md`, "Heimdall's security signals", has each step. Until the settings are filled in every run fails and
+  no ping is sent.
+- A deploy of `personal-page` now needs its variables, as any application with an `env_file` does. Before this release
+  reaches a host, set them for each of its environments (`ygg vars set personal-page@<environment> ...`), or its deploys
+  fail. The running site is not affected.
+
 ## [0.9.12] - 2026-11-08
 
 ### Added
@@ -1149,7 +1189,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.9.12...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/artur-rios/yggdrasil/compare/v0.9.12...v0.10.0
 [0.9.12]: https://github.com/artur-rios/yggdrasil/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/artur-rios/yggdrasil/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/artur-rios/yggdrasil/compare/v0.9.9...v0.9.10
