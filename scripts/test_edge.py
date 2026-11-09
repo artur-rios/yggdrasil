@@ -266,6 +266,7 @@ class EdgeTests(unittest.TestCase):
                 f"{AUTH_LIMIT}.ratelimit.average=10",
                 f"{AUTH_LIMIT}.ratelimit.period=1m",
                 f"{AUTH_LIMIT}.ratelimit.burst=10",
+                f"{AUTH_LIMIT}.ratelimit.sourcecriterion.ipstrategy.depth=1",
                 f"{AUTH_LIMIT}.ratelimit.sourcecriterion.ipstrategy.ipv6subnet=56"):
             with self.subTest(label=label):
                 self.assertIn(label, stack)
@@ -273,6 +274,22 @@ class EdgeTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertNotIn("requesthost", label.lower())
                 self.assertFalse(label.startswith(f"{AUTH}.priority"), label)
+
+    def test_given_a_rate_limit_in_a_stack_then_it_counts_the_visitor_cloudflare_reports(self):
+        # Without depth a limit counts the connection's address: behind Cloudflare, an edge address
+        # that unrelated visitors share.
+        limited = set()
+        for path in sorted(STACKS.glob("*.proxy.yml")):
+            if path.name == INTERNAL_STACK:
+                continue
+            stack = labels(path.name)
+            for label in stack:
+                match = re.match(r"(traefik[.]http[.]middlewares[.][^.]+[.]ratelimit)[.]average=", label)
+                if match:
+                    limited.add(path.name)
+                    with self.subTest(stack=path.name, limit=match[1]):
+                        self.assertIn(f"{match[1]}.sourcecriterion.ipstrategy.depth=1", stack)
+        self.assertLessEqual({"heimdall-api.proxy.yml", "personal-page.proxy.yml"}, limited)
 
     def test_auth_rule_is_case_insensitive_and_covers_both_hosts(self):
         auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")

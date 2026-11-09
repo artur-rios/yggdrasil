@@ -13,8 +13,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and `POST /api/contact` is limited per visitor to 3 requests at once and one more every 10 minutes, counted by the
   address Cloudflare reports, an IPv6 caller by its /56.
 
+### Fixed
+
+- **Heimdall's credential routes are limited per visitor behind Cloudflare.** The `heimdall-api-<environment>-auth-limit`
+  middleware counted the connection's address, a Cloudflare edge address that unrelated users share. It now counts the
+  visitor Cloudflare reports (`sourcecriterion.ipstrategy.depth=1`). [docs/hosts.md](docs/hosts.md#client-addresses) and
+  [docs/dns.md](docs/dns.md#a7-optional-the-cloudflare-proxy) no longer say that trusting the header is enough. Applies
+  to an environment once heimdall-api is redeployed there.
+
 ### Upgrading
 
+- On a machine with no Cloudflare proxy in front, or with `CLOUDFLARE_PROXIED=false`, heimdall-api's next deploy puts
+  every caller of its credential routes in one bucket of 10 a minute. Turn the proxy on first
+  ([docs/dns.md, A7](docs/dns.md#a7-optional-the-cloudflare-proxy)).
 - A deploy of `personal-page` now needs its variables, as any application with an `env_file` does. Before this release
   reaches a host, set them for each of its environments (`ygg vars set personal-page@<environment> ...`), or its deploys
   fail. The running site is not affected.
