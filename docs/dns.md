@@ -271,10 +271,13 @@ connection's address, an edge address unrelated visitors share.
 
 Those limits need the proxy on. With `false` on a proxied machine, or on a machine reached directly, there is
 no trusted entry to count, and every visitor shares one bucket: 10 a minute for all of Heimdall's sign-ins.
-Heimdall's own limit inside the API is separate: it counts the last entry of the header Traefik sends on, the
-connection's address, which is Cloudflare's behind the proxy and the client's on a machine reached directly.
-There, rootless Docker keeps the client's address when the engine uses `slirp4netns` (which `ygg install`
-sets). IPv6 clients through rootless Docker have not been checked: give such a machine an `A` record only.
+
+Heimdall's own limit inside the API is separate. Behind the proxy it counts the visitor only with
+`HEIMDALL_CLOUDFLARE_PROXIED=true` in each environment's variables, and without that it counts a Cloudflare
+address ([hosts.md, Client addresses](hosts.md#client-addresses)). On a machine reached directly it counts the
+client, with or without the variable. There, rootless Docker keeps the client's address when the engine uses
+`slirp4netns` (which `ygg install` sets). IPv6 clients through rootless Docker have not been checked: give such
+a machine an `A` record only.
 
 ## Option B: DuckDNS, free
 

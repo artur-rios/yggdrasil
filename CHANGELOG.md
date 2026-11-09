@@ -20,9 +20,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   visitor Cloudflare reports (`sourcecriterion.ipstrategy.depth=1`). [docs/hosts.md](docs/hosts.md#client-addresses) and
   [docs/dns.md](docs/dns.md#a7-optional-the-cloudflare-proxy) no longer say that trusting the header is enough. Applies
   to an environment once heimdall-api is redeployed there.
+- **The docs no longer say heimdall-api's own limit always counts a Cloudflare address.** A release of heimdall-api
+  that reads `HEIMDALL_CLOUDFLARE_PROXIED` counts the visitor there too, and logs the visitor's address.
 
 ### Upgrading
 
+- Once a heimdall-api release that reads it reaches an environment behind Cloudflare, set
+  `ygg vars set heimdall-api@<environment> HEIMDALL_CLOUDFLARE_PROXIED=true` and deploy. Until then its own limit and
+  its request log keep using a Cloudflare address, as they do today.
 - On a machine with no Cloudflare proxy in front, or with `CLOUDFLARE_PROXIED=false`, heimdall-api's next deploy puts
   every caller of its credential routes in one bucket of 10 a minute. Turn the proxy on first
   ([docs/dns.md, A7](docs/dns.md#a7-optional-the-cloudflare-proxy)).

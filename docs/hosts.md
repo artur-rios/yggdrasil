@@ -291,9 +291,14 @@ connection's address unless it is told otherwise, and behind Cloudflare that is 
 visitors share. So each limit in `stacks/` sets `sourcecriterion.ipstrategy.depth=1`, which counts the last
 entry of `X-Forwarded-For`: the visitor Cloudflare reports, whatever a client forged in front of it. Without
 a trusted Cloudflare in front there is no such entry, and every visitor shares one bucket
-([dns.md A7](dns.md#a7-optional-the-cloudflare-proxy)). heimdall-api's own sign-in limit is separate: it
-reads the last entry of the header Traefik sends on, the connection's address, so behind Cloudflare it
-counts a Cloudflare address.
+([dns.md A7](dns.md#a7-optional-the-cloudflare-proxy)).
+
+heimdall-api's own sign-in limit, and the address in its request log, are separate: the API reads the header
+Traefik sends on, which ends in the connection's address. Behind Cloudflare it takes
+`HEIMDALL_CLOUDFLARE_PROXIED=true` in each environment's variables to read the entry before that one, the
+visitor (`ygg vars set heimdall-api@<environment> HEIMDALL_CLOUDFLARE_PROXIED=true`, then a deploy). Without it
+the API counts a Cloudflare address. Traefik discards what a client sends from outside Cloudflare's ranges, so
+a client reaching the machine directly is one entry, and is counted as itself either way.
 
 The trust check needs the TCP source address of the connection, which the engine's network mode
 keeps. See [Rootless Docker](#5-rootless-docker).
