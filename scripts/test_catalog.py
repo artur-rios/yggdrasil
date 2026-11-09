@@ -1200,7 +1200,7 @@ class RealCatalogTests(unittest.TestCase):
                     # names its own Dockerfile now: each builds the repository's.
                     self.assertNotIn("dockerfile", web.get("build", {}))
                     if web.pop("env_file", None) is not None:
-                        self.assertEqual(app["id"], "github-readme-stats")
+                        self.assertIn(app["id"], ("github-readme-stats", "personal-page"))
                     # The docs index's proxy stack adds the router that redirects the docs host's root to it (decision 5
                     # of plan 5), as labels of its own: exactly these keys, and no other change to the template.
                     if app["id"] == "dotnet-libraries-docs" and name.endswith(".proxy.yml"):
@@ -1211,6 +1211,16 @@ class RealCatalogTests(unittest.TestCase):
                                                  ("rule", "entrypoints", "middlewares", "service")} |
                                          {f"traefik.http.middlewares.{root}.redirectregex.{key}" for key in
                                           ("regex", "replacement", "permanent")})
+                        web["labels"] = [label for label in web["labels"] if label.split("=", 1)[0] not in added]
+                    # The personal page's proxy stack adds its contact form's limited route, as labels of its own.
+                    if app["id"] == "personal-page" and name.endswith(".proxy.yml"):
+                        contact = f"{app['id']}-${{YGG_ENVIRONMENT}}-contact"
+                        added = {label.split("=", 1)[0] for label in web["labels"] if f".{contact}" in label.split("=", 1)[0]}
+                        self.assertEqual(added, {f"traefik.http.routers.{contact}.{key}" for key in
+                                                 ("rule", "entrypoints", "middlewares", "service")} |
+                                         {f"traefik.http.middlewares.{contact}-limit.ratelimit.{key}" for key in
+                                          ("average", "period", "burst", "sourcecriterion.ipstrategy.depth",
+                                           "sourcecriterion.ipstrategy.ipv6subnet")})
                         web["labels"] = [label for label in web["labels"] if label.split("=", 1)[0] not in added]
                     self.assertEqual(actual, expected)
 
