@@ -1787,6 +1787,22 @@ from the publish agent and without holding an executor while it waits, and posts
 Forgejo commit with the GitHub run as its address. If they have not finished in time the status stays pending
 (`GitHub Actions didn't answer`) and the build is unstable; a new build looks again.
 
+A workflow run can end before it starts a job (a GitHub internal error, an invalid workflow), and then its check
+never appears. Jenkins fails on that at once instead of waiting out `checksTimeout`: the status is `failure`, its
+address is the run, where GitHub says why, and the build log names the check. A new build only looks again, because
+GitHub Actions starts on a push to the mirror and a build pushes nothing. So start the workflow first, then build
+again: **Run workflow** on GitHub, or
+
+```bash
+gh workflow run <workflow-file> --repo <mirror.github>/<repository> --ref <branch>
+```
+
+While that run is going Jenkins waits for it as usual, so a build that is already waiting picks it up by itself.
+
+A release from a repository hosted on GitHub stops the same way: `github.sh wait-checks` fails on such a run, even
+when every check it can see has passed, and `github.sh publish-release` fails as soon as the packaging run fails,
+leaving the draft private, instead of waiting out its two hours.
+
 **Their triggers.** The pull requests live on Forgejo; the mirror has none, it only receives every branch the push
 mirror pushes. Jenkins looks up the job's run for the pull request's head commit by its SHA. So on Forgejo with a
 `mirror`, an `actionsChecks` job runs on `push` to every branch, and on nothing narrower:
