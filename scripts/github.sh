@@ -17,9 +17,11 @@
 #     scripts/github.sh run-status     <repo> <run-id>                   -> pending | success | failure
 #     scripts/github.sh download-artifacts <repo> <run-id> <dir>         -> <dir>/<artifact name>/...
 # actions-status and run-status exit 0 when everything finished successfully (skipped and neutral count),
-# 1 when something failed (failure, cancelled, timed_out, action_required, startup_failure; the check is
-# named on stderr), 3 while anything is pending (including a check not started yet, and a commit the mirror
-# has not pushed), 2 when GitHub did not answer. wait-ref exits 2 on timeout; dispatch 2 when no run appears.
+# 1 when something failed (failure, cancelled, timed_out, action_required, startup_failure, or for
+# actions-status a workflow run that ended without starting a job; the check is named on stderr), 3 while
+# anything is pending (including a check not started yet, and a commit the mirror has not pushed), 2 when
+# GitHub did not answer. wait-ref exits 2 on timeout; dispatch 2 when no run appears. wait-checks fails on a
+# run that ended without starting a job too, and publish-release as soon as its packaging run fails.
 #
 # Only wait-checks and the release-artifacts workflow flow of publish-release are GitHub Actions; the
 # rest (statuses, merge, tags, releases, branches) is the git server's interface, which scripts/forge.sh
@@ -124,6 +126,17 @@ wait_checks() {
       return 1
     fi
 
+    # Nothing is left running. A run that ended before it started a job has no check to fail above, so
+    # without this the wait would run out, or pass with that workflow never having run.
+    local dead dead_conclusion dead_url
+    if [[ "$pending_suites" -eq 0 && "$pending_runs" -eq 0 ]] && dead=$(run_without_jobs "$repo" "$sha"); then
+      IFS=$'\t' read -r dead_conclusion dead_url <<<"$dead"
+      echo "github: checks failed on $sha:" >&2
+      no_jobs_message "$dead_conclusion" "$dead_url" >&2
+      echo >&2
+      return 1
+    fi
+
     if [[ "$policy" -gt 0 && "$pending_suites" -eq 0 && "$pending_runs" -eq 0 ]]; then
       echo "github: every GitHub Actions check on $sha passed:"
       jq -r '.check_runs[] | select(.app.slug == "github-actions") | "  \(.name): \(.conclusion)"' <<<"$runs"
@@ -142,9 +155,27 @@ release() {
   forge create-release "$repo" "v$version" "$sha" "v$version" | cut -f2
 }
 
+# The latest run of <workflow> dispatched on <tag> since <epoch seconds>, when it has failed: prints
+# <conclusion> TAB <url>. Returns 1 when it hasn't, there is none yet, or GitHub didn't say.
+failed_dispatch() {
+  local repo=$1 workflow=$2 tag=$3 since=$4 query found
+  query=$(jq -rn --arg tag "$tag" '$tag | @uri')
+  raw_api GET "repos/$owner/$repo/actions/workflows/$workflow/runs?event=workflow_dispatch&branch=$query&per_page=20" \
+    && [[ "$http_code" == 200 ]] || return 1
+  found=$(jq -r --arg tag "$tag" --argjson since "$since" "$state_def"'
+    [.workflow_runs[]? | select(.event == "workflow_dispatch" and .head_branch == $tag
+                                and (.created_at | fromdateiso8601) >= $since)]
+    | max_by(.id) | select(. != null and state == "failure") | [.conclusion, .html_url] | @tsv' <<<"$http_body") || return 1
+  [[ -n "$found" ]] || return 1
+  printf '%s\n' "$found"
+}
+
 publish_release() {
   local repo=$1 version=$2 sha=$3 timeout=${4:-7200}
   local tag="v$version" deadline=$((SECONDS + timeout)) release_json release_id release_url created
+  local ended ended_conclusion ended_url
+  # A few seconds before, for the clocks of GitHub and this host differing a little.
+  local since=$(($(date -u +%s) - 5))
 
   # The tag is made explicit before packaging, so the application workflow checks out exactly the
   # commit Jenkins deployed and merged. Its release-tags ruleset makes that ref immutable.
@@ -168,6 +199,10 @@ publish_release() {
         jq -er '.html_url' <<<"$release_json"
         return 0
       fi
+    fi
+    if ended=$(failed_dispatch "$repo" release-artifacts.yml "$tag" "$since"); then
+      IFS=$'\t' read -r ended_conclusion ended_url <<<"$ended"
+      die "the packaging workflow ended ($ended_conclusion) without publishing $tag: $ended_url; the draft stays private: $release_url"
     fi
     ((SECONDS < deadline)) \
       || die "timed out after ${timeout}s waiting for the packaging workflow to publish $tag; draft: $release_url"
@@ -199,6 +234,31 @@ raw_api() {
 # pending, and skipped and neutral are as good as success. Anything else -- failure, cancelled, timed_out,
 # action_required, startup_failure -- is a failure.
 state_def='def state: if .status != "completed" then "pending" elif (.conclusion | IN("success", "skipped", "neutral")) then "success" else "failure" end;'
+
+# A workflow run can end before it starts a job (a GitHub internal error, an invalid workflow), and then its
+# checks never exist. Prints <conclusion> TAB <url> of such a run on <sha>, and returns 1 when there is none or
+# it can't tell. Every run on the commit must have ended, since a run still going may yet report the check, and
+# only a workflow's latest run counts: one started again has said all it will about the dead one.
+run_without_jobs() {
+  local repo=$1 sha=$2 list id conclusion url
+  raw_api GET "repos/$owner/$repo/actions/runs?head_sha=$sha&per_page=100" && [[ "$http_code" == 200 ]] || return 1
+  list=$http_body
+  jq -e '[.workflow_runs[]? | select(.status != "completed")] | length == 0' <<<"$list" >/dev/null || return 1
+  while IFS=$'\t' read -r id conclusion url; do
+    raw_api GET "repos/$owner/$repo/actions/runs/$id/jobs?per_page=1" && [[ "$http_code" == 200 ]] || continue
+    if jq -e '.total_count == 0' <<<"$http_body" >/dev/null; then
+      printf '%s\t%s\n' "$conclusion" "$url"
+      return 0
+    fi
+  done < <(jq -r "$state_def"' [.workflow_runs[]?] | group_by(.workflow_id) | map(max_by(.id)) | .[]
+                               | select(state == "failure") | [.id, .conclusion, .html_url] | @tsv' <<<"$list")
+  return 1
+}
+
+# What to tell the person reading the build log about a run_without_jobs: <conclusion> <url>.
+no_jobs_message() {
+  printf 'a workflow run ended (%s) without starting a job, so its checks will never report. GitHub says why on %s. Start the workflow again on GitHub, then build again.' "$1" "$2"
+}
 
 # Takes one look at the GitHub Actions check runs on <sha> and says where each stands; see the header for
 # the exit codes. A failure wins over a pending check: it is final, so the caller need not wait for the rest.
@@ -240,12 +300,24 @@ actions_status() {
     | group_by(.name) | map(max_by([(.id // 0), (.started_at // "")])) as $latest
     | (if ($names | length) == 0 then $latest
        else $names | map(. as $n | ($latest | map(select(.name == $n)) | first) // {name: $n, missing: true}) end)
-    | .[] | [.name, (if .missing then "pending" else state end), (.conclusion // "-"), (.html_url // "")] | @tsv' <<<"$runs")
+    | .[] | [.name, (if .missing then "pending" else state end), (if .missing then "missing" else (.conclusion // "-") end), (.html_url // "")] | @tsv' <<<"$runs")
+
+  local dead="" dead_conclusion="" dead_url=""
+  # Asked only when it can change the answer: a named check that isn't there, or, without names, when
+  # nothing else is failed or pending, where a run that never started a job would otherwise pass unseen.
+  if grep -q $'\tmissing\t' <<<"$lines" || { (($# == 0)) && ! grep -qE $'\t(pending|failure)\t' <<<"$lines"; }; then
+    dead=$(run_without_jobs "$repo" "$sha") || dead=""
+    IFS=$'\t' read -r dead_conclusion dead_url <<<"$dead"
+  fi
 
   local name state conclusion url failed=0 pending=0 count=0
   while IFS=$'\t' read -r name state conclusion url; do
     [[ -n "$name" ]] || continue
     count=$((count + 1))
+    if [[ "$conclusion" == missing && -n "$dead" ]]; then
+      state=failure url=$dead_url
+      conclusion=$(no_jobs_message "$dead_conclusion" "$dead_url")
+    fi
     printf '%s\t%s\t%s\n' "$name" "$state" "$url"
     case "$state" in
       failure)
@@ -255,6 +327,12 @@ actions_status() {
       pending) pending=1 ;;
     esac
   done <<<"$lines"
+
+  if (($# == 0)) && [[ -n "$dead" ]]; then
+    printf 'workflow run\tfailure\t%s\n' "$dead_url"
+    echo "github: $(no_jobs_message "$dead_conclusion" "$dead_url")" >&2
+    failed=1
+  fi
 
   ((failed == 0)) || return 1
   # Without names, nothing running yet is not "everything passed": the mirror may have just pushed.
