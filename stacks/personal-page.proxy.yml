@@ -20,6 +20,16 @@ services:
       - traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-apex.redirectregex.regex=^https?://[^/]+(.*)
       - traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-apex.redirectregex.replacement=https://${YGG_PUBLIC_HOST}$${1}
       - traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-apex.redirectregex.permanent=true
+      # The contact form's route, limited per source before it reaches the site: a public form must not be able to
+      # use up the mail quota. An IPv6 caller is counted by its /56. The longest rule wins, so no priority.
+      - traefik.http.routers.personal-page-${YGG_ENVIRONMENT}-contact.rule=Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh}`) && PathRegexp(`(?i)^/api/contact/?$`) && !Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)
+      - traefik.http.routers.personal-page-${YGG_ENVIRONMENT}-contact.entrypoints=websecure
+      - traefik.http.routers.personal-page-${YGG_ENVIRONMENT}-contact.middlewares=secure-headers@file,personal-page-${YGG_ENVIRONMENT}-contact-limit
+      - traefik.http.routers.personal-page-${YGG_ENVIRONMENT}-contact.service=personal-page-${YGG_ENVIRONMENT}
+      - traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit.average=3
+      - traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit.period=10m
+      - traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit.burst=3
+      - traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit.sourcecriterion.ipstrategy.ipv6subnet=56
       - traefik.http.services.personal-page-${YGG_ENVIRONMENT}.loadbalancer.server.port=8080
 
 networks:

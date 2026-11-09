@@ -12,6 +12,9 @@ services:
         PUBLIC_PATH: ${YGG_PUBLIC_PATH:-}
     image: personal-page:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    # The application's variables (its Hermes and Turnstile settings), read when the container runs: never a build
+    # argument.
+    env_file: ${APP_ENV_FILE:?APP_ENV_FILE is set by scripts/deploy.sh}
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

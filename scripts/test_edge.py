@@ -93,6 +93,29 @@ class EdgeTests(unittest.TestCase):
                 for label in chains:
                     self.assertTrue(label.endswith(".middlewares=secure-headers-ui@file"), label)
 
+    def test_given_the_personal_page_then_the_whole_env_file_reaches_it(self):
+        web = yaml.load((STACKS / "personal-page.yml").read_text(), Loader=ComposeLoader)["services"]["web"]
+        self.assertEqual(web["env_file"], "${APP_ENV_FILE:?APP_ENV_FILE is set by scripts/deploy.sh}")
+
+    def test_given_the_contact_route_then_it_is_limited_per_source(self):
+        limit = "traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit"
+        found = dict(label.split("=", 1) for label in labels("personal-page.proxy.yml"))
+        self.assertEqual(found[f"{limit}.average"], "3")
+        self.assertEqual(found[f"{limit}.period"], "10m")
+        self.assertEqual(found[f"{limit}.burst"], "3")
+        self.assertEqual(found[f"{limit}.sourcecriterion.ipstrategy.ipv6subnet"], "56")
+
+    def test_given_the_contact_route_then_every_unsafe_method_goes_through_the_limit(self):
+        contact = "personal-page-${YGG_ENVIRONMENT}-contact"
+        self.assertEqual(rule("personal-page.proxy.yml", contact),
+                         "Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh}`)"
+                         " && PathRegexp(`(?i)^/api/contact/?$`)" + SAFE_METHODS_EXCLUDED)
+        found = dict(label.split("=", 1) for label in labels("personal-page.proxy.yml"))
+        self.assertEqual(found[f"traefik.http.routers.{contact}.middlewares"],
+                         "secure-headers@file,personal-page-${YGG_ENVIRONMENT}-contact-limit")
+        self.assertEqual(found[f"traefik.http.routers.{contact}.service"], "personal-page-${YGG_ENVIRONMENT}")
+        self.assertEqual(found[f"traefik.http.routers.{contact}.entrypoints"], "websecure")
+
     def internal_api(self):
         return yaml.load((STACKS / INTERNAL_STACK).read_text(), Loader=ComposeLoader)["services"]["api"]
 

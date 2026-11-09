@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **The personal page's contact form.** `stacks/personal-page.yml` hands the application's variables to the container,
+  and `POST /api/contact` is limited to 3 requests per 10 minutes per source, an IPv6 caller counted by its /56.
+
+### Upgrading
+
+- A deploy of `personal-page` now needs its variables, as any application with an `env_file` does. Before this release
+  reaches a host, set them for each of its environments (`ygg vars set personal-page@<environment> ...`), or its deploys
+  stop asking for them.
+
 ## [0.9.12] - 2026-11-08
 
 ### Added
