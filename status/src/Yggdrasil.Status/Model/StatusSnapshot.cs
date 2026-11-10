@@ -14,20 +14,86 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
     public const string DeployedAtLabel = "yggdrasil.deployed_at";
 
     /// <param name="observations">By <see cref="ProbeTarget.Key"/>: one per target of the catalog.</param>
-    public HostStatus Build(IReadOnlyDictionary<string, Observation> observations, DateTimeOffset generatedAt)
+    /// <param name="details">The last detailed health fetches, by the same key; none for what was never fetched.</param>
+    public HostStatus Build(
+        IReadOnlyDictionary<string, Observation> observations,
+        DateTimeOffset generatedAt,
+        IReadOnlyDictionary<string, ApplicationDetails>? details = null)
     {
-        ApplicationStatus Application(ApplicationDefinition application, EnvironmentDefinition environment)
+        // Liveness first, and the systems' roll-ups of it: an integration's target is judged by these.
+        // A report can only turn up into degraded, never into stopped or not_deployed, which is all an
+        // integration asks of its target, so nothing here depends on the details and there is no cycle.
+        StatusLevel Liveness(ApplicationDefinition application, string environment)
         {
-            var target = ProbeTarget.Of(application, environment.Id);
-            return BuildApplication(target, observations[target.Key], generatedAt);
+            var target = ProbeTarget.Of(application, environment);
+            var observation = observations[target.Key];
+            return StatusRules.ForApplication(observation.Docker, observation.Probe, generatedAt, target.OnDemand);
         }
 
-        // Each system's applications in each of the host's environments it has an application in.
+        var systemLiveness = catalog.Systems.ToDictionary(
+            system => system.Id,
+            system => catalog.Environments.ToDictionary(
+                environment => environment.Id,
+                environment => HostCatalog.In(system, environment).ToList() is { Count: > 0 } members
+                    ? (StatusLevel?)StatusRules.Aggregate(members.Select(application => Liveness(application, environment.Id)))
+                    : null));
+
+        // The application's integrations in one environment, in catalog order. A system target the host
+        // has nothing of in that environment has no line there.
+        List<IntegrationStatus> Integrations(ApplicationDefinition application, string environment, ApplicationDetails? reported)
+        {
+            var caller = Liveness(application, environment);
+            var lines = new List<IntegrationStatus>();
+            foreach (var integration in application.Integrations ?? [])
+            {
+                StatusLevel? target = null;
+                if (integration.System is { } system)
+                {
+                    if (!systemLiveness.TryGetValue(system, out var environments) || environments[environment] is not { } level)
+                    {
+                        continue;
+                    }
+
+                    target = level;
+                }
+
+                var status = StatusRules.ForIntegration(caller, target, reported, integration.Check);
+                var reason = status switch
+                {
+                    IntegrationLevel.Down => reported?.Services
+                        .FirstOrDefault(service => string.Equals(service.Name, integration.Check, StringComparison.Ordinal))?.Reason,
+                    IntegrationLevel.Unknown => reported?.Reason,
+                    _ => null,
+                };
+                lines.Add(new IntegrationStatus(application.Id, integration.System, integration.External, integration.Check, status, reason));
+            }
+
+            return lines;
+        }
+
+        // Each system's applications and integrations in each of the host's environments it has an application in.
         var applications = catalog.Systems
             .Select(system => catalog.Environments
-                .Select(environment => (environment.Id, Applications: HostCatalog.In(system, environment)
-                    .Select(application => Application(application, environment))
-                    .ToList()))
+                .Select(environment =>
+                {
+                    var statuses = new List<ApplicationStatus>();
+                    var integrations = new List<IntegrationStatus>();
+                    var onDemand = false;
+                    foreach (var application in HostCatalog.In(system, environment))
+                    {
+                        var target = ProbeTarget.Of(application, environment.Id);
+                        var reported = details is not null && details.TryGetValue(target.Key, out var fetched) ? fetched : null;
+                        var lines = Integrations(application, environment.Id, reported);
+                        var stoppedChecks = lines.Where(line => line.Status == IntegrationLevel.Stopped)
+                            .Select(line => line.Check)
+                            .ToHashSet(StringComparer.Ordinal);
+                        integrations.AddRange(lines);
+                        statuses.Add(BuildApplication(target, observations[target.Key], generatedAt, reported, stoppedChecks));
+                        onDemand |= target.OnDemand;
+                    }
+
+                    return (environment.Id, Applications: statuses, Integrations: integrations, OnDemand: onDemand);
+                })
                 .Where(environment => environment.Applications.Count > 0)
                 .ToList())
             .ToList();
@@ -57,10 +123,12 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
                             application.Kind == ApplicationKind.Platform && stopped.Contains(environment.Id)
                                 ? StatusLevel.Stopped
                                 : application.Status)),
-                        environment.Applications))
+                        environment.Applications,
+                        environment.OnDemand,
+                        environment.Integrations))
                     .ToList();
                 return new SystemStatus(system.Id, system.Name, system.Description,
-                    StatusRules.Aggregate(statuses.Select(environment => environment.Status)), statuses);
+                    StatusRules.Aggregate(statuses.Select(environment => environment.Status)), statuses, system.Icon);
             })
             .ToList();
 
@@ -73,21 +141,37 @@ public sealed class SnapshotBuilder(HostCatalog catalog, StatusOptions options)
         return new HostStatus(options.Domain, generatedAt, status, summaries, systems);
     }
 
-    public ApplicationStatus BuildApplication(ProbeTarget target, Observation observation, DateTimeOffset now)
+    /// <param name="details">What the last detailed health fetch said; null when none was made.</param>
+    /// <param name="stoppedChecks">Report entries that fail only because their target is stopped on purpose.</param>
+    public ApplicationStatus BuildApplication(
+        ProbeTarget target,
+        Observation observation,
+        DateTimeOffset now,
+        ApplicationDetails? details = null,
+        IReadOnlySet<string>? stoppedChecks = null)
     {
         var application = target.Application;
         var container = (observation.Docker as DockerObservation.Found)?.Container;
+        var liveness = StatusRules.ForApplication(observation.Docker, observation.Probe, now, target.OnDemand);
+
+        // A stopped or missing application is not fetched, so whatever was held of it is not shown.
+        var shown = application.DetailedHealth is null
+            ? null
+            : liveness is StatusLevel.Stopped or StatusLevel.NotDeployed || details is null
+                ? new ApplicationDetails(DetailsStates.NotChecked, null, null, null, [])
+                : details;
 
         return new ApplicationStatus(
             application.Id,
             application.Name,
             application.Kind,
-            StatusRules.ForApplication(observation.Docker, observation.Probe, now, target.OnDemand),
+            StatusRules.WithDetails(liveness, shown, stoppedChecks ?? new HashSet<string>()),
             Url(application, target.HostSuffix, options.Domain),
             Repository(application, catalog.Owner, catalog.ForgeUrl),
             container is null ? null : Deployment(container),
             container is null ? null : new ContainerInfo(container.State, container.Health, container.StartedAt, null),
-            observation.Probe);
+            observation.Probe,
+            shown);
     }
 
     /// <summary>

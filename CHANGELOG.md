@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-10
+
+### Changed
+
+- **The console shows the systems as a map, one environment at a time.** An environment selector replaces the card
+  per system: each system is a node with its catalog icon and status, a line joins the systems that depend on each
+  other (or an external service) and shows whether the integration works, and selecting a node opens a panel with its
+  applications. The console loads when it opens and when you press *Refresh now*, which also fetches the applications'
+  detailed health reports (`POST /api/status/refresh`); *Auto-refresh* repeats it and is off by default. The offline
+  demo and `console/tool/mock_status_server.dart` now show icons, integrations, a failing line and an API that does not
+  answer, and the mock answers the refresh. See [docs/status-api.md](docs/status-api.md).
+
 ## [0.10.2] - 2026-11-09
 
 ### Added
@@ -1218,7 +1230,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/artur-rios/yggdrasil/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/artur-rios/yggdrasil/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/artur-rios/yggdrasil/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/artur-rios/yggdrasil/compare/v0.9.12...v0.10.0

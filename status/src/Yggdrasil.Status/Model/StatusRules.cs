@@ -110,4 +110,64 @@ public static class StatusRules
 
         return StatusLevel.Up;
     }
+
+    private static ReportedService? Entry(ApplicationDetails? details, string check) =>
+        details is { State: DetailsStates.Reported }
+            ? details.Services.FirstOrDefault(service => string.Equals(service.Name, check, StringComparison.Ordinal))
+            : null;
+
+    /// <summary>
+    /// One line of the system map, first matching row of docs/status-api.md. <paramref name="target"/> is the
+    /// target system's liveness-only status in the environment, null for an external target (always there).
+    /// </summary>
+    public static IntegrationLevel ForIntegration(StatusLevel caller, StatusLevel? target, ApplicationDetails? details, string check)
+    {
+        if (caller == StatusLevel.Stopped || target is StatusLevel.Stopped or StatusLevel.NotDeployed)
+        {
+            return IntegrationLevel.Stopped;
+        }
+
+        // Not answered, no route, nothing fetched yet and a report without the check all leave it unknown.
+        return Entry(details, check)?.Status switch
+        {
+            "Healthy" => IntegrationLevel.Up,
+            "NotConfigured" => IntegrationLevel.NotConfigured,
+            "Degraded" or "Unhealthy" => IntegrationLevel.Down,
+            _ => IntegrationLevel.Unknown,
+        };
+    }
+
+    /// <summary>
+    /// What the detailed health report does to the application: only ever worsens up to degraded, so
+    /// liveness precedes. An entry failing because its target is deliberately stopped (a name in
+    /// <paramref name="stoppedChecks"/>) is ignored, and a report whose only failures are those counts as healthy.
+    /// </summary>
+    public static StatusLevel WithDetails(StatusLevel liveness, ApplicationDetails? details, IReadOnlySet<string> stoppedChecks)
+    {
+        if (liveness != StatusLevel.Up)
+        {
+            return liveness;
+        }
+
+        switch (details?.State)
+        {
+            case DetailsStates.Unavailable:
+                return StatusLevel.Degraded;
+
+            case DetailsStates.Reported:
+                if (details.Status is "Healthy" or "NotConfigured")
+                {
+                    return StatusLevel.Up;
+                }
+
+                var failing = details.Services.Where(service => service.Status is "Degraded" or "Unhealthy").ToList();
+                return failing.Count > 0 && failing.All(service => stoppedChecks.Contains(service.Name))
+                    ? StatusLevel.Up
+                    : StatusLevel.Degraded;
+
+            default:
+                // Unsupported (a 404), not checked yet, or nothing at all.
+                return StatusLevel.Up;
+        }
+    }
 }

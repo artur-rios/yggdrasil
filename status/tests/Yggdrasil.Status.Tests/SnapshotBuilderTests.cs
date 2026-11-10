@@ -338,4 +338,174 @@ public class SnapshotBuilderTests
         // scratch-api is local only, and local is not one of the host's environments.
         Assert.DoesNotContain(all, t => t.StartsWith("scratch-api", StringComparison.Ordinal));
     }
+
+    // heimdall-api calls hermes (an on-demand system with no production deployment) and an external
+    // one, and serves a detailed health report.
+    private HostCatalog WithIntegrations()
+    {
+        var hermes = new SystemDefinition("hermes", "Hermes", "Mail", [App("sandbox-api") with
+        {
+            Id = "hermes-api",
+            Name = "Hermes API",
+            Deployments = [new ApplicationEnvironment("development", "-dev", true), new ApplicationEnvironment("homologation", "-hml", true)],
+        }]);
+
+        return catalog with
+        {
+            Systems =
+            [
+                .. catalog.Systems.Select(system => system.Id != "heimdall"
+                    ? system
+                    : system with
+                    {
+                        Applications = system.Applications.Select(application => application.Id != "heimdall-api"
+                            ? application
+                            : application with
+                            {
+                                DetailedHealth = new Uri("http://heimdall-api:8080/healthcheck/details"),
+                                Integrations =
+                                [
+                                    new IntegrationDefinition("hermes", null, "Hermes"),
+                                    new IntegrationDefinition(null, "SMTP relay", "Smtp"),
+                                ],
+                            }).ToList(),
+                    }),
+                hermes,
+            ],
+        };
+    }
+
+    private static IReadOnlyList<IntegrationStatus> Lines(HostStatus snapshot, string environment) =>
+        snapshot.Systems.Single(s => s.Id == "heimdall").Environments.Single(e => e.Environment == environment).Integrations;
+
+    private static ApplicationStatus Api(HostStatus snapshot, string environment) =>
+        snapshot.Systems.Single(s => s.Id == "heimdall").Environments.Single(e => e.Environment == environment)
+            .Applications.Single(a => a.Id == "heimdall-api");
+
+    [Fact]
+    public void GivenRunningCallerAndStoppedTarget_ThenLineStoppedAndCallerUp()
+    {
+        var host = WithIntegrations();
+        var observations = host.Targets.ToDictionary(t => t.Key, _ => Up);
+        observations["hermes-api.development"] = Exited;
+        var details = new Dictionary<string, ApplicationDetails>
+        {
+            ["heimdall-api.development"] = new(DetailsStates.Reported, TestData.Now, null, "Unhealthy",
+                [new("Hermes", "Unhealthy", "connection refused"), new("Smtp", "Healthy", null)]),
+        };
+
+        var snapshot = new SnapshotBuilder(host, TestData.Options()).Build(observations, TestData.Now, details);
+
+        Assert.Equal(new IntegrationStatus("heimdall-api", "hermes", null, "Hermes", IntegrationLevel.Stopped, null),
+            Lines(snapshot, "development").Single(i => i.Check == "Hermes"));
+        Assert.Equal(StatusLevel.Up, Api(snapshot, "development").Status);
+        Assert.Equal("Unhealthy", Api(snapshot, "development").Details!.Status);
+    }
+
+    [Fact]
+    public void GivenAFailingCheckOfARunningTarget_ThenLineDownWithItsReasonAndCallerDegraded()
+    {
+        var host = WithIntegrations();
+        var observations = host.Targets.ToDictionary(t => t.Key, _ => Up);
+        var details = new Dictionary<string, ApplicationDetails>
+        {
+            ["heimdall-api.development"] = new(DetailsStates.Reported, TestData.Now, null, "Degraded",
+                [new("Hermes", "Unhealthy", "connection refused"), new("Smtp", "NotConfigured", null)]),
+        };
+
+        var snapshot = new SnapshotBuilder(host, TestData.Options()).Build(observations, TestData.Now, details);
+
+        Assert.Equal(
+            [
+                new IntegrationStatus("heimdall-api", "hermes", null, "Hermes", IntegrationLevel.Down, "connection refused"),
+                new IntegrationStatus("heimdall-api", null, "SMTP relay", "Smtp", IntegrationLevel.NotConfigured, null),
+            ],
+            Lines(snapshot, "development"));
+        Assert.Equal(StatusLevel.Degraded, Api(snapshot, "development").Status);
+    }
+
+    [Fact]
+    public void GivenACallerThatDidNotAnswer_ThenLinesUnknownWithItsReason()
+    {
+        var host = WithIntegrations();
+        var observations = host.Targets.ToDictionary(t => t.Key, _ => Up);
+        var details = new Dictionary<string, ApplicationDetails>
+        {
+            ["heimdall-api.development"] = new(DetailsStates.Unavailable, TestData.Now, "timeout", null, []),
+        };
+
+        var snapshot = new SnapshotBuilder(host, TestData.Options()).Build(observations, TestData.Now, details);
+
+        Assert.All(Lines(snapshot, "development"), line =>
+        {
+            Assert.Equal(IntegrationLevel.Unknown, line.Status);
+            Assert.Equal("timeout", line.Reason);
+        });
+        Assert.Equal(StatusLevel.Degraded, Api(snapshot, "development").Status);
+    }
+
+    [Fact]
+    public void GivenTargetNotInEnvironment_ThenNoIntegrationEntry()
+    {
+        var host = WithIntegrations();
+        var observations = host.Targets.ToDictionary(t => t.Key, _ => Up);
+
+        var snapshot = new SnapshotBuilder(host, TestData.Options()).Build(observations, TestData.Now);
+
+        // hermes has no application in production: no line there for the system target, but the external one stays.
+        Assert.Equal(["Smtp"], Lines(snapshot, "production").Select(i => i.Check));
+        Assert.Equal(["Hermes", "Smtp"], Lines(snapshot, "homologation").Select(i => i.Check));
+        // A system without integrations has an empty list, not null.
+        Assert.Empty(snapshot.Systems.Single(s => s.Id == "yggdrasil").Environments[0].Integrations);
+    }
+
+    [Fact]
+    public void GivenAnyOnDemandApplication_ThenSystemEnvironmentIsOnDemand()
+    {
+        var snapshot = new SnapshotBuilder(catalog, TestData.Options()).Build(catalog.Targets.ToDictionary(t => t.Key, _ => Up), TestData.Now);
+
+        var heimdall = snapshot.Systems.Single(s => s.Id == "heimdall");
+        // The worker is always on in homologation, but the API and the web app there are on demand.
+        Assert.Equal([("development", true), ("homologation", true), ("production", false)],
+            heimdall.Environments.Select(e => (e.Environment, e.OnDemand)));
+        Assert.All(snapshot.Systems.Single(s => s.Id == "yggdrasil").Environments, e => Assert.False(e.OnDemand));
+    }
+
+    [Fact]
+    public void GivenASystemWithAnIcon_ThenItIsInTheSnapshot()
+    {
+        var host = catalog with { Systems = [.. catalog.Systems.Select(s => s.Id == "heimdall" ? s with { Icon = "shield" } : s)] };
+
+        var snapshot = new SnapshotBuilder(host, TestData.Options()).Build(host.Targets.ToDictionary(t => t.Key, _ => Up), TestData.Now);
+
+        Assert.Equal("shield", snapshot.Systems.Single(s => s.Id == "heimdall").Icon);
+        Assert.Null(snapshot.Systems.Single(s => s.Id == "yggdrasil").Icon);
+    }
+
+    [Fact]
+    public void GivenNoDetailedHealth_ThenDetailsNull()
+    {
+        var snapshot = new SnapshotBuilder(catalog, TestData.Options()).Build(catalog.Targets.ToDictionary(t => t.Key, _ => Up), TestData.Now);
+
+        Assert.All(snapshot.Systems.SelectMany(s => s.Environments).SelectMany(e => e.Applications), a => Assert.Null(a.Details));
+    }
+
+    [Fact]
+    public void GivenDetailedHealthNotFetched_ThenStateNotChecked()
+    {
+        var host = WithIntegrations();
+        var observations = host.Targets.ToDictionary(t => t.Key, _ => Up);
+        observations["heimdall-api.homologation"] = Exited;
+        // Fetched earlier, but the application has stopped since: nothing to show.
+        var details = new Dictionary<string, ApplicationDetails>
+        {
+            ["heimdall-api.homologation"] = new(DetailsStates.Reported, TestData.Now, null, "Healthy", []),
+        };
+
+        var snapshot = new SnapshotBuilder(host, TestData.Options()).Build(observations, TestData.Now, details);
+
+        var notChecked = new ApplicationDetails(DetailsStates.NotChecked, null, null, null, []);
+        Assert.Equal(notChecked, Api(snapshot, "production").Details);
+        Assert.Equal(notChecked, Api(snapshot, "homologation").Details);
+    }
 }

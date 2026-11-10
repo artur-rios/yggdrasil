@@ -11,15 +11,15 @@ abstract final class Breakpoints {
   static const double maxContentWidth = 1680;
 }
 
-/// How many columns of system cards fit [width].
-int systemColumnsFor(double width) {
+/// How many columns the system map has in [width].
+int mapColumnsFor(double width) {
   if (width >= Breakpoints.desktop) {
-    return 3;
+    return 5;
   }
 
   if (width >= Breakpoints.tablet) {
-    return 2;
+    return 4;
   }
 
-  return 1;
+  return 3;
 }

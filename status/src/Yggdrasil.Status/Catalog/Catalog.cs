@@ -28,7 +28,16 @@ public sealed record SystemDefinition(
     string Id,
     string Name,
     string Description,
-    IReadOnlyList<ApplicationDefinition> Applications);
+    IReadOnlyList<ApplicationDefinition> Applications,
+    // One of CatalogLoader.Icons, or null: the console maps the name to an icon it ships.
+    string? Icon = null);
+
+/// <summary>
+/// A dependency of an application on another system of the catalog (System) or on something outside
+/// it (External, a display name): exactly one of the two. Check is the name of the entry in the
+/// application's detailed health report that says whether it works.
+/// </summary>
+public sealed record IntegrationDefinition(string? System, string? External, string Check);
 
 public sealed record ApplicationDefinition(
     string Id,
@@ -49,7 +58,11 @@ public sealed record ApplicationDefinition(
     ContainerSelector Container,
     // Already defaulted too: the environments it deploys to, in catalog order, with its options there
     // resolved; every environment when the catalog lists none for it.
-    IReadOnlyList<ApplicationEnvironment> Deployments)
+    IReadOnlyList<ApplicationEnvironment> Deployments,
+    // The URL of the detailed health report, qualified by environment as Health is; null when the
+    // application serves none. Integrations is null when the catalog lists none.
+    Uri? DetailedHealth = null,
+    IReadOnlyList<IntegrationDefinition>? Integrations = null)
 {
     public IEnumerable<string> Environments => Deployments.Select(deployment => deployment.Environment);
 
@@ -172,6 +185,11 @@ public sealed record ProbeTarget(ApplicationDefinition Application, string? Envi
     public Uri Health => Environment is null
         ? Application.Health
         : new UriBuilder(Application.Health) { Host = Qualify(Application.Health.Host, Environment) }.Uri;
+
+    /// <summary>The catalog's detailed health URL, qualified exactly as <see cref="Health"/>; null without one.</summary>
+    public Uri? DetailedHealth => Application.DetailedHealth is not { } detailed || Environment is null
+        ? Application.DetailedHealth
+        : new UriBuilder(detailed) { Host = Qualify(detailed.Host, Environment) }.Uri;
 
     /// <summary>The catalog's metrics host:port, its host qualified the same way; null without metrics.</summary>
     public string? Metrics

@@ -66,31 +66,87 @@ class StatusException implements Exception {
 abstract interface class StatusSource {
   /// Throws [StatusException] on failure.
   Future<HostStatus> fetch(Environment environment, String? token);
+
+  /// Asks the status API to fetch the applications' detailed health now and
+  /// answers like [fetch], with the details merged in. `null` means this
+  /// status API has no such endpoint. Throws [StatusException] on failure.
+  Future<HostStatus?> refreshDetails(Environment environment, String? token);
 }
 
 /// `GET <baseUrl>/api/status` with the bearer token.
 class HttpStatusSource implements StatusSource {
-  HttpStatusSource(this._client, {this.timeout = const Duration(seconds: 10)});
+  HttpStatusSource(
+    this._client, {
+    this.timeout = const Duration(seconds: 10),
+    this.refreshTimeout = const Duration(seconds: 15),
+  });
 
   final http.Client _client;
   final Duration timeout;
 
+  /// For `POST /api/status/refresh`: 5 s of fetching on the server, plus
+  /// margin.
+  final Duration refreshTimeout;
+
   @override
   Future<HostStatus> fetch(Environment environment, String? token) async {
-    final uri = Uri.parse('${environment.baseUrl}/api/status');
+    final response = await _send('GET', environment, token, '/api/status');
+
+    return _read(response);
+  }
+
+  /// `POST <baseUrl>/api/status/refresh`: the same body as `GET /api/status`
+  /// with the detailed health fetched first, which waits on the applications
+  /// (up to 5 s on the server), so it has its own, longer timeout.
+  @override
+  Future<HostStatus?> refreshDetails(
+    Environment environment,
+    String? token,
+  ) async {
+    final response = await _send(
+      'POST',
+      environment,
+      token,
+      '/api/status/refresh',
+      timeout: refreshTimeout,
+    );
+
+    // A status API from before the endpoint: 404 (no such route) or 405.
+    if (response.statusCode == 404 || response.statusCode == 405) {
+      return null;
+    }
+
+    return _read(response);
+  }
+
+  /// Sends the request and throws the [StatusException] for a network failure,
+  /// `401` and the contract's `503` with `Retry-After`; any other answer is
+  /// returned.
+  Future<http.Response> _send(
+    String method,
+    Environment environment,
+    String? token,
+    String path, {
+    Duration? timeout,
+  }) async {
+    final request = http.Request(
+      method,
+      Uri.parse('${environment.baseUrl}$path'),
+    );
+
+    request.headers['Accept'] = 'application/json';
+
+    if (token != null && token.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $token';
+    }
+
     final http.Response response;
 
     try {
       response = await _client
-          .get(
-            uri,
-            headers: <String, String>{
-              'Accept': 'application/json',
-              if (token != null && token.isNotEmpty)
-                'Authorization': 'Bearer $token',
-            },
-          )
-          .timeout(timeout);
+          .send(request)
+          .then(http.Response.fromStream)
+          .timeout(timeout ?? this.timeout);
     } on TimeoutException {
       throw const StatusException(StatusFailureKind.network, detail: 'timeout');
     } on Exception catch (error) {
@@ -118,6 +174,10 @@ class HttpStatusSource implements StatusSource {
       );
     }
 
+    return response;
+  }
+
+  static HostStatus _read(http.Response response) {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw StatusException(
         StatusFailureKind.server,
@@ -180,6 +240,11 @@ class DemoStatusSource implements StatusSource {
     );
   }
 
+  /// The fixture already carries its details, so there is nothing to fetch.
+  @override
+  Future<HostStatus?> refreshDetails(Environment environment, String? token) =>
+      fetch(environment, token);
+
   static Object? _shiftDates(Object? value, Duration shift) {
     if (value is Map<String, dynamic>) {
       return <String, dynamic>{
@@ -215,4 +280,10 @@ class RoutingStatusSource implements StatusSource {
       environment.isDemo
       ? demo.fetch(environment, token)
       : http.fetch(environment, token);
+
+  @override
+  Future<HostStatus?> refreshDetails(Environment environment, String? token) =>
+      environment.isDemo
+      ? demo.refreshDetails(environment, token)
+      : http.refreshDetails(environment, token);
 }

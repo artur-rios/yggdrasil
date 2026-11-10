@@ -7,10 +7,7 @@ import '../../features/environments/domain/environment.dart';
 /// Everything here is compiled into the bundle and readable by anyone who
 /// loads it, so it never carries a token.
 class AppConfig {
-  const AppConfig({
-    this.environments = const <Environment>[],
-    this.refreshInterval = const Duration(seconds: 30),
-  });
+  const AppConfig({this.environments = const <Environment>[]});
 
   /// Reads `YGGDRASIL_ENVIRONMENTS`, a JSON list of hosts, `{name, url}` (the
   /// name predates the UI calling the saved connections hosts):
@@ -24,9 +21,6 @@ class AppConfig {
 
   /// The hosts offered when the user has not saved a list of their own.
   final List<Environment> environments;
-
-  /// How often the overview polls while it is visible; the contract's default.
-  final Duration refreshInterval;
 
   /// Parses the `YGGDRASIL_ENVIRONMENTS` value. Entries without a valid name
   /// and URL are skipped, and an unreadable value yields no environments

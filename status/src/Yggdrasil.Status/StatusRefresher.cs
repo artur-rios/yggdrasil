@@ -15,9 +15,16 @@ public sealed class StatusRefresher(
     IServiceProvider services,
     SnapshotBuilder builder,
     StatusSnapshotStore store,
+    DetailedHealthStore details,
     TimeProvider time,
     ILogger<StatusRefresher> logger) : BackgroundService
 {
+    // One build at a time, from the liveness loop or from a detailed health fetch. Each reads the
+    // newest observations and details inside it, so the later build always carries both; without it,
+    // a build that started first and finished last would publish over a newer one. It also keeps
+    // LogChanges' fields below to one thread.
+    private readonly Lock publishing = new();
+    private volatile Round? last;
     private Dictionary<string, StatusLevel> previous = [];
     private Dictionary<string, StatusLevel> previousEnvironments = [];
     private StatusLevel? previousHost;
@@ -46,6 +53,24 @@ public sealed class StatusRefresher(
         while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
+    /// <summary>By <see cref="ProbeTarget.Key"/>, from the last completed refresh; null before the first.</summary>
+    public IReadOnlyDictionary<string, Observation>? LastObservations => last?.Observations;
+
+    /// <summary>
+    /// Publishes the last observations again, with the details as they are now, so a console that
+    /// asked for details doesn't wait for the next tick to see them.
+    /// </summary>
+    public void Republish()
+    {
+        lock (publishing)
+        {
+            if (last is { } round)
+            {
+                Publish(round);
+            }
+        }
+    }
+
     public async Task RefreshAsync(CancellationToken cancellationToken)
     {
         // Fresh typed clients every refresh rather than ones captured by this singleton: the factory
@@ -71,10 +96,22 @@ public sealed class StatusRefresher(
             return (target.Key, Observation: new Observation(found, probe));
         }));
 
-        var byKey = observations.ToDictionary(o => o.Key, o => o.Observation);
-        var snapshot = builder.Build(byKey, time.GetUtcNow());
+        var round = new Round(observations.ToDictionary(o => o.Key, o => o.Observation), time.GetUtcNow());
+        lock (publishing)
+        {
+            last = round;
+            Publish(round);
+        }
+    }
+
+    // generatedAt stays the time of the observations, also when republishing: it is what tells a
+    // reader that refreshes have stopped, so details arriving must not advance it. The caller holds
+    // the lock.
+    private void Publish(Round round)
+    {
+        var snapshot = builder.Build(round.Observations, round.At, details.Current);
         store.Set(snapshot);
-        LogChanges(snapshot, byKey);
+        LogChanges(snapshot, round.Observations);
     }
 
     // Transitions only, not every refresh: one line when heimdall-api goes down in production is what
@@ -140,4 +177,6 @@ public sealed class StatusRefresher(
         previousEnvironments = environments;
         previousHost = snapshot.Status;
     }
+
+    private sealed record Round(Dictionary<string, Observation> Observations, DateTimeOffset At);
 }

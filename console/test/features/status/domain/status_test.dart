@@ -264,7 +264,8 @@ void main() {
 
     test('reads the default setup', () {
       expect(status.host, 'example.com');
-      expect(status.status, Status.up);
+      // Hermes does not answer and Heimdall depends on it.
+      expect(status.status, Status.degraded);
       expect(status.environments.map((e) => e.id), <String>[
         'development',
         'homologation',
@@ -272,8 +273,15 @@ void main() {
       ]);
       expect(status.systems.map((system) => system.id), <String>[
         'heimdall',
+        'hermes',
         'fortuna',
         'yggdrasil',
+      ]);
+      expect(status.systems.map((system) => system.icon), <String?>[
+        'shield',
+        'mail',
+        'savings',
+        'park',
       ]);
     });
 
@@ -560,6 +568,139 @@ void main() {
         ),
       );
       expect(() => parseStatusBody('[]'), throwsA(isA<StatusException>()));
+    });
+  });
+
+  group('details and integrations', () {
+    Map<String, dynamic> withNewFields() {
+      final json = jsonDecode(contractExampleJson()) as Map<String, dynamic>;
+      final system =
+          (json['systems'] as List<dynamic>).first as Map<String, dynamic>;
+      final environment =
+          (system['environments'] as List<dynamic>).last
+              as Map<String, dynamic>;
+      final application =
+          (environment['applications'] as List<dynamic>).first
+              as Map<String, dynamic>;
+
+      system['icon'] = 'shield';
+      environment['onDemand'] = true;
+      environment['integrations'] = <Object?>[
+        <String, Object?>{
+          'from': 'heimdall-api',
+          'system': 'hermes',
+          'external': null,
+          'check': 'Hermes',
+          'status': 'down',
+          'reason': 'connection refused',
+        },
+        <String, Object?>{
+          'from': 'heimdall-api',
+          'system': null,
+          'external': 'SMTP',
+          'check': 'Smtp',
+          'status': 'not_configured',
+          'reason': null,
+        },
+      ];
+      application['details'] = <String, Object?>{
+        'state': 'reported',
+        'checkedAt': '2026-10-08T18:04:10Z',
+        'reason': null,
+        'status': 'Degraded',
+        'services': <Object?>[
+          <String, Object?>{
+            'name': 'Hermes',
+            'status': 'Unhealthy',
+            'reason': 'connection refused',
+          },
+          <String, Object?>{'name': 'Database', 'status': 'Healthy'},
+        ],
+      };
+
+      return json;
+    }
+
+    test('reads icon, onDemand, integrations and details', () {
+      final status = HostStatus.fromJson(withNewFields());
+      final system = status.systems.first;
+      final environment = system.environments.last;
+      final details = environment.applications.first.details!;
+
+      expect(system.icon, 'shield');
+      expect(environment.onDemand, isTrue);
+      expect(environment.integrations, hasLength(2));
+      expect(environment.integrations.first.from, 'heimdall-api');
+      expect(environment.integrations.first.system, 'hermes');
+      expect(environment.integrations.first.external, isNull);
+      expect(environment.integrations.first.check, 'Hermes');
+      expect(environment.integrations.first.status, IntegrationHealth.down);
+      expect(environment.integrations.first.reason, 'connection refused');
+      expect(environment.integrations.last.system, isNull);
+      expect(environment.integrations.last.external, 'SMTP');
+      expect(
+        environment.integrations.last.status,
+        IntegrationHealth.notConfigured,
+      );
+      expect(details.state, DetailsState.reported);
+      expect(details.checkedAt, DateTime.utc(2026, 10, 8, 18, 4, 10));
+      expect(details.status, 'Degraded');
+      expect(details.services.map((service) => service.name), <String>[
+        'Hermes',
+        'Database',
+      ]);
+      expect(details.services.first.status, 'Unhealthy');
+      expect(details.services.first.reason, 'connection refused');
+      expect(details.services.last.reason, isNull);
+    });
+
+    test('a response without the new fields still parses', () {
+      for (final status in <HostStatus>[
+        parseStatusBody(contractExampleJson()),
+        v1Status(),
+      ]) {
+        for (final system in status.systems) {
+          expect(system.icon, isNull);
+
+          for (final environment in system.environments) {
+            expect(environment.onDemand, isFalse);
+            expect(environment.integrations, isEmpty);
+
+            for (final application in environment.applications) {
+              expect(application.details, isNull);
+            }
+          }
+        }
+      }
+    });
+
+    test('an unrecognised integration status is unknown', () {
+      final json = withNewFields();
+      final system =
+          (json['systems'] as List<dynamic>).first as Map<String, dynamic>;
+      final environment =
+          (system['environments'] as List<dynamic>).last
+              as Map<String, dynamic>;
+
+      ((environment['integrations'] as List<dynamic>).first
+              as Map<String, dynamic>)['status'] =
+          'wobbly';
+
+      final status = HostStatus.fromJson(json);
+
+      expect(
+        status.systems.first.environments.last.integrations.first.status,
+        IntegrationHealth.unknown,
+      );
+    });
+
+    test('an unrecognised details state is not checked', () {
+      final details = ApplicationDetails.fromJson(<String, dynamic>{
+        'state': 'sleeping',
+      });
+
+      expect(details.state, DetailsState.notChecked);
+      expect(details.services, isEmpty);
     });
   });
 }
