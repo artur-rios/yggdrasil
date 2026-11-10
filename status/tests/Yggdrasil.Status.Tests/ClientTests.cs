@@ -365,8 +365,8 @@ public class DetailedHealthClientTests
 
     [Theory]
     [InlineData("Host=db;Password=x")]
-    [InlineData("Database\u0000")]
-    [InlineData("Data\nbase")]
+    [InlineData("Database\\u0000")]
+    [InlineData("Data\\nbase")]
     [InlineData(" Database")]
     [InlineData("")]
     public async Task GivenNameOutsideTheLabelShape_WhenFetched_ThenUnavailableInvalidResponse(string name) =>
