@@ -30,7 +30,12 @@ Future<void> switchHost(WidgetTester tester, String name) async {
   await settle(tester);
 }
 
-const List<String> demoSystems = <String>['heimdall', 'fortuna', 'yggdrasil'];
+const List<String> demoSystems = <String>[
+  'heimdall',
+  'hermes',
+  'fortuna',
+  'yggdrasil',
+];
 
 /// The demo with fortuna-api degraded in production.
 HostStatus demoWithAProblem() {
@@ -69,7 +74,12 @@ void main() {
     expect(source.calls.single.$1, production);
     expect(find.byKey(const ValueKey<String>('host-name')), findsOneWidget);
     expect(find.text('example.com'), findsOneWidget);
-    expect(find.text('3 systems · 3 environments'), findsOneWidget);
+    // The demo's story: Hermes does not answer, so it and Heimdall (which
+    // depends on it) are degraded.
+    expect(
+      find.text('4 systems · 3 environments · 2 degraded'),
+      findsOneWidget,
+    );
     // The refresh controls say when, not the banner.
     expect(find.textContaining('updated '), findsNothing);
     // The environment selector carries these now, not the banner.
@@ -117,7 +127,7 @@ void main() {
     );
 
     expect(
-      find.text('3 systems · 3 environments · 1 degraded'),
+      find.text('4 systems · 3 environments · 3 degraded'),
       findsOneWidget,
     );
     expect(find.bySemanticsLabel(RegExp('^Fortuna, degraded')), findsOneWidget);
@@ -691,7 +701,7 @@ void main() {
         expect(marks, <(IconData?, String?)>[
           (Icons.pause_circle_outline, 'Stopped'),
           (Icons.pause_circle_outline, 'Stopped'),
-          (Icons.check_circle, 'Up'),
+          (Icons.warning_rounded, 'Degraded'),
         ]);
       },
     );
@@ -907,17 +917,36 @@ void main() {
     String ago(Duration age) =>
         DateTime.now().toUtc().subtract(age).toIso8601String();
 
+    Map<String, dynamic> api(Map<String, dynamic> production) =>
+        (production['applications'] as List<dynamic>)
+            .cast<Map<String, dynamic>>()
+            .firstWhere((application) => application['id'] == 'heimdall-api');
+
     /// The demo with [edit] applied to Heimdall in production.
     HostStatus heimdallWith(
       void Function(Map<String, dynamic> production) edit,
     ) {
       final json = jsonDecode(demoJson()) as Map<String, dynamic>;
-      final heimdall = (json['systems'] as List<dynamic>)
-          .cast<Map<String, dynamic>>()
-          .firstWhere((system) => system['id'] == 'heimdall');
+      final systems = (json['systems'] as List<dynamic>)
+          .cast<Map<String, dynamic>>();
+      final heimdall = systems.firstWhere(
+        (system) => system['id'] == 'heimdall',
+      );
       final production = (heimdall['environments'] as List<dynamic>)
           .cast<Map<String, dynamic>>()
           .firstWhere((entry) => entry['environment'] == 'production');
+
+      // Start from a Heimdall with nothing reported, and without the demo's
+      // Hermes, which the stub below stands in for: each test declares the
+      // details and integrations it looks at.
+      systems.removeWhere((system) => system['id'] == 'hermes');
+      heimdall['status'] = 'up';
+      production
+        ..['status'] = 'up'
+        ..['integrations'] = <Map<String, dynamic>>[];
+      api(production)
+        ..['status'] = 'up'
+        ..['details'] = null;
 
       edit(production);
       // The target of the integrations the tests declare.
@@ -936,11 +965,6 @@ void main() {
 
       return HostStatus.fromJson(json);
     }
-
-    Map<String, dynamic> api(Map<String, dynamic> production) =>
-        (production['applications'] as List<dynamic>)
-            .cast<Map<String, dynamic>>()
-            .firstWhere((application) => application['id'] == 'heimdall-api');
 
     Future<void> openHeimdall(WidgetTester tester, HostStatus host) async {
       await pumpConsole(tester, source: FakeStatusSource((_, _) async => host));
@@ -1034,7 +1058,8 @@ void main() {
       expect(find.text('Database'), findsOneWidget);
       expect(find.text('Healthy'), findsOneWidget);
       expect(find.text('Cache'), findsOneWidget);
-      expect(find.text('Degraded'), findsOneWidget);
+      // Other systems on the map are degraded in the demo; this is the panel's.
+      expect(inPanel('Degraded'), findsOneWidget);
       expect(find.text('slow replies'), findsOneWidget);
     });
 

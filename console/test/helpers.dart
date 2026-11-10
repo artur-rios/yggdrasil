@@ -19,6 +19,9 @@ import 'package:yggdrasil_console/features/status/presentation/status_controller
 /// A v2 response like the example of `docs/status-api.md`: example.com with
 /// development and homologation (on demand, stopped) and production (up), the
 /// heimdall and fortuna systems and part of the yggdrasil platform.
+///
+/// It predates the icons, integrations and detailed health reports on purpose:
+/// the tests that a response without them still parses read this one.
 String contractExampleJson() =>
     File('test/fixtures/contract_example.json').readAsStringSync();
 

@@ -70,8 +70,11 @@ void main() {
   });
 
   group('hostSummary', () {
-    test('counts systems and environments; all is well on the demo', () {
-      expect(hostSummary(demoStatus()), '3 systems · 3 environments');
+    test('counts systems, environments and the degraded APIs of the demo', () {
+      expect(
+        hostSummary(demoStatus()),
+        '4 systems · 3 environments · 2 degraded',
+      );
     });
 
     test('counts the problems of a v1 host', () {

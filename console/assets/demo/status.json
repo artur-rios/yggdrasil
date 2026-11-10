@@ -1,7 +1,7 @@
 {
   "host": "example.com",
   "generatedAt": "2026-10-08T18:04:11Z",
-  "status": "up",
+  "status": "degraded",
   "environments": [
     {
       "id": "development",
@@ -19,7 +19,7 @@
       "id": "production",
       "name": "Production",
       "onDemand": false,
-      "status": "up"
+      "status": "degraded"
     }
   ],
   "systems": [
@@ -27,11 +27,23 @@
       "id": "heimdall",
       "name": "Heimdall",
       "description": "Identity and access management",
-      "status": "up",
+      "icon": "shield",
+      "status": "degraded",
       "environments": [
         {
           "environment": "development",
           "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            {
+              "from": "heimdall-api",
+              "system": "hermes",
+              "external": null,
+              "check": "Hermes",
+              "status": "stopped",
+              "reason": null
+            }
+          ],
           "applications": [
             {
               "id": "heimdall-api",
@@ -52,7 +64,14 @@
                 "startedAt": "2026-10-07T16:22:14Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": {
+                "state": "not_checked",
+                "checkedAt": null,
+                "reason": null,
+                "status": null,
+                "services": []
+              }
             },
             {
               "id": "heimdall-ui",
@@ -73,13 +92,25 @@
                 "startedAt": "2026-10-06T11:05:51Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": null
             }
           ]
         },
         {
           "environment": "homologation",
           "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            {
+              "from": "heimdall-api",
+              "system": "hermes",
+              "external": null,
+              "check": "Hermes",
+              "status": "stopped",
+              "reason": null
+            }
+          ],
           "applications": [
             {
               "id": "heimdall-api",
@@ -100,7 +131,14 @@
                 "startedAt": "2026-10-04T14:30:56Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": {
+                "state": "not_checked",
+                "checkedAt": null,
+                "reason": null,
+                "status": null,
+                "services": []
+              }
             },
             {
               "id": "heimdall-ui",
@@ -121,19 +159,31 @@
                 "startedAt": "2026-09-30T10:12:12Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": null
             }
           ]
         },
         {
           "environment": "production",
-          "status": "up",
+          "status": "degraded",
+          "onDemand": false,
+          "integrations": [
+            {
+              "from": "heimdall-api",
+              "system": "hermes",
+              "external": null,
+              "check": "Hermes",
+              "status": "down",
+              "reason": "connection refused"
+            }
+          ],
           "applications": [
             {
               "id": "heimdall-api",
               "name": "Heimdall API",
               "kind": "api",
-              "status": "up",
+              "status": "degraded",
               "url": "https://heimdall-api.example.com",
               "repository": "https://github.com/artur-rios/heimdall-api",
               "deployment": {
@@ -154,6 +204,24 @@
                 "latencyMs": 12,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
+              },
+              "details": {
+                "state": "reported",
+                "checkedAt": "2026-10-08T18:04:10Z",
+                "reason": null,
+                "status": "Degraded",
+                "services": [
+                  {
+                    "name": "Database",
+                    "status": "Healthy",
+                    "reason": null
+                  },
+                  {
+                    "name": "Hermes",
+                    "status": "Unhealthy",
+                    "reason": "connection refused"
+                  }
+                ]
               }
             },
             {
@@ -181,6 +249,157 @@
                 "latencyMs": 3,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
+              },
+              "details": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "description": "Email delivery for internal services",
+      "icon": "mail",
+      "status": "degraded",
+      "environments": [
+        {
+          "environment": "development",
+          "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            {
+              "from": "hermes-api",
+              "system": null,
+              "external": "Mailgun",
+              "check": "Mailgun",
+              "status": "stopped",
+              "reason": null
+            }
+          ],
+          "applications": [
+            {
+              "id": "hermes-api",
+              "name": "Hermes API",
+              "kind": "api",
+              "status": "stopped",
+              "url": null,
+              "repository": "https://github.com/artur-rios/hermes-api",
+              "deployment": {
+                "version": "0.10.0",
+                "commit": "4be71d2",
+                "deployedAt": "2026-10-06T10:41:03Z",
+                "image": "hermes-api:development-0.10.0-4be71d2"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": null,
+                "restartCount": null
+              },
+              "probe": null,
+              "details": {
+                "state": "not_checked",
+                "checkedAt": null,
+                "reason": null,
+                "status": null,
+                "services": []
+              }
+            }
+          ]
+        },
+        {
+          "environment": "homologation",
+          "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            {
+              "from": "hermes-api",
+              "system": null,
+              "external": "Mailgun",
+              "check": "Mailgun",
+              "status": "stopped",
+              "reason": null
+            }
+          ],
+          "applications": [
+            {
+              "id": "hermes-api",
+              "name": "Hermes API",
+              "kind": "api",
+              "status": "stopped",
+              "url": null,
+              "repository": "https://github.com/artur-rios/hermes-api",
+              "deployment": {
+                "version": "0.9.2",
+                "commit": "a90c5e7",
+                "deployedAt": "2026-10-02T13:15:48Z",
+                "image": "hermes-api:homologation-0.9.2-a90c5e7"
+              },
+              "container": {
+                "state": "exited",
+                "health": null,
+                "startedAt": null,
+                "restartCount": null
+              },
+              "probe": null,
+              "details": {
+                "state": "not_checked",
+                "checkedAt": null,
+                "reason": null,
+                "status": null,
+                "services": []
+              }
+            }
+          ]
+        },
+        {
+          "environment": "production",
+          "status": "degraded",
+          "onDemand": false,
+          "integrations": [
+            {
+              "from": "hermes-api",
+              "system": null,
+              "external": "Mailgun",
+              "check": "Mailgun",
+              "status": "unknown",
+              "reason": "connection refused"
+            }
+          ],
+          "applications": [
+            {
+              "id": "hermes-api",
+              "name": "Hermes API",
+              "kind": "api",
+              "status": "degraded",
+              "url": null,
+              "repository": "https://github.com/artur-rios/hermes-api",
+              "deployment": {
+                "version": "0.9.2",
+                "commit": "a90c5e7",
+                "deployedAt": "2026-10-03T08:02:30Z",
+                "image": "hermes-api:production-0.9.2-a90c5e7"
+              },
+              "container": {
+                "state": "running",
+                "health": "healthy",
+                "startedAt": "2026-10-03T08:02:34Z",
+                "restartCount": null
+              },
+              "probe": {
+                "healthy": true,
+                "statusCode": 200,
+                "latencyMs": 8,
+                "checkedAt": "2026-10-08T18:04:09Z",
+                "error": null
+              },
+              "details": {
+                "state": "unavailable",
+                "checkedAt": "2026-10-08T18:04:10Z",
+                "reason": "connection refused",
+                "status": null,
+                "services": []
               }
             }
           ]
@@ -191,11 +410,23 @@
       "id": "fortuna",
       "name": "Fortuna",
       "description": "Personal finance",
+      "icon": "savings",
       "status": "up",
       "environments": [
         {
           "environment": "development",
           "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            {
+              "from": "fortuna-api",
+              "system": "heimdall",
+              "external": null,
+              "check": "Heimdall",
+              "status": "stopped",
+              "reason": null
+            }
+          ],
           "applications": [
             {
               "id": "fortuna-api",
@@ -216,7 +447,14 @@
                 "startedAt": "2026-10-08T09:41:07Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": {
+                "state": "not_checked",
+                "checkedAt": null,
+                "reason": null,
+                "status": null,
+                "services": []
+              }
             },
             {
               "id": "fortuna-ui",
@@ -237,13 +475,25 @@
                 "startedAt": "2026-10-05T20:13:33Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": null
             }
           ]
         },
         {
           "environment": "homologation",
           "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            {
+              "from": "fortuna-api",
+              "system": "heimdall",
+              "external": null,
+              "check": "Heimdall",
+              "status": "stopped",
+              "reason": null
+            }
+          ],
           "applications": [
             {
               "id": "fortuna-api",
@@ -264,7 +514,14 @@
                 "startedAt": "2026-10-02T17:48:40Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": {
+                "state": "not_checked",
+                "checkedAt": null,
+                "reason": null,
+                "status": null,
+                "services": []
+              }
             },
             {
               "id": "fortuna-ui",
@@ -285,13 +542,25 @@
                 "startedAt": "2026-09-28T19:02:48Z",
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": null
             }
           ]
         },
         {
           "environment": "production",
           "status": "up",
+          "onDemand": false,
+          "integrations": [
+            {
+              "from": "fortuna-api",
+              "system": "heimdall",
+              "external": null,
+              "check": "Heimdall",
+              "status": "up",
+              "reason": null
+            }
+          ],
           "applications": [
             {
               "id": "fortuna-api",
@@ -318,6 +587,24 @@
                 "latencyMs": 18,
                 "checkedAt": "2026-10-08T18:04:10Z",
                 "error": null
+              },
+              "details": {
+                "state": "reported",
+                "checkedAt": "2026-10-08T18:04:10Z",
+                "reason": null,
+                "status": "Healthy",
+                "services": [
+                  {
+                    "name": "Database",
+                    "status": "Healthy",
+                    "reason": null
+                  },
+                  {
+                    "name": "Heimdall",
+                    "status": "Healthy",
+                    "reason": null
+                  }
+                ]
               }
             },
             {
@@ -345,7 +632,8 @@
                 "latencyMs": 4,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             }
           ]
         }
@@ -355,11 +643,14 @@
       "id": "yggdrasil",
       "name": "Yggdrasil",
       "description": "Deployment platform",
+      "icon": "park",
       "status": "up",
       "environments": [
         {
           "environment": "development",
           "status": "stopped",
+          "onDemand": false,
+          "integrations": [],
           "applications": [
             {
               "id": "traefik",
@@ -386,7 +677,8 @@
                 "latencyMs": 1,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "status",
@@ -413,7 +705,8 @@
                 "latencyMs": 2,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "console",
@@ -440,7 +733,8 @@
                 "latencyMs": 2,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "prometheus",
@@ -467,7 +761,8 @@
                 "latencyMs": 5,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "loki",
@@ -494,7 +789,8 @@
                 "latencyMs": 6,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "alloy",
@@ -521,7 +817,8 @@
                 "latencyMs": 3,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "grafana",
@@ -548,7 +845,8 @@
                 "latencyMs": 9,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "jenkins",
@@ -559,13 +857,16 @@
               "repository": null,
               "deployment": null,
               "container": null,
-              "probe": null
+              "probe": null,
+              "details": null
             }
           ]
         },
         {
           "environment": "homologation",
           "status": "stopped",
+          "onDemand": false,
+          "integrations": [],
           "applications": [
             {
               "id": "traefik",
@@ -592,7 +893,8 @@
                 "latencyMs": 1,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "status",
@@ -619,7 +921,8 @@
                 "latencyMs": 2,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "console",
@@ -646,7 +949,8 @@
                 "latencyMs": 2,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "prometheus",
@@ -673,7 +977,8 @@
                 "latencyMs": 5,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "loki",
@@ -700,7 +1005,8 @@
                 "latencyMs": 6,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "alloy",
@@ -727,7 +1033,8 @@
                 "latencyMs": 3,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "grafana",
@@ -754,7 +1061,8 @@
                 "latencyMs": 9,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "jenkins",
@@ -765,13 +1073,16 @@
               "repository": null,
               "deployment": null,
               "container": null,
-              "probe": null
+              "probe": null,
+              "details": null
             }
           ]
         },
         {
           "environment": "production",
           "status": "up",
+          "onDemand": false,
+          "integrations": [],
           "applications": [
             {
               "id": "traefik",
@@ -798,7 +1109,8 @@
                 "latencyMs": 1,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "status",
@@ -825,7 +1137,8 @@
                 "latencyMs": 2,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "console",
@@ -852,7 +1165,8 @@
                 "latencyMs": 2,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "prometheus",
@@ -879,7 +1193,8 @@
                 "latencyMs": 5,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "loki",
@@ -906,7 +1221,8 @@
                 "latencyMs": 6,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "alloy",
@@ -933,7 +1249,8 @@
                 "latencyMs": 3,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "grafana",
@@ -960,7 +1277,8 @@
                 "latencyMs": 9,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
-              }
+              },
+              "details": null
             },
             {
               "id": "jenkins",
@@ -971,7 +1289,8 @@
               "repository": null,
               "deployment": null,
               "container": null,
-              "probe": null
+              "probe": null,
+              "details": null
             }
           ]
         }

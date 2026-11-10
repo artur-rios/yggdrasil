@@ -308,7 +308,7 @@ void main() {
         heimdallApi.deployment!.deployedAt,
         now.subtract(const Duration(hours: 20, minutes: 24, seconds: 9)),
       );
-      expect(status.systems, hasLength(3));
+      expect(status.systems, hasLength(4));
     });
 
     test('the demo source answers refreshDetails from the fixture', () async {
@@ -318,7 +318,58 @@ void main() {
       final status = await source.refreshDetails(Environment.demo(), null);
 
       expect(status!.generatedAt, now);
-      expect(status.systems, hasLength(3));
+      expect(status.systems, hasLength(4));
+    });
+  });
+
+  group('the demo', () {
+    test('shows a failing integration and an API that does not answer', () {
+      final production = demoStatus().systems
+          .expand((system) => system.environments)
+          .where((environment) => environment.environment == 'production')
+          .toList();
+      final integrations = production.expand((e) => e.integrations).toList();
+      final heimdallToHermes = integrations.singleWhere(
+        (i) => i.from == 'heimdall-api' && i.system == 'hermes',
+      );
+      final unavailable = production
+          .expand((e) => e.applications)
+          .where((a) => a.details?.state == DetailsState.unavailable)
+          .toList();
+
+      expect(heimdallToHermes.status, IntegrationHealth.down);
+      expect(heimdallToHermes.reason, 'connection refused');
+      expect(unavailable.map((a) => a.id), <String>['hermes-api']);
+      expect(unavailable.single.details!.reason, 'connection refused');
+      // The caller did not answer, so what it depends on is not known.
+      expect(
+        integrations.singleWhere((i) => i.from == 'hermes-api').status,
+        IntegrationHealth.unknown,
+      );
+    });
+
+    test('is on demand in development and homologation', () {
+      final status = demoStatus();
+
+      expect(
+        status.environments.where((e) => e.onDemand).map((e) => e.id),
+        <String>['development', 'homologation'],
+      );
+
+      final heimdall = status.systems.firstWhere((s) => s.id == 'heimdall');
+
+      expect(
+        heimdall.environments.map((e) => (e.environment, e.onDemand)),
+        <(String, bool)>[
+          ('development', true),
+          ('homologation', true),
+          ('production', false),
+        ],
+      );
+      expect(
+        heimdall.environments.first.integrations.single.status,
+        IntegrationHealth.stopped,
+      );
     });
   });
 

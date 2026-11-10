@@ -175,15 +175,17 @@ The same Flutter app on three platforms:
 | **Android** | `yggdrasil-console-<version>.apk` from the same releases | Same as Windows (HTTPS only) |
 
 - A **host** shows every environment it runs, each with its status, e.g. `Development · Stopped`, `Homologation · Stopped`, `Production · Up`.
-- Every **system** is a card with one status chip per environment: its applications there taken together, `down` when every deployed one is down, `degraded` when any is down or degraded, else `unknown` or `up`; `not deployed` ones don't count ([the rules](docs/status-api.md#roll-up)). Problems sort first.
-- **`Stopped`** is an on-demand environment switched off: neutral, not a problem.
-- **Expanding** a system shows a section per environment, listing its applications, each with:
+- An **environment selector** picks the environment the console shows; the map and the panel follow it.
+- The **system map** draws every system of that environment as a node with its icon and status, and a line for each integration between them (or to an external service): green when it works, red when it fails, grey when a side is stopped. A system's status is its applications there taken together, `down` when every deployed one is down, `degraded` when any is down or degraded, else `unknown` or `up`; `not deployed` ones don't count ([the rules](docs/status-api.md#roll-up)).
+- **`Stopped`** is an on-demand environment switched off: neutral, not a problem. Its systems say *on demand* on the map.
+- **Selecting** a system opens its panel (a side panel on a computer, a bottom sheet on a phone) listing its applications, each with:
   - status and kind
   - version, commit and deploy time
   - latest health probe and latency
   - container state, health and restarts
   - links to the application and its repository
-- Data comes from each host's **status API** (`GET /api/status`, bearer token), one for all its environments. The console refreshes every 30 s while visible; the API probes every 15 s.
+  - what the application reports about itself (its detailed health) and, if it did not answer, why
+- Data comes from each host's **status API** (`GET /api/status`, bearer token), one for all its environments. The console loads it when it opens and when you press **Refresh now**, which also asks the API to fetch the detailed health reports (`POST /api/status/refresh`); **Auto-refresh** (off by default; every 1, 5, 10, 15 or 30 min) repeats that while the overview is visible. The API probes every 15 s.
 - Contract: [docs/status-api.md](docs/status-api.md).
 
 The installer and the APK are attached to every `v*` release of this repository by its own pipeline: Jenkins builds

@@ -264,7 +264,8 @@ void main() {
 
     test('reads the default setup', () {
       expect(status.host, 'example.com');
-      expect(status.status, Status.up);
+      // Hermes does not answer and Heimdall depends on it.
+      expect(status.status, Status.degraded);
       expect(status.environments.map((e) => e.id), <String>[
         'development',
         'homologation',
@@ -272,8 +273,15 @@ void main() {
       ]);
       expect(status.systems.map((system) => system.id), <String>[
         'heimdall',
+        'hermes',
         'fortuna',
         'yggdrasil',
+      ]);
+      expect(status.systems.map((system) => system.icon), <String?>[
+        'shield',
+        'mail',
+        'savings',
+        'park',
       ]);
     });
 
