@@ -1,6 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../presentation/refresh_settings.dart';
+import '../domain/refresh_settings.dart';
 
 /// Where the auto-refresh choice lives between launches.
 abstract interface class RefreshSettingsStore {
