@@ -134,11 +134,16 @@ public class ApiTests : IClassFixture<StatusApiFactory>
               "id": "heimdall",
               "name": "Heimdall",
               "description": "Identity and access management",
+              "icon": "shield",
               "status": "up",
               "environments": [
                 {
                   "environment": "development",
                   "status": "stopped",
+                  "onDemand": true,
+                  "integrations": [
+                    { "from": "heimdall-api", "system": "hermes", "external": null, "check": "Hermes", "status": "stopped", "reason": null }
+                  ],
                   "applications": [
                     {
                       "id": "heimdall-api",
@@ -159,13 +164,18 @@ public class ApiTests : IClassFixture<StatusApiFactory>
                         "startedAt": null,
                         "restartCount": null
                       },
-                      "probe": null
+                      "probe": null,
+                      "details": { "state": "not_checked", "checkedAt": null, "reason": null, "status": null, "services": [] }
                     }
                   ]
                 },
                 {
                   "environment": "homologation",
                   "status": "stopped",
+                  "onDemand": true,
+                  "integrations": [
+                    { "from": "heimdall-api", "system": "hermes", "external": null, "check": "Hermes", "status": "stopped", "reason": null }
+                  ],
                   "applications": [
                     {
                       "id": "heimdall-api",
@@ -186,13 +196,18 @@ public class ApiTests : IClassFixture<StatusApiFactory>
                         "startedAt": null,
                         "restartCount": null
                       },
-                      "probe": null
+                      "probe": null,
+                      "details": { "state": "not_checked", "checkedAt": null, "reason": null, "status": null, "services": [] }
                     }
                   ]
                 },
                 {
                   "environment": "production",
                   "status": "up",
+                  "onDemand": false,
+                  "integrations": [
+                    { "from": "heimdall-api", "system": "hermes", "external": null, "check": "Hermes", "status": "down", "reason": "connection refused" }
+                  ],
                   "applications": [
                     {
                       "id": "heimdall-api",
@@ -219,6 +234,16 @@ public class ApiTests : IClassFixture<StatusApiFactory>
                         "latencyMs": 12,
                         "checkedAt": "2026-10-08T18:04:09Z",
                         "error": null
+                      },
+                      "details": {
+                        "state": "reported",
+                        "checkedAt": "2026-10-08T18:04:10Z",
+                        "reason": null,
+                        "status": "Degraded",
+                        "services": [
+                          { "name": "Database", "status": "Healthy", "reason": null },
+                          { "name": "Hermes", "status": "Unhealthy", "reason": "connection refused" }
+                        ]
                       }
                     }
                   ]
@@ -593,7 +618,8 @@ public class ApiTests : IClassFixture<StatusApiFactory>
         {
             case JsonObject expectedObject:
                 var actualObject = actual.AsObject();
-                Assert.True(expectedObject.Select(p => p.Key).SequenceEqual(actualObject.Select(p => p.Key)),
+                // The order of a JSON object's properties means nothing.
+                Assert.True(expectedObject.Select(p => p.Key).Order().SequenceEqual(actualObject.Select(p => p.Key).Order()),
                     $"{path}: expected properties [{string.Join(", ", expectedObject.Select(p => p.Key))}], " +
                     $"got [{string.Join(", ", actualObject.Select(p => p.Key))}]");
                 foreach (var (name, value) in expectedObject)

@@ -161,4 +161,83 @@ public class StatusRulesTests
         // development and homologation stopped, production up, traefik up and jenkins not on this host.
         Assert.Equal(StatusLevel.Up, StatusRules.Aggregate(
             [StatusLevel.Stopped, StatusLevel.Stopped, StatusLevel.Up, StatusLevel.Up, StatusLevel.NotDeployed]));
+
+    private static ApplicationDetails Report(string status, params (string Name, string Status)[] services) =>
+        new(DetailsStates.Reported, Now, null, status,
+            services.Select(s => new ReportedService(s.Name, s.Status, null)).ToList());
+
+    private static ApplicationDetails Of(string state, string? reason = null) => new(state, Now, reason, null, []);
+
+    [Theory]
+    [InlineData(StatusLevel.Stopped, StatusLevel.Up, "Healthy", IntegrationLevel.Stopped)]
+    [InlineData(StatusLevel.Up, StatusLevel.Stopped, "Unhealthy", IntegrationLevel.Stopped)]
+    [InlineData(StatusLevel.Up, StatusLevel.NotDeployed, "Unhealthy", IntegrationLevel.Stopped)]
+    [InlineData(StatusLevel.Up, StatusLevel.Up, "NotConfigured", IntegrationLevel.NotConfigured)]
+    [InlineData(StatusLevel.Up, StatusLevel.Up, "Healthy", IntegrationLevel.Up)]
+    [InlineData(StatusLevel.Up, StatusLevel.Up, "Degraded", IntegrationLevel.Down)]
+    [InlineData(StatusLevel.Up, StatusLevel.Up, "Unhealthy", IntegrationLevel.Down)]
+    public void GivenACallerReportingTheCheck_WhenDerivingTheIntegration_ThenTheFirstMatchingRowWins(
+        StatusLevel caller, StatusLevel target, string checkStatus, IntegrationLevel expected) =>
+        Assert.Equal(expected, StatusRules.ForIntegration(caller, target, Report("Healthy", ("Hermes", checkStatus)), "Hermes"));
+
+    [Fact]
+    public void GivenAnExternalTarget_WhenTheCheckIsHealthy_ThenUp() =>
+        Assert.Equal(IntegrationLevel.Up, StatusRules.ForIntegration(StatusLevel.Up, null, Report("Healthy", ("Smtp", "Healthy")), "Smtp"));
+
+    [Fact]
+    public void GivenACallerThatDidNotAnswer_ThenUnknown() =>
+        Assert.Equal(IntegrationLevel.Unknown,
+            StatusRules.ForIntegration(StatusLevel.Up, StatusLevel.Up, Of(DetailsStates.Unavailable, "timeout"), "Hermes"));
+
+    [Fact]
+    public void GivenAReportWithoutTheCheck_ThenUnknown() =>
+        Assert.Equal(IntegrationLevel.Unknown,
+            StatusRules.ForIntegration(StatusLevel.Up, StatusLevel.Up, Report("Healthy", ("Database", "Healthy")), "Hermes"));
+
+    [Fact]
+    public void GivenNothingFetched_ThenUnknown()
+    {
+        Assert.Equal(IntegrationLevel.Unknown, StatusRules.ForIntegration(StatusLevel.Up, StatusLevel.Up, null, "Hermes"));
+        Assert.Equal(IntegrationLevel.Unknown,
+            StatusRules.ForIntegration(StatusLevel.Up, StatusLevel.Up, Of(DetailsStates.NotChecked), "Hermes"));
+    }
+
+    private static readonly IReadOnlySet<string> NoneStopped = new HashSet<string>();
+
+    [Theory]
+    [InlineData("Healthy", StatusLevel.Up)]
+    [InlineData("Degraded", StatusLevel.Degraded)]
+    [InlineData("Unhealthy", StatusLevel.Degraded)]
+    public void GivenAnUpApplicationAndAReport_WhenApplyingIt_ThenItCanOnlyWorsenToDegraded(string reported, StatusLevel expected) =>
+        Assert.Equal(expected, StatusRules.WithDetails(StatusLevel.Up, Report(reported, ("Database", reported)), NoneStopped));
+
+    [Fact]
+    public void GivenAnUpApplicationThatDidNotAnswer_ThenDegraded() =>
+        Assert.Equal(StatusLevel.Degraded,
+            StatusRules.WithDetails(StatusLevel.Up, Of(DetailsStates.Unavailable, "timeout"), NoneStopped));
+
+    [Fact]
+    public void GivenAnUpApplicationWithoutTheRoute_OrNotChecked_ThenUp()
+    {
+        Assert.Equal(StatusLevel.Up, StatusRules.WithDetails(StatusLevel.Up, Of(DetailsStates.Unsupported), NoneStopped));
+        Assert.Equal(StatusLevel.Up, StatusRules.WithDetails(StatusLevel.Up, Of(DetailsStates.NotChecked), NoneStopped));
+        Assert.Equal(StatusLevel.Up, StatusRules.WithDetails(StatusLevel.Up, null, NoneStopped));
+    }
+
+    [Fact]
+    public void GivenALivenessThatIsNotUp_WhenApplyingAReport_ThenLivenessPrecedes()
+    {
+        Assert.Equal(StatusLevel.Down, StatusRules.WithDetails(StatusLevel.Down, Report("Healthy"), NoneStopped));
+        Assert.Equal(StatusLevel.Stopped, StatusRules.WithDetails(StatusLevel.Stopped, Report("Unhealthy", ("Hermes", "Unhealthy")), NoneStopped));
+    }
+
+    [Fact]
+    public void GivenEveryFailingEntryIsAStoppedIntegration_ThenTheReportCountsAsHealthy() =>
+        Assert.Equal(StatusLevel.Up, StatusRules.WithDetails(StatusLevel.Up,
+            Report("Degraded", ("Database", "Healthy"), ("Hermes", "Unhealthy")), new HashSet<string> { "Hermes" }));
+
+    [Fact]
+    public void GivenAnotherEntryFailsBesideAStoppedIntegration_ThenDegraded() =>
+        Assert.Equal(StatusLevel.Degraded, StatusRules.WithDetails(StatusLevel.Up,
+            Report("Unhealthy", ("Database", "Unhealthy"), ("Hermes", "Unhealthy")), new HashSet<string> { "Hermes" }));
 }
