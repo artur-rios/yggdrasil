@@ -58,7 +58,7 @@ own platform and a deploy agent that dials out to the one Jenkins controller.
 | | |
 |---|---|
 | **Application** | One deployable unit (an API, a web UI, a worker) with its own repository, container image and release cycle. |
-| **System** | What users think of as one product: a group of applications that work together. The console shows a system's status and, expanded, each of its applications. |
+| **System** | What users think of as one product: a group of applications that work together. The console shows a system's status and, in its panel, each of its applications. |
 | **Environment** | A stage applications run in, such as local, development, homologation or production. Options: exposure (`proxy` through Traefik or host `ports`), `trigger` (`manual`, `branch` or `release`), which Jenkins `agent` deploys it, whether it needs `approval`, `hostSuffix` (its host names, `heimdall-dev.<domain>`), `onDemand` (runs only while used), timeouts and rollback depth. Each application deploys to all environments or to its own list, and can override any option per environment. |
 | **Linux DevOps Server** | The machine that keeps the code and runs the pipeline: Forgejo, the Jenkins controller, the CI and release build agents, Renovate and their backups. There is one per installation. Its role is `dev` (`ygg install --role dev`); [docs/hosts.md](docs/hosts.md) has its users, firewall and files. |
 | **Linux Application Server** | A machine that runs the applications: one environment or several, with one platform stack (Traefik, status API, console, monitoring), one Jenkins deploy agent and one or more domains for all of them; each application runs once per environment, as its own Compose project. An installation has one or more. Its role is `apps` (`ygg install --role apps`). |
@@ -176,7 +176,7 @@ The same Flutter app on three platforms:
 
 - A **host** shows every environment it runs, each with its status, e.g. `Development · Stopped`, `Homologation · Stopped`, `Production · Up`.
 - An **environment selector** picks the environment the console shows; the map and the panel follow it.
-- The **system map** draws every system of that environment as a node with its icon and status, and a line for each integration between them (or to an external service): green when it works, red when it fails, grey when a side is stopped. A system's status is its applications there taken together, `down` when every deployed one is down, `degraded` when any is down or degraded, else `unknown` or `up`; `not deployed` ones don't count ([the rules](docs/status-api.md#roll-up)).
+- The **system map** draws every system of that environment as a node with its icon and status, and a line for each integration between them (or to an external service): green when it works, red when it fails, dashed grey when a side is stopped or the integration is not configured, and *Unknown* when the caller did not answer. A system's status is its applications there taken together, `down` when every deployed one is down, `degraded` when any is down or degraded, else `unknown` or `up`; `not deployed` ones don't count ([the rules](docs/status-api.md#roll-up)).
 - **`Stopped`** is an on-demand environment switched off: neutral, not a problem. Its systems say *on demand* on the map.
 - **Selecting** a system opens its panel (a side panel on a computer, a bottom sheet on a phone) listing its applications, each with:
   - status and kind
