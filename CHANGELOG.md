@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-09
+
+### Added
+
+- **`scripts/prune_release_branches.py` deletes the release branches Forgejo keeps.** Forgejo refuses to delete a
+  protected branch, so every `release/x.y.z` stayed behind after its release and had to be removed by hand. The owner
+  runs this instead (`--dry-run` to see what it would do). It deletes a branch only when no open pull request uses it,
+  its tip is in `main` and a version tag contains it, lifting the `release/*` protection of that repository only for
+  the deletion and putting it back.
+
 ## [0.10.1] - 2026-11-09
 
 ### Fixed
@@ -1208,7 +1218,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/artur-rios/yggdrasil/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/artur-rios/yggdrasil/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/artur-rios/yggdrasil/compare/v0.9.12...v0.10.0
 [0.9.12]: https://github.com/artur-rios/yggdrasil/compare/v0.9.11...v0.9.12
