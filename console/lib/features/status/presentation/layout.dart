@@ -23,16 +23,3 @@ int mapColumnsFor(double width) {
 
   return 3;
 }
-
-/// How many columns of system cards fit [width].
-int systemColumnsFor(double width) {
-  if (width >= Breakpoints.desktop) {
-    return 3;
-  }
-
-  if (width >= Breakpoints.tablet) {
-    return 2;
-  }
-
-  return 1;
-}

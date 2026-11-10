@@ -18,6 +18,7 @@ import 'status_controller.dart';
 import 'widgets/environment_selector.dart';
 import 'widgets/refresh_controls.dart';
 import 'widgets/status_visuals.dart';
+import 'widgets/system_panel.dart';
 
 /// The host switcher, the host's status and every system on it.
 ///
@@ -357,9 +358,12 @@ class _OverviewBody extends ConsumerWidget {
                       child: SystemMap(
                         host: snapshot.status,
                         environmentId: hostEnvironment.id,
-                        // The system panel is not there yet: a tap does
-                        // nothing for now.
-                        onOpenSystem: (_) {},
+                        onOpenSystem: (id) => _openSystem(
+                          context,
+                          snapshot.status,
+                          hostEnvironment.id,
+                          id,
+                        ),
                       ),
                     ),
                   ),
@@ -381,6 +385,35 @@ class _OverviewBody extends ConsumerWidget {
         );
       },
     );
+  }
+}
+
+/// Opens the panel of system [id] as it is in [environmentId] right now.
+void _openSystem(
+  BuildContext context,
+  HostStatus host,
+  String environmentId,
+  String id,
+) {
+  for (final system in host.systems) {
+    if (system.id != id) {
+      continue;
+    }
+
+    for (final environment in system.environments) {
+      if (environment.environment == environmentId) {
+        unawaited(
+          showSystemPanel(
+            context,
+            system: system,
+            environment: environment,
+            host: host,
+          ),
+        );
+
+        return;
+      }
+    }
   }
 }
 

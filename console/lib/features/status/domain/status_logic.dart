@@ -1,18 +1,10 @@
 import 'status.dart';
 
-/// Systems ordered worst status first, then by name (case-insensitive), then
-/// by id so the order is total and stable across refreshes.
-List<SystemStatus> sortSystems(Iterable<SystemStatus> systems) =>
-    systems.toList()..sort(compareByStatusThenName);
-
 /// Applications in the same order as systems: worst first, then by name.
 List<ApplicationStatus> sortApplications(
   Iterable<ApplicationStatus> applications,
 ) => applications.toList()
   ..sort((a, b) => _compare(a.status, a.name, a.id, b.status, b.name, b.id));
-
-int compareByStatusThenName(SystemStatus a, SystemStatus b) =>
-    _compare(a.status, a.name, a.id, b.status, b.name, b.id);
 
 int _compare(
   Status statusA,
@@ -33,25 +25,6 @@ int _compare(
   return byName != 0 ? byName : idA.compareTo(idB);
 }
 
-/// The systems shown for the "problems only" filter: those whose overall
-/// status needs attention. A stopped on-demand environment is not a problem.
-List<SystemStatus> visibleSystems(
-  Iterable<SystemStatus> systems, {
-  required bool problemsOnly,
-}) {
-  final sorted = sortSystems(systems);
-
-  if (!problemsOnly) {
-    return sorted;
-  }
-
-  return sorted.where(hasProblem).toList();
-}
-
-/// Whether the system's overall status (the rollup of its environments)
-/// needs attention.
-bool hasProblem(SystemStatus system) => system.status.isProblem;
-
 /// How many applications of each status, in severity order, zeros omitted.
 Map<Status, int> countByStatus(Iterable<ApplicationStatus> applications) {
   final counts = <Status, int>{};
@@ -65,44 +38,6 @@ Map<Status, int> countByStatus(Iterable<ApplicationStatus> applications) {
 
   return <Status, int>{for (final status in ordered) status: counts[status]!};
 }
-
-/// The one-line summary of some applications, e.g. `2 applications · 1
-/// degraded`.
-///
-/// Every status other than `up` is counted; when all are up, or all stopped,
-/// it says so.
-String applicationsSummary(Iterable<ApplicationStatus> applications) {
-  final list = applications.toList();
-  final total = list.length;
-  final parts = <String>[
-    '$total ${total == 1 ? 'application' : 'applications'}',
-  ];
-
-  if (total == 0) {
-    return parts.single;
-  }
-
-  final counts = countByStatus(list);
-  final only = counts.length == 1 ? counts.keys.single : null;
-
-  if (only == Status.up || only == Status.stopped) {
-    final label = statusLabel(only!).toLowerCase();
-    parts.add(total == 1 ? label : 'all $label');
-  } else {
-    for (final entry in counts.entries) {
-      if (entry.key != Status.up) {
-        parts.add('${entry.value} ${statusLabel(entry.key).toLowerCase()}');
-      }
-    }
-  }
-
-  return parts.join(' · ');
-}
-
-/// The one-line summary of a system in one environment, e.g.
-/// `2 applications · all up`.
-String environmentSummary(SystemEnvironment environment) =>
-    applicationsSummary(environment.applications);
 
 /// The one-line summary of a host, e.g.
 /// `3 systems · 3 environments · 1 down · 2 degraded`.

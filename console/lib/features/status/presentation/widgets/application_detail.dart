@@ -271,3 +271,19 @@ class _Section extends StatelessWidget {
     );
   }
 }
+
+/// The probe in a few words: `12 ms`, `HTTP 503 · 8 ms`, `connection refused`.
+///
+/// `error` is set only when no HTTP answer came back; otherwise the status
+/// code tells what the answer was, and a 2xx is not worth repeating.
+String describeProbe(Probe probe) {
+  final code = probe.statusCode;
+
+  return <String>[
+    if (code != null && (code < 200 || code >= 300)) 'HTTP $code',
+    if (probe.latencyMs != null) formatLatency(probe.latencyMs!),
+    if (probe.error != null) probe.error!,
+    if (code == null && probe.latencyMs == null && probe.error == null)
+      probe.healthy == true ? 'healthy' : 'unhealthy',
+  ].join(' · ');
+}

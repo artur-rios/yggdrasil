@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_riverpod/legacy.dart';
 
 import '../../environments/domain/environment.dart';
 import '../../environments/presentation/environments_controller.dart';
@@ -155,15 +154,6 @@ class StatusController extends Notifier<StatusViewState> {
       state.environment?.id == environment.id &&
       state.environment?.baseUrl == environment.baseUrl;
 }
-
-/// The "problems only" filter chip.
-final StateProvider<bool> problemsOnlyProvider = StateProvider<bool>(
-  (ref) => false,
-);
-
-/// Which systems are expanded, by id; kept across refreshes and layouts.
-final StateProvider<Set<String>> expandedSystemsProvider =
-    StateProvider<Set<String>>((ref) => const <String>{});
 
 /// The host environment (development, production...) the user chose on the
 /// selected saved host; `null` until they choose or the memory is read.

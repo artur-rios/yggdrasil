@@ -283,7 +283,7 @@ class SystemStatus {
   /// the status API predates the field).
   final String? icon;
 
-  /// The rollup of [environments]: what the card is sorted and filtered by.
+  /// The rollup of [environments]: the overall status the map shows.
   final Status status;
 
   /// The host's environments this system has applications in, in the host's

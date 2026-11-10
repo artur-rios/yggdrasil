@@ -9,6 +9,7 @@ import 'package:yggdrasil_console/features/status/data/status_source.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
 import 'package:yggdrasil_console/features/status/presentation/map/system_map.dart';
 import 'package:yggdrasil_console/features/status/presentation/refresh_settings.dart';
+import 'package:yggdrasil_console/features/status/presentation/widgets/application_detail.dart';
 
 import '../../../helpers.dart';
 
@@ -894,6 +895,372 @@ void main() {
         (tester.getCenter(updated).dy - tester.getCenter(refresh).dy).abs(),
         lessThan(24),
       );
+    });
+  });
+
+  group('system panel', () {
+    final panel = find.byKey(const ValueKey<String>('system-panel'));
+
+    Finder inPanel(String text) =>
+        find.descendant(of: panel, matching: find.text(text));
+
+    String ago(Duration age) =>
+        DateTime.now().toUtc().subtract(age).toIso8601String();
+
+    /// The demo with [edit] applied to Heimdall in production.
+    HostStatus heimdallWith(
+      void Function(Map<String, dynamic> production) edit,
+    ) {
+      final json = jsonDecode(demoJson()) as Map<String, dynamic>;
+      final heimdall = (json['systems'] as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .firstWhere((system) => system['id'] == 'heimdall');
+      final production = (heimdall['environments'] as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .firstWhere((entry) => entry['environment'] == 'production');
+
+      edit(production);
+      // The target of the integrations the tests declare.
+      (json['systems'] as List<dynamic>).add(<String, dynamic>{
+        'id': 'hermes',
+        'name': 'Hermes mail',
+        'status': 'up',
+        'environments': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'environment': 'production',
+            'status': 'up',
+            'applications': <Map<String, dynamic>>[],
+          },
+        ],
+      });
+
+      return HostStatus.fromJson(json);
+    }
+
+    Map<String, dynamic> api(Map<String, dynamic> production) =>
+        (production['applications'] as List<dynamic>)
+            .cast<Map<String, dynamic>>()
+            .firstWhere((application) => application['id'] == 'heimdall-api');
+
+    Future<void> openHeimdall(WidgetTester tester, HostStatus host) async {
+      await pumpConsole(tester, source: FakeStatusSource((_, _) async => host));
+      await tester.tap(tile('heimdall'));
+      await settle(tester);
+    }
+
+    Map<String, dynamic> hermesLink({String status = 'up', String? reason}) =>
+        <String, dynamic>{
+          'from': 'heimdall-api',
+          'system': 'hermes',
+          'external': null,
+          'check': 'Hermes',
+          'status': status,
+          'reason': reason,
+        };
+
+    testWidgets('the panel lists applications with status, version and '
+        'deploy time', (tester) async {
+      await openHeimdall(tester, heimdallWith((_) {}));
+
+      expect(panel, findsOneWidget);
+      expect(
+        find.descendant(of: panel, matching: find.text('Heimdall')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: panel,
+          matching: find.text('Identity and access management'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: panel, matching: find.text('Production')),
+        findsOneWidget,
+      );
+      expect(find.text('Heimdall API'), findsOneWidget);
+      expect(find.text('Heimdall web'), findsOneWidget);
+      expect(find.text('v1.4.0 · 3f2a9c1'), findsOneWidget);
+      expect(find.textContaining('deployed '), findsWidgets);
+      expect(find.text('Up'), findsWidgets);
+    });
+
+    testWidgets('an application row opens the existing application detail', (
+      tester,
+    ) async {
+      await openHeimdall(tester, heimdallWith((_) {}));
+
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>('application-production-heimdall-api'),
+        ),
+      );
+      await settle(tester);
+
+      expect(find.byType(ApplicationDetail), findsOneWidget);
+      expect(find.text('Deployment'), findsOneWidget);
+      expect(
+        find.text('heimdall-api:production-1.4.0-3f2a9c1'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('reported services show status, reason and checked time', (
+      tester,
+    ) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          api(production)['details'] = <String, dynamic>{
+            'state': 'reported',
+            'checkedAt': ago(const Duration(minutes: 3)),
+            'status': 'Degraded',
+            'services': <Map<String, dynamic>>[
+              <String, dynamic>{'name': 'Database', 'status': 'Healthy'},
+              <String, dynamic>{
+                'name': 'Cache',
+                'status': 'Degraded',
+                'reason': 'slow replies',
+              },
+            ],
+          };
+        }),
+      );
+
+      expect(
+        find.text('Reported by Heimdall API · checked 3 min ago'),
+        findsOneWidget,
+      );
+      expect(find.text('Database'), findsOneWidget);
+      expect(find.text('Healthy'), findsOneWidget);
+      expect(find.text('Cache'), findsOneWidget);
+      expect(find.text('Degraded'), findsOneWidget);
+      expect(find.text('slow replies'), findsOneWidget);
+    });
+
+    testWidgets('an unavailable report says it could not get more details, '
+        'with the reason', (tester) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          api(production)['details'] = <String, dynamic>{
+            'state': 'unavailable',
+            'checkedAt': ago(const Duration(seconds: 20)),
+            'reason': 'connection refused',
+          };
+        }),
+      );
+
+      expect(
+        find.text(
+          'Could not get more details. The detailed health endpoint did not '
+          'answer: connection refused.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('integrations of an unavailable report read Not checked', (
+      tester,
+    ) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          production['integrations'] = <Map<String, dynamic>>[hermesLink()];
+          api(production)['details'] = <String, dynamic>{
+            'state': 'unavailable',
+            'checkedAt': ago(const Duration(seconds: 20)),
+            'reason': 'connection refused',
+          };
+        }),
+      );
+
+      // The check's name, and the target system's.
+      expect(find.text('Hermes'), findsOneWidget);
+      expect(find.text('Hermes mail'), findsWidgets);
+      expect(find.text('Not checked'), findsOneWidget);
+      expect(find.text('integration'), findsOneWidget);
+    });
+
+    testWidgets('an unsupported report says this version does not report '
+        'detailed health', (tester) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          api(production)['details'] = <String, dynamic>{
+            'state': 'unsupported',
+            'checkedAt': ago(const Duration(seconds: 20)),
+          };
+        }),
+      );
+
+      expect(
+        find.text('This version does not report detailed health'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a report not checked yet says so, without a time', (
+      tester,
+    ) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          api(production)['details'] = <String, dynamic>{
+            'state': 'not_checked',
+          };
+        }),
+      );
+
+      expect(find.text('Reported by Heimdall API'), findsOneWidget);
+      expect(find.text('Not checked yet'), findsOneWidget);
+    });
+
+    testWidgets('no detailedHealth means no Reported by section', (
+      tester,
+    ) async {
+      await openHeimdall(tester, heimdallWith((_) {}));
+
+      expect(find.textContaining('Reported by'), findsNothing);
+    });
+
+    testWidgets('a stopped dependency reads stopped, not failing', (
+      tester,
+    ) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          production['integrations'] = <Map<String, dynamic>>[
+            hermesLink(status: 'stopped', reason: 'not running'),
+          ];
+          api(production)['details'] = <String, dynamic>{
+            'state': 'reported',
+            'checkedAt': ago(const Duration(minutes: 1)),
+            'status': 'Unhealthy',
+            'services': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'name': 'Hermes',
+                'status': 'Unhealthy',
+                'reason': 'connection refused',
+              },
+            ],
+          };
+        }),
+      );
+
+      expect(inPanel('Stopped'), findsOneWidget);
+      expect(inPanel('Unhealthy'), findsNothing);
+      expect(inPanel('connection refused'), findsNothing);
+      expect(inPanel('not running'), findsNothing);
+    });
+
+    testWidgets('a failing dependency shows its reason', (tester) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          production['integrations'] = <Map<String, dynamic>>[
+            hermesLink(status: 'down', reason: 'connection refused'),
+          ];
+          api(production)['details'] = <String, dynamic>{
+            'state': 'reported',
+            'checkedAt': ago(const Duration(minutes: 1)),
+            'status': 'Unhealthy',
+            'services': <Map<String, dynamic>>[
+              <String, dynamic>{'name': 'Hermes', 'status': 'Unhealthy'},
+            ],
+          };
+        }),
+      );
+
+      expect(inPanel('Failing'), findsOneWidget);
+      expect(inPanel('connection refused'), findsOneWidget);
+    });
+
+    testWidgets('an external target is named as written', (tester) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) {
+          production['integrations'] = <Map<String, dynamic>>[
+            <String, dynamic>{
+              'from': 'heimdall-api',
+              'system': null,
+              'external': 'Mailgun',
+              'check': 'Mail',
+              'status': 'up',
+            },
+          ];
+          api(production)['details'] = <String, dynamic>{
+            'state': 'reported',
+            'checkedAt': ago(const Duration(minutes: 1)),
+            'status': 'Healthy',
+            'services': <Map<String, dynamic>>[
+              <String, dynamic>{'name': 'Mail', 'status': 'Healthy'},
+            ],
+          };
+        }),
+      );
+
+      expect(
+        find.descendant(of: panel, matching: find.text('Mailgun')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: panel, matching: find.byIcon(Icons.cloud)),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the panel shows on demand when it applies', (tester) async {
+      await openHeimdall(
+        tester,
+        heimdallWith((production) => production['onDemand'] = true),
+      );
+
+      expect(
+        find.descendant(of: panel, matching: find.text('on demand')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the panel does not say on demand when it does not apply', (
+      tester,
+    ) async {
+      await openHeimdall(tester, heimdallWith((_) {}));
+
+      expect(
+        find.descendant(of: panel, matching: find.text('on demand')),
+        findsNothing,
+      );
+
+      await tester.tap(find.byTooltip('Close'));
+      await settle(tester);
+
+      expect(panel, findsNothing);
+    });
+
+    testWidgets('a phone gets a bottom sheet', (tester) async {
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource((_, _) async => heimdallWith((_) {})),
+        size: const Size(390, 900),
+      );
+      await tester.tap(tile('heimdall'));
+      await settle(tester);
+
+      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(panel, findsOneWidget);
+    });
+
+    testWidgets('a computer gets a side panel with the map still visible', (
+      tester,
+    ) async {
+      await openHeimdall(tester, heimdallWith((_) {}));
+
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(tester.getSize(panel).width, 420);
+      expect(tester.getRect(panel).right, 1000);
+      expect(tile('fortuna'), findsOneWidget);
+      expect(tester.getRect(tile('fortuna')).right, lessThan(580));
     });
   });
 }

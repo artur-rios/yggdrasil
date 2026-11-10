@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
-import 'package:yggdrasil_console/features/status/presentation/widgets/system_card.dart';
+import 'package:yggdrasil_console/features/status/presentation/widgets/application_detail.dart';
 
 void main() {
   test('a healthy 2xx probe shows only its latency', () {
