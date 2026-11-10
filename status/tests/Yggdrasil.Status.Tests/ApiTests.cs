@@ -49,6 +49,15 @@ public sealed class StatusApiFactory : WebApplicationFactory<Program>
 
     public List<string> ProbedHosts { get; } = [];
 
+    /// <summary>The applications' detailed health reports, by the same environment-qualified aliases.</summary>
+    public FakeProbes Reports { get; } = new FakeProbes();
+
+    public List<string> FetchedHosts { get; } = [];
+
+    public Catalog Catalog { get; init; } = TestData.Catalog();
+
+    public TimeProvider Time { get; init; } = TimeProvider.System;
+
     /// <summary>Pretend every request arrived on the internal port (TestServer reports port 0).</summary>
     public bool OnInternalPort { get; init; }
 
@@ -72,9 +81,11 @@ public sealed class StatusApiFactory : WebApplicationFactory<Program>
 
         builder.ConfigureTestServices(services =>
         {
-            services.AddSingleton(TestData.Catalog());
+            services.AddSingleton(Catalog);
+            services.AddSingleton(Time);
             services.AddHttpClient<DockerClient>().ConfigurePrimaryHttpMessageHandler(() => Docker);
             services.AddHttpClient<HealthProber>().ConfigurePrimaryHttpMessageHandler(() => new Recording(Probes, ProbedHosts));
+            services.AddHttpClient<DetailedHealthClient>().ConfigurePrimaryHttpMessageHandler(() => new Recording(Reports, FetchedHosts));
             if (OnInternalPort)
             {
                 services.AddSingleton<InternalPortPolicy, AlwaysInternal>();
@@ -93,6 +104,14 @@ public sealed class StatusApiFactory : WebApplicationFactory<Program>
 
         Assert.NotNull(store.Current);
         return CreateClient();
+    }
+
+    public int FetchesOf(string host)
+    {
+        lock (FetchedHosts)
+        {
+            return FetchedHosts.Count(fetched => fetched == host);
+        }
     }
 
     private sealed class AlwaysInternal(StatusOptions options) : InternalPortPolicy(options)
@@ -578,23 +597,310 @@ public class ApiTests : IClassFixture<StatusApiFactory>
         Assert.Equal("degraded", (string?)body["status"]);
     }
 
+    [Fact]
+    public async Task GivenNoToken_WhenRefreshPosted_Then401()
+    {
+        var client = await factory.ReadyClientAsync();
+
+        using var response = await client.PostAsync(RefreshPath, null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task GivenNotReady_WhenRefreshPosted_Then503WithRetryAfter()
+    {
+        await using var starting = new StatusApiFactory();
+        starting.Docker.Hold = new TaskCompletionSource();
+        var client = starting.CreateClient();
+
+        using var response = await client.SendAsync(Authorized(RefreshPath, HttpMethod.Post));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("5", response.Headers.GetValues("Retry-After").Single());
+        Assert.Empty(starting.FetchedHosts);
+    }
+
+    [Fact]
+    public async Task GivenReportingApi_WhenRefreshPosted_ThenBodyHasDetails()
+    {
+        await using var host = Reporting();
+        var client = await host.ReadyClientAsync();
+
+        var body = await PostRefresh(client);
+
+        var details = Application(body, "heimdall", "production", "heimdall-api")["details"]!;
+        Assert.Equal("reported", (string?)details["state"]);
+        Assert.Equal("Healthy", (string?)details["status"]);
+        Assert.Equal("""[{"name":"Database","status":"Healthy","reason":null}]""", details["services"]!.ToJsonString());
+        Assert.Equal("example.com", (string?)body["host"]);
+    }
+
+    [Fact]
+    public async Task GivenNoRefreshPosted_ThenNoReportFetchedAfterSeveralRefreshes()
+    {
+        await using var host = Reporting();
+        await host.ReadyClientAsync();
+        var refresher = host.Services.GetRequiredService<StatusRefresher>();
+
+        await refresher.RefreshAsync(CancellationToken.None);
+        await refresher.RefreshAsync(CancellationToken.None);
+        await refresher.RefreshAsync(CancellationToken.None);
+
+        Assert.Empty(host.FetchedHosts);
+    }
+
+    [Fact]
+    public async Task GivenStoppedApplication_WhenRefreshPosted_ThenItsReportNotFetched()
+    {
+        await using var host = Reporting();
+        var client = await host.ReadyClientAsync();
+
+        var body = await PostRefresh(client);
+
+        // Not development or homologation (stopped), not jenkins (not deployed), nor anything without a report.
+        Assert.Equal(["heimdall-api.production"], host.FetchedHosts);
+        Assert.Equal("not_checked", (string?)Application(body, "heimdall", "development", "heimdall-api")["details"]!["state"]);
+        Assert.Equal("not_checked", (string?)Application(body, "yggdrasil", "production", "jenkins")["details"]!["state"]);
+    }
+
+    [Fact]
+    public async Task GivenTwoConcurrentPosts_ThenOneFetchPerApplication()
+    {
+        await using var host = Reporting();
+        var client = await host.ReadyClientAsync();
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Reports.Hold = held;
+
+        var first = client.SendAsync(Authorized(RefreshPath, HttpMethod.Post));
+        await WaitUntil(() => host.FetchesOf("heimdall-api.production") == 1);
+        var second = client.SendAsync(Authorized(RefreshPath, HttpMethod.Post));
+        // Time for the second to reach the fetch under way. Too little could only let a broken
+        // single-flight pass, by turning this into the 10 s reuse; it can never fail a working one.
+        await Task.Delay(200);
+        held.SetResult();
+
+        using var firstAnswer = await first;
+        using var secondAnswer = await second;
+        Assert.Equal(HttpStatusCode.OK, firstAnswer.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondAnswer.StatusCode);
+        Assert.Equal(1, host.FetchesOf("heimdall-api.production"));
+        var body = JsonNode.Parse(await secondAnswer.Content.ReadAsStringAsync())!;
+        Assert.Equal("reported", (string?)Application(body, "heimdall", "production", "heimdall-api")["details"]!["state"]);
+    }
+
+    [Fact]
+    public async Task GivenPostWithin10Seconds_ThenNoNewFetch()
+    {
+        var time = new FixedTime(TestData.Now);
+        await using var host = Reporting(time);
+        var client = await host.ReadyClientAsync();
+
+        await PostRefresh(client);
+        time.Now += TimeSpan.FromMilliseconds(9999);
+        var body = await PostRefresh(client);
+
+        Assert.Equal(1, host.FetchesOf("heimdall-api.production"));
+        Assert.Equal("reported", (string?)Application(body, "heimdall", "production", "heimdall-api")["details"]!["state"]);
+    }
+
+    [Fact]
+    public async Task GivenPostAfter10Seconds_ThenFetchesAgain()
+    {
+        var time = new FixedTime(TestData.Now);
+        await using var host = Reporting(time);
+        var client = await host.ReadyClientAsync();
+
+        await PostRefresh(client);
+        time.Now += TimeSpan.FromSeconds(10);
+        await PostRefresh(client);
+
+        Assert.Equal(2, host.FetchesOf("heimdall-api.production"));
+    }
+
+    [Fact]
+    public async Task GivenASlowFetch_WhenPostedRightAfterIt_ThenThe10SecondsCountFromItsEnd()
+    {
+        var time = new FixedTime(TestData.Now);
+        await using var host = Reporting(time);
+        var client = await host.ReadyClientAsync();
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Reports.Hold = held;
+
+        var first = client.SendAsync(Authorized(RefreshPath, HttpMethod.Post));
+        await WaitUntil(() => host.FetchesOf("heimdall-api.production") == 1);
+        time.Now += TimeSpan.FromSeconds(20);
+        held.SetResult();
+        (await first).Dispose();
+        await PostRefresh(client);
+
+        Assert.Equal(1, host.FetchesOf("heimdall-api.production"));
+    }
+
+    [Fact]
+    public async Task GivenAFaultedFetch_WhenRefreshedAgain_ThenItFetchesAgain()
+    {
+        await using var host = Reporting();
+        await host.ReadyClientAsync();
+        var refresher = host.Services.GetRequiredService<DetailedHealthRefresher>();
+        var faulted = new TaskCompletionSource();
+        faulted.SetException(new InvalidOperationException("not a failure the client turns into a state"));
+        host.Reports.Hold = faulted;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(refresher.RefreshAsync);
+        host.Reports.Hold = null;
+        await refresher.RefreshAsync();
+
+        Assert.Equal(2, host.FetchesOf("heimdall-api.production"));
+        Assert.Equal(DetailsStates.Reported, host.Services.GetRequiredService<DetailedHealthStore>().Current["heimdall-api.production"].State);
+    }
+
+    [Fact]
+    public async Task GivenTheClientDisconnects_WhenFetching_ThenTheFetchStillFinishes()
+    {
+        await using var host = Reporting();
+        var client = await host.ReadyClientAsync();
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Reports.Hold = held;
+        using var disconnect = new CancellationTokenSource();
+
+        var post = client.SendAsync(Authorized(RefreshPath, HttpMethod.Post), disconnect.Token);
+        await WaitUntil(() => host.FetchesOf("heimdall-api.production") == 1);
+        await disconnect.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => post);
+        held.SetResult();
+
+        // Another console may be waiting on this same fetch: a request's token would have cancelled it.
+        var details = host.Services.GetRequiredService<DetailedHealthStore>();
+        await WaitUntil(() => details.Current.ContainsKey("heimdall-api.production"));
+    }
+
+    [Fact]
+    public async Task GivenAllowedOrigin_WhenPreflightPost_ThenAllowed()
+    {
+        var client = await factory.ReadyClientAsync();
+
+        using var response = await client.SendAsync(Preflight(StatusApiFactory.AllowedOrigin, RefreshPath, "POST"));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(StatusApiFactory.AllowedOrigin, response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+        Assert.Contains("POST", response.Headers.GetValues("Access-Control-Allow-Methods").Single());
+    }
+
+    [Fact]
+    public async Task GivenRefreshAlreadyRan_WhenGetStatus_ThenDetailsAreThere()
+    {
+        await using var host = Reporting();
+        var client = await host.ReadyClientAsync();
+
+        await PostRefresh(client);
+        var afterPost = await GetJson(client, "/api/status");
+        // The 15 s loop builds the next snapshot from the kept details, without fetching.
+        await host.Services.GetRequiredService<StatusRefresher>().RefreshAsync(CancellationToken.None);
+        var afterLiveness = await GetJson(client, "/api/status");
+
+        Assert.Equal("reported", (string?)Application(afterPost, "heimdall", "production", "heimdall-api")["details"]!["state"]);
+        Assert.Equal("reported", (string?)Application(afterLiveness, "heimdall", "production", "heimdall-api")["details"]!["state"]);
+        Assert.Equal(1, host.FetchesOf("heimdall-api.production"));
+    }
+
+    [Fact]
+    public async Task GivenALivenessBuildUnderWay_WhenRepublished_ThenTheNewerDetailsAreWhatStaysPublished()
+    {
+        var pause = new PausingIntegrations();
+        await using var host = new StatusApiFactory { Catalog = TestData.CatalogWithReports(pause) };
+        var client = await host.ReadyClientAsync();
+        var status = host.Services.GetRequiredService<StatusRefresher>();
+
+        // A liveness refresh that has read the (still empty) details and is stopped inside the build.
+        pause.Arm();
+        var older = Task.Run(() => status.RefreshAsync(CancellationToken.None));
+        Assert.True(pause.Reached.Wait(TimeSpan.FromSeconds(10)));
+
+        // Details land meanwhile. Unserialised, this Republish would finish now and the older build
+        // would then overwrite it; a short wait can only let that pass, never fail the right order.
+        host.Services.GetRequiredService<DetailedHealthStore>().Set(new Dictionary<string, ApplicationDetails>
+        {
+            ["heimdall-api.production"] = new(DetailsStates.Reported, TestData.Now, null, "Healthy", []),
+        });
+        var republish = Task.Run(status.Republish);
+        await Task.WhenAny(republish, Task.Delay(200));
+        pause.Release.Set();
+        await Task.WhenAll(older, republish);
+
+        var body = await GetJson(client, "/api/status");
+        Assert.Equal("reported", (string?)Application(body, "heimdall", "production", "heimdall-api")["details"]!["state"]);
+    }
+
+    private static StatusApiFactory Reporting(TimeProvider? time = null)
+    {
+        var host = new StatusApiFactory { Catalog = TestData.CatalogWithReports(), Time = time ?? TimeProvider.System };
+        host.Reports.Answer("heimdall-api.production", HttpStatusCode.OK, """{"status":"Healthy","services":[{"name":"Database","status":"Healthy"}]}""");
+        return host;
+    }
+
+    private static async Task WaitUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition() && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.True(condition());
+    }
+
+    // Only SnapshotBuilder.Build reads an application's integrations, so this stops one build at a
+    // point where it has already been handed the details and has not yet published anything.
+    private sealed class PausingIntegrations : IReadOnlyList<IntegrationDefinition>
+    {
+        private int armed;
+
+        public ManualResetEventSlim Reached { get; } = new();
+
+        public ManualResetEventSlim Release { get; } = new();
+
+        public int Count => 0;
+
+        public IntegrationDefinition this[int index] => throw new ArgumentOutOfRangeException(nameof(index));
+
+        public void Arm() => Volatile.Write(ref armed, 1);
+
+        public IEnumerator<IntegrationDefinition> GetEnumerator()
+        {
+            // The first build after arming only; the one it is racing must get through once released.
+            if (Interlocked.Exchange(ref armed, 0) == 1)
+            {
+                Reached.Set();
+                Release.Wait(TimeSpan.FromSeconds(10));
+            }
+
+            return Enumerable.Empty<IntegrationDefinition>().GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     private static JsonNode Application(JsonNode body, string system, string environment, string id) =>
         body["systems"]!.AsArray().Single(s => (string?)s!["id"] == system)!["environments"]!.AsArray()
             .Single(e => (string?)e!["environment"] == environment)!["applications"]!.AsArray()
             .Single(a => (string?)a!["id"] == id)!;
 
-    private static HttpRequestMessage Authorized(string path)
+    private const string RefreshPath = "/api/status/refresh";
+
+    private static HttpRequestMessage Authorized(string path, HttpMethod? method = null)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        var request = new HttpRequestMessage(method ?? HttpMethod.Get, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", TestData.Token);
         return request;
     }
 
-    private static HttpRequestMessage Preflight(string origin)
+    private static HttpRequestMessage Preflight(string origin, string path = "/api/status", string method = "GET")
     {
-        var request = new HttpRequestMessage(HttpMethod.Options, "/api/status");
+        var request = new HttpRequestMessage(HttpMethod.Options, path);
         request.Headers.Add("Origin", origin);
-        request.Headers.Add("Access-Control-Request-Method", "GET");
+        request.Headers.Add("Access-Control-Request-Method", method);
         request.Headers.Add("Access-Control-Request-Headers", "authorization");
         return request;
     }
@@ -602,6 +908,14 @@ public class ApiTests : IClassFixture<StatusApiFactory>
     private static async Task<JsonNode> GetJson(HttpClient client, string path)
     {
         using var response = await client.SendAsync(Authorized(path));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        return JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+    }
+
+    private static async Task<JsonNode> PostRefresh(HttpClient client)
+    {
+        using var response = await client.SendAsync(Authorized(RefreshPath, HttpMethod.Post));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
         return JsonNode.Parse(await response.Content.ReadAsStringAsync())!;

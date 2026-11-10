@@ -91,12 +91,14 @@ builder.Services.AddHttpClient<DetailedHealthClient>(http =>
 // clients itself on every refresh.
 builder.Services.AddSingleton<StatusRefresher>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<StatusRefresher>());
+builder.Services.AddSingleton<DetailedHealthStore>();
+builder.Services.AddSingleton<DetailedHealthRefresher>();
 
 builder.Services.AddCors();
 builder.Services.AddOptions<Microsoft.AspNetCore.Cors.Infrastructure.CorsOptions>()
     .Configure<StatusOptions>((cors, status) => cors.AddPolicy(Endpoints.CorsPolicy, policy => policy
         .WithOrigins([.. status.CorsOrigins])
-        .WithMethods(HttpMethods.Get)
+        .WithMethods(HttpMethods.Get, HttpMethods.Post)
         .WithHeaders("Authorization")
         // Browsers cap this lower themselves (Chrome at 2 h); it just spares a preflight per poll.
         .SetPreflightMaxAge(TimeSpan.FromHours(1))));

@@ -222,6 +222,9 @@ public sealed class FakeProbes : HttpMessageHandler
 {
     private readonly Dictionary<string, Func<CancellationToken, Task<HttpResponseMessage>>> hosts = [];
 
+    /// <summary>When set, every request waits for it: a fetch still under way, or one that faults.</summary>
+    public TaskCompletionSource? Hold { get; set; }
+
     public FakeProbes Answer(string host, HttpStatusCode status, TimeSpan delay = default)
     {
         hosts[host] = async token =>
@@ -249,11 +252,18 @@ public sealed class FakeProbes : HttpMessageHandler
         return this;
     }
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-        hosts.TryGetValue(request.RequestUri!.Host, out var answer)
-            ? answer(cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (Hold is not null)
+        {
+            await Hold.Task.WaitAsync(cancellationToken);
+        }
+
+        return hosts.TryGetValue(request.RequestUri!.Host, out var answer)
+            ? await answer(cancellationToken)
             : throw new HttpRequestException(HttpRequestError.NameResolutionError, "no such host",
                 new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound));
+    }
 }
 
 public sealed class FixedTime(DateTimeOffset now) : TimeProvider
@@ -392,6 +402,31 @@ public static class TestData
         """;
 
     public static Catalog Catalog() => CatalogLoader.Parse(CatalogYaml);
+
+    /// <summary>
+    /// The catalog with a detailed health report on heimdall-api, which is running in production and
+    /// stopped elsewhere, and on jenkins, which is not deployed on the test host.
+    /// </summary>
+    public static Catalog CatalogWithReports(IReadOnlyList<IntegrationDefinition>? integrations = null)
+    {
+        var catalog = Catalog();
+        return catalog with
+        {
+            Systems = catalog.Systems.Select(system => system with
+            {
+                Applications = system.Applications.Select(application => application.Id switch
+                {
+                    "heimdall-api" => application with
+                    {
+                        DetailedHealth = new Uri("http://heimdall-api:9464/internal/health"),
+                        Integrations = integrations,
+                    },
+                    "jenkins" => application with { DetailedHealth = new Uri("http://jenkins:8080/internal/health") },
+                    _ => application,
+                }).ToList(),
+            }).ToList(),
+        };
+    }
 
     public static HostCatalog OnHost(params string[] environments) =>
         HostCatalog.For(Catalog(), environments.Length == 0 ? HostEnvironments : environments);

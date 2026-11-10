@@ -34,6 +34,19 @@ public static class Endpoints
             return system is null ? Results.NotFound() : Results.Ok(system);
         });
 
+        // The one endpoint that waits on probes, and only for a console that asked: at most the 5 s
+        // timeout of a report.
+        api.MapPost("/status/refresh", async (StatusSnapshotStore store, DetailedHealthRefresher refresher) =>
+        {
+            if (store.Current is null)
+            {
+                return NotReady();
+            }
+
+            await refresher.RefreshAsync();
+            return Results.Ok(store.Current);
+        });
+
         var internalApi = app.MapGroup("/internal")
             .AddEndpointFilter<InternalPortFilter>();
 
