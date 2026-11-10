@@ -59,6 +59,20 @@ class FakeStatusSource implements StatusSource {
 
     return respond?.call(environment, token) ?? Future.value(demoStatus());
   }
+
+  /// What [refreshDetails] answers; `null` means "no such endpoint".
+  Future<HostStatus?> Function(Environment environment, String? token)?
+  respondDetails;
+
+  final List<(Environment, String?)> detailsCalls = <(Environment, String?)>[];
+
+  @override
+  Future<HostStatus?> refreshDetails(Environment environment, String? token) {
+    detailsCalls.add((environment, token));
+
+    return respondDetails?.call(environment, token) ??
+        Future.value(demoStatus());
+  }
 }
 
 /// Pumps the whole app with in-memory stores and [source].

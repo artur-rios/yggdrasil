@@ -44,11 +44,30 @@ class StatusRepository {
 
   StatusSnapshot? lastFor(Environment environment) => _last[_key(environment)];
 
-  Future<StatusReport> refresh(Environment environment, String? token) async {
+  Future<StatusReport> refresh(Environment environment, String? token) =>
+      _report(environment, () => _source.fetch(environment, token));
+
+  /// Asks the status API to fetch the detailed health, then reports like
+  /// [refresh]. A status API without the endpoint changes nothing: the last
+  /// snapshot is returned, with no failure.
+  Future<StatusReport> refreshDetails(Environment environment, String? token) =>
+      _report(environment, () => _source.refreshDetails(environment, token));
+
+  /// Runs [request] and remembers its answer; `null` (no such endpoint) keeps
+  /// the last snapshot.
+  Future<StatusReport> _report(
+    Environment environment,
+    Future<HostStatus?> Function() request,
+  ) async {
     final key = _key(environment);
 
     try {
-      final status = await _source.fetch(environment, token);
+      final status = await request();
+
+      if (status == null) {
+        return StatusReport(snapshot: _last[key]);
+      }
+
       final snapshot = StatusSnapshot(status: status, receivedAt: _now());
 
       _last[key] = snapshot;

@@ -187,6 +187,112 @@ void main() {
     });
   });
 
+  group('HttpStatusSource.refreshDetails', () {
+    test('POSTs <base>/api/status/refresh with the bearer token', () async {
+      late http.Request seen;
+      final source = HttpStatusSource(
+        MockClient((request) async {
+          seen = request;
+
+          return http.Response(contractExampleJson(), 200);
+        }),
+      );
+
+      final status = await source.refreshDetails(
+        const Environment(
+          id: 'p',
+          name: 'p',
+          url: 'https://yggdrasil.example.com/',
+        ),
+        'secret',
+      );
+
+      expect(seen.method, 'POST');
+      expect(
+        seen.url.toString(),
+        'https://yggdrasil.example.com/api/status/refresh',
+      );
+      expect(seen.headers['Authorization'], 'Bearer secret');
+      expect(status!.host, 'example.com');
+    });
+
+    test('answers null on 404 and on 405', () async {
+      for (final code in <int>[404, 405]) {
+        final source = HttpStatusSource(
+          MockClient((_) async => http.Response('', code)),
+        );
+
+        expect(await source.refreshDetails(production, 't'), isNull);
+      }
+    });
+
+    test('401 is an unauthorized failure', () {
+      final source = HttpStatusSource(
+        MockClient((_) async => http.Response('', 401)),
+      );
+
+      expect(
+        source.refreshDetails(production, 'wrong'),
+        failsWith(StatusFailureKind.unauthorized),
+      );
+    });
+
+    test('503 with Retry-After is the API starting', () {
+      final source = HttpStatusSource(
+        MockClient(
+          (_) async => http.Response('', 503, headers: {'retry-after': '5'}),
+        ),
+      );
+
+      expect(
+        source.refreshDetails(production, 't'),
+        throwsA(
+          isA<StatusException>()
+              .having((e) => e.kind, 'kind', StatusFailureKind.starting)
+              .having(
+                (e) => e.retryAfter,
+                'retryAfter',
+                const Duration(seconds: 5),
+              ),
+        ),
+      );
+    });
+
+    test('another non-2xx is a server failure', () {
+      final source = HttpStatusSource(
+        MockClient((_) async => http.Response('', 500)),
+      );
+
+      expect(
+        source.refreshDetails(production, 't'),
+        failsWith(StatusFailureKind.server),
+      );
+    });
+
+    test('a network failure is a network failure', () {
+      final source = HttpStatusSource(
+        MockClient((_) async => throw http.ClientException('offline')),
+      );
+
+      expect(
+        source.refreshDetails(production, 't'),
+        failsWith(StatusFailureKind.network),
+      );
+    });
+
+    test('a request slower than the refresh timeout is a network failure', () {
+      final source = HttpStatusSource(
+        MockClient((_) => Completer<http.Response>().future),
+        refreshTimeout: const Duration(milliseconds: 10),
+      );
+
+      expect(
+        source.refreshDetails(production, 't'),
+        failsWith(StatusFailureKind.network),
+      );
+    });
+  });
+
   group('DemoStatusSource', () {
     test('moves every timestamp so generatedAt is now', () async {
       final now = DateTime.utc(2030, 1, 1, 12);
@@ -204,6 +310,16 @@ void main() {
       );
       expect(status.systems, hasLength(3));
     });
+
+    test('the demo source answers refreshDetails from the fixture', () async {
+      final now = DateTime.utc(2030, 1, 1, 12);
+      final source = DemoStatusSource(() async => demoJson(), now: () => now);
+
+      final status = await source.refreshDetails(Environment.demo(), null);
+
+      expect(status!.generatedAt, now);
+      expect(status.systems, hasLength(3));
+    });
   });
 
   test('RoutingStatusSource sends the demo to the demo source', () async {
@@ -218,7 +334,62 @@ void main() {
     expect(remote.calls.single.$1.id, 'production');
   });
 
+  test('RoutingStatusSource routes refreshDetails like fetch', () async {
+    final remote = FakeStatusSource();
+    final demo = FakeStatusSource();
+    final source = RoutingStatusSource(http: remote, demo: demo);
+
+    await source.refreshDetails(Environment.demo(), null);
+    await source.refreshDetails(production, 't');
+
+    expect(demo.detailsCalls.single.$1.id, 'demo');
+    expect(remote.detailsCalls.single.$1.id, 'production');
+    expect(demo.calls, isEmpty);
+    expect(remote.calls, isEmpty);
+  });
+
   group('StatusRepository', () {
+    test('refreshDetails remembers the snapshot it returns', () async {
+      final repository = StatusRepository(FakeStatusSource());
+
+      final report = await repository.refreshDetails(production, 't');
+
+      expect(report.failure, isNull);
+      expect(repository.lastFor(production), same(report.snapshot));
+    });
+
+    test('repository keeps the last snapshot when refreshDetails answers null, '
+        'with no failure', () async {
+      final source = FakeStatusSource();
+      final repository = StatusRepository(source);
+      final first = await repository.refresh(production, 't');
+
+      source.respondDetails = (_, _) async => null;
+
+      final report = await repository.refreshDetails(production, 't');
+
+      expect(report.failure, isNull);
+      expect(report.snapshot, same(first.snapshot));
+      expect(repository.lastFor(production), same(first.snapshot));
+    });
+
+    test('a failed refreshDetails keeps the last snapshot as stale', () async {
+      final source = FakeStatusSource();
+      final repository = StatusRepository(source);
+      final first = await repository.refresh(production, 't');
+
+      source.respondDetails = (_, _) => throw const StatusException(
+        StatusFailureKind.unauthorized,
+        statusCode: 401,
+      );
+
+      final report = await repository.refreshDetails(production, 't');
+
+      expect(report.failure!.kind, StatusFailureKind.unauthorized);
+      expect(report.snapshot, same(first.snapshot));
+      expect(report.isStale, isTrue);
+    });
+
     test('a success returns and remembers the snapshot', () async {
       final received = DateTime.utc(2026, 9, 18, 18, 5);
       final repository = StatusRepository(
