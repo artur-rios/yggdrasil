@@ -277,6 +277,13 @@ environments:
 #   kind            api | web | worker | platform -- what the console shows it as.
 #   repository      Defaults to id; to none for platform components (kind platform), which are not
 #                   deployed by Jenkins but started by platform/compose.yml on every host.
+#   detailedHealth  Optional. URL of the detailed health report (status and one entry per dependency)
+#                   the status API fetches when a console asks, qualified with the environment like
+#                   health: http://heimdall-api:9464/internal/health.
+#   integrations    Optional list of what this application depends on, drawn as lines on the console's
+#                   system map. Each entry is { system: <another system's id> } or
+#                   { external: <display name> } -- exactly one -- and { check: <the entry's name in
+#                   the detailed health report> }.
 #   health          URL the status API probes over the Docker networks. A 2xx answer is healthy.
 #                   Written with the plain id as host: for every application but a platform
 #                   component, the status API probes <id>.<environment> in each environment.
@@ -311,6 +318,11 @@ environments:
 #                     environments:
 #                       homologation: {}
 #                       production: { approval: true }
+
+# System fields: id, name, description, applications, and optionally
+#   icon            One of shield, mail, savings, construction, local_library, music_note, extension,
+#                   person, business, park, cloud. The console maps the name to a Material icon it
+#                   ships and shows a neutral one without it, or for a name it does not know.
 
 systems:
   - id: heimdall
