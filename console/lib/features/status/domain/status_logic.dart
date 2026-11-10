@@ -139,6 +139,40 @@ String hostSummary(HostStatus host) {
   return parts.join(' · ');
 }
 
+/// The environment of [host] to show: the [remembered] one if the host still
+/// has it, else the last in catalog order (production, normally). `null` when
+/// the host reports no environments.
+HostEnvironment? resolveHostEnvironment(HostStatus host, String? remembered) {
+  for (final environment in host.environments) {
+    if (environment.id == remembered) {
+      return environment;
+    }
+  }
+
+  return host.environments.isEmpty ? null : host.environments.last;
+}
+
+/// The one-line summary beside the environment selector, e.g. `1 integration
+/// failing`; empty when none is failing.
+///
+/// Only `down` counts: stopped and not-configured integrations are normal,
+/// and an unknown one is not known to be failing.
+String environmentSummaryLine(HostStatus host, String environmentId) {
+  final failing = <IntegrationStatus>[
+    for (final system in host.systems)
+      for (final environment in system.environments)
+        if (environment.environment == environmentId)
+          for (final integration in environment.integrations)
+            if (integration.status == IntegrationHealth.down) integration,
+  ].length;
+
+  return switch (failing) {
+    0 => '',
+    1 => '1 integration failing',
+    _ => '$failing integrations failing',
+  };
+}
+
 /// The label shown next to a status icon.
 String statusLabel(Status status) => switch (status) {
   Status.up => 'Up',

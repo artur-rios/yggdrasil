@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
@@ -5,6 +7,7 @@ import '../../environments/domain/environment.dart';
 import '../../environments/presentation/environments_controller.dart';
 import '../data/status_repository.dart';
 import '../data/status_source.dart';
+import 'refresh_settings.dart';
 
 /// Overridden in `main.dart` with the HTTP-backed repository, and in tests
 /// with one over a fake source.
@@ -161,3 +164,60 @@ final StateProvider<bool> problemsOnlyProvider = StateProvider<bool>(
 /// Which systems are expanded, by id; kept across refreshes and layouts.
 final StateProvider<Set<String>> expandedSystemsProvider =
     StateProvider<Set<String>>((ref) => const <String>{});
+
+/// The host environment (development, production...) the user chose on the
+/// selected saved host; `null` until they choose or the memory is read.
+///
+/// Remembered per host. It only says what to show: `resolveHostEnvironment`
+/// turns it into an environment the host really has. Choosing never loads,
+/// since one response already holds every environment.
+final NotifierProvider<SelectedHostEnvironmentController, String?>
+selectedHostEnvironmentProvider =
+    NotifierProvider<SelectedHostEnvironmentController, String?>(
+      SelectedHostEnvironmentController.new,
+    );
+
+class SelectedHostEnvironmentController extends Notifier<String?> {
+  /// The user chose before the remembered value was read.
+  bool _changed = false;
+
+  @override
+  String? build() {
+    final hostId = ref.watch(
+      environmentsControllerProvider.select(
+        (environments) => environments.value?.selected?.id,
+      ),
+    );
+
+    _changed = false;
+
+    if (hostId != null) {
+      unawaited(_load(hostId));
+    }
+
+    return null;
+  }
+
+  Future<void> _load(String hostId) async {
+    final remembered = await ref
+        .read(refreshSettingsStoreProvider)
+        .readEnvironmentFor(hostId);
+
+    if (ref.mounted && !_changed) {
+      state = remembered;
+    }
+  }
+
+  Future<void> select(String environmentId) async {
+    final hostId = ref.read(environmentsControllerProvider).value?.selected?.id;
+
+    _changed = true;
+    state = environmentId;
+
+    if (hostId != null) {
+      await ref
+          .read(refreshSettingsStoreProvider)
+          .writeEnvironmentFor(hostId, environmentId);
+    }
+  }
+}

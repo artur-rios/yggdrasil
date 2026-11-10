@@ -106,13 +106,10 @@ void main() {
     expect(find.text('example.com'), findsOneWidget);
     expect(find.text('3 systems · 3 environments'), findsOneWidget);
     expect(find.textContaining('updated '), findsOneWidget);
+    // The environment selector carries these now, not the banner.
     expect(
-      chipsIn(tester, find.byKey(const ValueKey<String>('host-environments'))),
-      <String>[
-        'Development · Stopped',
-        'Homologation · Stopped',
-        'Production · Up',
-      ],
+      find.byKey(const ValueKey<String>('host-environments')),
+      findsNothing,
     );
 
     // All up overall, so by name.
@@ -130,7 +127,7 @@ void main() {
       'Homologation · Stopped',
       'Production · Up',
     ]);
-    expect(find.text('Development · Stopped'), findsNWidgets(4));
+    expect(find.text('Development · Stopped'), findsNWidgets(3));
 
     // Collapsed: no application rows yet.
     expect(find.byType(ApplicationRow), findsNothing);
@@ -436,7 +433,7 @@ void main() {
 
     await expandAll(tester, <String>['fortuna']);
 
-    expect(find.byType(EnvironmentStatusChip), findsNWidgets(12));
+    expect(find.byType(EnvironmentStatusChip), findsNWidgets(9));
     expect(tester.takeException(), isNull);
   });
 
@@ -909,5 +906,295 @@ void main() {
     await settle(tester);
 
     expect(find.text('Production'), findsOneWidget);
+  });
+
+  group('environment selector', () {
+    final selector = find.byKey(const ValueKey<String>('environment-selector'));
+    final hostSwitcher = find.byKey(
+      const ValueKey<String>('environment-switcher'),
+    );
+
+    Set<String> chosen(WidgetTester tester) =>
+        tester.widget<SegmentedButton<String>>(selector).selected;
+
+    HostStatus withFailingIntegration() {
+      final base = demoStatus();
+
+      return HostStatus(
+        host: base.host,
+        generatedAt: base.generatedAt,
+        status: base.status,
+        environments: base.environments,
+        systems: <SystemStatus>[
+          for (final system in base.systems)
+            SystemStatus(
+              id: system.id,
+              name: system.name,
+              status: system.status,
+              description: system.description,
+              icon: system.icon,
+              environments: <SystemEnvironment>[
+                for (final environment in system.environments)
+                  SystemEnvironment(
+                    environment: environment.environment,
+                    status: environment.status,
+                    applications: environment.applications,
+                    onDemand: environment.onDemand,
+                    integrations:
+                        system.id == 'heimdall' &&
+                            environment.environment == 'production'
+                        ? const <IntegrationStatus>[
+                            IntegrationStatus(
+                              from: 'heimdall-api',
+                              system: 'fortuna',
+                              check: 'fortuna',
+                              status: IntegrationHealth.down,
+                            ),
+                          ]
+                        : environment.integrations,
+                  ),
+              ],
+            ),
+        ],
+      );
+    }
+
+    testWidgets(
+      "the selector lists the host's environments with a status mark",
+      (tester) async {
+        await pumpConsole(tester, source: FakeStatusSource());
+
+        for (final name in <String>[
+          'Development',
+          'Homologation',
+          'Production',
+        ]) {
+          expect(
+            find.descendant(of: selector, matching: find.text(name)),
+            findsOneWidget,
+          );
+        }
+
+        // The mark is the status's own shape, with the status in words for
+        // screen readers.
+        final marks = tester
+            .widgetList<Icon>(
+              find.descendant(of: selector, matching: find.byType(Icon)),
+            )
+            .map((icon) => (icon.icon, icon.semanticLabel))
+            .toList();
+        expect(marks, <(IconData?, String?)>[
+          (Icons.pause_circle_outline, 'Stopped'),
+          (Icons.pause_circle_outline, 'Stopped'),
+          (Icons.check_circle, 'Up'),
+        ]);
+      },
+    );
+
+    testWidgets('the first time, the last environment is selected', (
+      tester,
+    ) async {
+      await pumpConsole(tester, source: FakeStatusSource());
+
+      expect(chosen(tester), <String>{'production'});
+    });
+
+    testWidgets('the choice is remembered per host', (tester) async {
+      final store = InMemoryRefreshSettingsStore();
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource(),
+        refreshSettings: store,
+      );
+
+      await tester.tap(
+        find.descendant(of: selector, matching: find.text('Development')),
+      );
+      await settle(tester);
+      expect(chosen(tester), <String>{'development'});
+      expect(await store.readEnvironmentFor(production.id), 'development');
+
+      // Another host starts from its own memory: the last environment.
+      await tester.tap(
+        find.descendant(of: hostSwitcher, matching: find.text('homologation')),
+      );
+      await settle(tester);
+      expect(chosen(tester), <String>{'production'});
+
+      await tester.tap(
+        find.descendant(of: hostSwitcher, matching: find.text('production')),
+      );
+      await settle(tester);
+      expect(chosen(tester), <String>{'development'});
+    });
+
+    testWidgets('a saved choice is used on start', (tester) async {
+      final store = InMemoryRefreshSettingsStore();
+      await store.writeEnvironmentFor(production.id, 'homologation');
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource(),
+        refreshSettings: store,
+      );
+
+      expect(chosen(tester), <String>{'homologation'});
+    });
+
+    testWidgets(
+      'a remembered environment that is gone falls back to the last',
+      (tester) async {
+        final store = InMemoryRefreshSettingsStore();
+        await store.writeEnvironmentFor(production.id, 'staging');
+        await pumpConsole(
+          tester,
+          source: FakeStatusSource(),
+          refreshSettings: store,
+        );
+
+        expect(chosen(tester), <String>{'production'});
+      },
+    );
+
+    testWidgets('no environments shows the empty state', (tester) async {
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource(
+          (_, _) async => const HostStatus(
+            host: 'example.com',
+            generatedAt: null,
+            status: Status.up,
+            environments: <HostEnvironment>[],
+            systems: <SystemStatus>[],
+          ),
+        ),
+      );
+
+      expect(selector, findsNothing);
+      expect(find.text('This host reports no environments.'), findsOneWidget);
+    });
+
+    testWidgets('narrow screens get a dropdown', (tester) async {
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource(),
+        size: const Size(320, 900),
+      );
+
+      expect(
+        find.descendant(
+          of: selector,
+          matching: find.byType(DropdownButton<String>),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: selector,
+          matching: find.byType(SegmentedButton<String>),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('the summary names the failing integrations', (tester) async {
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource((_, _) async => withFailingIntegration()),
+      );
+
+      expect(find.text('1 integration failing'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(of: selector, matching: find.text('Development')),
+      );
+      await settle(tester);
+
+      expect(find.textContaining('failing'), findsNothing);
+    });
+
+    testWidgets('changing environment does not load', (tester) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source);
+
+      await tester.tap(
+        find.descendant(of: selector, matching: find.text('Development')),
+      );
+      await settle(tester);
+
+      expect(source.calls, hasLength(1));
+      expect(source.detailsCalls, hasLength(1));
+    });
+
+    testWidgets('the saved-host switcher is still offered with two hosts', (
+      tester,
+    ) async {
+      await pumpConsole(tester, source: FakeStatusSource());
+
+      expect(hostSwitcher, findsOneWidget);
+    });
+  });
+
+  group('refresh controls', () {
+    testWidgets('the auto-refresh menu offers 1, 5, 10, 15 and 30 minutes', (
+      tester,
+    ) async {
+      await pumpConsole(tester, source: FakeStatusSource());
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('auto-refresh-interval')),
+      );
+      await settle(tester);
+
+      for (final label in <String>[
+        'Every 5 minutes',
+        'Every 10 minutes',
+        'Every 15 minutes',
+        'Every 30 minutes',
+      ]) {
+        expect(find.text(label), findsOneWidget);
+      }
+      // The current value on the button, and its entry in the menu.
+      expect(find.text('Every 1 minute'), findsNWidgets(2));
+    });
+
+    testWidgets('the switch and the menu are saved', (tester) async {
+      final store = InMemoryRefreshSettingsStore();
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource(),
+        refreshSettings: store,
+      );
+
+      await tester.tap(find.byKey(const ValueKey<String>('auto-refresh')));
+      await settle(tester);
+      expect(store.settings, const RefreshSettings(enabled: true));
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('auto-refresh-interval')),
+      );
+      await settle(tester);
+      await tester.tap(find.text('Every 10 minutes'));
+      await settle(tester);
+
+      expect(
+        store.settings,
+        const RefreshSettings(enabled: true, interval: Duration(minutes: 10)),
+      );
+    });
+
+    testWidgets('updated time is visible beside Refresh now', (tester) async {
+      await pumpConsole(tester, source: FakeStatusSource());
+
+      final updated = find.textContaining('Updated ');
+      final refresh = find.byKey(const ValueKey<String>('refresh'));
+
+      expect(updated, findsOneWidget);
+      expect(refresh, findsOneWidget);
+      expect(find.text('Refresh now'), findsOneWidget);
+      expect(
+        (tester.getCenter(updated).dy - tester.getCenter(refresh).dy).abs(),
+        lessThan(24),
+      );
+    });
   });
 }

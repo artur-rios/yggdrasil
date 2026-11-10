@@ -286,4 +286,118 @@ void main() {
       },
     );
   });
+
+  group('resolveHostEnvironment', () {
+    const host = HostStatus(
+      host: 'example.com',
+      generatedAt: null,
+      status: Status.up,
+      environments: <HostEnvironment>[
+        HostEnvironment(
+          id: 'development',
+          name: 'Development',
+          onDemand: true,
+          status: Status.stopped,
+        ),
+        HostEnvironment(
+          id: 'production',
+          name: 'Production',
+          onDemand: false,
+          status: Status.up,
+        ),
+      ],
+      systems: <SystemStatus>[],
+    );
+
+    test('a remembered environment that exists is the one', () {
+      expect(resolveHostEnvironment(host, 'development')?.id, 'development');
+    });
+
+    test('with nothing remembered, the last in catalog order', () {
+      expect(resolveHostEnvironment(host, null)?.id, 'production');
+    });
+
+    test('a remembered environment that is gone falls back to the last', () {
+      expect(resolveHostEnvironment(host, 'staging')?.id, 'production');
+    });
+
+    test('a host with no environments resolves to none', () {
+      final empty = const HostStatus(
+        host: 'example.com',
+        generatedAt: null,
+        status: Status.up,
+        environments: <HostEnvironment>[],
+        systems: <SystemStatus>[],
+      );
+
+      expect(resolveHostEnvironment(empty, 'production'), isNull);
+    });
+  });
+
+  group('environmentSummaryLine', () {
+    IntegrationStatus link(String from, IntegrationHealth status) =>
+        IntegrationStatus(from: from, check: 'c', status: status);
+
+    HostStatus hostWith(Map<String, List<IntegrationStatus>> byEnvironment) =>
+        HostStatus(
+          host: 'example.com',
+          generatedAt: null,
+          status: Status.up,
+          environments: const <HostEnvironment>[],
+          systems: <SystemStatus>[
+            SystemStatus(
+              id: 'heimdall',
+              name: 'Heimdall',
+              status: Status.up,
+              environments: <SystemEnvironment>[
+                for (final entry in byEnvironment.entries)
+                  SystemEnvironment(
+                    environment: entry.key,
+                    status: Status.up,
+                    applications: const <ApplicationStatus>[],
+                    integrations: entry.value,
+                  ),
+              ],
+            ),
+          ],
+        );
+
+    test('summary counts failing integrations in that environment only', () {
+      final host = hostWith(<String, List<IntegrationStatus>>{
+        'production': <IntegrationStatus>[
+          link('a', IntegrationHealth.down),
+          link('b', IntegrationHealth.up),
+        ],
+        'development': <IntegrationStatus>[
+          link('a', IntegrationHealth.down),
+          link('b', IntegrationHealth.down),
+        ],
+      });
+
+      expect(
+        environmentSummaryLine(host, 'production'),
+        '1 integration failing',
+      );
+      expect(
+        environmentSummaryLine(host, 'development'),
+        '2 integrations failing',
+      );
+    });
+
+    test('summary ignores stopped and not-configured integrations', () {
+      final host = hostWith(<String, List<IntegrationStatus>>{
+        'production': <IntegrationStatus>[
+          link('a', IntegrationHealth.stopped),
+          link('b', IntegrationHealth.notConfigured),
+          link('c', IntegrationHealth.unknown),
+        ],
+      });
+
+      expect(environmentSummaryLine(host, 'production'), isEmpty);
+    });
+
+    test('says nothing when there are no integrations', () {
+      expect(environmentSummaryLine(hostWith(const {}), 'production'), isEmpty);
+    });
+  });
 }

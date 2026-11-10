@@ -14,6 +14,8 @@ import '../domain/status_logic.dart';
 import 'layout.dart';
 import 'refresh_settings.dart';
 import 'status_controller.dart';
+import 'widgets/environment_selector.dart';
+import 'widgets/refresh_controls.dart';
 import 'widgets/status_visuals.dart';
 import 'widgets/system_card.dart';
 
@@ -195,13 +197,6 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
           ],
         ),
         actions: <Widget>[
-          if (status.environment != null)
-            IconButton(
-              key: const ValueKey<String>('refresh'),
-              tooltip: 'Refresh',
-              onPressed: status.loading ? null : _refresh,
-              icon: const Icon(Icons.refresh),
-            ),
           IconButton(
             key: const ValueKey<String>('settings'),
             tooltip: 'Hosts',
@@ -261,6 +256,12 @@ class _OverviewBody extends ConsumerWidget {
     final failure = status.failure;
     final problemsOnly = ref.watch(problemsOnlyProvider);
     final expanded = ref.watch(expandedSystemsProvider);
+    final autoRefresh = ref.watch(refreshSettingsProvider);
+    final rememberedEnvironment = ref.watch(selectedHostEnvironmentProvider);
+    final hostStatus = snapshot?.status;
+    final hostEnvironment = hostStatus == null
+        ? null
+        : resolveHostEnvironment(hostStatus, rememberedEnvironment);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -286,6 +287,19 @@ class _OverviewBody extends ConsumerWidget {
                             selectedId: environment?.id,
                           ),
                         ),
+                      if (environment != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: RefreshControls(
+                            updatedAt: hostStatus?.generatedAt,
+                            loading: status.loading,
+                            settings: autoRefresh,
+                            onRefresh: onRetry,
+                            onSettingsChanged: (settings) => ref
+                                .read(refreshSettingsProvider.notifier)
+                                .update(settings),
+                          ),
+                        ),
                       if (failure != null && failure.isStarting)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 12),
@@ -305,6 +319,22 @@ class _OverviewBody extends ConsumerWidget {
                         _Stale(
                           stale: status.isStale,
                           child: _StatusBanner(status: snapshot.status),
+                        ),
+                      if (hostStatus != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: hostEnvironment == null
+                              ? const Text('This host reports no environments.')
+                              : _EnvironmentBar(
+                                  host: hostStatus,
+                                  selected: hostEnvironment,
+                                  onSelected: (id) => ref
+                                      .read(
+                                        selectedHostEnvironmentProvider
+                                            .notifier,
+                                      )
+                                      .select(id),
+                                ),
                         ),
                     ],
                   ),
@@ -490,7 +520,7 @@ class _EnvironmentSwitcher extends ConsumerWidget {
   }
 }
 
-/// The host: its overall status, a summary, and each environment's status.
+/// The host: its overall status, a summary and when it was generated.
 class _StatusBanner extends StatelessWidget {
   const _StatusBanner({required this.status});
 
@@ -542,23 +572,6 @@ class _StatusBanner extends StatelessWidget {
                         color: visual.foreground,
                       ),
                     ),
-                    if (status.environments.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Wrap(
-                        key: const ValueKey<String>('host-environments'),
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: <Widget>[
-                          for (final environment in status.environments)
-                            EnvironmentStatusChip(
-                              name: environment.name,
-                              status: environment.status,
-                              onDemand: environment.onDemand,
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                    ],
                     if (generatedAt != null)
                       NowBuilder(
                         builder: (context, now) => RelativeTime(
@@ -577,6 +590,40 @@ class _StatusBanner extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The environment selector and, beside it, how many integrations are failing
+/// there.
+class _EnvironmentBar extends StatelessWidget {
+  const _EnvironmentBar({
+    required this.host,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final HostStatus host;
+  final HostEnvironment selected;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = environmentSummaryLine(host, selected.id);
+
+    return Wrap(
+      spacing: 16,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: <Widget>[
+        EnvironmentSelector(
+          environments: host.environments,
+          selectedId: selected.id,
+          onSelected: onSelected,
+        ),
+        if (summary.isNotEmpty)
+          Text(summary, style: Theme.of(context).textTheme.bodyMedium),
+      ],
     );
   }
 }
