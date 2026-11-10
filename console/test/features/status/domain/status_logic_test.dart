@@ -51,43 +51,7 @@ void main() {
     });
   });
 
-  group('sortSystems', () {
-    test('puts the worst status first, then sorts by name', () {
-      final sorted = sortSystems(<SystemStatus>[
-        system('Zeta', Status.up),
-        system('alpha', Status.up),
-        system('Idle', Status.notDeployed),
-        system('Asleep', Status.stopped),
-        system('Mystery', Status.unknown),
-        system('Broken', Status.down),
-        system('Slow', Status.degraded),
-        system('Awful', Status.down),
-      ]);
-
-      expect(sorted.map((system) => system.name), <String>[
-        'Awful',
-        'Broken',
-        'Slow',
-        'Mystery',
-        'alpha',
-        'Zeta',
-        'Asleep',
-        'Idle',
-      ]);
-    });
-
-    test('sorts by the overall status, not by any one environment', () {
-      // Heimdall is up overall although two of its environments are stopped.
-      expect(
-        sortSystems(demoStatus().systems).map((system) => system.id),
-        <String>['fortuna', 'heimdall', 'yggdrasil'],
-      );
-      expect(
-        sortSystems(v1Status().systems).map((system) => system.id),
-        <String>['huginn', 'fortuna', 'yggdrasil', 'heimdall'],
-      );
-    });
-
+  group('sortApplications', () {
     test('sorts applications the same way', () {
       final sorted = sortApplications(<ApplicationStatus>[
         app('b', Status.up),
@@ -105,118 +69,12 @@ void main() {
     });
   });
 
-  group('visibleSystems', () {
-    final systems = <SystemStatus>[
-      system('Fine', Status.up, <ApplicationStatus>[app('a', Status.up)]),
-      system('Bad', Status.down, <ApplicationStatus>[app('b', Status.down)]),
-      system('Idle', Status.notDeployed),
-      system('Asleep', Status.stopped, <ApplicationStatus>[
-        app('c', Status.stopped),
-      ]),
-    ];
-
-    test('shows everything, sorted, without the filter', () {
-      expect(
-        visibleSystems(systems, problemsOnly: false).map((s) => s.name),
-        <String>['Bad', 'Fine', 'Asleep', 'Idle'],
-      );
-    });
-
-    test('shows only systems with a problem with the filter', () {
-      expect(
-        visibleSystems(systems, problemsOnly: true).map((s) => s.name),
-        <String>['Bad'],
-      );
-    });
-
-    test('the overall status decides, not the environments', () {
-      expect(
-        hasProblem(
-          system('Odd', Status.unknown, <ApplicationStatus>[
-            app('x', Status.up),
-          ]),
-        ),
-        isTrue,
-      );
-      // Stopped environments of a system that is up: not a problem.
-      expect(demoStatus().systems.where(hasProblem), isEmpty);
-      expect(v1Status().systems.where(hasProblem).map((s) => s.id), <String>[
-        'fortuna',
-        'huginn',
-        'yggdrasil',
-      ]);
-    });
-  });
-
-  group('applicationsSummary', () {
-    test('counts applications and each non-up status', () {
-      expect(
-        applicationsSummary(<ApplicationStatus>[
-          app('a', Status.up),
-          app('b', Status.degraded),
-        ]),
-        '2 applications · 1 degraded',
-      );
-    });
-
-    test('lists statuses worst first', () {
-      expect(
-        applicationsSummary(<ApplicationStatus>[
-          app('a', Status.notDeployed),
-          app('b', Status.degraded),
-          app('e', Status.stopped),
-          app('c', Status.down),
-          app('d', Status.up),
-        ]),
-        '5 applications · 1 down · 1 degraded · 1 stopped · 1 not deployed',
-      );
-    });
-
-    test('says when all are up', () {
-      expect(
-        applicationsSummary(<ApplicationStatus>[
-          app('a', Status.up),
-          app('b', Status.up),
-        ]),
-        '2 applications · all up',
-      );
-      expect(
-        applicationsSummary(<ApplicationStatus>[app('a', Status.up)]),
-        '1 application · up',
-      );
-    });
-
-    test('says when all are stopped', () {
-      expect(
-        applicationsSummary(<ApplicationStatus>[
-          app('a', Status.stopped),
-          app('b', Status.stopped),
-        ]),
-        '2 applications · all stopped',
-      );
-    });
-
-    test('handles no applications', () {
-      expect(
-        applicationsSummary(const <ApplicationStatus>[]),
-        '0 applications',
-      );
-    });
-
-    test('summarises a system in one environment', () {
-      final heimdall = demoStatus().systems.first;
-
-      expect(heimdall.environments.map(environmentSummary), <String>[
-        '2 applications · all stopped',
-        '2 applications · all stopped',
-        '2 applications · all up',
-      ]);
-    });
-  });
-
   group('hostSummary', () {
-    test('counts systems and environments; all is well on the demo', () {
-      expect(hostSummary(demoStatus()), '3 systems · 3 environments');
+    test('counts systems, environments and the degraded APIs of the demo', () {
+      expect(
+        hostSummary(demoStatus()),
+        '4 systems · 3 environments · 2 degraded',
+      );
     });
 
     test('counts the problems of a v1 host', () {
@@ -285,5 +143,119 @@ void main() {
         Status.unknown: 'Unknown',
       },
     );
+  });
+
+  group('resolveHostEnvironment', () {
+    const host = HostStatus(
+      host: 'example.com',
+      generatedAt: null,
+      status: Status.up,
+      environments: <HostEnvironment>[
+        HostEnvironment(
+          id: 'development',
+          name: 'Development',
+          onDemand: true,
+          status: Status.stopped,
+        ),
+        HostEnvironment(
+          id: 'production',
+          name: 'Production',
+          onDemand: false,
+          status: Status.up,
+        ),
+      ],
+      systems: <SystemStatus>[],
+    );
+
+    test('a remembered environment that exists is the one', () {
+      expect(resolveHostEnvironment(host, 'development')?.id, 'development');
+    });
+
+    test('with nothing remembered, the last in catalog order', () {
+      expect(resolveHostEnvironment(host, null)?.id, 'production');
+    });
+
+    test('a remembered environment that is gone falls back to the last', () {
+      expect(resolveHostEnvironment(host, 'staging')?.id, 'production');
+    });
+
+    test('a host with no environments resolves to none', () {
+      final empty = const HostStatus(
+        host: 'example.com',
+        generatedAt: null,
+        status: Status.up,
+        environments: <HostEnvironment>[],
+        systems: <SystemStatus>[],
+      );
+
+      expect(resolveHostEnvironment(empty, 'production'), isNull);
+    });
+  });
+
+  group('environmentSummaryLine', () {
+    IntegrationStatus link(String from, IntegrationHealth status) =>
+        IntegrationStatus(from: from, check: 'c', status: status);
+
+    HostStatus hostWith(Map<String, List<IntegrationStatus>> byEnvironment) =>
+        HostStatus(
+          host: 'example.com',
+          generatedAt: null,
+          status: Status.up,
+          environments: const <HostEnvironment>[],
+          systems: <SystemStatus>[
+            SystemStatus(
+              id: 'heimdall',
+              name: 'Heimdall',
+              status: Status.up,
+              environments: <SystemEnvironment>[
+                for (final entry in byEnvironment.entries)
+                  SystemEnvironment(
+                    environment: entry.key,
+                    status: Status.up,
+                    applications: const <ApplicationStatus>[],
+                    integrations: entry.value,
+                  ),
+              ],
+            ),
+          ],
+        );
+
+    test('summary counts failing integrations in that environment only', () {
+      final host = hostWith(<String, List<IntegrationStatus>>{
+        'production': <IntegrationStatus>[
+          link('a', IntegrationHealth.down),
+          link('b', IntegrationHealth.up),
+        ],
+        'development': <IntegrationStatus>[
+          link('a', IntegrationHealth.down),
+          link('b', IntegrationHealth.down),
+        ],
+      });
+
+      expect(
+        environmentSummaryLine(host, 'production'),
+        '1 integration failing',
+      );
+      expect(
+        environmentSummaryLine(host, 'development'),
+        '2 integrations failing',
+      );
+    });
+
+    test('summary ignores stopped and not-configured integrations', () {
+      final host = hostWith(<String, List<IntegrationStatus>>{
+        'production': <IntegrationStatus>[
+          link('a', IntegrationHealth.stopped),
+          link('b', IntegrationHealth.notConfigured),
+          link('c', IntegrationHealth.unknown),
+        ],
+      });
+
+      expect(environmentSummaryLine(host, 'production'), isEmpty);
+    });
+
+    test('says nothing when there are no integrations', () {
+      expect(environmentSummaryLine(hostWith(const {}), 'production'), isEmpty);
+    });
   });
 }

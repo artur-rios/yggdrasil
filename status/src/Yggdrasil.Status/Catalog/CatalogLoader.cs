@@ -20,6 +20,17 @@ public static partial class CatalogLoader
         .IgnoreUnmatchedProperties()
         .Build();
 
+    /// <summary>
+    /// The icon names a system may carry. Flutter strips the icons a build does not name, so the console
+    /// maps these to constant icons and shows a neutral one for anything else. One list per language:
+    /// scripts/catalog.py's ICONS must be the same.
+    /// </summary>
+    public static readonly IReadOnlyList<string> Icons =
+    [
+        "shield", "mail", "savings", "construction", "local_library", "music_note", "extension", "person",
+        "business", "park", "cloud",
+    ];
+
     public static Catalog LoadFile(string path)
     {
         if (!File.Exists(path))
@@ -75,6 +86,8 @@ public static partial class CatalogLoader
         var systemIds = new HashSet<string>(StringComparer.Ordinal);
         var applicationIds = new HashSet<string>(StringComparer.Ordinal);
         var systems = new List<SystemDefinition>();
+        // Checked once every system is read: an integration may point at a system listed after its own.
+        var integrations = new List<(string Where, string SystemId, IntegrationDefinition Integration)>();
 
         foreach (var (rawSystem, systemIndex) in (raw.Systems ?? []).Select((system, index) => (system, index)))
         {
@@ -101,14 +114,36 @@ public static partial class CatalogLoader
             foreach (var (rawApp, appIndex) in (rawSystem.Applications ?? []).Select((app, index) => (app, index)))
             {
                 var application = ValidateApplication(
-                    rawApp, $"{where}.applications[{appIndex}]", applicationIds, environments, declared, errors);
+                    rawApp, $"{where}.applications[{appIndex}]", systemId, applicationIds, environments, declared, integrations, errors);
                 if (application is not null)
                 {
                     applications.Add(application);
                 }
             }
 
-            systems.Add(new SystemDefinition(systemId, rawSystem.Name?.Trim() ?? "", rawSystem.Description?.Trim() ?? "", applications));
+            // Not trimmed, as scripts/catalog.py reads it.
+            var icon = rawSystem.Icon;
+            if (icon is not null && !Icons.Contains(icon))
+            {
+                errors.Add($"{where}: icon '{icon}' is not one of {string.Join(", ", Icons)}");
+            }
+
+            systems.Add(new SystemDefinition(
+                systemId, rawSystem.Name?.Trim() ?? "", rawSystem.Description?.Trim() ?? "", applications, icon));
+        }
+
+        // Against the whole catalog, not the host's environments: a target filtered out by
+        // HostCatalog.For is still a system of the catalog.
+        foreach (var (at, ownerId, integration) in integrations.Where(entry => entry.Integration.System is not null))
+        {
+            if (string.Equals(integration.System, ownerId, StringComparison.Ordinal))
+            {
+                errors.Add($"{at}: system '{integration.System}' is its own system; an integration is with another one");
+            }
+            else if (!systemIds.Contains(integration.System!))
+            {
+                errors.Add($"{at}: system '{integration.System}' is not a system in the catalog");
+            }
         }
 
         return new Catalog(owner, environments, systems, ValidateForge(raw.Forge, errors));
@@ -258,9 +293,11 @@ public static partial class CatalogLoader
     private static ApplicationDefinition? ValidateApplication(
         RawApplication raw,
         string where,
+        string systemId,
         HashSet<string> applicationIds,
         List<EnvironmentDefinition> environments,
         HashSet<string> declared,
+        List<(string Where, string SystemId, IntegrationDefinition Integration)> integrations,
         List<string> errors)
     {
         var id = raw.Id?.Trim() ?? "";
@@ -304,6 +341,16 @@ public static partial class CatalogLoader
         {
             errors.Add($"{where}: health '{raw.Health}' is not an absolute http(s) URL");
         }
+
+        Uri? detailedHealth = null;
+        if (raw.DetailedHealth is not null &&
+            (!Uri.TryCreate(raw.DetailedHealth.Trim(), UriKind.Absolute, out detailedHealth) ||
+             (detailedHealth.Scheme != Uri.UriSchemeHttp && detailedHealth.Scheme != Uri.UriSchemeHttps)))
+        {
+            errors.Add($"{where}: detailedHealth '{raw.DetailedHealth}' is not an absolute http(s) URL");
+        }
+
+        var applicationIntegrations = ValidateIntegrations(raw.Integrations, where, systemId, integrations, errors);
 
         var metrics = NullIfBlank(raw.Metrics);
         if (metrics is not null && !HostPort().IsMatch(metrics))
@@ -436,7 +483,54 @@ public static partial class CatalogLoader
 
         return new ApplicationDefinition(
             id, raw.Name!.Trim(), kind, repository, health!, metrics, metricsPath, host, domain, path, apex, checks,
-            new ContainerSelector(project, service), deployments);
+            new ContainerSelector(project, service), deployments, detailedHealth, applicationIntegrations);
+    }
+
+    /// <summary>
+    /// The application's integrations, each with exactly one of system and external and a check. That a
+    /// system target exists is checked by <see cref="Validate"/>, which sees every system: the valid
+    /// entries are added to <paramref name="pending"/> for it.
+    /// </summary>
+    private static List<IntegrationDefinition>? ValidateIntegrations(
+        List<RawIntegration?>? raw,
+        string where,
+        string systemId,
+        List<(string Where, string SystemId, IntegrationDefinition Integration)> pending,
+        List<string> errors)
+    {
+        if (raw is null)
+        {
+            return null;
+        }
+
+        var integrations = new List<IntegrationDefinition>();
+        foreach (var (entry, index) in raw.Select((entry, index) => (entry, index)))
+        {
+            var at = $"{where}.integrations[{index}]";
+            var system = NullIfBlank(entry?.System);
+            var external = NullIfBlank(entry?.External);
+            var check = NullIfBlank(entry?.Check);
+            var errorCount = errors.Count;
+
+            if ((system is null) == (external is null))
+            {
+                errors.Add($"{at}: exactly one of system and external is required");
+            }
+
+            if (check is null)
+            {
+                errors.Add($"{at}: check is required (the name of the entry in the detailed health report)");
+            }
+
+            if (errors.Count == errorCount)
+            {
+                var integration = new IntegrationDefinition(system, external, check!);
+                integrations.Add(integration);
+                pending.Add((at, systemId, integration));
+            }
+        }
+
+        return integrations;
     }
 
     private static void CheckId(string id, string where, List<string> errors)
@@ -507,6 +601,7 @@ public static partial class CatalogLoader
         public string? Id { get; set; }
         public string? Name { get; set; }
         public string? Description { get; set; }
+        public string? Icon { get; set; }
         public List<RawApplication>? Applications { get; set; }
     }
 
@@ -517,6 +612,8 @@ public static partial class CatalogLoader
         public string? Kind { get; set; }
         public string? Repository { get; set; }
         public string? Health { get; set; }
+        public string? DetailedHealth { get; set; }
+        public List<RawIntegration?>? Integrations { get; set; }
         public string? Metrics { get; set; }
         public string? MetricsPath { get; set; }
         public string? Host { get; set; }
@@ -553,6 +650,13 @@ public static partial class CatalogLoader
     {
         public string? Id { get; set; }
         public string? Name { get; set; }
+    }
+
+    private sealed class RawIntegration
+    {
+        public string? System { get; set; }
+        public string? External { get; set; }
+        public string? Check { get; set; }
     }
 
     private sealed class RawContainer

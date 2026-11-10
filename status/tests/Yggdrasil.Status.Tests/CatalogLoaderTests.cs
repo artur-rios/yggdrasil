@@ -415,7 +415,105 @@ public class CatalogLoaderTests
         Assert.Contains(expected, error.Message);
     }
 
-    private static string Minimal(string fields, bool withHealth = true, string environments = "- { id: dev, name: Dev }") => $"""
+    [Fact]
+    public void GivenIconAndIntegrations_WhenParsed_ThenTheyAreOnTheDefinitions()
+    {
+        var catalog = CatalogLoader.Parse(Integrated("icon: shield", Integrations("{ system: hermes, check: Hermes }")));
+
+        var heimdall = catalog.Systems[0];
+        Assert.Equal("shield", heimdall.Icon);
+        Assert.Equal(new IntegrationDefinition("hermes", null, "Hermes"), heimdall.Applications[0].Integrations![0]);
+    }
+
+    [Fact]
+    public void GivenAnExternalIntegration_WhenParsed_ThenItHasNoSystem()
+    {
+        var catalog = CatalogLoader.Parse(Integrated("", Integrations("{ external: Mailgun, check: Mailgun }")));
+
+        Assert.Equal(new IntegrationDefinition(null, "Mailgun", "Mailgun"), catalog.Systems[0].Applications[0].Integrations![0]);
+    }
+
+    [Fact]
+    public void GivenUnknownIcon_WhenParsed_ThenListsAnError()
+    {
+        var error = Assert.Throws<CatalogException>(() => CatalogLoader.Parse(Integrated("icon: rocket", "")));
+
+        Assert.Contains("icon 'rocket'", error.Message);
+    }
+
+    [Theory]
+    [InlineData("{ system: hermes, external: Mailgun, check: Hermes }", "exactly one of system and external")]
+    [InlineData("{ check: Hermes }", "exactly one of system and external")]
+    [InlineData("{ system: heimdall, check: Hermes }", "its own system")]
+    [InlineData("{ system: nowhere, check: Hermes }", "system 'nowhere' is not a system in the catalog")]
+    [InlineData("{ system: hermes }", "check is required")]
+    [InlineData("{ external: \" \", check: Mailgun }", "exactly one of system and external")]
+    public void GivenAnInvalidIntegration_WhenParsed_ThenListsAnError(string integration, string expected)
+    {
+        var error = Assert.Throws<CatalogException>(
+            () => CatalogLoader.Parse(Integrated("", Integrations(integration))));
+
+        Assert.Contains("integrations[0]", error.Message);
+        Assert.Contains(expected, error.Message);
+    }
+
+    [Fact]
+    public void GivenRelativeDetailedHealth_WhenParsed_ThenListsAnError()
+    {
+        var error = Assert.Throws<CatalogException>(() => CatalogLoader.Parse(Minimal("kind: api", detailedHealth: "/internal/health")));
+
+        Assert.Contains("detailedHealth '/internal/health' is not an absolute http(s) URL", error.Message);
+    }
+
+    [Fact]
+    public void GivenDetailedHealth_WhenTargetInEnvironment_ThenHostIsQualified()
+    {
+        var catalog = CatalogLoader.Parse(Minimal("kind: api", detailedHealth: "http://heimdall-api:9464/internal/health"));
+        var target = ProbeTarget.Of(catalog.Applications.Single(), "dev");
+
+        Assert.Equal(new Uri("http://heimdall-api.dev:9464/internal/health"), target.DetailedHealth);
+    }
+
+    [Fact]
+    public void GivenNoNewKeys_WhenParsed_ThenAllAreNull()
+    {
+        var catalog = CatalogLoader.Parse(Minimal("kind: api"));
+
+        Assert.Null(catalog.Systems[0].Icon);
+        Assert.Null(catalog.Applications.Single().DetailedHealth);
+        Assert.Null(catalog.Applications.Single().Integrations);
+        Assert.Null(ProbeTarget.Of(catalog.Applications.Single(), "dev").DetailedHealth);
+    }
+
+    private static string Integrations(string integration) =>
+        string.Join(Environment.NewLine, "integrations:", "          - " + integration);
+
+    // Two systems, so that an integration has something to point at; the new keys go on the first.
+    private static string Integrated(string systemKeys, string applicationKeys) => $"""
+        owner: o
+        environments:
+          - id: dev
+            name: Dev
+        systems:
+          - id: heimdall
+            name: Heimdall
+            {systemKeys}
+            applications:
+              - id: heimdall-api
+                name: API
+                kind: api
+                health: http://heimdall-api:8080/healthcheck
+                {applicationKeys}
+          - id: hermes
+            name: Hermes
+            applications:
+              - id: hermes-api
+                name: API
+                kind: api
+                health: http://hermes-api:8080/healthcheck
+        """;
+
+    private static string Minimal(string fields, bool withHealth = true, string environments = "- { id: dev, name: Dev }", string detailedHealth = "") => $"""
         owner: o
         environments:
           {environments}
@@ -426,6 +524,7 @@ public class CatalogLoaderTests
               - id: app
                 name: App
                 {(withHealth ? "health: http://app:8080/healthz" : "")}
+                {(detailedHealth.Length > 0 ? "detailedHealth: " + detailedHealth : "")}
                 {fields}
         """;
 }

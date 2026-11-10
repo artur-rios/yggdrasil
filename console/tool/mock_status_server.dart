@@ -4,8 +4,9 @@
 //         [--fixture assets/demo/status.json] [--web build/web]
 //         [--starting-seconds 0]
 //
-// Serves GET /api/status and GET /api/systems/{id} from the fixture, as
-// docs/status-api.md defines them: bearer token (401 with an empty body and
+// Serves GET /api/status, POST /api/status/refresh (the same body, as the
+// real one answers once it has fetched the detailed health reports) and
+// GET /api/systems/{id} from the fixture, as docs/status-api.md defines them: bearer token (401 with an empty body and
 // WWW-Authenticate otherwise), CORS for any origin, `generatedAt` moved to now
 // on every request, and for the first --starting-seconds a 503 with
 // Retry-After: 5, like a status API that has not finished its first refresh.
@@ -50,7 +51,7 @@ Future<void> main(List<String> arguments) async {
       response.headers
         ..set('Access-Control-Allow-Origin', origin)
         ..set('Access-Control-Allow-Headers', 'Authorization, Accept')
-        ..set('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        ..set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         ..set('Vary', 'Origin');
     }
 
@@ -76,7 +77,9 @@ Future<void> main(List<String> arguments) async {
       } else {
         final status = _fresh(fixture.readAsStringSync(), random);
 
-        if (path == '/api/status') {
+        if (path == '/api/status' && request.method == 'GET') {
+          _json(response, status);
+        } else if (path == '/api/status/refresh' && request.method == 'POST') {
           _json(response, status);
         } else if (path.startsWith('/api/systems/')) {
           final id = path.substring('/api/systems/'.length);

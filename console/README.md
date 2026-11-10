@@ -1,16 +1,18 @@
 # console
 
-The yggdrasil deploy console: a Flutter app (web, Android and Windows) that shows, for a yggdrasil host, the status of every environment it runs and of every system in them and, expanded, of each application. It reads the status API described in [`docs/status-api.md`](../docs/status-api.md), polling `GET /api/status` every 30 s (fixed) while the overview is visible. Requests time out after 10 s.
+The yggdrasil deploy console: a Flutter app (web, Android and Windows) that shows, for a yggdrasil host, the status of every environment it runs and of every system in them and, in a panel, of each application. It reads the status API described in [`docs/status-api.md`](../docs/status-api.md), loading `GET /api/status` when the overview opens and when you press **Refresh now** (which also asks for the detailed health reports with `POST /api/status/refresh`), and repeating it on the interval you pick with **Auto-refresh** (off by default) while the overview is visible. Requests time out after 10 s.
 
 ## The overview
 
-- **Header**: the host's name (the response's `host`, e.g. `example.com`), its overall status, a summary (`3 systems · 3 environments`, plus a count of the applications that are down, degraded or unknown), and one chip per environment with its status, in catalog order, e.g. `Development · Stopped`, `Homologation · Stopped`, `Production · Up`.
-- **System cards**: name, description and one chip per environment the system is deployed to (environment name + status), in the same order. Cards are sorted worst first by the system's overall status, then by name; **Problems only** keeps the systems whose overall status is down, degraded or unknown.
-- **Expanded card**: one section per environment (name, status, an *on demand* hint for on-demand environments, and a summary such as `2 applications · all up`) listing its applications. Tapping an application opens its details (a bottom sheet on a phone, a dialog on wider screens), including the environment it is in.
-- **Stopped** (pause icon, neutral grey-blue) is the normal state of an on-demand environment that is switched off (`scripts/ygg.sh env stop <environment>`): it is not a problem, does not count for *Problems only*, and sorts between *Up* and *Not deployed*. A stopped application is not probed.
-- The platform system (Traefik, the status API, the console, ...) runs once per host and appears in every environment. Its chip in an on-demand environment that is stopped is *Stopped*, like the other systems'; expanded, each component still shows its own status.
+- **Header**: the host's name (the response's `host`, e.g. `example.com`), its overall status, a summary (`3 systems · 3 environments`, plus a count of the applications that are down, degraded or unknown), and the refresh controls.
+- **Environment selector**: picks the environment shown; the map and the panel follow it.
+- **System map**: one node per system in the selected environment (its icon, name and status, and *on demand* where the environment is), with a line per integration between systems or to an external service: each labelled with its state: *OK* (green), *Failing* (red, the reason is in the panel), *Unknown*, and dashed grey for *Stopped* and *Not configured*. A system that is down or degraded shows it on its node.
+- **System panel**: select a node to list its applications (a side panel on a computer, a bottom sheet on a phone) with status, version and deploy time, its integrations, and what each API reports about itself (or why it could not). Tapping an application opens its details, including the environment it is in.
+- **Refresh controls**: *Refresh now*, and *Auto-refresh* with its interval (1, 5, 10, 15 or 30 min), saved on the device.
+- **Stopped** (pause icon, neutral grey-blue) is the normal state of an on-demand environment that is switched off (`scripts/ygg.sh env stop <environment>`): it is not a problem and is not counted in the header's summary. A stopped application is not probed.
+- The platform system (Traefik, the status API, the console, ...) runs once per host and appears in every environment. In an on-demand environment that is stopped its node is *Stopped*, like the other systems'; in its panel each component still shows its own status.
 - A host whose status API still answers with the v1 contract (one environment per host) is shown as a host with that one environment, named after it.
-- One column on a phone, two from 600 dp, three from 1200 dp; the environment chips wrap on narrow screens.
+- The map has three columns of systems below 600 dp (a phone), four from 600 dp and five from 1200 dp; a system keeps its place when you change environment, and one not deployed there leaves its cell empty.
 
 ## Hosts and tokens
 

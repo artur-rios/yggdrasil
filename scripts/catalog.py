@@ -81,6 +81,10 @@ AGENT_NAME = ID
 # The pipeline's own agents (agents.groovy): checks on ci, release files on release. Never a write token.
 BUILD_AGENTS = ("ci", "release")
 KINDS = {"api", "web", "worker", "platform"}
+# The icon names a system may carry; the console maps them to icons it ships. Keep in step with
+# CatalogLoader.Icons in the status API.
+ICONS = ("shield", "mail", "savings", "construction", "local_library", "music_note", "extension", "person",
+         "business", "park", "cloud")
 MODES = {"proxy", "ports"}
 TRIGGERS = {"manual", "branch", "release"}
 # `repositories`: how a repository that is not an application is released and protected.
@@ -154,6 +158,7 @@ def validate(catalog):
     environments_by_id = {env["id"]: env for env in environments if isinstance(env, dict) and env.get("id") in env_ids}
     system_ids = []
     app_ids = []
+    integration_targets = []  # (system, application, index, target system) of every integration to a system
     for i, system in enumerate(systems):
         if not isinstance(system, dict):
             errors.append(f"systems[{i}]: must be a mapping")
@@ -167,6 +172,8 @@ def validate(catalog):
             system_ids.append(sid)
         if not _text(system.get("name")):
             errors.append(f"system '{sid}'.name: required")
+        if system.get("icon") is not None and system["icon"] not in ICONS:
+            errors.append(f"system '{sid}': icon '{system['icon']}' is not one of {', '.join(ICONS)}")
         applications = system.get("applications")
         if not isinstance(applications, list) or not applications:
             errors.append(f"system '{sid}'.applications: required, a non-empty list")
@@ -189,6 +196,12 @@ def validate(catalog):
                 errors.append(f"{where}.kind: one of {sorted(KINDS)}")
             if not str(app.get("health", "")).startswith(("http://", "https://")):
                 errors.append(f"{where}.health: an absolute http(s) URL")
+            detailed = app.get("detailedHealth")
+            if detailed is not None and not (_text(detailed) or "").startswith(("http://", "https://")):
+                errors.append(f"{where}.detailedHealth: an absolute http(s) URL")
+            integration_errors, targets = _integration_errors(where, sid, aid, app)
+            errors += integration_errors
+            integration_targets += targets
             errors += _application_field_errors(where, app)
             errors += _host_suffix_errors(where, app, environments_by_id)
             overrides = app.get("environments")
@@ -210,6 +223,14 @@ def validate(catalog):
                     if resolved.get("trigger") == "branch" and not resolved.get("branches"):
                         errors.append(f"{where}.environments.{env_id}.branches: required when trigger is branch "
                                       "(neither the application nor the environment sets them)")
+    # After every system is read: an integration may point at a system listed after its own. Against the
+    # whole catalog, not one host's environments.
+    for sid, aid, i, target in integration_targets:
+        if target == sid:
+            errors.append(f"application '{aid}'.integrations[{i}]: system '{target}' is its own system; "
+                          "an integration is with another one")
+        elif target not in system_ids:
+            errors.append(f"application '{aid}'.integrations[{i}]: system '{target}' is not a system in the catalog")
     errors += _project_errors(systems, env_ids)
     errors += _repository_errors(catalog, systems)
     errors += _shared_repository_errors(catalog, systems)
@@ -478,6 +499,31 @@ def _application_field_errors(where, app):
                                   or any(container.get(k) is not None and not _text(container[k]) for k in ("project", "service"))):
         errors.append(f"{where}.container: a mapping of project and/or service names")
     return errors
+
+
+def _integration_errors(where, sid, aid, app):
+    """(errors, targets) of an application's integrations: exactly one of system and external, and a check.
+    Whether a system target exists is for validate(), once it has read every system; `targets` are the ones
+    it must look up, as (system, application, index, target)."""
+    integrations = app.get("integrations")
+    if integrations is None:
+        return [], []
+    if not isinstance(integrations, list):
+        return [f"{where}.integrations: a list of mappings"], []
+    errors, targets = [], []
+    for i, integration in enumerate(integrations):
+        at = f"{where}.integrations[{i}]"
+        if not isinstance(integration, dict):
+            errors.append(f"{at}: must be a mapping")
+            continue
+        system, external = _text(integration.get("system")), _text(integration.get("external"))
+        if (system is None) == (external is None):
+            errors.append(f"{at}: exactly one of system and external is required")
+        elif system is not None:
+            targets.append((sid, aid, i, system))
+        if _text(integration.get("check")) is None:
+            errors.append(f"{at}: check is required (the name of the entry in the detailed health report)")
+    return errors, targets
 
 
 def _check_list_errors(where, entry):

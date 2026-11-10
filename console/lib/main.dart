@@ -10,8 +10,10 @@ import 'app/console_app.dart';
 import 'core/config/app_config.dart';
 import 'features/environments/data/environment_store.dart';
 import 'features/environments/presentation/environments_controller.dart';
+import 'features/status/data/refresh_settings_store.dart';
 import 'features/status/data/status_repository.dart';
 import 'features/status/data/status_source.dart';
+import 'features/status/presentation/refresh_settings.dart';
 import 'features/status/presentation/status_controller.dart';
 
 void main() {
@@ -23,12 +25,15 @@ void main() {
     ProviderScope(
       // Riverpod 3 retries a provider whose build throws. The console shows
       // such a failure (loading the saved environments) as is, and the
-      // status polling has its own schedule, so nothing is retried.
+      // status refresh has its own schedule, so nothing is retried.
       retry: (_, _) => null,
       overrides: <Override>[
         appConfigProvider.overrideWithValue(config),
         environmentStoreProvider.overrideWithValue(
           const PreferencesEnvironmentStore(),
+        ),
+        refreshSettingsStoreProvider.overrideWithValue(
+          const PreferencesRefreshSettingsStore(),
         ),
         tokenStoreProvider.overrideWithValue(
           const SecureTokenStore(FlutterSecureStorage()),

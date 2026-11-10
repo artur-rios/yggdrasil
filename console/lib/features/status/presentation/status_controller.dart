@@ -1,10 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_riverpod/legacy.dart';
 
 import '../../environments/domain/environment.dart';
 import '../../environments/presentation/environments_controller.dart';
 import '../data/status_repository.dart';
 import '../data/status_source.dart';
+import 'refresh_settings.dart';
 
 /// Overridden in `main.dart` with the HTTP-backed repository, and in tests
 /// with one over a fake source.
@@ -52,8 +54,9 @@ statusControllerProvider = NotifierProvider<StatusController, StatusViewState>(
 
 /// Loads the selected host's status on demand.
 ///
-/// The polling itself belongs to the overview screen, which knows whether it
-/// is visible; this only fetches when asked, and never twice at once.
+/// Each load is the map (`GET`) and then the details (`POST`). When to load
+/// belongs to the overview screen, which knows whether it is visible; this
+/// only fetches when asked, and never twice at once.
 class StatusController extends Notifier<StatusViewState> {
   String? _loadedKey;
 
@@ -101,40 +104,110 @@ class StatusController extends Notifier<StatusViewState> {
     );
 
     final environments = ref.read(environmentsControllerProvider.notifier);
+    final repository = ref.read(statusRepositoryProvider);
     final token = await environments.tokenFor(environment.id);
-    final report = await ref
-        .read(statusRepositoryProvider)
-        .refresh(environment, token);
+    final map = await repository.refresh(environment, token);
 
     // The user may have switched environments, or pointed this one at another
     // URL, meanwhile: the answer is not about what the screen shows any more.
-    if (state.environment?.id != environment.id ||
-        state.environment?.baseUrl != environment.baseUrl) {
+    if (!_isShowing(environment)) {
       return;
     }
 
+    // The map is drawn at once; `loading` holds until the details are in.
     state = StatusViewState(
       environment: state.environment,
-      snapshot: report.snapshot,
-      failure: report.failure,
+      snapshot: map.snapshot,
+      failure: map.failure,
+      loading: map.failure == null,
     );
 
-    final snapshot = report.snapshot;
+    if (map.failure != null) {
+      return;
+    }
 
-    if (report.failure == null && snapshot != null) {
+    final mapSnapshot = map.snapshot;
+
+    if (mapSnapshot != null) {
       await environments.adoptResponseName(
         environment.id,
-        snapshot.status.host,
+        mapSnapshot.status.host,
       );
+    }
+
+    final details = await repository.refreshDetails(environment, token);
+
+    if (!_isShowing(environment)) {
+      return;
+    }
+
+    // No snapshot means no endpoint and nothing known: the map stays as it
+    // was. A failure keeps the map too, marked stale.
+    state = StatusViewState(
+      environment: state.environment,
+      snapshot: details.snapshot ?? state.snapshot,
+      failure: details.failure,
+    );
+  }
+
+  bool _isShowing(Environment environment) =>
+      state.environment?.id == environment.id &&
+      state.environment?.baseUrl == environment.baseUrl;
+}
+
+/// The host environment (development, production...) the user chose on the
+/// selected saved host; `null` until they choose or the memory is read.
+///
+/// Remembered per host. It only says what to show: `resolveHostEnvironment`
+/// turns it into an environment the host really has. Choosing never loads,
+/// since one response already holds every environment.
+final NotifierProvider<SelectedHostEnvironmentController, String?>
+selectedHostEnvironmentProvider =
+    NotifierProvider<SelectedHostEnvironmentController, String?>(
+      SelectedHostEnvironmentController.new,
+    );
+
+class SelectedHostEnvironmentController extends Notifier<String?> {
+  /// The user chose before the remembered value was read.
+  bool _changed = false;
+
+  @override
+  String? build() {
+    final hostId = ref.watch(
+      environmentsControllerProvider.select(
+        (environments) => environments.value?.selected?.id,
+      ),
+    );
+
+    _changed = false;
+
+    if (hostId != null) {
+      unawaited(_load(hostId));
+    }
+
+    return null;
+  }
+
+  Future<void> _load(String hostId) async {
+    final remembered = await ref
+        .read(refreshSettingsStoreProvider)
+        .readEnvironmentFor(hostId);
+
+    if (ref.mounted && !_changed) {
+      state = remembered;
+    }
+  }
+
+  Future<void> select(String environmentId) async {
+    final hostId = ref.read(environmentsControllerProvider).value?.selected?.id;
+
+    _changed = true;
+    state = environmentId;
+
+    if (hostId != null) {
+      await ref
+          .read(refreshSettingsStoreProvider)
+          .writeEnvironmentFor(hostId, environmentId);
     }
   }
 }
-
-/// The "problems only" filter chip.
-final StateProvider<bool> problemsOnlyProvider = StateProvider<bool>(
-  (ref) => false,
-);
-
-/// Which systems are expanded, by id; kept across refreshes and layouts.
-final StateProvider<Set<String>> expandedSystemsProvider =
-    StateProvider<Set<String>>((ref) => const <String>{});

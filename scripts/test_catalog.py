@@ -206,6 +206,54 @@ class ValidateTests(unittest.TestCase):
         self.assertTrue(c.validate(catalog(systems={"shop": {}})))
 
 
+class IconAndIntegrationTests(unittest.TestCase):
+    """icon, detailedHealth and integrations: the same rules as the status API's CatalogLoader."""
+
+    def value(self, icon=None, detailed=None, integrations=None):
+        value = catalog()
+        value["systems"].append({"id": "mail", "name": "Mail", "applications": [
+            {"id": "mail-api", "name": "API", "kind": "api", "health": "http://mail-api:8080/healthz"}]})
+        if icon is not None:
+            value["systems"][0]["icon"] = icon
+        if detailed is not None:
+            value["systems"][0]["applications"][0]["detailedHealth"] = detailed
+        if integrations is not None:
+            value["systems"][0]["applications"][0]["integrations"] = integrations
+        return value
+
+    def test_given_every_icon_when_validated_then_there_are_no_errors(self):
+        for icon in c.ICONS:
+            self.assertEqual(c.validate(self.value(icon=icon)), [], icon)
+
+    def test_given_an_unknown_icon_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("icon 'rocket'" in e for e in c.validate(self.value(icon="rocket"))))
+
+    def test_given_valid_integrations_when_validated_then_there_are_no_errors(self):
+        integrations = [{"system": "mail", "check": "Mail"}, {"external": "Mailgun", "check": "Mailgun"}]
+        self.assertEqual(c.validate(self.value(integrations=integrations)), [])
+
+    def test_given_an_invalid_integration_when_validated_then_it_is_an_error(self):
+        for integration, expected in (
+            ({"system": "mail", "external": "Mailgun", "check": "Mail"}, "exactly one of system and external"),
+            ({"check": "Mail"}, "exactly one of system and external"),
+            ({"external": " ", "check": "Mail"}, "exactly one of system and external"),
+            ({"system": "shop", "check": "Shop"}, "its own system"),
+            ({"system": "nowhere", "check": "Mail"}, "system 'nowhere' is not a system in the catalog"),
+            ({"system": "mail"}, "check is required"),
+        ):
+            errors = c.validate(self.value(integrations=[integration]))
+            self.assertTrue(any("integrations[0]" in e and expected in e for e in errors), (integration, errors))
+
+    def test_given_integrations_that_is_not_a_list_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("integrations" in e for e in c.validate(self.value(integrations={"system": "mail"}))))
+
+    def test_given_a_relative_detailed_health_when_validated_then_it_is_an_error(self):
+        self.assertTrue(any("detailedHealth" in e for e in c.validate(self.value(detailed="/internal/health"))))
+
+    def test_given_an_absolute_detailed_health_when_validated_then_there_are_no_errors(self):
+        self.assertEqual(c.validate(self.value(detailed="http://shop-api:9464/internal/health")), [])
+
+
 class ResolveTests(unittest.TestCase):
     def test_given_no_overrides_when_resolved_then_every_environment_with_defaults(self):
         plan = c.resolve(catalog(), "shop-api")

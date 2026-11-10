@@ -219,6 +219,7 @@ class SystemStatus {
     required this.status,
     required this.environments,
     this.description,
+    this.icon,
   });
 
   /// [order] maps environment ids to their position on the host, so the
@@ -245,6 +246,7 @@ class SystemStatus {
       id: _requiredString(json, 'id'),
       name: _requiredString(json, 'name'),
       description: _string(json['description']),
+      icon: _string(json['icon']),
       status: Status.parse(json['status']),
       environments: <SystemEnvironment>[for (final (_, e) in indexed) e],
     );
@@ -277,7 +279,11 @@ class SystemStatus {
   final String name;
   final String? description;
 
-  /// The rollup of [environments]: what the card is sorted and filtered by.
+  /// The catalog's icon name for the system, or `null` when it has none (or
+  /// the status API predates the field).
+  final String? icon;
+
+  /// The rollup of [environments]: the overall status the map shows.
   final Status status;
 
   /// The host's environments this system has applications in, in the host's
@@ -296,6 +302,8 @@ class SystemEnvironment {
     required this.environment,
     required this.status,
     required this.applications,
+    this.onDemand = false,
+    this.integrations = const <IntegrationStatus>[],
   });
 
   factory SystemEnvironment.fromJson(Map<String, dynamic> json) =>
@@ -303,6 +311,12 @@ class SystemEnvironment {
         environment: _requiredString(json, 'environment'),
         status: Status.parse(json['status']),
         applications: _list(json, 'applications', ApplicationStatus.fromJson),
+        onDemand: json['onDemand'] == true,
+        integrations: _optionalList(
+          json,
+          'integrations',
+          IntegrationStatus.fromJson,
+        ),
       );
 
   /// The environment's id, as in [HostStatus.environments].
@@ -310,6 +324,81 @@ class SystemEnvironment {
 
   final Status status;
   final List<ApplicationStatus> applications;
+
+  /// Whether any application of the system is on demand in this environment.
+  /// Per system, not the environment's own flag: an application can override
+  /// it.
+  final bool onDemand;
+
+  /// The system's integrations here, in catalog order; empty when it has none
+  /// or the status API predates the field.
+  final List<IntegrationStatus> integrations;
+}
+
+/// The health of an integration: a caller's dependency on another system or
+/// an external service.
+enum IntegrationHealth {
+  up('up'),
+  down('down'),
+  notConfigured('not_configured'),
+  stopped('stopped'),
+  unknown('unknown');
+
+  const IntegrationHealth(this.wire);
+
+  final String wire;
+
+  /// Anything unrecognised is [IntegrationHealth.unknown], as for [Status].
+  static IntegrationHealth parse(Object? value) {
+    for (final health in values) {
+      if (health.wire == value) {
+        return health;
+      }
+    }
+
+    return IntegrationHealth.unknown;
+  }
+}
+
+/// One integration of a system in an environment: [from] depends on a system
+/// or on an external service.
+class IntegrationStatus {
+  const IntegrationStatus({
+    required this.from,
+    required this.check,
+    required this.status,
+    this.system,
+    this.external,
+    this.reason,
+  });
+
+  factory IntegrationStatus.fromJson(Map<String, dynamic> json) =>
+      IntegrationStatus(
+        from: _requiredString(json, 'from'),
+        system: _string(json['system']),
+        external: _string(json['external']),
+        check: _string(json['check']) ?? '',
+        status: IntegrationHealth.parse(json['status']),
+        reason: _string(json['reason']),
+      );
+
+  /// The calling application's id.
+  final String from;
+
+  /// The target system's id, or `null` for an external one.
+  final String? system;
+
+  /// The external target's display name, or `null` for a system target.
+  final String? external;
+
+  /// The name of the entry in the caller's detailed health report.
+  final String check;
+
+  final IntegrationHealth status;
+
+  /// Why the integration is `down`, or `unknown` for a caller that did not
+  /// answer; otherwise `null`.
+  final String? reason;
 }
 
 /// One deployable unit of a system.
@@ -325,6 +414,7 @@ class ApplicationStatus {
     this.deployment,
     this.container,
     this.probe,
+    this.details,
   });
 
   factory ApplicationStatus.fromJson(Map<String, dynamic> json) =>
@@ -339,6 +429,7 @@ class ApplicationStatus {
         deployment: _object(json['deployment'], Deployment.fromJson),
         container: _object(json['container'], ContainerInfo.fromJson),
         probe: _object(json['probe'], Probe.fromJson),
+        details: _object(json['details'], ApplicationDetails.fromJson),
       );
 
   final String id;
@@ -365,6 +456,93 @@ class ApplicationStatus {
 
   /// `null` for `not_deployed` applications, which are not probed.
   final Probe? probe;
+
+  /// The detailed health report the status API holds, or `null` when the
+  /// application has none configured (or the status API predates the field).
+  final ApplicationDetails? details;
+}
+
+/// What the status API holds of an application's last detailed health fetch.
+enum DetailsState {
+  reported('reported'),
+  unavailable('unavailable'),
+  unsupported('unsupported'),
+  notChecked('not_checked');
+
+  const DetailsState(this.wire);
+
+  final String wire;
+
+  /// Anything unrecognised is [DetailsState.notChecked], so an older console
+  /// shows nothing for a state it does not know instead of breaking.
+  static DetailsState parse(Object? value) {
+    for (final state in values) {
+      if (state.wire == value) {
+        return state;
+      }
+    }
+
+    return DetailsState.notChecked;
+  }
+}
+
+/// An application's detailed health: the report's overall status and one
+/// entry per dependency.
+class ApplicationDetails {
+  const ApplicationDetails({
+    required this.state,
+    this.checkedAt,
+    this.reason,
+    this.status,
+    this.services = const <ReportedService>[],
+  });
+
+  factory ApplicationDetails.fromJson(Map<String, dynamic> json) =>
+      ApplicationDetails(
+        state: DetailsState.parse(json['state']),
+        checkedAt: _date(json['checkedAt']),
+        reason: _string(json['reason']),
+        status: _string(json['status']),
+        services: _optionalList(json, 'services', ReportedService.fromJson),
+      );
+
+  final DetailsState state;
+
+  /// `null` for [DetailsState.notChecked].
+  final DateTime? checkedAt;
+
+  /// Why the fetch failed, for [DetailsState.unavailable].
+  final String? reason;
+
+  /// The report's status as written (`Healthy`, `Degraded`, ...); `null`
+  /// unless [state] is [DetailsState.reported].
+  final String? status;
+
+  final List<ReportedService> services;
+}
+
+/// One entry of a detailed health report.
+class ReportedService {
+  const ReportedService({
+    required this.name,
+    required this.status,
+    this.reason,
+  });
+
+  factory ReportedService.fromJson(Map<String, dynamic> json) =>
+      ReportedService(
+        name: _requiredString(json, 'name'),
+        status: _string(json['status']) ?? '',
+        reason: _string(json['reason']),
+      );
+
+  final String name;
+
+  /// As written by the application: `Healthy`, `Degraded`, `Unhealthy` or
+  /// `NotConfigured`.
+  final String status;
+
+  final String? reason;
 }
 
 /// What was deployed, read from the container's `yggdrasil.*` labels.
@@ -498,3 +676,11 @@ List<T> _list<T>(
         throw FormatException('Expected an object in "$key"', element),
   ];
 }
+
+/// Like [_list], but a missing or non-list value is an empty list: the field
+/// is optional in the contract.
+List<T> _optionalList<T>(
+  Map<String, dynamic> json,
+  String key,
+  T Function(Map<String, dynamic>) parse,
+) => json[key] is List<dynamic> ? _list(json, key, parse) : <T>[];

@@ -36,11 +36,11 @@ Generate the token with `openssl rand -hex 32`. The scheme `Bearer` is case-inse
 
 CORS: the origins in `YGGDRASIL_STATUS_CORS_ORIGINS`, in the host's `platform.env`, may call `/api/*` from a browser. This lets the console served by one host show another host. Same-origin use needs no entry.
 - Comma-separated, may be empty. Each origin is exactly `https://host` or `https://host:port` (`http://` is accepted too): no path or query (a trailing `/` is tolerated). An invalid entry stops the service at start-up.
-- Allowed: `GET` with the `Authorization` header. Preflight answers are cached for 1 hour.
+- Allowed: `GET` and `POST` with the `Authorization` header (`POST` is for [`/api/status/refresh`](#post-apistatusrefresh)). Preflight answers are cached for 1 hour.
 
 ## `GET /api/status`
 
-The whole host in one response. The console polls it every 30 s (fixed) while its overview is visible. Abridged below to one system with one application per environment:
+The whole host in one response, answered from memory at once. A console loads once on start or host switch, again on Refresh now, and on an opt-in timer; each load is a `GET` followed by [`POST /api/status/refresh`](#post-apistatusrefresh). Abridged below to one system with one application per environment:
 
 ```json
 {
@@ -57,11 +57,16 @@ The whole host in one response. The console polls it every 30 s (fixed) while it
       "id": "heimdall",
       "name": "Heimdall",
       "description": "Identity and access management",
+      "icon": "shield",
       "status": "up",
       "environments": [
         {
           "environment": "development",
           "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            { "from": "heimdall-api", "system": "hermes", "external": null, "check": "Hermes", "status": "stopped", "reason": null }
+          ],
           "applications": [
             {
               "id": "heimdall-api",
@@ -82,13 +87,18 @@ The whole host in one response. The console polls it every 30 s (fixed) while it
                 "startedAt": null,
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": { "state": "not_checked", "checkedAt": null, "reason": null, "status": null, "services": [] }
             }
           ]
         },
         {
           "environment": "homologation",
           "status": "stopped",
+          "onDemand": true,
+          "integrations": [
+            { "from": "heimdall-api", "system": "hermes", "external": null, "check": "Hermes", "status": "stopped", "reason": null }
+          ],
           "applications": [
             {
               "id": "heimdall-api",
@@ -109,13 +119,18 @@ The whole host in one response. The console polls it every 30 s (fixed) while it
                 "startedAt": null,
                 "restartCount": null
               },
-              "probe": null
+              "probe": null,
+              "details": { "state": "not_checked", "checkedAt": null, "reason": null, "status": null, "services": [] }
             }
           ]
         },
         {
           "environment": "production",
           "status": "up",
+          "onDemand": false,
+          "integrations": [
+            { "from": "heimdall-api", "system": "hermes", "external": null, "check": "Hermes", "status": "down", "reason": "connection refused" }
+          ],
           "applications": [
             {
               "id": "heimdall-api",
@@ -142,6 +157,16 @@ The whole host in one response. The console polls it every 30 s (fixed) while it
                 "latencyMs": 12,
                 "checkedAt": "2026-10-08T18:04:09Z",
                 "error": null
+              },
+              "details": {
+                "state": "reported",
+                "checkedAt": "2026-10-08T18:04:10Z",
+                "reason": null,
+                "status": "Degraded",
+                "services": [
+                  { "name": "Database", "status": "Healthy", "reason": null },
+                  { "name": "Hermes", "status": "Unhealthy", "reason": "connection refused" }
+                ]
               }
             }
           ]
@@ -195,6 +220,9 @@ When the Docker proxy is unreachable, applications whose probe fails are `down` 
 - **`host`**: the host's `YGGDRASIL_DOMAIN`, for display.
 - **`environments`**: the host's environments, in catalog order. `id` and `name` are the catalog's; `onDemand` is the environment's own option (not an application's override).
 - **`systems`**: in catalog order. **`systems[].environments`** lists, in catalog order, only the host's environments the system has at least one application in; `environment` is the environment's `id`. The platform system is in every environment its components are in.
+  - **`systems[].icon`**: the catalog's `icon` (one of `shield`, `mail`, `savings`, `construction`, `local_library`, `music_note`, `extension`, `person`, `business`, `park`, `cloud`), or `null` without one. A consumer that does not know a name shows a neutral icon.
+  - **`systems[].environments[].onDemand`**: `true` when any application of the system in that environment is on demand. It is per system because `onDemand` can be overridden per application, so it can differ from the environment's own `onDemand` in `environments[]`.
+  - **`systems[].environments[].integrations`**: the system's integrations in that environment, in catalog order (an array, empty when there are none): see [Details and integrations](#details-and-integrations).
 - **Application objects** (`systems[].environments[].applications[]`):
   - **`url`**: where the application is served, formed as `scripts/catalog.py` forms it for `scripts/deploy.sh` (`public-host`, `public-path`), so it is the address the proxy answers to: `https://<host><hostSuffix>.<domain><path>`.
     - `<host>` is the catalog's `host`, and `<hostSuffix>` the application's in that environment.
@@ -216,8 +244,78 @@ When the Docker proxy is unreachable, applications whose probe fails are `down` 
     - `statusCode` is the HTTP answer.
     - `error` is `null` whenever an answer came back, even a failing one. Otherwise it is one of `timeout`, `connection refused`, `connection failed`, `connection reset`, `connection closed`, `name not resolved`, `host unreachable`, `tls error`, `invalid response` or `request failed` (anything else).
     - `latencyMs` is set on failures too: the time until the probe gave up.
+  - **`details`**: `null` when the application has no `detailedHealth` in the catalog, otherwise an object: see [Details and integrations](#details-and-integrations).
   - **Restarted recently**: restarted (see `container`) and `startedAt` less than 10 minutes ago, outside an on-demand environment. A fresh deploy is a new container, so it doesn't count.
   - **`deployedAt`**: normalised to UTC (`...Z`) when the label parses as a date, otherwise passed through as written.
+
+### Details and integrations
+
+An application with a `detailedHealth` URL in the catalog serves a **detailed health report** there: an overall status and one entry per thing it depends on, on an internal port that the `edge` and `telemetry` networks can reach and no proxy routes. The report is the same bare JSON for every API, not wrapped in an envelope:
+
+```json
+{
+  "status": "Degraded",
+  "services": [
+    { "name": "Database", "status": "Healthy" },
+    { "name": "Hermes", "status": "Unhealthy", "reason": "connection refused" }
+  ]
+}
+```
+
+- `status` of the report and of each entry is `Healthy`, `Degraded`, `Unhealthy` or `NotConfigured`.
+- `reason` is optional, and is one of the probe `error` words above, or `HTTP <code>`. Nothing else.
+- The API answers `200` for `Healthy` and `Degraded`, `503` for `Unhealthy`, with the same body. Other fields in the report are ignored.
+
+**`applications[].details`** is what the status API holds of the last fetch of that report, per application and environment:
+
+| Field | Meaning |
+|---|---|
+| `state` | `reported`: a report was read. `unavailable`: the application did not answer usefully, see `reason`. `unsupported`: it answered `404`, i.e. this version has no such route. `not_checked`: nothing has been fetched for it (no console has asked since the status API started, or the application is `stopped` or `not_deployed`). |
+| `checkedAt` | When the fetch finished, UTC; `null` for `not_checked`. |
+| `reason` | For `unavailable`: one of the probe `error` words, `HTTP <code>`, or `invalid response`. `null` otherwise. |
+| `status` | The report's `status`; `null` unless `state` is `reported`. |
+| `services` | The report's entries, each `{ "name", "status", "reason" }` (`reason` is `null` when absent); empty unless `state` is `reported`. |
+
+The owner's rule is that an API that does not answer is treated as not healthy. How a fetch affects the application, and what a console shows:
+
+| Outcome of the fetch | Effect on the application | Details shown |
+|---|---|---|
+| Report `Healthy` | None | The entries |
+| Report `Degraded` or `Unhealthy` | At most `degraded` | The entries |
+| No answer, timeout, a body that is not a report, or a status other than 200, 503 or 404 | `degraded` if it would otherwise be `up` | "Could not get more details": the reason |
+| 404 | None | "This version does not report detailed health" |
+| Not fetched yet | None | Nothing yet |
+
+The liveness rules above are unchanged and take precedence: a stopped or missing container is still `stopped` or `down`. A report can only worsen `up` to `degraded`; `down` keeps its meaning. A `404` is not a failure, so that a catalog entry can land before every environment runs a version that has the route.
+
+**`systems[].environments[].integrations[]`** lists the catalog's `integrations` of the system's applications, in each environment where the caller is deployed and, for a `system` target, the target is deployed too:
+
+```json
+{ "from": "heimdall-api", "system": "hermes", "external": null, "check": "Hermes", "status": "down", "reason": "connection refused" }
+```
+
+`from` is the calling application's id. `system` is the target system's id, or `null` for an `external` one, whose display name is then `external` (`null` for a system target). `check` is the report entry's name. `status` is the first row that matches:
+
+| Status | When |
+|---|---|
+| `stopped` | The caller is `stopped`, or the target system is `stopped` or `not_deployed` in that environment |
+| `unknown` | The caller did not answer, its report lacks the check, or nothing has been fetched yet |
+| `not_configured` | The caller's report has the check `NotConfigured` |
+| `up` | The caller's report has the check `Healthy` |
+| `down` | The caller's report has the check `Degraded` or `Unhealthy` |
+
+`reason` is the check's own `reason` for `down`, the caller's `details.reason` for `unknown` when it did not answer, and `null` otherwise.
+
+**A deliberately stopped target is not a problem.** In an on-demand environment one application can be left running while the rest are stopped. The running caller's check against a stopped target fails, but that check is ignored when working out the caller's status: if every entry of the report that is not healthy is an integration whose status above is `stopped`, the report counts as `Healthy`. Any other failing entry counts as usual. The line then reads `stopped` although the caller reports itself healthy.
+
+## `POST /api/status/refresh`
+
+Fetches the detailed health report of every application that has a `detailedHealth` and is neither `stopped` nor `not_deployed`, and answers with the same body as `GET /api/status`, the fetched details merged in. It takes the same token and has no request body.
+
+- Each fetch is a `GET` of the environment-qualified `detailedHealth` URL with a 5 s timeout and no redirects followed, all in parallel. There is no background loop for it: this is the only time reports are fetched.
+- Requests that arrive during a fetch share it, and a result less than 10 s old is reused, so several consoles or repeated clicks do not become a burst of calls.
+- This is the one endpoint that waits on probes, for at most the 5 s timeout. Everything else still answers from memory. Like `GET /api/status`, it answers `503` with `Retry-After: 5` until the first liveness refresh has completed.
+- Results are kept per application per environment until the next fetch. The liveness loop merges them into each refresh, so `GET /api/status` shows them too.
 
 ## `GET /api/systems/{id}`
 
@@ -244,7 +342,7 @@ Groups follow the catalog: systems, then their applications, then each applicati
 
 ## How probing works
 
-A background loop refreshes every application in every environment of the host every 15 s (`YGGDRASIL_STATUS_INTERVAL_SECONDS`), with the probes running in parallel. Requests are answered from the latest results and never wait for a probe; `generatedAt` is the time of the last completed refresh. A refresh that fails keeps the previous results, so a `generatedAt` that stops advancing means refreshes are failing: see `docker logs yggdrasil-status-1`.
+A background loop refreshes every application in every environment of the host every 15 s (`YGGDRASIL_STATUS_INTERVAL_SECONDS`), with the probes running in parallel. Requests are answered from the latest results and never wait for a probe (except `POST /api/status/refresh`, which waits for the detailed health fetch, at most 5 s); `generatedAt` is the time of the last completed refresh. A refresh that fails keeps the previous results, so a `generatedAt` that stops advancing means refreshes are failing: see `docker logs yggdrasil-status-1`.
 
 Authentication comes first: a wrong token gets `401` even while the API is starting.
 
