@@ -7,62 +7,26 @@ import 'package:yggdrasil_console/features/environments/domain/environment.dart'
 import 'package:yggdrasil_console/features/status/data/refresh_settings_store.dart';
 import 'package:yggdrasil_console/features/status/data/status_source.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
+import 'package:yggdrasil_console/features/status/presentation/map/system_map.dart';
 import 'package:yggdrasil_console/features/status/presentation/refresh_settings.dart';
-import 'package:yggdrasil_console/features/status/presentation/widgets/application_detail.dart';
-import 'package:yggdrasil_console/features/status/presentation/widgets/status_visuals.dart';
-import 'package:yggdrasil_console/features/status/presentation/widgets/system_card.dart';
 
 import '../../../helpers.dart';
 
-Finder systemHeader(String id) => find.byKey(ValueKey<String>('system-$id'));
+Finder tile(String id) => find.byKey(ValueKey<String>('map-system-$id'));
 
-Finder card(String id) => find.byKey(ValueKey<String>('card-$id'));
+final Finder map = find.byType(SystemMap);
 
-/// System ids in reading order: top to bottom, then left to right.
-List<String> shownSystems(WidgetTester tester) {
-  final cards = tester.widgetList<SystemCard>(find.byType(SystemCard)).toList()
-    ..sort((a, b) {
-      final pa = tester.getTopLeft(find.byWidget(a));
-      final pb = tester.getTopLeft(find.byWidget(b));
+final Finder hostSwitcher = find.byKey(
+  const ValueKey<String>('environment-switcher'),
+);
 
-      return pa.dy != pb.dy ? pa.dy.compareTo(pb.dy) : pa.dx.compareTo(pb.dx);
-    });
-
-  return cards.map((card) => card.system.id).toList();
-}
-
-/// The environment chips under [of], as `name · status`, in reading order.
-List<String> chipsIn(WidgetTester tester, Finder of) {
-  final chips = find.descendant(
-    of: of,
-    matching: find.byType(EnvironmentStatusChip),
-  );
-  final positioned =
-      <(Offset, EnvironmentStatusChip)>[
-        for (final element in chips.evaluate())
-          (
-            tester.getTopLeft(find.byWidget(element.widget)),
-            element.widget as EnvironmentStatusChip,
-          ),
-      ]..sort(
-        (a, b) => a.$1.dy != b.$1.dy
-            ? a.$1.dy.compareTo(b.$1.dy)
-            : a.$1.dx.compareTo(b.$1.dx),
-      );
-
-  return <String>[
-    for (final (_, chip) in positioned)
-      '${chip.name} · ${StatusVisual.of(chip.status, Brightness.light).label}',
-  ];
-}
-
-Future<void> expandAll(WidgetTester tester, List<String> ids) async {
-  for (final id in ids) {
-    await tester.ensureVisible(systemHeader(id));
-    await tester.pump();
-    await tester.tap(systemHeader(id));
-    await settle(tester);
-  }
+/// Picks [name] in the saved-host dropdown.
+Future<void> switchHost(WidgetTester tester, String name) async {
+  await tester.tap(hostSwitcher);
+  await settle(tester);
+  // The menu's entry, over the button's own copy.
+  await tester.tap(find.text(name).last);
+  await settle(tester);
 }
 
 const List<String> demoSystems = <String>['heimdall', 'fortuna', 'yggdrasil'];
@@ -105,292 +69,60 @@ void main() {
     expect(find.byKey(const ValueKey<String>('host-name')), findsOneWidget);
     expect(find.text('example.com'), findsOneWidget);
     expect(find.text('3 systems · 3 environments'), findsOneWidget);
-    expect(find.textContaining('updated '), findsOneWidget);
+    // The refresh controls say when, not the banner.
+    expect(find.textContaining('updated '), findsNothing);
     // The environment selector carries these now, not the banner.
     expect(
       find.byKey(const ValueKey<String>('host-environments')),
       findsNothing,
     );
 
-    // All up overall, so by name.
-    expect(shownSystems(tester), <String>['fortuna', 'heimdall', 'yggdrasil']);
-
-    // One chip per environment, in the host's order.
-    expect(chipsIn(tester, card('heimdall')), <String>[
-      'Development · Stopped',
-      'Homologation · Stopped',
-      'Production · Up',
-    ]);
-    // The platform too: it serves nothing in a stopped environment.
-    expect(chipsIn(tester, card('yggdrasil')), <String>[
-      'Development · Stopped',
-      'Homologation · Stopped',
-      'Production · Up',
-    ]);
-    expect(find.text('Development · Stopped'), findsNWidgets(3));
-
-    // Collapsed: no application rows yet.
-    expect(find.byType(ApplicationRow), findsNothing);
-    expect(find.byType(EnvironmentSection), findsNothing);
+    for (final id in demoSystems) {
+      expect(tile(id), findsOneWidget, reason: id);
+    }
   });
 
-  testWidgets('expanding a system shows one section per environment', (
-    tester,
-  ) async {
-    await pumpConsole(tester, source: FakeStatusSource());
-
-    await tester.tap(systemHeader('heimdall'));
-    await settle(tester);
-
-    final sections = tester
-        .widgetList<EnvironmentSection>(find.byType(EnvironmentSection))
-        .toList();
-    expect(sections.map((section) => section.name), <String>[
-      'Development',
-      'Homologation',
-      'Production',
-    ]);
-    final tops = <double>[
-      for (final section in sections)
-        tester.getTopLeft(find.byWidget(section)).dy,
-    ];
-    expect(tops, orderedEquals(List<double>.of(tops)..sort()));
-
-    expect(find.byType(ApplicationRow), findsNWidgets(6));
-    expect(find.text('on demand'), findsNWidgets(2));
-    expect(find.text('2 applications · all stopped'), findsNWidgets(2));
-    expect(find.text('2 applications · all up'), findsOneWidget);
-    expect(find.text('Heimdall API'), findsNWidgets(3));
-    expect(find.text('v1.4.0 · 3f2a9c1'), findsOneWidget);
-    expect(find.text('v1.5.0 · 9c41e7b'), findsOneWidget);
-    expect(find.text('12 ms'), findsOneWidget);
-    expect(find.text('running · healthy'), findsNWidgets(2));
-    expect(find.text('exited'), findsNWidgets(4));
-    expect(
-      find.byKey(const ValueKey<String>('application-production-heimdall-api')),
-      findsOneWidget,
-    );
-
-    await tester.tap(systemHeader('heimdall'));
-    await settle(tester);
-
-    expect(find.byType(ApplicationRow), findsNothing);
-  });
-
-  testWidgets('320 dp: one column, nothing overflows when all is expanded', (
-    tester,
-  ) async {
-    await pumpConsole(
+  for (final width in <double>[320, 360, 800, 1400]) {
+    testWidgets('$width dp: the map fits and nothing overflows', (
       tester,
-      source: FakeStatusSource(),
-      size: const Size(320, 12000),
-    );
-
-    await expandAll(tester, demoSystems);
-
-    // 2 + 2 applications in 3 environments, and 8 platform components in 3.
-    expect(find.byType(ApplicationRow), findsNWidgets(36));
-    expect(find.byType(EnvironmentSection), findsNWidgets(9));
-    final lefts = tester
-        .widgetList<SystemCard>(find.byType(SystemCard))
-        .map((card) => tester.getTopLeft(find.byWidget(card)).dx)
-        .toSet();
-    expect(lefts, hasLength(1));
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('1400 dp: three columns, nothing overflows when expanded', (
-    tester,
-  ) async {
-    await pumpConsole(
-      tester,
-      source: FakeStatusSource(),
-      size: const Size(1400, 5000),
-    );
-
-    await expandAll(tester, demoSystems);
-
-    final lefts = tester
-        .widgetList<SystemCard>(find.byType(SystemCard))
-        .map((card) => tester.getTopLeft(find.byWidget(card)).dx)
-        .toSet();
-    expect(lefts, hasLength(3));
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('800 dp: two columns', (tester) async {
-    await pumpConsole(
-      tester,
-      source: FakeStatusSource(),
-      size: const Size(800, 3000),
-    );
-
-    final lefts = tester
-        .widgetList<SystemCard>(find.byType(SystemCard))
-        .map((card) => tester.getTopLeft(find.byWidget(card)).dx)
-        .toSet();
-    expect(lefts, hasLength(2));
-  });
-
-  testWidgets('an application opens in a bottom sheet on a phone', (
-    tester,
-  ) async {
-    await pumpConsole(
-      tester,
-      source: FakeStatusSource(),
-      size: const Size(360, 800),
-    );
-
-    await expandAll(tester, <String>['yggdrasil']);
-    // The name, not the row's centre, which may be one of its link buttons.
-    final jenkins = find.text('Jenkins').first;
-    await tester.ensureVisible(jenkins);
-    await settle(tester);
-    await tester.tap(jenkins);
-    await settle(tester);
-
-    expect(find.byType(BottomSheet), findsOneWidget);
-    expect(find.byType(ApplicationDetail), findsOneWidget);
-    expect(find.text('Yggdrasil · Development · jenkins'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('Not probed: not deployed on this host.'),
-      200,
-      scrollable: find
-          .descendant(
-            of: find.byType(ApplicationDetail),
-            matching: find.byType(Scrollable),
-          )
-          .first,
-    );
-    expect(find.text('No container on this host.'), findsNWidgets(2));
-    expect(find.text('Not probed: not deployed on this host.'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('an application opens in a dialog on a wide screen', (
-    tester,
-  ) async {
-    await pumpConsole(
-      tester,
-      source: FakeStatusSource(),
-      size: const Size(1400, 1400),
-    );
-
-    await tester.tap(systemHeader('heimdall'));
-    await settle(tester);
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(
-          const ValueKey<String>('application-production-heimdall-api'),
-        ),
-        matching: find.text('Heimdall API'),
-      ),
-    );
-    await settle(tester);
-
-    expect(find.byType(Dialog), findsOneWidget);
-    final detail = find.byType(ApplicationDetail);
-    expect(
-      find.descendant(
-        of: detail,
-        matching: find.text('heimdall-api:production-1.4.0-3f2a9c1'),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: detail,
-        matching: find.text('Heimdall · Production · heimdall-api'),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: detail, matching: find.text('HTTP status')),
-      findsOneWidget,
-    );
-
-    await tester.tap(find.byTooltip('Close'));
-    await settle(tester);
-    expect(find.byType(Dialog), findsNothing);
-  });
-
-  testWidgets('a stopped application says why it was not probed', (
-    tester,
-  ) async {
-    await pumpConsole(
-      tester,
-      source: FakeStatusSource(),
-      size: const Size(1400, 1400),
-    );
-
-    await tester.tap(systemHeader('heimdall'));
-    await settle(tester);
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(
-          const ValueKey<String>('application-development-heimdall-api'),
-        ),
-        matching: find.text('Heimdall API'),
-      ),
-    );
-    await settle(tester);
-
-    final detail = find.byType(ApplicationDetail);
-    expect(
-      find.descendant(
-        of: detail,
-        matching: find.text('Not probed: stopped (an on-demand environment).'),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: detail, matching: find.text('Stopped')),
-      findsWidgets,
-    );
-  });
-
-  testWidgets('stopped environments are not problems', (tester) async {
-    await pumpConsole(tester, source: FakeStatusSource());
-
-    expect(find.text('Problems only (0)'), findsOneWidget);
-
-    await tester.tap(find.byKey(const ValueKey<String>('problems-only')));
-    await settle(tester);
-
-    expect(find.byType(SystemCard), findsNothing);
-    expect(find.text('No problems: every system is up.'), findsOneWidget);
-  });
-
-  testWidgets(
-    'a problem in one environment shows on its chip and sorts first',
-    (tester) async {
+    ) async {
       await pumpConsole(
         tester,
         source: FakeStatusSource((_, _) async => demoWithAProblem()),
+        size: Size(width, 1200),
       );
 
-      expect(shownSystems(tester), <String>[
-        'fortuna',
-        'heimdall',
-        'yggdrasil',
-      ]);
-      expect(chipsIn(tester, card('fortuna')), <String>[
-        'Development · Stopped',
-        'Homologation · Stopped',
-        'Production · Degraded',
-      ]);
-      expect(
-        find.text('3 systems · 3 environments · 1 degraded'),
-        findsOneWidget,
-      );
-      expect(find.text('Problems only (1)'), findsOneWidget);
+      expect(map, findsOneWidget);
+      expect(tester.getRect(map).right, lessThanOrEqualTo(width));
+      expect(tester.takeException(), isNull);
+    });
+  }
 
-      await tester.tap(find.byKey(const ValueKey<String>('problems-only')));
-      await settle(tester);
+  testWidgets('there is no problems filter any more', (tester) async {
+    await pumpConsole(tester, source: FakeStatusSource());
 
-      expect(shownSystems(tester), <String>['fortuna']);
-    },
-  );
+    expect(find.byKey(const ValueKey<String>('problems-only')), findsNothing);
+    expect(find.textContaining('Problems only'), findsNothing);
+  });
+
+  testWidgets('a problem in the selected environment shows on its system', (
+    tester,
+  ) async {
+    final handle = tester.ensureSemantics();
+
+    await pumpConsole(
+      tester,
+      source: FakeStatusSource((_, _) async => demoWithAProblem()),
+    );
+
+    expect(
+      find.text('3 systems · 3 environments · 1 degraded'),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel(RegExp('^Fortuna, degraded')), findsOneWidget);
+
+    handle.dispose();
+  });
 
   testWidgets('a v1 host shows as one environment', (tester) async {
     await pumpConsole(
@@ -403,72 +135,47 @@ void main() {
       find.text('4 systems · 1 environment · 1 down · 2 degraded'),
       findsOneWidget,
     );
-    expect(shownSystems(tester), <String>[
-      'huginn',
-      'fortuna',
-      'yggdrasil',
-      'heimdall',
-    ]);
-    expect(chipsIn(tester, card('huginn')), <String>['Production · Down']);
 
-    await tester.tap(systemHeader('heimdall'));
-    await settle(tester);
+    for (final id in <String>['huginn', 'fortuna', 'yggdrasil', 'heimdall']) {
+      expect(tile(id), findsOneWidget, reason: id);
+    }
 
-    expect(find.byType(EnvironmentSection), findsOneWidget);
-    expect(find.byType(ApplicationRow), findsNWidgets(2));
     expect(find.text('on demand'), findsNothing);
-
-    await tester.tap(find.byKey(const ValueKey<String>('problems-only')));
-    await settle(tester);
-
-    expect(shownSystems(tester), <String>['huginn', 'fortuna', 'yggdrasil']);
-  });
-
-  testWidgets('360 dp: the header and the chips fit', (tester) async {
-    await pumpConsole(
-      tester,
-      source: FakeStatusSource((_, _) async => demoWithAProblem()),
-      size: const Size(360, 3000),
-    );
-
-    await expandAll(tester, <String>['fortuna']);
-
-    expect(find.byType(EnvironmentStatusChip), findsNWidgets(9));
-    expect(tester.takeException(), isNull);
   });
 
   testWidgets('switching host loads that host', (tester) async {
     final source = FakeStatusSource();
     await pumpConsole(tester, source: source);
 
-    await tester.tap(find.text('homologation'));
-    await settle(tester);
+    await switchHost(tester, 'homologation');
 
     expect(source.calls.last.$1, homologation);
   });
 
-  testWidgets('a narrow screen switches hosts with a dropdown', (tester) async {
-    await pumpConsole(
+  for (final size in <Size>[const Size(360, 800), const Size(1000, 900)]) {
+    testWidgets('at ${size.width} dp hosts switch with a compact dropdown', (
       tester,
-      source: FakeStatusSource(),
-      environments: const <Environment>[
-        production,
-        homologation,
-        Environment(
-          id: 'third',
-          name: 'a-host-with-a-long-name',
-          url: 'https://third.example.com',
-        ),
-      ],
-      size: const Size(360, 800),
-    );
+    ) async {
+      await pumpConsole(
+        tester,
+        source: FakeStatusSource(),
+        environments: const <Environment>[
+          production,
+          homologation,
+          Environment(
+            id: 'third',
+            name: 'a-host-with-a-long-name',
+            url: 'https://third.example.com',
+          ),
+        ],
+        size: size,
+      );
 
-    expect(
-      find.widgetWithText(DropdownButtonFormField<String>, 'Host'),
-      findsOneWidget,
-    );
-    expect(tester.takeException(), isNull);
-  });
+      expect(tester.widget(hostSwitcher), isA<DropdownButton<String>>());
+      expect(tester.getSize(hostSwitcher).height, lessThan(32));
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('a 401 asks for the token, then retries with it', (tester) async {
     final source = FakeStatusSource(
@@ -482,7 +189,7 @@ void main() {
     await pumpConsole(tester, source: source);
 
     expect(find.text('Token for production'), findsOneWidget);
-    expect(find.byType(SystemCard), findsNothing);
+    expect(map, findsNothing);
 
     await tester.enterText(
       find.byKey(const ValueKey<String>('token-field')),
@@ -492,7 +199,7 @@ void main() {
     await settle(tester);
 
     expect(source.calls.last.$2, 'right');
-    expect(find.byType(SystemCard), findsNWidgets(3));
+    expect(map, findsOneWidget);
     expect(find.byKey(const ValueKey<String>('failure-banner')), findsNothing);
   });
 
@@ -517,7 +224,7 @@ void main() {
       find.textContaining('Showing the last data received'),
       findsOneWidget,
     );
-    expect(find.byType(SystemCard), findsNWidgets(3));
+    expect(map, findsOneWidget);
     expect(find.byType(ColorFiltered), findsWidgets);
   });
 
@@ -566,7 +273,7 @@ void main() {
 
     expect(source.calls, hasLength(2), reason: 'retried after Retry-After');
     expect(find.byKey(const ValueKey<String>('starting-banner')), findsNothing);
-    expect(find.byType(SystemCard), findsNWidgets(3));
+    expect(map, findsOneWidget);
     expect(find.byType(ColorFiltered), findsNothing, reason: 'not stale');
   });
 
@@ -587,7 +294,7 @@ void main() {
     await tester.tap(find.text('Retry'));
     await settle(tester);
 
-    expect(find.byType(SystemCard), findsNWidgets(3));
+    expect(map, findsOneWidget);
   });
 
   group('refreshing', () {
@@ -771,7 +478,7 @@ void main() {
             throw const StatusException(StatusFailureKind.server);
       await pumpConsole(tester, source: source);
 
-      expect(find.byType(SystemCard), findsNWidgets(3));
+      expect(map, findsOneWidget);
       expect(
         find.byKey(const ValueKey<String>('failure-banner')),
         findsOneWidget,
@@ -798,7 +505,7 @@ void main() {
 
       expect(source.calls, hasLength(2));
       expect(source.detailsCalls, hasLength(1));
-      expect(find.byType(SystemCard), findsNWidgets(3));
+      expect(map, findsOneWidget);
 
       await tester.pump(const Duration(minutes: 10));
       expect(source.calls, hasLength(2), reason: 'a one-shot, not a poll');
@@ -850,7 +557,7 @@ void main() {
       source.calls.skip(1).map((call) => call.$1.id),
       everyElement(Environment.demoId),
     );
-    expect(find.byType(SystemCard), findsNWidgets(3));
+    expect(map, findsOneWidget);
   });
 
   testWidgets('with no host, the demo can be opened', (tester) async {
@@ -868,7 +575,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey<String>('open-demo')));
     await settle(tester);
 
-    expect(find.byType(SystemCard), findsNWidgets(3));
+    expect(map, findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -910,9 +617,6 @@ void main() {
 
   group('environment selector', () {
     final selector = find.byKey(const ValueKey<String>('environment-selector'));
-    final hostSwitcher = find.byKey(
-      const ValueKey<String>('environment-switcher'),
-    );
 
     Set<String> chosen(WidgetTester tester) =>
         tester.widget<SegmentedButton<String>>(selector).selected;
@@ -1015,16 +719,10 @@ void main() {
       expect(await store.readEnvironmentFor(production.id), 'development');
 
       // Another host starts from its own memory: the last environment.
-      await tester.tap(
-        find.descendant(of: hostSwitcher, matching: find.text('homologation')),
-      );
-      await settle(tester);
+      await switchHost(tester, 'homologation');
       expect(chosen(tester), <String>{'production'});
 
-      await tester.tap(
-        find.descendant(of: hostSwitcher, matching: find.text('production')),
-      );
-      await settle(tester);
+      await switchHost(tester, 'production');
       expect(chosen(tester), <String>{'development'});
     });
 

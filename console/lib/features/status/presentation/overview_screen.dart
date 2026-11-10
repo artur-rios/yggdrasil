@@ -12,12 +12,12 @@ import '../data/status_source.dart';
 import '../domain/status.dart';
 import '../domain/status_logic.dart';
 import 'layout.dart';
+import 'map/system_map.dart';
 import 'refresh_settings.dart';
 import 'status_controller.dart';
 import 'widgets/environment_selector.dart';
 import 'widgets/refresh_controls.dart';
 import 'widgets/status_visuals.dart';
-import 'widgets/system_card.dart';
 
 /// The host switcher, the host's status and every system on it.
 ///
@@ -254,8 +254,6 @@ class _OverviewBody extends ConsumerWidget {
     final environment = status.environment ?? environments.selected;
     final snapshot = status.snapshot;
     final failure = status.failure;
-    final problemsOnly = ref.watch(problemsOnlyProvider);
-    final expanded = ref.watch(expandedSystemsProvider);
     final autoRefresh = ref.watch(refreshSettingsProvider);
     final rememberedEnvironment = ref.watch(selectedHostEnvironmentProvider);
     final hostStatus = snapshot?.status;
@@ -267,7 +265,6 @@ class _OverviewBody extends ConsumerWidget {
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         final gutter = width < Breakpoints.tablet ? 8.0 : 16.0;
-        final columns = systemColumnsFor(width);
 
         return CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -350,60 +347,24 @@ class _OverviewBody extends ConsumerWidget {
                       : const SizedBox.shrink(),
                 ),
               )
-            else ...<Widget>[
+            else if (hostEnvironment != null)
               SliverPadding(
-                padding: EdgeInsets.fromLTRB(gutter, 12, gutter, 8),
-                sliver: SliverToBoxAdapter(
-                  child: _Constrained(
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: FilterChip(
-                        key: const ValueKey<String>('problems-only'),
-                        label: Text(
-                          'Problems only '
-                          '(${snapshot.status.systems.where(hasProblem).length})',
-                        ),
-                        selected: problemsOnly,
-                        onSelected: (value) =>
-                            ref.read(problemsOnlyProvider.notifier).state =
-                                value,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              SliverPadding(
-                padding: EdgeInsets.fromLTRB(gutter, 0, gutter, gutter + 16),
+                padding: EdgeInsets.fromLTRB(gutter, 16, gutter, gutter + 16),
                 sliver: SliverToBoxAdapter(
                   child: _Constrained(
                     child: _Stale(
                       stale: status.isStale,
-                      child: _SystemGrid(
+                      child: SystemMap(
                         host: snapshot.status,
-                        systems: visibleSystems(
-                          snapshot.status.systems,
-                          problemsOnly: problemsOnly,
-                        ),
-                        columns: columns,
-                        spacing: gutter < 16 ? 8 : 12,
-                        expanded: expanded,
-                        onToggle: (id) {
-                          final notifier = ref.read(
-                            expandedSystemsProvider.notifier,
-                          );
-                          notifier.state = notifier.state.contains(id)
-                              ? (Set<String>.of(notifier.state)..remove(id))
-                              : <String>{...notifier.state, id};
-                        },
-                        emptyText: problemsOnly
-                            ? 'No problems: every system is up.'
-                            : 'This host has no systems.',
+                        environmentId: hostEnvironment.id,
+                        // The system panel is not there yet: a tap does
+                        // nothing for now.
+                        onOpenSystem: (_) {},
                       ),
                     ),
                   ),
                 ),
               ),
-            ],
           ],
         );
       },
@@ -452,6 +413,8 @@ class _Stale extends StatelessWidget {
       : child;
 }
 
+/// Picks the saved host: small, as it changes far less often than the
+/// environment selector under it.
 class _EnvironmentSwitcher extends ConsumerWidget {
   const _EnvironmentSwitcher({
     required this.environments,
@@ -464,63 +427,64 @@ class _EnvironmentSwitcher extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.read(environmentsControllerProvider.notifier);
+    final theme = Theme.of(context);
     final list = environments.environments;
+    final style = theme.textTheme.bodySmall;
+    final longest = list
+        .map((environment) => environment.name.length)
+        .reduce((a, b) => a > b ? a : b);
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final longest = list
-            .map((environment) => environment.name.length)
-            .reduce((a, b) => a > b ? a : b);
-        // Roughly what a segment needs: padding plus ~9 px per character.
-        final segmentWidth = 40 + longest * 9.0;
-        final fits =
-            list.length <= 4 &&
-            segmentWidth * list.length <= constraints.maxWidth;
-
-        if (fits) {
-          return Align(
-            alignment: Alignment.centerLeft,
-            child: SegmentedButton<String>(
-              key: const ValueKey<String>('environment-switcher'),
-              showSelectedIcon: false,
-              segments: <ButtonSegment<String>>[
-                for (final environment in list)
-                  ButtonSegment<String>(
-                    value: environment.id,
-                    label: Text(environment.name),
-                  ),
-              ],
-              selected: <String>{?selectedId},
-              onSelectionChanged: (selection) =>
-                  controller.select(selection.first),
-            ),
-          );
-        }
-
-        return DropdownButtonFormField<String>(
-          key: const ValueKey<String>('environment-switcher'),
-          initialValue: selectedId,
-          isExpanded: true,
-          decoration: const InputDecoration(labelText: 'Host', isDense: true),
-          items: <DropdownMenuItem<String>>[
-            for (final environment in list)
-              DropdownMenuItem<String>(
-                value: environment.id,
-                child: Text(environment.name, overflow: TextOverflow.ellipsis),
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text(
+            'Host',
+            style: style?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            // Roughly what the longest name needs: the arrow plus ~7 px per
+            // character. Sized so a short list stays small and a long name
+            // ellipsizes instead of overflowing a narrow screen.
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: 40 + longest * 7.0),
+              child: DropdownButton<String>(
+                key: const ValueKey<String>('environment-switcher'),
+                // The host on screen can be one just removed from the list.
+                value: list.any((environment) => environment.id == selectedId)
+                    ? selectedId
+                    : null,
+                isDense: true,
+                isExpanded: true,
+                underline: const SizedBox.shrink(),
+                style: style?.copyWith(color: theme.colorScheme.onSurface),
+                items: <DropdownMenuItem<String>>[
+                  for (final environment in list)
+                    DropdownMenuItem<String>(
+                      value: environment.id,
+                      child: Text(
+                        environment.name,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (id) {
+                  if (id != null) {
+                    controller.select(id);
+                  }
+                },
               ),
-          ],
-          onChanged: (id) {
-            if (id != null) {
-              controller.select(id);
-            }
-          },
-        );
-      },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
-/// The host: its overall status, a summary and when it was generated.
+/// The host: its overall status and a summary.
 class _StatusBanner extends StatelessWidget {
   const _StatusBanner({required this.status});
 
@@ -530,7 +494,6 @@ class _StatusBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final visual = StatusVisual.of(status.status, theme.brightness);
-    final generatedAt = status.generatedAt;
 
     return Semantics(
       container: true,
@@ -572,17 +535,6 @@ class _StatusBanner extends StatelessWidget {
                         color: visual.foreground,
                       ),
                     ),
-                    if (generatedAt != null)
-                      NowBuilder(
-                        builder: (context, now) => RelativeTime(
-                          generatedAt,
-                          prefix: 'updated ',
-                          now: now,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: visual.foreground,
-                          ),
-                        ),
-                      ),
                   ],
                 ),
               ),
@@ -765,87 +717,6 @@ class _FailureBanner extends StatelessWidget {
     }
 
     return '${seconds ~/ 3600} h ago';
-  }
-}
-
-/// Cards laid out in [columns] columns, filled row by row so the worst
-/// systems stay at the top whatever the width.
-class _SystemGrid extends StatelessWidget {
-  const _SystemGrid({
-    required this.host,
-    required this.systems,
-    required this.columns,
-    required this.spacing,
-    required this.expanded,
-    required this.onToggle,
-    required this.emptyText,
-  });
-
-  final HostStatus host;
-  final List<SystemStatus> systems;
-  final int columns;
-  final double spacing;
-  final Set<String> expanded;
-  final void Function(String id) onToggle;
-  final String emptyText;
-
-  @override
-  Widget build(BuildContext context) {
-    if (systems.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 32),
-        child: Center(child: Text(emptyText, textAlign: TextAlign.center)),
-      );
-    }
-
-    return NowBuilder(
-      interval: const Duration(seconds: 15),
-      builder: (context, now) {
-        Widget card(SystemStatus system) => SystemCard(
-          key: ValueKey<String>('card-${system.id}'),
-          host: host,
-          system: system,
-          expanded: expanded.contains(system.id),
-          onToggle: () => onToggle(system.id),
-          now: now,
-        );
-
-        if (columns == 1) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              for (final (index, system) in systems.indexed) ...[
-                if (index > 0) SizedBox(height: spacing),
-                card(system),
-              ],
-            ],
-          );
-        }
-
-        // Row-major: system i goes to column i % columns. Each column is its
-        // own stack, so expanding a card does not stretch its neighbours.
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            for (var column = 0; column < columns; column++) ...[
-              if (column > 0) SizedBox(width: spacing),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    for (final (index, system) in systems.indexed)
-                      if (index % columns == column) ...[
-                        if (index >= columns) SizedBox(height: spacing),
-                        card(system),
-                      ],
-                  ],
-                ),
-              ),
-            ],
-          ],
-        );
-      },
-    );
   }
 }
 
