@@ -564,30 +564,96 @@ void main() {
     expect(opened, isEmpty);
   });
 
-  testWidgets('on a phone a pill rides above a level line, whose arrow shows', (
+  /// The pill's own box, on the line from Heimdall to Hermes.
+  Finder heimdallToHermesPill() => find.descendant(
+    of: line('heimdall', 'hermes'),
+    matching: find.byType(DecoratedBox),
+  );
+
+  for (final width in <double>[320, 390, 700]) {
+    for (final health in IntegrationHealth.values) {
+      testWidgets(
+        'at $width px a pill rides above a level line it would cover: '
+        '${health.wire}',
+        (tester) async {
+          await pumpMap(
+            tester,
+            heimdallToHermes(status: health),
+            size: Size(width, 900),
+          );
+
+          // The arrowhead is 5 px either side of the line.
+          expect(
+            tester.getRect(heimdallToHermesPill()).bottom,
+            lessThanOrEqualTo(tester.getCenter(tile('heimdall')).dy - 5),
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets('with room for it, a pill sits on the line', (tester) async {
+    await pumpMap(tester, heimdallToHermes());
+
+    expect(
+      tester.getCenter(heimdallToHermesPill()).dy,
+      tester.getCenter(tile('heimdall')).dy,
+    );
+  });
+
+  testWidgets('a line whose pill rides above it still takes the tap', (
     tester,
   ) async {
     final opened = await pumpMap(
       tester,
       heimdallToHermes(status: IntegrationHealth.down),
-      size: const Size(320, 900),
+      size: const Size(390, 900),
     );
-    final lineY = tester.getCenter(tile('heimdall')).dy;
-    final pill = tester.getRect(find.text('Failing'));
 
-    expect(pill.bottom, lessThan(lineY));
-
-    // The line itself still takes the tap, not the pill's new place.
     await tester.tapAt(
-      Offset(
-        (tester.getCenter(tile('heimdall')).dx +
-                tester.getCenter(tile('hermes')).dx) /
-            2,
-        lineY,
-      ),
+      (tester.getCenter(tile('heimdall')) + tester.getCenter(tile('hermes'))) /
+          2,
     );
 
     expect(opened, <String>['heimdall']);
+  });
+
+  testWidgets('a tap on the caption of an external does nothing, even with a '
+      'line behind it', (tester) async {
+    // 3 columns: a b Mailgun / . . c, so c's line runs up behind the caption.
+    final opened = await pumpMap(
+      tester,
+      hostOf(<SystemStatus>[
+        sys('a', 'A', <SystemEnvironment>[
+          deployed(
+            production,
+            'a-api',
+            integrations: <IntegrationStatus>[link('a-api', 'b')],
+          ),
+        ]),
+        sys('b', 'B', <SystemEnvironment>[
+          deployed(
+            production,
+            'b-api',
+            integrations: <IntegrationStatus>[linkOut('b-api', 'Mailgun')],
+          ),
+        ]),
+        sys('c', 'C', <SystemEnvironment>[
+          deployed(
+            production,
+            'c-api',
+            integrations: <IntegrationStatus>[linkOut('c-api', 'Mailgun')],
+          ),
+        ]),
+      ]),
+      size: const Size(320, 900),
+    );
+
+    await tester.tap(find.text('external'));
+    await tester.tap(find.text('Mailgun'));
+
+    expect(opened, isEmpty);
   });
 
   testWidgets(
@@ -671,6 +737,12 @@ void main() {
       expect(centres.every((x) => x > 0 && x < width), isTrue);
     });
   }
+
+  testWidgets('an environment with nothing deployed says so', (tester) async {
+    await pumpMap(tester, heimdallToHermes(), environment: development);
+
+    expect(find.text('Nothing is deployed in Development.'), findsOneWidget);
+  });
 
   testWidgets('a host with nothing there says so', (tester) async {
     await pumpMap(tester, hostOf(const <SystemStatus>[]));

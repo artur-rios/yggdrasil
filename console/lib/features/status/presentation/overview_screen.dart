@@ -364,6 +364,18 @@ class _OverviewBody extends ConsumerWidget {
                     ),
                   ),
                 ),
+              )
+            else if (snapshot.status.systems.isEmpty)
+              const SliverPadding(
+                padding: EdgeInsets.symmetric(vertical: 32),
+                sliver: SliverToBoxAdapter(
+                  child: Center(
+                    child: Text(
+                      'This host has no systems.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
               ),
           ],
         );

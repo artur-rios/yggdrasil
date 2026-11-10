@@ -769,6 +769,7 @@ void main() {
 
       expect(selector, findsNothing);
       expect(find.text('This host reports no environments.'), findsOneWidget);
+      expect(find.text('This host has no systems.'), findsOneWidget);
     });
 
     testWidgets('narrow screens get a dropdown', (tester) async {

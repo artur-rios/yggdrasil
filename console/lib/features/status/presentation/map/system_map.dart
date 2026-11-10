@@ -15,8 +15,8 @@ const double _cellHeight = 160;
 
 const double _maxCellWidth = 200;
 
-/// Below this cell width (a phone), the circle shrinks so a pill still fits
-/// between two circles.
+/// Below this cell width (a small phone), the circle shrinks to leave a line
+/// some length.
 const double _compactCellWidth = 120;
 
 const double _circleDiameter = 64;
@@ -33,11 +33,14 @@ const double _lineTapDistance = 12;
 
 const double _pillSlotHeight = 40;
 
-/// A pill's widest on a phone: "Not configured" takes two lines there.
-const double _compactPillWidth = 80;
+/// What the widest pill, "Not configured", needs on one line.
+const double _widestPill = 93;
 
-/// How far above a level line a pill rides on a phone.
-const double _compactPillLift = 14;
+/// The least a pill above a line may wrap to: "Not configured" in two lines.
+const double _narrowestPill = 80;
+
+/// Between a pill above a line and the line, clearing the arrowhead.
+const double _pillClearance = 6;
 
 /// Pills sharing a line stack this far apart.
 const double _pillStep = 22;
@@ -195,6 +198,8 @@ class _DrawnLine {
     required this.start,
     required this.end,
     required this.pill,
+    required this.pillAbove,
+    required this.pillWidth,
   });
 
   final String callerId;
@@ -209,8 +214,15 @@ class _DrawnLine {
   final Offset start;
   final Offset end;
 
-  /// The centre of its pill.
+  /// The centre of its pill or, with [pillAbove], the middle of its bottom
+  /// edge.
   final Offset pill;
+
+  /// Whether the pill rides above the line instead of on it.
+  final bool pillAbove;
+
+  /// The most its pill may take before wrapping.
+  final double pillWidth;
 }
 
 /// What is on screen for one environment, in the map's own coordinates.
@@ -218,7 +230,6 @@ class _MapDrawing {
   const _MapDrawing({
     required this.size,
     required this.cellWidth,
-    required this.pillWidth,
     required this.diameter,
     required this.systems,
     required this.externals,
@@ -234,8 +245,9 @@ class _MapDrawing {
     final columns = mapColumnsFor(width);
     final layout = computeMapLayout(host, columns);
     final cellWidth = math.min(width / columns, _maxCellWidth);
-    final compact = cellWidth < _compactCellWidth;
-    final diameter = compact ? _compactCircleDiameter : _circleDiameter;
+    final diameter = cellWidth < _compactCellWidth
+        ? _compactCircleDiameter
+        : _circleDiameter;
 
     // A rollup of not_deployed means there is no container for any of its
     // applications here: as absent as a system the catalog leaves out.
@@ -291,13 +303,19 @@ class _MapDrawing {
           (other.$1 == from && other.$2 == to) ||
           (other.$1 == to && other.$2 == from);
       final sharing = connections.where(sameLine).toList();
+      final index = sharing.indexWhere(
+        (other) => identical(other.$3, integration),
+      );
 
-      // On a phone a pill is as wide as the gap between two circles: on a
-      // level line it would hide the arrow, so it rides just above.
-      final lift = compact && a.dy == b.dy ? _compactPillLift : 0.0;
-      final stack =
-          sharing.indexWhere((other) => identical(other.$3, integration)) -
-          (sharing.length - 1) / 2;
+      // A pill on a level line too short for the widest one and an arrowhead
+      // at each side would hide the arrow, and with it the direction: the
+      // same room for every pill, so they line up. A level line is the
+      // common case, as the path through the grid mostly runs along rows.
+      final start = a + inset;
+      final end = b - inset;
+      final length = (end - start).distance;
+      final above =
+          a.dy == b.dy && length < _widestPill + 2 * _LinesPainter._headLength;
 
       lines.add(
         _DrawnLine(
@@ -311,9 +329,14 @@ class _MapDrawing {
               '${visual.label.toLowerCase()}'
               '${reason == null ? '' : ', $reason'}',
           visual: visual,
-          start: a + inset,
-          end: b - inset,
-          pill: (a + b) / 2 + Offset(0, stack * _pillStep - lift),
+          start: start,
+          end: end,
+          pill: above
+              ? (a + b) / 2 + Offset(0, -_pillClearance - index * _pillStep)
+              : (a + b) / 2 +
+                    Offset(0, (index - (sharing.length - 1) / 2) * _pillStep),
+          pillAbove: above,
+          pillWidth: above ? math.max(_narrowestPill, length) : cellWidth,
         ),
       );
     }
@@ -321,7 +344,6 @@ class _MapDrawing {
     return _MapDrawing(
       size: Size(columns * cellWidth, drawnRows.length * _cellHeight),
       cellWidth: cellWidth,
-      pillWidth: compact ? _compactPillWidth : cellWidth,
       diameter: diameter,
       systems: <_DrawnSystem>[
         for (final MapEntry(key: node, value: (system, environment))
@@ -338,7 +360,6 @@ class _MapDrawing {
 
   final Size size;
   final double cellWidth;
-  final double pillWidth;
   final double diameter;
   final List<_DrawnSystem> systems;
   final List<_DrawnExternal> externals;
@@ -432,9 +453,11 @@ class _MapCanvas extends StatelessWidget {
             // take no taps of their own: the line beneath them does.
             for (final line in drawing.lines)
               Positioned(
-                left: line.pill.dx - drawing.pillWidth / 2,
-                top: line.pill.dy - _pillSlotHeight / 2,
-                width: drawing.pillWidth,
+                left: line.pill.dx - line.pillWidth / 2,
+                top:
+                    line.pill.dy -
+                    (line.pillAbove ? _pillSlotHeight : _pillSlotHeight / 2),
+                width: line.pillWidth,
                 height: _pillSlotHeight,
                 child: Semantics(
                   key: ValueKey<String>(
@@ -444,7 +467,12 @@ class _MapCanvas extends StatelessWidget {
                   label: line.label,
                   excludeSemantics: true,
                   child: IgnorePointer(
-                    child: Center(child: _LinePill(visual: line.visual)),
+                    child: Align(
+                      alignment: line.pillAbove
+                          ? Alignment.bottomCenter
+                          : Alignment.center,
+                      child: _LinePill(visual: line.visual),
+                    ),
                   ),
                 ),
               ),
@@ -573,13 +601,18 @@ class _ExternalTile extends StatelessWidget {
               ),
             ),
           ),
-          _Caption(
-            name: name,
-            detail: Text(
-              'external',
-              style: theme.textTheme.bodySmall?.copyWith(color: color),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+          // Takes the tap and does nothing with it: a line running up behind
+          // the caption must not answer for it.
+          GestureDetector(
+            onTap: () {},
+            child: _Caption(
+              name: name,
+              detail: Text(
+                'external',
+                style: theme.textTheme.bodySmall?.copyWith(color: color),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
         ],
