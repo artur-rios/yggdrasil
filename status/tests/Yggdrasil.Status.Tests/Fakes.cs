@@ -236,6 +236,12 @@ public sealed class FakeProbes : HttpMessageHandler
         return this;
     }
 
+    public FakeProbes Answer(string host, HttpStatusCode status, string body)
+    {
+        hosts[host] = _ => Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
+        return this;
+    }
+
     public FakeProbes Refuse(string host)
     {
         hosts[host] = _ => throw new HttpRequestException(HttpRequestError.ConnectionError, "refused",

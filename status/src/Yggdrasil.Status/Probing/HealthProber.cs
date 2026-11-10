@@ -42,7 +42,7 @@ public sealed class HealthProber(HttpClient http, TimeProvider time)
             new(healthy, statusCode, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, time.GetUtcNow(), error);
     }
 
-    private static string Describe(HttpRequestException e)
+    internal static string Describe(HttpRequestException e)
     {
         if (e.InnerException is SocketException socket)
         {

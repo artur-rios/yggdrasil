@@ -58,5 +58,27 @@ public sealed record ContainerInfo(string State, string? Health, DateTimeOffset?
 
 public sealed record ProbeResult(bool Healthy, int? StatusCode, long LatencyMs, DateTimeOffset CheckedAt, string? Error);
 
+/// <summary>
+/// What an application's detailed health report said, or why there is none. Status and Services are
+/// only set when State is "reported"; Reason only when it is "unavailable".
+/// </summary>
+public sealed record ApplicationDetails(
+    string State,
+    DateTimeOffset? CheckedAt,
+    string? Reason,
+    string? Status,
+    IReadOnlyList<ReportedService> Services);
+
+public sealed record ReportedService(string Name, string Status, string? Reason);
+
+/// <summary>The wire values of ApplicationDetails.State.</summary>
+public static class DetailsStates
+{
+    public const string Reported = "reported";
+    public const string Unavailable = "unavailable";
+    public const string Unsupported = "unsupported";
+    public const string NotChecked = "not_checked";
+}
+
 /// <summary>One element of the Prometheus HTTP service discovery response.</summary>
 public sealed record ScrapeTargetGroup(IReadOnlyList<string> Targets, IReadOnlyDictionary<string, string> Labels);

@@ -76,6 +76,17 @@ builder.Services.AddHttpClient<HealthProber>(http =>
     // networks (to the public host name), and would hide a misconfigured URL behind a 200.
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 
+builder.Services.AddHttpClient<DetailedHealthClient>(http =>
+    {
+        // DetailedHealthClient applies its own 5 s timeout, to tell timeouts from shutdown.
+        http.Timeout = Timeout.InfiniteTimeSpan;
+        // A report is a few lines; anything bigger is not one, and is refused rather than buffered.
+        http.MaxResponseContentBufferSize = DetailedHealthClient.MaxBodyBytes;
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("yggdrasil-status");
+    })
+    // Same as the probe: a report must come from the URL itself, not from wherever it redirects.
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
+
 // A singleton so tests and the host share the one instance; it resolves its (transient) typed
 // clients itself on every refresh.
 builder.Services.AddSingleton<StatusRefresher>();

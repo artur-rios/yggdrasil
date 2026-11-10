@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using System.Net;
 using Yggdrasil.Status.Docker;
+using Yggdrasil.Status.Model;
 using Yggdrasil.Status.Probing;
 
 namespace Yggdrasil.Status.Tests;
@@ -276,6 +277,130 @@ public class HealthProberTests
     }
 }
 
+public class DetailedHealthClientTests
+{
+    private static readonly Uri Url = new("http://app/internal/health");
+
+    private static Task<ApplicationDetails> Fetch(FakeProbes probes) =>
+        new DetailedHealthClient(new HttpClient(probes), new FixedTime(TestData.Now)).FetchAsync(Url, CancellationToken.None);
+
+    private static Task<ApplicationDetails> Fetch(HttpStatusCode status, string body) =>
+        Fetch(new FakeProbes().Answer("app", status, body));
+
+    private static void AssertUnavailable(ApplicationDetails details, string reason)
+    {
+        Assert.Equal(DetailsStates.Unavailable, details.State);
+        Assert.Equal(reason, details.Reason);
+        Assert.Null(details.Status);
+        Assert.Empty(details.Services);
+        Assert.Equal(TestData.Now, details.CheckedAt);
+    }
+
+    [Fact]
+    public async Task GivenHealthyReport_WhenFetched_ThenReported()
+    {
+        var details = await Fetch(HttpStatusCode.OK,
+            """{"status":"Healthy","services":[{"name":"Database","status":"Healthy"},{"name":"Hermes","status":"NotConfigured"}],"queueDepth":3}""");
+
+        Assert.Equal(DetailsStates.Reported, details.State);
+        Assert.Equal("Healthy", details.Status);
+        Assert.Null(details.Reason);
+        Assert.Equal(TestData.Now, details.CheckedAt);
+        Assert.Equal(["Database", "Hermes"], details.Services.Select(s => s.Name));
+        Assert.Equal("NotConfigured", details.Services[1].Status);
+    }
+
+    [Fact]
+    public async Task GivenUnhealthyReportWith503_WhenFetched_ThenReported()
+    {
+        var details = await Fetch(HttpStatusCode.ServiceUnavailable,
+            """{"status":"Unhealthy","services":[{"name":"Database","status":"Unhealthy","reason":"connection refused"}]}""");
+
+        Assert.Equal(DetailsStates.Reported, details.State);
+        Assert.Equal("Unhealthy", details.Status);
+        Assert.Equal("connection refused", details.Services.Single().Reason);
+    }
+
+    [Fact]
+    public async Task Given404_WhenFetched_ThenUnsupported()
+    {
+        var details = await Fetch(new FakeProbes().Answer("app", HttpStatusCode.NotFound));
+
+        Assert.Equal(DetailsStates.Unsupported, details.State);
+        Assert.Null(details.Reason);
+        Assert.Null(details.Status);
+        Assert.Empty(details.Services);
+    }
+
+    [Fact]
+    public async Task Given401_WhenFetched_ThenUnavailableWithHttpReason() =>
+        AssertUnavailable(await Fetch(new FakeProbes().Answer("app", HttpStatusCode.Unauthorized)), "HTTP 401");
+
+    [Fact]
+    public async Task GivenConnectionRefused_WhenFetched_ThenUnavailable() =>
+        AssertUnavailable(await Fetch(new FakeProbes().Refuse("app")), "connection refused");
+
+    [Fact]
+    public async Task GivenSlowAnswer_WhenFetched_ThenUnavailableTimeout() =>
+        AssertUnavailable(await Fetch(new FakeProbes().Answer("app", HttpStatusCode.OK, TimeSpan.FromSeconds(30))), "timeout");
+
+    [Theory]
+    [InlineData("<html>login</html>")]
+    [InlineData("")]
+    [InlineData("[]")]
+    [InlineData("""{"status":"Healthy"}""")]
+    [InlineData("""{"status":"Healthy","data":[]}""")]
+    [InlineData("""{"status":"Healthy","services":{}}""")]
+    [InlineData("""{"status":"Healthy","services":[{"status":"Healthy"}]}""")]
+    [InlineData("""{"services":[]}""")]
+    public async Task GivenNotAReport_WhenFetched_ThenUnavailableInvalidResponse(string body) =>
+        AssertUnavailable(await Fetch(HttpStatusCode.OK, body), "invalid response");
+
+    [Theory]
+    [InlineData("""{"status":"Fine","services":[]}""")]
+    [InlineData("""{"status":"healthy","services":[]}""")]
+    [InlineData("""{"status":"Healthy","services":[{"name":"Database","status":"Broken"}]}""")]
+    public async Task GivenUnknownStatusWord_WhenFetched_ThenUnavailableInvalidResponse(string body) =>
+        AssertUnavailable(await Fetch(HttpStatusCode.OK, body), "invalid response");
+
+    [Fact]
+    public async Task GivenReasonOutsideVocabulary_WhenFetched_ThenReasonIsDropped()
+    {
+        var details = await Fetch(HttpStatusCode.OK,
+            """{"status":"Degraded","services":[{"name":"Database","status":"Unhealthy","reason":"Npgsql: Host=db;Password=x"}]}""");
+
+        var service = Assert.Single(details.Services);
+        Assert.Equal("Database", service.Name);
+        Assert.Equal("Unhealthy", service.Status);
+        Assert.Null(service.Reason);
+    }
+
+    [Theory]
+    [InlineData("HTTP 500")]
+    [InlineData("timeout")]
+    [InlineData("name not resolved")]
+    public async Task GivenHttp500Reason_WhenFetched_ThenKept(string reason)
+    {
+        var details = await Fetch(HttpStatusCode.OK,
+            $$"""{"status":"Degraded","services":[{"name":"Hermes","status":"Unhealthy","reason":"{{reason}}"}]}""");
+
+        Assert.Equal(reason, details.Services.Single().Reason);
+    }
+
+    [Theory]
+    [InlineData("HTTP 5000")]
+    [InlineData("HTTP 50")]
+    [InlineData("http 500")]
+    [InlineData("HTTP 500\\n")]
+    public async Task GivenMalformedHttpReason_WhenFetched_ThenDropped(string reason)
+    {
+        var details = await Fetch(HttpStatusCode.OK,
+            $$"""{"status":"Degraded","services":[{"name":"Hermes","status":"Unhealthy","reason":"{{reason}}"}]}""");
+
+        Assert.Null(details.Services.Single().Reason);
+    }
+}
+
 public class StatusOptionsTests
 {
     private static IConfiguration Config(params (string Key, string Value)[] values)
@@ -383,5 +508,19 @@ public class StatusOptionsTests
         var error = Assert.Throws<StartupException>(() => StatusOptions.Load(Config((key, value))));
 
         Assert.Contains(key, error.Message);
+    }
+}
+
+public class DetailedHealthClientLimitTests
+{
+    [Fact]
+    public async Task GivenABodyOverTheLimit_WhenFetched_ThenUnavailableAndNeverThrows()
+    {
+        var probes = new FakeProbes().Answer("app", HttpStatusCode.OK, new string(' ', 2048) + """{"status":"Healthy","services":[]}""");
+        var client = new DetailedHealthClient(new HttpClient(probes) { MaxResponseContentBufferSize = 1024 }, new FixedTime(TestData.Now));
+
+        var details = await client.FetchAsync(new Uri("http://app/h"), CancellationToken.None);
+
+        Assert.Equal(DetailsStates.Unavailable, details.State);
     }
 }
