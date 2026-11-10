@@ -26,6 +26,13 @@ public sealed partial class DetailedHealthClient(HttpClient http, TimeProvider t
         "name not resolved", "host unreachable", "tls error", "invalid response", "request failed",
     ];
 
+    public const int MaxServices = 50;
+
+    // Names are shown as is, so they are held to a plain label: no "=" or ";" that could carry a
+    // connection string, no control characters.
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\z")]
+    private static partial Regex ServiceName();
+
     [GeneratedRegex(@"^HTTP [0-9]{3}\z")]
     private static partial Regex HttpReason();
 
@@ -86,13 +93,15 @@ public sealed partial class DetailedHealthClient(HttpClient http, TimeProvider t
                 if (entry.ValueKind != JsonValueKind.Object
                     || !entry.TryGetProperty("name", out var name)
                     || name.ValueKind != JsonValueKind.String
-                    || string.IsNullOrWhiteSpace(name.GetString())
+                    || name.GetString() is not { } text
+                    || !ServiceName().IsMatch(text)
+                    || services.Count >= MaxServices
                     || !TryStatus(entry, out var entryStatus))
                 {
                     return null;
                 }
 
-                services.Add(new ReportedService(name.GetString()!, entryStatus, Reason(entry)));
+                services.Add(new ReportedService(text, entryStatus, Reason(entry)));
             }
 
             return new ApplicationDetails(DetailsStates.Reported, time.GetUtcNow(), null, status, services);

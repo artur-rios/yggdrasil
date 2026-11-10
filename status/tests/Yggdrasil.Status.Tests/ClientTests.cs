@@ -363,6 +363,35 @@ public class DetailedHealthClientTests
     public async Task GivenUnknownStatusWord_WhenFetched_ThenUnavailableInvalidResponse(string body) =>
         AssertUnavailable(await Fetch(HttpStatusCode.OK, body), "invalid response");
 
+    [Theory]
+    [InlineData("Host=db;Password=x")]
+    [InlineData("Database\u0000")]
+    [InlineData("Data\nbase")]
+    [InlineData(" Database")]
+    [InlineData("")]
+    public async Task GivenNameOutsideTheLabelShape_WhenFetched_ThenUnavailableInvalidResponse(string name) =>
+        AssertUnavailable(await Fetch(HttpStatusCode.OK,
+            $$"""{"status":"Healthy","services":[{"name":"{{name}}","status":"Healthy"}]}"""), "invalid response");
+
+    [Fact]
+    public async Task GivenNameLongerThan64Characters_WhenFetched_ThenUnavailableInvalidResponse()
+    {
+        AssertUnavailable(await Fetch(HttpStatusCode.OK,
+            $$"""{"status":"Healthy","services":[{"name":"{{new string('a', 65)}}","status":"Healthy"}]}"""), "invalid response");
+        var ok = await Fetch(HttpStatusCode.OK,
+            $$"""{"status":"Healthy","services":[{"name":"{{new string('a', 64)}}","status":"Healthy"}]}""");
+        Assert.Equal(DetailsStates.Reported, ok.State);
+    }
+
+    [Fact]
+    public async Task GivenMoreThan50Services_WhenFetched_ThenUnavailableInvalidResponse()
+    {
+        string Report(int count) => $$"""{"status":"Healthy","services":[{{string.Join(",", Enumerable.Range(0, count).Select(i => $$"""{"name":"S{{i}}","status":"Healthy"}"""))}}]}""";
+
+        AssertUnavailable(await Fetch(HttpStatusCode.OK, Report(51)), "invalid response");
+        Assert.Equal(50, (await Fetch(HttpStatusCode.OK, Report(50))).Services.Count);
+    }
+
     [Fact]
     public async Task GivenReasonOutsideVocabulary_WhenFetched_ThenReasonIsDropped()
     {
