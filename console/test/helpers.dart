@@ -9,9 +9,11 @@ import 'package:yggdrasil_console/core/config/app_config.dart';
 import 'package:yggdrasil_console/features/environments/data/environment_store.dart';
 import 'package:yggdrasil_console/features/environments/domain/environment.dart';
 import 'package:yggdrasil_console/features/environments/presentation/environments_controller.dart';
+import 'package:yggdrasil_console/features/status/data/refresh_settings_store.dart';
 import 'package:yggdrasil_console/features/status/data/status_repository.dart';
 import 'package:yggdrasil_console/features/status/data/status_source.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
+import 'package:yggdrasil_console/features/status/presentation/refresh_settings.dart';
 import 'package:yggdrasil_console/features/status/presentation/status_controller.dart';
 
 /// A v2 response like the example of `docs/status-api.md`: example.com with
@@ -70,7 +72,10 @@ class FakeStatusSource implements StatusSource {
   Future<HostStatus?> refreshDetails(Environment environment, String? token) {
     detailsCalls.add((environment, token));
 
+    // Unless the test decides otherwise, the details answer is what a plain
+    // fetch answers.
     return respondDetails?.call(environment, token) ??
+        respond?.call(environment, token) ??
         Future.value(demoStatus());
   }
 }
@@ -86,6 +91,7 @@ Future<void> pumpConsole(
   Map<String, String>? tokens,
   Size size = const Size(1000, 900),
   String? webOrigin,
+  RefreshSettingsStore? refreshSettings,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -99,6 +105,9 @@ Future<void> pumpConsole(
         appConfigProvider.overrideWithValue(const AppConfig()),
         environmentStoreProvider.overrideWithValue(
           InMemoryEnvironmentStore(environments: environments),
+        ),
+        refreshSettingsStoreProvider.overrideWithValue(
+          refreshSettings ?? InMemoryRefreshSettingsStore(),
         ),
         tokenStoreProvider.overrideWithValue(InMemoryTokenStore(tokens)),
         webOriginProvider.overrideWithValue(webOrigin),

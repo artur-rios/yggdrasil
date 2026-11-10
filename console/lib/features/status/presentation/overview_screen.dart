@@ -12,15 +12,16 @@ import '../data/status_source.dart';
 import '../domain/status.dart';
 import '../domain/status_logic.dart';
 import 'layout.dart';
+import 'refresh_settings.dart';
 import 'status_controller.dart';
 import 'widgets/status_visuals.dart';
 import 'widgets/system_card.dart';
 
 /// The host switcher, the host's status and every system on it.
 ///
-/// Polls every `AppConfig.refreshInterval` while the app is visible; the timer
-/// stops when the app is backgrounded or the browser tab hidden, and while the
-/// settings screen covers this one.
+/// Loads once on start, on request and, when the user turned auto-refresh on,
+/// every chosen interval; that timer stops when the app is backgrounded or the
+/// browser tab hidden, and while the settings screen covers this one.
 class OverviewScreen extends ConsumerStatefulWidget {
   const OverviewScreen({super.key});
 
@@ -65,8 +66,12 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
     _visible = visible;
 
     if (visible) {
-      // Whatever is on screen is at least as old as the time spent hidden.
-      unawaited(_refresh());
+      // Whatever is on screen is at least as old as the time spent hidden;
+      // without auto-refresh the user asks when they want it.
+      if (_autoRefresh.enabled) {
+        unawaited(_refresh());
+      }
+
       _startPolling();
     } else {
       _poll?.cancel();
@@ -84,17 +89,16 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
     _retry = Timer(after, () => unawaited(_refresh()));
   }
 
+  RefreshSettings get _autoRefresh => ref.read(refreshSettingsProvider);
+
   void _startPolling() {
     _poll?.cancel();
 
-    if (!_visible || _covered) {
+    if (!_visible || _covered || !_autoRefresh.enabled) {
       return;
     }
 
-    _poll = Timer.periodic(
-      ref.read(appConfigProvider).refreshInterval,
-      (_) => unawaited(_refresh()),
-    );
+    _poll = Timer.periodic(_autoRefresh.interval, (_) => unawaited(_refresh()));
   }
 
   Future<void> _refresh() =>
@@ -112,7 +116,11 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
     }
 
     _covered = false;
-    unawaited(_refresh());
+
+    if (_autoRefresh.enabled) {
+      unawaited(_refresh());
+    }
+
     _startPolling();
   }
 
@@ -146,6 +154,12 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // A new choice restarts the timer, or stops it.
+    ref.listen<RefreshSettings>(
+      refreshSettingsProvider,
+      (_, _) => _startPolling(),
+    );
+
     // A 401 takes the user straight to entering that host's token.
     ref.listen<StatusViewState>(statusControllerProvider, (previous, next) {
       final environment = next.environment;

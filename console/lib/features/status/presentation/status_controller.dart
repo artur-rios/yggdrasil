@@ -52,8 +52,9 @@ statusControllerProvider = NotifierProvider<StatusController, StatusViewState>(
 
 /// Loads the selected host's status on demand.
 ///
-/// The polling itself belongs to the overview screen, which knows whether it
-/// is visible; this only fetches when asked, and never twice at once.
+/// Each load is the map (`GET`) and then the details (`POST`). When to load
+/// belongs to the overview screen, which knows whether it is visible; this
+/// only fetches when asked, and never twice at once.
 class StatusController extends Notifier<StatusViewState> {
   String? _loadedKey;
 
@@ -101,33 +102,55 @@ class StatusController extends Notifier<StatusViewState> {
     );
 
     final environments = ref.read(environmentsControllerProvider.notifier);
+    final repository = ref.read(statusRepositoryProvider);
     final token = await environments.tokenFor(environment.id);
-    final report = await ref
-        .read(statusRepositoryProvider)
-        .refresh(environment, token);
+    final map = await repository.refresh(environment, token);
 
     // The user may have switched environments, or pointed this one at another
     // URL, meanwhile: the answer is not about what the screen shows any more.
-    if (state.environment?.id != environment.id ||
-        state.environment?.baseUrl != environment.baseUrl) {
+    if (!_isShowing(environment)) {
       return;
     }
 
+    // The map is drawn at once; `loading` holds until the details are in.
     state = StatusViewState(
       environment: state.environment,
-      snapshot: report.snapshot,
-      failure: report.failure,
+      snapshot: map.snapshot,
+      failure: map.failure,
+      loading: map.failure == null,
     );
 
-    final snapshot = report.snapshot;
+    if (map.failure != null) {
+      return;
+    }
 
-    if (report.failure == null && snapshot != null) {
+    final mapSnapshot = map.snapshot;
+
+    if (mapSnapshot != null) {
       await environments.adoptResponseName(
         environment.id,
-        snapshot.status.host,
+        mapSnapshot.status.host,
       );
     }
+
+    final details = await repository.refreshDetails(environment, token);
+
+    if (!_isShowing(environment)) {
+      return;
+    }
+
+    // No snapshot means no endpoint and nothing known: the map stays as it
+    // was. A failure keeps the map too, marked stale.
+    state = StatusViewState(
+      environment: state.environment,
+      snapshot: details.snapshot ?? state.snapshot,
+      failure: details.failure,
+    );
   }
+
+  bool _isShowing(Environment environment) =>
+      state.environment?.id == environment.id &&
+      state.environment?.baseUrl == environment.baseUrl;
 }
 
 /// The "problems only" filter chip.

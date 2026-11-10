@@ -1,10 +1,13 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yggdrasil_console/features/environments/domain/environment.dart';
+import 'package:yggdrasil_console/features/status/data/refresh_settings_store.dart';
 import 'package:yggdrasil_console/features/status/data/status_source.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
+import 'package:yggdrasil_console/features/status/presentation/refresh_settings.dart';
 import 'package:yggdrasil_console/features/status/presentation/widgets/application_detail.dart';
 import 'package:yggdrasil_console/features/status/presentation/widgets/status_visuals.dart';
 import 'package:yggdrasil_console/features/status/presentation/widgets/system_card.dart';
@@ -590,30 +593,219 @@ void main() {
     expect(find.byType(SystemCard), findsNWidgets(3));
   });
 
-  testWidgets('polls every 30 s while visible, not while hidden', (
-    tester,
-  ) async {
-    final source = FakeStatusSource();
-    await pumpConsole(tester, source: source);
-    expect(source.calls, hasLength(1));
+  group('refreshing', () {
+    RefreshSettingsStore autoRefresh([
+      Duration interval = const Duration(minutes: 1),
+    ]) => InMemoryRefreshSettingsStore(
+      RefreshSettings(enabled: true, interval: interval),
+    );
 
-    await tester.pump(const Duration(seconds: 30));
-    await settle(tester);
-    expect(source.calls, hasLength(2));
+    void hide(WidgetTester tester) {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    }
 
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
-    await tester.pump(const Duration(seconds: 90));
-    expect(source.calls, hasLength(2));
+    void show(WidgetTester tester) {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    }
 
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-    await settle(tester);
-    expect(source.calls, hasLength(3), reason: 'refreshes on return');
+    testWidgets('loads once on start: one fetch and one refreshDetails', (
+      tester,
+    ) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source);
 
-    await tester.pump(const Duration(seconds: 30));
-    await settle(tester);
-    expect(source.calls, hasLength(4));
+      expect(source.calls, hasLength(1));
+      expect(source.detailsCalls, hasLength(1));
+    });
+
+    testWidgets('does not load again as time passes with auto-refresh off', (
+      tester,
+    ) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source);
+
+      await tester.pump(const Duration(minutes: 10));
+      await settle(tester);
+
+      expect(source.calls, hasLength(1));
+      expect(source.detailsCalls, hasLength(1));
+    });
+
+    testWidgets('Refresh now loads again', (tester) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source);
+
+      await tester.tap(find.byKey(const ValueKey<String>('refresh')));
+      await settle(tester);
+
+      expect(source.calls, hasLength(2));
+      expect(source.detailsCalls, hasLength(2));
+    });
+
+    testWidgets('with auto-refresh on, loads every minute by default', (
+      tester,
+    ) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source, refreshSettings: autoRefresh());
+      expect(source.calls, hasLength(1));
+
+      await tester.pump(const Duration(seconds: 59));
+      expect(source.calls, hasLength(1));
+
+      await tester.pump(const Duration(seconds: 1));
+      await settle(tester);
+      expect(source.calls, hasLength(2));
+      expect(source.detailsCalls, hasLength(2));
+
+      await tester.pump(const Duration(minutes: 1));
+      await settle(tester);
+      expect(source.calls, hasLength(3));
+    });
+
+    for (final interval in autoRefreshIntervals) {
+      testWidgets('the ${interval.inMinutes} min interval is honoured', (
+        tester,
+      ) async {
+        final source = FakeStatusSource();
+        await pumpConsole(
+          tester,
+          source: source,
+          refreshSettings: autoRefresh(interval),
+        );
+
+        await tester.pump(interval - const Duration(seconds: 1));
+        expect(source.calls, hasLength(1));
+
+        await tester.pump(const Duration(seconds: 1));
+        await settle(tester);
+        expect(source.calls, hasLength(2));
+      });
+    }
+
+    testWidgets('turning auto-refresh on starts the timer', (tester) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source);
+
+      await ProviderScope.containerOf(
+            tester.element(find.byType(Scaffold).first),
+          )
+          .read(refreshSettingsProvider.notifier)
+          .update(const RefreshSettings(enabled: true));
+      await settle(tester);
+      await tester.pump(const Duration(minutes: 1));
+      await settle(tester);
+
+      expect(source.calls, hasLength(2));
+    });
+
+    testWidgets('auto-refresh pauses while hidden and loads on return', (
+      tester,
+    ) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source, refreshSettings: autoRefresh());
+
+      hide(tester);
+      await tester.pump(const Duration(minutes: 5));
+      expect(source.calls, hasLength(1));
+
+      show(tester);
+      await settle(tester);
+      expect(source.calls, hasLength(2), reason: 'loads on return');
+
+      await tester.pump(const Duration(minutes: 1));
+      await settle(tester);
+      expect(source.calls, hasLength(3));
+    });
+
+    testWidgets('with auto-refresh off, returning from hidden does not load', (
+      tester,
+    ) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source);
+
+      hide(tester);
+      await tester.pump(const Duration(minutes: 5));
+      show(tester);
+      await settle(tester);
+
+      expect(source.calls, hasLength(1));
+      expect(source.detailsCalls, hasLength(1));
+    });
+
+    testWidgets('closing the hosts screen loads with auto-refresh on', (
+      tester,
+    ) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source, refreshSettings: autoRefresh());
+
+      await tester.tap(find.byKey(const ValueKey<String>('settings')));
+      await settle(tester);
+      await tester.pump(const Duration(minutes: 5));
+      expect(source.calls, hasLength(1), reason: 'covered, so paused');
+
+      await tester.pageBack();
+      await settle(tester);
+
+      expect(source.calls, hasLength(2));
+    });
+
+    testWidgets('closing the hosts screen does not load with it off', (
+      tester,
+    ) async {
+      final source = FakeStatusSource();
+      await pumpConsole(tester, source: source);
+
+      await tester.tap(find.byKey(const ValueKey<String>('settings')));
+      await settle(tester);
+      await tester.pageBack();
+      await settle(tester);
+
+      expect(source.calls, hasLength(1));
+      expect(source.detailsCalls, hasLength(1));
+    });
+
+    testWidgets('a failed details refresh keeps the map on screen', (
+      tester,
+    ) async {
+      final source = FakeStatusSource()
+        ..respondDetails = (_, _) =>
+            throw const StatusException(StatusFailureKind.server);
+      await pumpConsole(tester, source: source);
+
+      expect(find.byType(SystemCard), findsNWidgets(3));
+      expect(
+        find.byKey(const ValueKey<String>('failure-banner')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the one-shot retry still runs after a starting answer', (
+      tester,
+    ) async {
+      final source = FakeStatusSource(
+        (_, _) async => throw const StatusException(
+          StatusFailureKind.starting,
+          statusCode: 503,
+          retryAfter: Duration(seconds: 5),
+        ),
+      );
+      await pumpConsole(tester, source: source);
+      expect(source.calls, hasLength(1));
+      expect(source.detailsCalls, isEmpty);
+
+      source.respond = null;
+      await tester.pump(const Duration(seconds: 5));
+      await settle(tester);
+
+      expect(source.calls, hasLength(2));
+      expect(source.detailsCalls, hasLength(1));
+      expect(find.byType(SystemCard), findsNWidgets(3));
+
+      await tester.pump(const Duration(minutes: 10));
+      expect(source.calls, hasLength(2), reason: 'a one-shot, not a poll');
+    });
   });
 
   testWidgets('the settings screen manages hosts', (tester) async {
