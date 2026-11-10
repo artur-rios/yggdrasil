@@ -121,7 +121,9 @@ public sealed partial class DetailedHealthClient(HttpClient http, TimeProvider t
 
             return new ApplicationDetails(DetailsStates.Reported, time.GetUtcNow(), null, status, services);
         }
-        catch (JsonException)
+        // A lone surrogate escape ends up as ArgumentException from GetString() after a clean
+        // parse; the report is invalid, and must not fault the probe round.
+        catch (Exception e) when (e is JsonException or ArgumentException or InvalidOperationException)
         {
             return null;
         }

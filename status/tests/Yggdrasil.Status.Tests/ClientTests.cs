@@ -401,6 +401,11 @@ public class DetailedHealthClientTests
             $$"""{"status":"Healthy","services":[{"name":"{{name}}","status":"Healthy"}]}"""), "invalid response");
 
     [Fact]
+    public async Task GivenALoneSurrogateEscape_WhenFetched_ThenUnavailableInvalidResponse() =>
+        AssertUnavailable(await Fetch(HttpStatusCode.OK,
+            """{"status":"Healthy","services":[{"name":"\ud800","status":"Healthy"}]}"""), "invalid response");
+
+    [Fact]
     public async Task GivenNameLongerThan64Characters_WhenFetched_ThenUnavailableInvalidResponse()
     {
         AssertUnavailable(await Fetch(HttpStatusCode.OK,
