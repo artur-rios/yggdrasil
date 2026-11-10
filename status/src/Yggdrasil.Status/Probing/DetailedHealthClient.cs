@@ -58,7 +58,22 @@ public sealed partial class DetailedHealthClient(HttpClient http, TimeProvider t
                 return Without(DetailsStates.Unavailable, $"HTTP {code}");
             }
 
-            var body = await response.Content.ReadAsStringAsync(timeout.Token);
+            string body;
+            try
+            {
+                body = await response.Content.ReadAsStringAsync(timeout.Token);
+            }
+            catch (InvalidOperationException)
+            {
+                // The charset of the Content-Type is the application's own words too, and one no
+                // decoder exists for must not fail the fetch for every other application.
+                return Without(DetailsStates.Unavailable, "invalid response");
+            }
+            catch (IOException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return Without(DetailsStates.Unavailable, "request failed");
+            }
+
             return Parse(body) ?? Without(DetailsStates.Unavailable, "invalid response");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

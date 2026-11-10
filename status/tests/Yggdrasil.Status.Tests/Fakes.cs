@@ -239,9 +239,25 @@ public sealed class FakeProbes : HttpMessageHandler
         return this;
     }
 
-    public FakeProbes Answer(string host, HttpStatusCode status, string body)
+    public FakeProbes Answer(string host, HttpStatusCode status, string body, string? contentType = null)
     {
-        hosts[host] = _ => Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
+        hosts[host] = _ =>
+        {
+            var content = new StringContent(body);
+            if (contentType is not null)
+            {
+                content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(contentType);
+            }
+
+            return Task.FromResult(new HttpResponseMessage(status) { Content = content });
+        };
+        return this;
+    }
+
+    /// <summary>Answers 200, then the connection breaks while the body is being read.</summary>
+    public FakeProbes BreakBody(string host)
+    {
+        hosts[host] = _ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new BrokenBody() });
         return this;
     }
 
@@ -263,6 +279,18 @@ public sealed class FakeProbes : HttpMessageHandler
             ? await answer(cancellationToken)
             : throw new HttpRequestException(HttpRequestError.NameResolutionError, "no such host",
                 new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound));
+    }
+
+    private sealed class BrokenBody : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            throw new IOException("The response ended prematurely.");
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 }
 

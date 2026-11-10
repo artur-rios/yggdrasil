@@ -297,6 +297,33 @@ public class DetailedHealthClientTests
     }
 
     [Fact]
+    public async Task GivenAnUnknownCharset_WhenFetched_ThenUnavailableAsAnInvalidResponse()
+    {
+        var details = await Fetch(new FakeProbes().Answer("app", HttpStatusCode.OK,
+            """{"status":"Healthy","services":[]}""", "application/json; charset=bogus"));
+
+        AssertUnavailable(details, "invalid response");
+    }
+
+    [Fact]
+    public async Task GivenTheConnectionBreaksDuringTheBody_WhenFetched_ThenUnavailable()
+    {
+        var details = await Fetch(new FakeProbes().BreakBody("app"));
+
+        AssertUnavailable(details, "request failed");
+    }
+
+    [Fact]
+    public async Task GivenTheCallerCancels_WhenFetched_ThenTheCancellationPropagates()
+    {
+        var client = new DetailedHealthClient(new HttpClient(new FakeProbes { Hold = new TaskCompletionSource() }), new FixedTime(TestData.Now));
+        using var shutdown = new CancellationTokenSource();
+        await shutdown.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.FetchAsync(Url, shutdown.Token));
+    }
+
+    [Fact]
     public async Task GivenHealthyReport_WhenFetched_ThenReported()
     {
         var details = await Fetch(HttpStatusCode.OK,

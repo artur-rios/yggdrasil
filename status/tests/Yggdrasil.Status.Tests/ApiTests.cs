@@ -757,6 +757,23 @@ public class ApiTests : IClassFixture<StatusApiFactory>
     }
 
     [Fact]
+    public async Task GivenOneReportWithAnUnknownCharset_WhenRefreshPosted_ThenTheOthersStillReport()
+    {
+        await using var host = Reporting();
+        host.Docker.Add(new FakeContainer("jenkins1", "yggdrasil", Service: "jenkins", Image: "jenkins:lts"));
+        host.Probes.Answer("jenkins", HttpStatusCode.OK);
+        host.Reports.Answer("jenkins", HttpStatusCode.OK, """{"status":"Healthy","services":[]}""", "application/json; charset=bogus");
+        var client = await host.ReadyClientAsync();
+
+        var body = await PostRefresh(client);
+
+        Assert.Equal("reported", (string?)Application(body, "heimdall", "production", "heimdall-api")["details"]!["state"]);
+        var jenkins = Application(body, "yggdrasil", "production", "jenkins")["details"]!;
+        Assert.Equal("unavailable", (string?)jenkins["state"]);
+        Assert.Equal("invalid response", (string?)jenkins["reason"]);
+    }
+
+    [Fact]
     public async Task GivenTheClientDisconnects_WhenFetching_ThenTheFetchStillFinishes()
     {
         await using var host = Reporting();
