@@ -70,8 +70,9 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
 
     if (visible) {
       // Whatever is on screen is at least as old as the time spent hidden;
-      // without auto-refresh the user asks when they want it.
-      if (_autoRefresh.enabled) {
+      // without auto-refresh the user asks when they want it. A pending
+      // "starting" retry was cancelled on the way out, so re-arm it.
+      if (_autoRefresh.enabled || _isStarting) {
         unawaited(_refresh());
       }
 
@@ -91,6 +92,8 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
 
     _retry = Timer(after, () => unawaited(_refresh()));
   }
+
+  bool get _isStarting => ref.read(statusControllerProvider).isStarting;
 
   RefreshSettings get _autoRefresh => ref.read(refreshSettingsProvider);
 
@@ -120,7 +123,7 @@ class _OverviewScreenState extends ConsumerState<OverviewScreen> {
 
     _covered = false;
 
-    if (_autoRefresh.enabled) {
+    if (_autoRefresh.enabled || _isStarting) {
       unawaited(_refresh());
     }
 

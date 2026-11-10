@@ -521,6 +521,32 @@ void main() {
       await tester.pump(const Duration(minutes: 10));
       expect(source.calls, hasLength(2), reason: 'a one-shot, not a poll');
     });
+
+    testWidgets('a starting retry cancelled by leaving is re-armed on return', (
+      tester,
+    ) async {
+      final source = FakeStatusSource(
+        (_, _) async => throw const StatusException(
+          StatusFailureKind.starting,
+          statusCode: 503,
+          retryAfter: Duration(seconds: 5),
+        ),
+      );
+      await pumpConsole(tester, source: source);
+      expect(source.calls, hasLength(1));
+
+      await tester.tap(find.byKey(const ValueKey<String>('settings')));
+      await settle(tester);
+      await tester.pump(const Duration(seconds: 10));
+      expect(source.calls, hasLength(1), reason: 'the retry was cancelled');
+
+      source.respond = null;
+      await tester.pageBack();
+      await settle(tester);
+
+      expect(source.calls, hasLength(2), reason: 'loads on return');
+      expect(map, findsOneWidget);
+    });
   });
 
   testWidgets('the settings screen manages hosts', (tester) async {
