@@ -40,7 +40,7 @@ CORS: the origins in `YGGDRASIL_STATUS_CORS_ORIGINS`, in the host's `platform.en
 
 ## `GET /api/status`
 
-The whole host in one response, answered from memory at once. A console polls it on its own interval while its overview is visible, and asks for details with [`POST /api/status/refresh`](#post-apistatusrefresh) only when its user does. Abridged below to one system with one application per environment:
+The whole host in one response, answered from memory at once. A console loads once on start or host switch, again on Refresh now, and on an opt-in timer; each load is a `GET` followed by [`POST /api/status/refresh`](#post-apistatusrefresh). Abridged below to one system with one application per environment:
 
 ```json
 {

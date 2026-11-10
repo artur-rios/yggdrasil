@@ -365,10 +365,11 @@ What Jenkins does meanwhile:
 - The release pull request deploys production, which is always on, then merges and tags.
 
 **The console** (`https://yggdrasil.example.com`, or the Windows and Android apps with one host:
-that URL and the server's `YGGDRASIL_STATUS_TOKEN`) shows the server as one host with its three
-environments. Each system card has a chip per environment, e.g. `Development · Stopped`,
-`Homologation · Stopped`, `Production · Up`; expanded, a section per environment lists its
-applications. `Stopped` is neutral, not a problem: it doesn't count for *Problems only*.
+that URL and the server's `YGGDRASIL_STATUS_TOKEN`) shows the server as one host drawn as a system
+map. An environment selector picks which of the three environments the map shows (`Development`,
+`Homologation`, `Production`); each system is a node with its dependencies drawn as links, and
+selecting one opens a panel listing its applications in that environment, with status, version and
+integration health. A stopped environment reads *Stopped*, which is neutral, not a problem.
 `local` isn't shown: it has no status API.
 
 **Logs and metrics** in Grafana (`https://grafana.example.com`) carry an `environment` label:
