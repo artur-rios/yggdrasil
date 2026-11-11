@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-11
+
 ### Security
 
 - **Jenkins enforces its Content Security Policy.** `casc.yaml` sets `security.contentSecurityPolicy.enforce`, so
@@ -1277,7 +1279,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/artur-rios/yggdrasil/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/artur-rios/yggdrasil/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/artur-rios/yggdrasil/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/artur-rios/yggdrasil/compare/v0.12.0...v0.12.1
