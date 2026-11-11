@@ -57,7 +57,7 @@ unclassified:
               # tag, and the Gitea source (plugin 286.v0740a_413c1eb_) finds the tag but then fetches
               # it as refs/heads/<tag>, so no version ever loaded (proved by
               # scripts/test_jenkins_live.py). Read-only, as the jobs' sources are.
-              git:
+              gitSource:
                 remote: "${FORGE_URL}/${GITHUB_OWNER}/${YGGDRASIL_REPOSITORY}.git"
                 credentialsId: "forge-read"
                 traits:
