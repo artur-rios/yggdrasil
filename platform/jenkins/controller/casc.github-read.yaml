@@ -15,5 +15,9 @@ credentials:
               id: "github-read"
               description: "yggdrasil GitHub App, read-only (the ci agent)"
               appID: "${GITHUB_READ_APP_ID}"
-              owner: "${GITHUB_OWNER}"
+              # The owner's installation, every repository it reaches, as casc.github-app.yaml (not the
+              # deprecated `owner` field).
+              repositoryAccessStrategy:
+                specificRepositories:
+                  owner: "${GITHUB_OWNER}"
               privateKey: "${readFile:/run/secrets/github-read.pem}"

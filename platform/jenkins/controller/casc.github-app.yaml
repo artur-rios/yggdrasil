@@ -12,5 +12,11 @@ credentials:
               id: "github-app"
               description: "yggdrasil GitHub App"
               appID: "${GITHUB_APP_ID}"
-              owner: "${GITHUB_OWNER}"
+              # Tokens for the owner's installation only. No repository list: every repository it reaches,
+              # since the pipeline uses this App on repositories other than the job's (the mirrors, the
+              # library). Not the deprecated `owner` field, which the plugin migrates to this at every start
+              # and flags on the Jenkins UI.
+              repositoryAccessStrategy:
+                specificRepositories:
+                  owner: "${GITHUB_OWNER}"
               privateKey: "${readFile:/run/secrets/github-app.pem}"
