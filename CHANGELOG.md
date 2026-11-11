@@ -7,12 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-11-11
+
 ### Changed
 
 - **Jenkins on JDK 25.** The controller, deploy-agent and build-agent images move from their `-jdk21` builds to the
   `-jdk25` builds of the same versions (Jenkins 2.580.2 LTS, inbound-agent 3391.va_37fa_a_305d6d-6), ahead of Jenkins
   ending Java 21 support on or after 2027-09-30, which the controller now warns about. Renovate tracks the `-jdk25`
   agent tags. `platform.sh up` on the controller host rebuilds the images.
+
+### Fixed
+
+- **Configuration as Code's obsolete-format warning.** The shared library's retriever in `casc.forgejo.yaml` names
+  the git plugin's source `gitSource`, its current symbol, instead of the obsolete `git`, which the Jenkins UI
+  flagged. The source itself (`GitSCMSource`) is unchanged, so the library loads as before.
 
 ## [0.12.2] - 2026-11-11
 
@@ -1262,7 +1270,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/artur-rios/yggdrasil/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/artur-rios/yggdrasil/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/artur-rios/yggdrasil/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/artur-rios/yggdrasil/compare/v0.11.0...v0.12.0
