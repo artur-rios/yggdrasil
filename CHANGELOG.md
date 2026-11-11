@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and `integrations` (`{ system: <id> }` or `{ external: <name> }`, with the check's name in the report) draw the
   lines between systems and whether each works. See [docs/catalog.md](docs/catalog.md).
 
+## [0.11.0] - 2026-11-10
+
 ### Changed
 
 - **The console shows the systems as a map, one environment at a time.** An environment selector replaces the card
@@ -1235,7 +1237,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/artur-rios/yggdrasil/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/artur-rios/yggdrasil/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/artur-rios/yggdrasil/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/artur-rios/yggdrasil/compare/v0.9.12...v0.10.0
