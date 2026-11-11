@@ -288,6 +288,17 @@ class JenkinsCredentialsTests(unittest.TestCase):
         self.assertEqual(found["github-app"][0], "gitHubApp")
         self.assertEqual(found["github-app"][1]["privateKey"], "${readFile:/run/secrets/github-app.pem}")
 
+    def test_given_the_github_apps_when_read_then_their_tokens_are_limited_to_the_owner_without_the_deprecated_field(self):
+        # The plugin's deprecated `owner` field is migrated at every start to the access strategy below and flags
+        # the credential on the Jenkins UI ("Consider reconfiguring your existing GitHub App credentials"). The
+        # strategy itself, with no repository list: tokens reach every repository the App's installation on the
+        # owner reaches, as before (the pipeline merges, tags and sets statuses on the mirrors with github-app).
+        for name, credential in (("casc.github-app.yaml", "github-app"), ("casc.github-read.yaml", "github-read")):
+            fields = credentials(name)[credential][1]
+            self.assertNotIn("owner", fields, name)
+            self.assertEqual(fields["repositoryAccessStrategy"],
+                             {"specificRepositories": {"owner": "${GITHUB_OWNER}"}}, name)
+
     def test_given_the_github_read_configuration_when_read_then_it_has_the_read_only_app_only(self):
         # The ci agent's identity on GitHub, in a file of its own: platform.sh adds it only when both of
         # its settings are there (Configuration as Code has no conditionals).
@@ -296,7 +307,6 @@ class JenkinsCredentialsTests(unittest.TestCase):
         kind, fields = found["github-read"]
         self.assertEqual(kind, "gitHubApp")
         self.assertEqual(fields["appID"], "${GITHUB_READ_APP_ID}")
-        self.assertEqual(fields["owner"], "${GITHUB_OWNER}")
         self.assertEqual(fields["privateKey"], "${readFile:/run/secrets/github-read.pem}")
         self.assertNotIn("github-read", yaml.dump(casc("casc.github.yaml")))
 
