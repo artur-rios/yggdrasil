@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The GitHub App credentials' migration notice.** `casc.github-app.yaml` and `casc.github-read.yaml` named the
+  App's owner with the GitHub Branch Source plugin's deprecated `owner` field, which the plugin migrates at every
+  start and then flags on the Jenkins UI ("Consider reconfiguring your existing GitHub App credentials"). They now
+  set its replacement, `repositoryAccessStrategy` → `specificRepositories` with the same owner and no repository
+  list, what that migration produced: tokens reach the same repositories with the same permissions as before.
+  `git pull` and `platform.sh up` on the DevOps Server recreates the controller and clears it.
+
 ## [0.13.1] - 2026-11-11
 
 ### Fixed
