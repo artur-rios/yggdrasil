@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-11
+
+### Added
+
+- **Cerberus docs.** A `cerberus` system with its docs site, `cerberus-docs`, served at
+  `docs.artur-rios.tech/cerberus-docs` and deployed to production from `main`, with its stack files from the site
+  templates. `cerberus-api` and `cerberus-ui` stay repositories entries: nothing of theirs deploys yet.
+
 ## [0.12.0] - 2026-11-10
 
 ### Added
@@ -1239,7 +1247,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/artur-rios/yggdrasil/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/artur-rios/yggdrasil/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/artur-rios/yggdrasil/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/artur-rios/yggdrasil/compare/v0.10.1...v0.10.2
