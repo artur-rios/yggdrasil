@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pulled change to the controller's configuration reaches it.** The Jenkins controller reads its Configuration
+  as Code, the Jenkinsfile and job scripts kept in Jenkins, `catalog.yaml` and `agents.groovy` only when it starts,
+  from files mounted at fixed paths, so `platform.sh up` left it running on the old ones after a `git pull` that
+  changed only them: 0.13.0's Content Security Policy setting was not applied. `platform.sh` now hashes those files
+  into a label on the controller (`yggdrasil.jenkins-config-hash`), as it already did for Traefik's configuration and
+  the credentials, and a changed file recreates the controller at the next `up`, which stops the builds running on
+  it. A catalog change no longer needs `docker restart yggdrasil-jenkins-1`. `git pull` and `platform.sh up` on the
+  DevOps Server applies it, and with it 0.13.0's CSP setting.
+
 ## [0.13.0] - 2026-11-11
 
 ### Security

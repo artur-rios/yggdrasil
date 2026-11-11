@@ -233,6 +233,30 @@ if [[ -n "$credentials_dir" ]]; then
 fi
 [[ -n "$credentials_rendered" ]] || export JENKINS_CREDENTIALS_DIR=/dev/null
 export YGG_JENKINS_CREDENTIALS_FILE YGG_JENKINS_CREDENTIALS_HASH
+
+# The files the controller mounts from this checkout (compose.yml), which it reads only when it starts: its
+# Configuration as Code, the Jenkinsfile and job scripts kept in Jenkins, the catalog and the agents script. A
+# `git pull` changes them under the same paths, so Compose would leave the controller running on the old ones
+# (and a single-file bind mount keeps showing the old file until the container starts again): 0.13.0's CSP
+# setting reached no controller that way. Their hash is a label on the controller (compose.yml), so a changed
+# file recreates it. scripts/test_jenkins_config.py keeps this list equal to the mounts.
+jenkins_config_files=(
+  platform/jenkins/controller/casc.yaml
+  platform/jenkins/controller/casc.forgejo.yaml
+  platform/jenkins/controller/casc.github.yaml
+  platform/jenkins/controller/casc.github-app.yaml
+  platform/jenkins/controller/casc.github-read.yaml
+  platform/jenkins/controller/casc.nuget.yaml
+  platform/jenkins/controller/init.groovy.d/agents.groovy
+  jenkins/Jenkinsfile.default
+  jenkins/actions-release.groovy
+  jenkins/release-resume.groovy
+  jenkins/tag-check.groovy
+  catalog.yaml
+)
+YGG_JENKINS_CONFIG_HASH=$(cd "$root" && sha256sum -- "${jenkins_config_files[@]}" | sha256sum | cut -d' ' -f1) \
+  || die "cannot read the controller's configuration in $root"
+export YGG_JENKINS_CONFIG_HASH
 export FORGE_URL FORGE_JENKINS_USER YGG_CASC_CONFIG
 # Without an App there is no key to mount: /dev/null, not a path Docker would create as a directory.
 [[ -n "$uses_github_app" ]] || export GITHUB_APP_KEY_FILE=/dev/null
