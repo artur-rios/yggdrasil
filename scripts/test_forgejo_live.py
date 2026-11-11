@@ -1030,6 +1030,20 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
     def tags(self, repo):
         return [tag["name"] for tag in self.api[OWNER].request("GET", f"/repos/{OWNER}/{repo}/tags") or []]
 
+    def mirror_settled(self, repo):
+        """Whether the repository's push mirror reports no error from its last sync, asking for another sync when
+        it does: a sync that succeeds clears the error Forgejo keeps from one that failed."""
+        path = f"/repos/{OWNER}/{repo}/push_mirrors"
+        (mirror,) = self.api[OWNER].request("GET", path)
+        if not (mirror.get("last_error") or "").strip():
+            return True
+        self.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/push_mirrors-sync")
+        # One sync at a time: Forgejo stamps last_update when a sync ends, failed or not. Asking again before
+        # this one has ended would start the race over.
+        self.eventually(lambda: self.api[OWNER].request("GET", path)[0].get("last_update") != mirror.get("last_update"),
+                        "the requested mirror sync", seconds=60)
+        return False
+
     def test_given_a_repository_when_migrate_mirrors_it_then_forgejo_pushes_its_branches_and_a_new_tag_to_the_target(self):
         # The second repository of this very server stands in for the GitHub copy. Forgejo only pushes to a
         # local address because the container allows it ([migrations] ALLOW_LOCALNETWORKS, set in setUpClass
@@ -1065,6 +1079,13 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         pushed = self.git(OWNER, "push", "origin", "v0.0.1", cwd=clone)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.eventually(lambda: "v0.0.1" in self.tags(target), "the tag on the target")
+
+        # The sync migrate asked for can still be running when the tag's push starts the next one, and the two
+        # then race the same way: every ref reaches the target, but the loser's "reference already exists" stays
+        # the mirror's last error, which the run below would report as a failed sync (and verify as a failed
+        # mirror). It happened on Jenkins, rarely. A later sync that succeeds clears the error, so wait for one
+        # before reading the mirror back: what is tested below is the mirror as it settles, not the race.
+        self.eventually(lambda: self.mirror_settled(source), "the mirror's last sync without an error")
 
         # Run again: the mirror is there and has pushed, so nothing is written.
         code, out, err = self.migrate_run(["mirrors", "--only", source], catalog, [source], env, lambda name: address)
