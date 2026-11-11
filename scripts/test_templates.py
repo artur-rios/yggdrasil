@@ -245,6 +245,21 @@ class LibraryScriptsTests(unittest.TestCase):
                 self.assertIn("SOLUTION='src/ArturRios.<Name>.sln'", lines)
                 self.assertLess(lines.index("SOLUTION='src/ArturRios.<Name>.sln'"), 40)
 
+    def test_given_the_shell_scripts_under_pipefail_when_read_then_none_pipes_printf_or_echo_into_grep_q(self):
+        # grep -q exits at its first match, the writer's next write then dies of a broken pipe, and pipefail makes
+        # the test read as no match, on a loaded machine only (see the long test project test below). A here-string
+        # (`grep -q ... <<<"$text"`) or `[[ ]]` has no pipe to break.
+        pattern = re.compile(r"\b(?:printf|echo)\b[^|#]*\|\s*grep\s+-[A-Za-z]*q")
+        for directory in (TEMPLATES, ROOT / "scripts", ROOT / "ci"):
+            for path in sorted(directory.rglob("*.sh")):
+                text = path.read_text(encoding="utf-8")
+                if "pipefail" not in text:
+                    continue
+                for number, line in enumerate(text.splitlines(), 1):
+                    if not line.lstrip().startswith("#"):
+                        with self.subTest(script=str(path.relative_to(ROOT)), line=number):
+                            self.assertIsNone(pattern.search(line), line.strip())
+
     @unittest.skipUnless(shutil.which("git") and (ROOT / ".git").exists(), "needs a git checkout")
     def test_given_the_library_scripts_when_committed_then_git_records_them_as_executable(self):
         # `git update-index --chmod=+x`: a Windows checkout has no mode bits to read, git's index does.
@@ -444,6 +459,17 @@ class LibraryScriptBehaviourTests(unittest.TestCase):
         # ...nor does a package of a project that is not packable count as expected.
         result = self.run_script("pack.sh", RELEASE_VERSION="1.2.3", FAKE_PACK_NAME="Sample.Tests.1.2.3.nupkg")
         self.assertEqual(result.returncode, 1)
+
+    def test_given_a_long_test_project_when_packed_then_it_is_still_not_packable(self):
+        # Under pipefail, `printf "$text" | grep -q` loses a race: grep exits at its match, printf's next write
+        # fails with a broken pipe, and the lookup reads as no match, so a test project counted as packable and
+        # its package passed the release check (seen once on a loaded ci agent, 0.13.2's release PR). Lines after
+        # the match make printf still be writing every time, so the race is lost on every run, not once in a while.
+        self.write_project(self.repo / "tests" / "Sample.Tests" / "Sample.Tests.csproj",
+                           "<IsPackable>false</IsPackable>\r\n" + "".join(f"    <P{i}>x</P{i}>\r\n" for i in range(20000)))
+        result = self.run_script("pack.sh", RELEASE_VERSION="1.2.3", FAKE_PACK_NAME="Sample.Tests.1.2.3.nupkg")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Sample.Tests.1.2.3.nupkg", result.stderr)
 
     def test_given_a_package_id_that_is_not_the_project_name_when_packed_then_the_package_id_is_expected(self):
         self.write_project(self.repo / "src" / "ArturRios.Sample.csproj",
