@@ -436,5 +436,16 @@ class AgentsScriptTests(unittest.TestCase):
         self.assertIn("String remoteFS = '/home/jenkins/agent'", script)
 
 
+@unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
+class JenkinsSecurityTests(unittest.TestCase):
+    def test_given_the_common_configuration_when_read_then_the_content_security_policy_is_enforced(self):
+        self.assertIs(casc()["security"]["contentSecurityPolicy"]["enforce"], True)
+
+    def test_given_the_plugins_when_read_then_none_is_known_to_break_under_the_content_security_policy(self):
+        # Jenkins' list of plugins that enforcing CSP breaks (https://www.jenkins.io/doc/book/security/csp/).
+        plugins = read(CONTROLLER / "plugins.txt").split()
+        for plugin in ("artifactory", "build-pipeline-plugin"):
+            self.assertNotIn(plugin, plugins)
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- **Jenkins enforces its Content Security Policy.** `casc.yaml` sets `security.contentSecurityPolicy.enforce`, so
+  browsers refuse inline scripts and other origins' resources on Jenkins' pages, which limits what a cross-site
+  scripting flaw could do. Jenkins (2.539+) ships it off and shows a notice until an administrator chooses; none of
+  the installed plugins is on Jenkins' list of plugins it breaks. `platform.sh up` on the DevOps Server applies it.
+
 ## [0.12.3] - 2026-11-11
 
 ### Changed
