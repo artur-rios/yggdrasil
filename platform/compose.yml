@@ -36,8 +36,8 @@ name: yggdrasil
 # interpolates the whole file whatever the active profiles are: an agent-only host would otherwise have to
 # define the controller's GitHub App settings. scripts/platform.sh checks them per profile instead.
 # DOCKER_SOCKET, PROMETHEUS_CONFIG_FILE, YGG_TRAEFIK_CONFIG_FILE, YGG_TRAEFIK_CONFIG_HASH,
-# YGG_JENKINS_CREDENTIALS_FILE and YGG_JENKINS_CREDENTIALS_HASH are exported by scripts/platform.sh, not set in
-# the env file.
+# YGG_JENKINS_CREDENTIALS_FILE, YGG_JENKINS_CREDENTIALS_HASH and YGG_JENKINS_CONFIG_HASH are exported by
+# scripts/platform.sh, not set in the env file.
 
 x-logging: &logging
   # Docker's default json-file driver never rotates. Alloy reads the same files, so rotation here is
@@ -435,6 +435,10 @@ services:
       # each secret file's size and time, never its content). The file's path is the same at every run, so
       # this is what makes `up` recreate the controller, which reads its credentials only when it starts.
       yggdrasil.credentials-hash: ${YGG_JENKINS_CREDENTIALS_HASH:-}
+      # The hash of the files it mounts from the checkout (scripts/platform.sh: casc*.yaml, the Jenkinsfile and job
+      # scripts, catalog.yaml, agents.groovy), which it also reads only when it starts: a pulled change to any of
+      # them recreates it at the next `up`.
+      yggdrasil.jenkins-config-hash: ${YGG_JENKINS_CONFIG_HASH:-}
       traefik.enable: "true"
       traefik.http.routers.jenkins.rule: Host(`jenkins.${DOMAIN}`)
       traefik.http.routers.jenkins.entrypoints: websecure

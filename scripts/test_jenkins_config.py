@@ -396,6 +396,24 @@ class JenkinsServiceTests(unittest.TestCase):
         self.assertEqual(environment["CI_AGENT_WORKDIR"], "${CI_AGENT_WORKDIR:-}")
         self.assertEqual(environment["RELEASE_AGENT_WORKDIR"], "${RELEASE_AGENT_WORKDIR:-}")
 
+    def test_given_the_compose_service_when_read_then_every_file_it_mounts_from_the_checkout_is_in_the_config_hash(self):
+        # The controller reads these only when it starts, and a git pull changes them under the same paths, so
+        # Compose would leave it running on the old ones: platform.sh hashes them into a label, and a new hash is
+        # what makes `up` recreate it. A file mounted here but not hashed would be the CSP setting of 0.13.0 again.
+        mounted = set()
+        for volume in jenkins_service()["volumes"]:
+            source = volume.split(":")[0]
+            if source.startswith(("./", "../")):
+                mounted.add((ROOT / "platform" / source).resolve().relative_to(ROOT).as_posix())
+        script = read(ROOT / "scripts" / "platform.sh")
+        listed = re.search(r"(?ms)^jenkins_config_files=\((.*?)^\)", script)
+        self.assertIsNotNone(listed, "platform.sh has no jenkins_config_files list")
+        hashed = set(re.findall(r"(?m)^\s+(\S+)$", listed.group(1)))
+        self.assertEqual(hashed, mounted)
+        for path in hashed:
+            self.assertTrue((ROOT / path).is_file(), path)
+        self.assertEqual(jenkins_service()["labels"]["yggdrasil.jenkins-config-hash"], "${YGG_JENKINS_CONFIG_HASH:-}")
+
     def test_given_the_environment_example_when_read_then_it_documents_the_new_settings(self):
         text = read(ROOT / "env" / "platform.env.example")
         for name in ("YGGDRASIL_LIBRARY_VERSION", "FORGE_WRITE_TOKEN_FILE", "FORGE_READ_TOKEN_FILE",

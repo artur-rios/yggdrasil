@@ -54,6 +54,7 @@ class PlatformTests(unittest.TestCase):
                           'echo "JENKINS_CREDENTIALS_DIR=${JENKINS_CREDENTIALS_DIR:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "YGG_JENKINS_CREDENTIALS_FILE=${YGG_JENKINS_CREDENTIALS_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "YGG_JENKINS_CREDENTIALS_HASH=${YGG_JENKINS_CREDENTIALS_HASH:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "YGG_JENKINS_CONFIG_HASH=${YGG_JENKINS_CONFIG_HASH:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
                           '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
                           '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
@@ -534,6 +535,42 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(self.up(settings).returncode, 0)
         second = re.search(r"YGG_JENKINS_CREDENTIALS_HASH=(\w+)", self.docker_calls()).group(1)
         self.assertNotEqual(first, second)
+
+    def jenkins_config_hash(self):
+        return re.search(r"YGG_JENKINS_CONFIG_HASH=(\S*)", self.docker_calls()).group(1)
+
+    def test_given_the_jenkins_profile_when_up_twice_then_the_controller_config_hash_is_the_same(self):
+        settings = self.JENKINS + self.GITHUB_APP
+        self.assertEqual(self.up(settings).returncode, 0)
+        first = self.jenkins_config_hash()
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        self.log.unlink()
+        self.assertEqual(self.up(settings).returncode, 0)
+        # Nothing changed in the checkout: the controller is left running.
+        self.assertEqual(self.jenkins_config_hash(), first)
+
+    def test_given_a_changed_casc_file_when_up_then_the_controller_config_hash_changes(self):
+        # The controller reads its Configuration as Code only when it starts, from files mounted at fixed paths:
+        # only the hash (a label on the service) tells Compose that a pulled casc.yaml needs a new controller.
+        # A copy of the checkout, so the change does not touch this one.
+        checkout = self.temp / "checkout"
+        for part in ("scripts", "platform", "jenkins"):
+            shutil.copytree(SCRIPT.parent.parent / part, checkout / part,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy(SCRIPT.parent.parent / "catalog.yaml", checkout / "catalog.yaml")
+        script = checkout / "scripts" / "platform.sh"
+        (self.secrets / "platform.env").write_text(TRAEFIK_ENV + self.JENKINS + self.GITHUB_APP)
+
+        def up():
+            result = subprocess.run(["bash", str(script), "up"], env=self.env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return self.jenkins_config_hash()
+
+        first = up()
+        casc = checkout / "platform" / "jenkins" / "controller" / "casc.yaml"
+        casc.write_text(casc.read_text() + "# changed\n")
+        self.log.unlink()
+        self.assertNotEqual(up(), first)
 
     def test_given_a_credential_the_catalog_does_not_name_when_up_then_it_stops_before_docker(self):
         directory = self.credentials_dir(reportgenerator_licence="the-key")
