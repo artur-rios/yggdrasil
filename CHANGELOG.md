@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-11
+
+### Fixed
+
+- **A pulled change to the controller's configuration reaches it.** The Jenkins controller reads its Configuration
+  as Code, the Jenkinsfile and job scripts kept in Jenkins, `catalog.yaml` and `agents.groovy` only when it starts,
+  from files mounted at fixed paths, so `platform.sh up` left it running on the old ones after a `git pull` that
+  changed only them: 0.13.0's Content Security Policy setting was not applied. `platform.sh` now hashes those files
+  into a label on the controller (`yggdrasil.jenkins-config-hash`), as it already did for Traefik's configuration and
+  the credentials, and a changed file recreates the controller at the next `up`, which stops the builds running on
+  it. A catalog change no longer needs `docker restart yggdrasil-jenkins-1`. `git pull` and `platform.sh up` on the
+  DevOps Server applies it, and with it 0.13.0's CSP setting.
+
 ## [0.13.0] - 2026-11-11
 
 ### Security
@@ -1279,7 +1292,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/artur-rios/yggdrasil/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/artur-rios/yggdrasil/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/artur-rios/yggdrasil/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/artur-rios/yggdrasil/compare/v0.12.1...v0.12.2

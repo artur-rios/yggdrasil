@@ -1667,16 +1667,19 @@ So a change to the catalog or the stack files goes to `main` first, then to ever
 cd /opt/yggdrasil && git pull
 scripts/platform.sh up
 docker restart yggdrasil-status-1                        # every host: re-reads the catalog
-docker restart yggdrasil-jenkins-1                       # the controller host only
 ```
 
 Variables are not part of this: `deploy.sh` and `platform.sh` read them from the variables store
 or the env files each time they run, so a changed variable needs no restart, only the next deploy of
 the application (or `platform.sh up` for the platform's own).
 
-`platform.sh up` alone isn't enough: the catalog is mounted into the running containers as a single
-file, and they keep seeing the old one until they restart. Jenkins creates new jobs and agents only
-when it starts; it never deletes agents (remove them in **Manage Jenkins → Nodes**).
+The catalog is mounted into the running containers as a single file, and they keep seeing the old one
+until they start again. For the Jenkins controller `platform.sh up` sees to it: it hashes every file the
+controller mounts from the checkout (the catalog, `casc*.yaml`, the Jenkinsfile and job scripts,
+`agents.groovy`) into a label, so a pulled change to any of them recreates the controller. That stops the
+builds running on it, so pull while it is idle. The status API has no such label: restart it as above.
+Jenkins creates new jobs and agents only when it starts; it never deletes agents (remove them in
+**Manage Jenkins → Nodes**).
 
 ## The pipeline
 
