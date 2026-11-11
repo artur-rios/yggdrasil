@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Jenkins on JDK 25.** The controller, deploy-agent and build-agent images move from their `-jdk21` builds to the
+  `-jdk25` builds of the same versions (Jenkins 2.580.2 LTS, inbound-agent 3391.va_37fa_a_305d6d-6), ahead of Jenkins
+  ending Java 21 support on or after 2027-09-30, which the controller now warns about. Renovate tracks the `-jdk25`
+  agent tags. `platform.sh up` on the controller host rebuilds the images.
+
 ## [0.12.2] - 2026-11-11
 
 ### Changed
