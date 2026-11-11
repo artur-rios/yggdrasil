@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **The catalog declares each system's icon and, for the three APIs, its detailed health report and the systems
+  it depends on.** `icon` names the Material icon the console's system map shows for a system; `detailedHealth`
+  and `integrations` (`{ system: <id> }` or `{ external: <name> }`, with the check's name in the report) draw the
+  lines between systems and whether each works. See [docs/catalog.md](docs/catalog.md).
+
 ## [0.11.0] - 2026-11-10
 
 ### Changed
