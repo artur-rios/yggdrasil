@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   set its replacement, `repositoryAccessStrategy` → `specificRepositories` with the same owner and no repository
   list, what that migration produced: tokens reach the same repositories with the same permissions as before.
   `git pull` and `platform.sh up` on the DevOps Server recreates the controller and clears it.
+- **The library template's `ci/pack.sh` could count a test project as packable.** It told test projects apart
+  with `printf "$text" | grep -q` under `pipefail`: when `grep` exited at its match before `printf` had finished
+  writing, `printf` died of a broken pipe and the lookup read as no match, so a test project's package passed the
+  release check. Seen once, on a loaded `ci` agent, as a failure of `test_templates`. It reads the text from a
+  here-string now, and a test fails any script under `pipefail` that pipes `printf` or `echo` into `grep -q`.
+  Libraries that copied `ci/pack.sh` from the template have the same line: change it there too.
 
 ## [0.13.1] - 2026-11-11
 
