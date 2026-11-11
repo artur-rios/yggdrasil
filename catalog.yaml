@@ -416,6 +416,22 @@ systems:
         environments:
           production: { trigger: branch, branches: main }
 
+  # cerberus-api and cerberus-ui are repositories entries (checks, releases): nothing of theirs deploys yet.
+  - id: cerberus
+    name: Cerberus
+    description: End-to-end encrypted vault
+    applications:
+      - id: cerberus-docs
+        name: Cerberus docs
+        kind: web
+        health: http://cerberus-docs:8080/healthz
+        domain: artur-rios.tech
+        host: docs
+        path: /cerberus-docs
+        checks: [build]
+        environments:
+          production: { trigger: branch, branches: main }
+
   - id: chimera
     name: Chimera
     description: Local-first developer toolbox
