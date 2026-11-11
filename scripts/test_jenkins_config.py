@@ -330,8 +330,8 @@ class JenkinsLibraryTests(unittest.TestCase):
         # The git plugin's source: the Gitea plugin's fetches a tag version as a branch
         # (scripts/test_jenkins_live.py), so no version loads through it.
         scm = libraries("casc.forgejo.yaml")[0]["retriever"]["modernSCM"]["scm"]
-        self.assertEqual(list(scm), ["git"])
-        source = scm["git"]
+        self.assertEqual(list(scm), ["gitSource"])
+        source = scm["gitSource"]
         self.assertEqual(source["remote"], "${FORGE_URL}/${GITHUB_OWNER}/${YGGDRASIL_REPOSITORY}.git")
         self.assertEqual(source["credentialsId"], "forge-read")
         # A version is a tag: without tag discovery the library could not be found at v1.0.0.
