@@ -328,12 +328,15 @@ systems:
   - id: heimdall
     name: Heimdall
     description: Identity and access management
+    icon: shield
     applications:
       - id: heimdall-api
         name: Heimdall API
         kind: api
         health: http://heimdall-api:8080/healthcheck
         metrics: heimdall-api:9464
+        detailedHealth: http://heimdall-api:9464/internal/health
+        integrations: [{ system: hermes, check: Hermes }]
         host: heimdall-api
         # check: the OpenAPI document, path-filtered (yggdrasil.yml `paths`: skipped, which passes).
         checks: [test, docker, check]
@@ -364,6 +367,7 @@ systems:
   - id: hermes
     name: Hermes
     description: Email delivery for internal services
+    icon: mail
     applications:
       # No host: Hermes has no public route. Its callers and Prometheus reach it over the internal aliases
       # (stacks/hermes-api.proxy.yml).
@@ -372,17 +376,22 @@ systems:
         kind: api
         health: http://hermes-api:8080/healthcheck
         metrics: hermes-api:9464
+        detailedHealth: http://hermes-api:9464/internal/health
+        integrations: [{ external: Mailgun, check: Mailgun }]
         checks: [test, docker]
 
   - id: fortuna
     name: Fortuna
     description: Personal finance
+    icon: savings
     applications:
       - id: fortuna-api
         name: Fortuna API
         kind: api
         health: http://fortuna-api:8080/healthcheck
         metrics: fortuna-api:9464
+        detailedHealth: http://fortuna-api:9464/internal/health
+        integrations: [{ system: heimdall, check: Heimdall }]
         host: fortuna-api
         # native-msrv and native-build: the native core on Linux, path-filtered like check. Its Windows
         # build stays on GitHub Actions, path-filtered too, so it is waited for when it runs and never
@@ -410,6 +419,7 @@ systems:
   - id: chimera
     name: Chimera
     description: Local-first developer toolbox
+    icon: construction
     applications:
       - id: chimera
         name: Chimera web
@@ -452,6 +462,7 @@ systems:
   - id: alexandria
     name: Alexandria
     description: Personal library
+    icon: local_library
     applications:
       - id: alexandria-docs
         name: Alexandria docs
@@ -467,6 +478,7 @@ systems:
   - id: orpheus
     name: Orpheus
     description: Music player
+    icon: music_note
     applications:
       # The repository is the repositories entry orpheus (checks, releases); this is its docs site.
       - id: orpheus-docs
@@ -488,6 +500,7 @@ systems:
   - id: dotnet-libraries
     name: .NET libraries
     description: The ArturRios .NET library family
+    icon: extension
     applications:
       - id: dotnet-libraries-docs
         name: .NET libraries index
@@ -648,6 +661,7 @@ systems:
   - id: personal
     name: Personal sites
     description: Artur Rios' own site, blog and lab
+    icon: person
     applications:
       # Released like an application: develop, release/* and the release pull request to main.
       - id: personal-page
@@ -708,6 +722,7 @@ systems:
   - id: tech-craftsmen
     name: Tech Craftsmen
     description: The company's page and public services
+    icon: business
     applications:
       # Released like an application: release/* deploys homologation, the release pull request production.
       - id: tech-craftsmen-company-page
@@ -738,6 +753,7 @@ systems:
   - id: yggdrasil
     name: Yggdrasil
     description: Deployment platform
+    icon: park
     applications:
       - id: traefik
         name: Traefik
