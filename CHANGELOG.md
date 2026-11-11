@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-11-11
+
 ### Changed
 
 - **Jenkins 2.580.2 LTS.** The controller image moves from 2.580.1 to 2.580.2, a security release of the same
@@ -1253,7 +1255,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/artur-rios/yggdrasil/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/artur-rios/yggdrasil/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/artur-rios/yggdrasil/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/artur-rios/yggdrasil/compare/v0.10.2...v0.11.0
