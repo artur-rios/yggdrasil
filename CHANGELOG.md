@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Jenkins 2.580.2 LTS.** The controller image moves from 2.580.1 to 2.580.2, a security release of the same
+  baseline (Jetty 12.1.14, a newer ASM), still on JDK 21. `platform.sh up` on the controller host rebuilds it; the
+  plugins resolve again to their latest compatible versions in that rebuild.
+
 ## [0.12.1] - 2026-11-11
 
 ### Added
