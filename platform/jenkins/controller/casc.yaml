@@ -36,6 +36,12 @@ jenkins:
 security:
   globalJobDslSecurityConfiguration:
     useScriptSecurity: false
+  # Content Security Policy (Jenkins 2.539+): the browser refuses inline scripts and resources from
+  # other origins on Jenkins' pages, which limits what an XSS could do. Off by default for older
+  # plugins; none of plugins.txt is on Jenkins' list of plugins it breaks
+  # (https://www.jenkins.io/doc/book/security/csp/). Set here, so the UI's choice is not offered.
+  contentSecurityPolicy:
+    enforce: true
 
 # The credentials are in the files of the git server (see the top): casc.forgejo.yaml,
 # casc.github-app.yaml.
