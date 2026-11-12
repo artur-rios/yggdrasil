@@ -1,8 +1,8 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:yggdrasil_console/features/environments/domain/environment.dart';
 import 'package:yggdrasil_console/features/status/data/refresh_settings_store.dart';
 import 'package:yggdrasil_console/features/status/data/status_source.dart';

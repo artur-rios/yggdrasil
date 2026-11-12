@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// The world tree's green. Both schemes derive from it, and the Android icon
 /// and web manifest use the same colour.
