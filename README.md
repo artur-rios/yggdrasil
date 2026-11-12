@@ -270,6 +270,7 @@ one-server layout on real hardware:
 | Read a secret | `ygg vars get heimdall-api@production KEY --reveal`, or `ygg` › Applications › heimdall-api › production › the variable › Show value |
 | See who changed a variable, or undo it | `ygg vars history`, then `vars rollback <id>` |
 | Update a host's platform or catalog | `cd /opt/yggdrasil && git pull && scripts/platform.sh up`, then restart `yggdrasil-status-1` (and `yggdrasil-jenkins-1` on the controller host) after a catalog change: [setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog) |
+| Update Jenkins' plugins | `ygg platform update-plugins` on the Linux DevOps Server: the latest compatible plugins, applied with a safe restart: pipelines pause and carry on after it ([docs/cli.md](docs/cli.md#jenkins-plugins)) |
 | Change the branch rules | `python3 scripts/rules.py --dry-run`, then without ([setup.md, step 12](docs/setup.md#12-apply-the-branch-rules)); on an existing GitHub installation, first [adopt `yggdrasil.yml`](docs/setup.md#an-existing-github-installation) |
 | See what runs where | The console, or `curl -H "Authorization: Bearer $TOKEN" https://yggdrasil.<DOMAIN>/api/status` |
 

@@ -21,7 +21,7 @@ GROUP_SUMMARIES = {
     "Applications": "each application's variables and secrets; deploy; set up a new one",
     "Environments": "start, stop and list this host's environments",
     "Variables and secrets": "any scope of the variables store, and every vars command",
-    "Platform": "the platform stack: up, down, ps, logs, config",
+    "Platform": "the platform stack: up, down, ps, logs, config, Jenkins' plugins",
     "Host": "check and install the tools and the machine's role; build agents, backups, the ygg command",
     "Catalog": "what catalog.yaml declares",
     "Help and version": "the commands, the version, tab completion",
@@ -308,6 +308,10 @@ def confirmation(command, values, ctx):
         return f"Stop every application of {v.get('environment')}?"
     if path == ("platform", "down"):
         return "Stop this host's platform (proxy, status, observability, Jenkins)?"
+    if path == ("platform", "update-plugins"):
+        if v.get("now"):
+            return "Update Jenkins' plugins and restart it now, under the builds it runs?"
+        return "Update Jenkins' plugins and restart it once it can restart safely?"
     if path == ("deploy",) and v.get("environment") and not ctx.on_demand(v["environment"]):
         return f"Deploy {v.get('application')} to {v['environment']}, which stays up?"
     return None

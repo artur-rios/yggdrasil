@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`ygg platform update-plugins`** (`scripts/platform.sh update-plugins`), on the Linux DevOps Server. `plugins.txt`
+  names no versions, but `platform up` builds the controller from Docker's cache, so its plugins stayed as they were
+  at the first build. The command rebuilds the image with the latest compatible plugins and prints which change.
+  Then it puts Jenkins in quiet-down, waits until nothing blocks a restart, as Jenkins' safe restart does (pipelines
+  pause and carry on after it; other builds finish first), and brings the platform up on the new image. `--now`
+  skips the wait; with nothing to change, Jenkins keeps running. The controller's
+  Dockerfile takes a `PLUGINS_REFRESHED` build argument for this, saved in `/etc/yggdrasil/jenkins-plugins-refreshed`
+  and passed by every `up`, so a later `up` stays on the new plugins
+  ([docs/cli.md](docs/cli.md#jenkins-plugins)).
+
 ## [0.13.2] - 2026-11-11
 
 ### Fixed

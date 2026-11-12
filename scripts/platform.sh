@@ -3,6 +3,13 @@
 #
 #     scripts/platform.sh up | down | ps | config [--last-good]
 #     scripts/platform.sh logs [--last-good] [service]
+#     scripts/platform.sh update-plugins [--last-good] [--now]
+#
+# update-plugins (the Linux DevOps Server: the jenkins profile) rebuilds the Jenkins controller's image with
+# the latest compatible plugins, prints which change, then puts Jenkins in quiet-down and waits until it can restart
+# safely, as Jenkins' own safe restart does (pipelines pause and carry on after the restart; other builds finish
+# first), and brings the platform up on the new image, as `up` does. --now skips the wait. With nothing to change it
+# leaves Jenkins running as it is.
 #
 # Runs on the invoking user's own rootless Docker engine and nothing else: the socket comes from
 # DOCKER_HOST, else the user's runtime directory, and a rootful engine is refused. One platform
@@ -20,7 +27,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=docker-engine.sh
 source "$root/scripts/docker-engine.sh"
 secrets=${YGG_SECRETS_DIR:-/etc/yggdrasil}
-usage="usage: platform.sh up | down | ps | config [--last-good], or platform.sh logs [--last-good] [service]"
+usage="usage: platform.sh up | down | ps | config [--last-good], or platform.sh logs [--last-good] [service], or platform.sh update-plugins [--last-good] [--now]"
 command=${1:-}
 (($#)) && shift
 last_good=""
@@ -28,15 +35,47 @@ if [[ "${1:-}" == --last-good ]]; then
   last_good=1
   shift
 fi
-[[ "$command" =~ ^(up|down|ps|logs|config)$ ]] || die "$usage"
+[[ "$command" =~ ^(up|down|ps|logs|config|update-plugins)$ ]] || die "$usage"
+now=""
+if [[ "$command" == update-plugins && "${1:-}" == --now ]]; then
+  now=1
+  shift
+fi
 [[ "$command" == logs || $# -eq 0 ]] || die "$usage"
+# up and update-plugins bring the platform up: they publish what the other commands only render.
+brings_up=""
+if [[ "$command" == up || "$command" == update-plugins ]]; then
+  brings_up=1
+fi
 # Never as root (`sudo platform.sh …`): the platform runs on its user's rootless engine, whose
 # container root is that user, so a file root writes in the secrets directory (traefik.yml above all)
 # is one Traefik cannot read at its next start. Checked before anything is read or written.
 [[ "$(id -u)" != 0 ]] \
   || die "run platform.sh as the user that owns the platform (ygg: log in as ygg, or sudo -iu ygg), not as root (docs/hosts.md)"
 cleanup_paths=()
-trap 'rm -rf ${cleanup_paths[@]+"${cleanup_paths[@]}"}' EXIT
+# update-plugins: whether it tagged the image the controller ran as previous_image (the build moves the image's
+# own tag, and Docker's containerd image store deletes an image the moment it has no tag left), whether that image
+# is to be tagged back if this stops on the way (so the next `up` does not restart Jenkins on plugins nobody waited
+# for), and whether Jenkins is in a quiet-down this run started.
+kept_previous=""
+restore_previous=""
+quieted=""
+on_exit() {
+  if [[ -n "$quieted" ]]; then
+    echo "platform: cancelling the quiet-down: Jenkins starts builds again" >&2
+    jenkins_cli cancel-quiet-down >&2 \
+      || echo "platform: could not cancel the quiet-down; cancel it at the top of Manage Jenkins" >&2
+  fi
+  if [[ -n "$restore_previous" ]]; then
+    docker tag "$previous_image" "$jenkins_image" \
+      || echo "platform: could not tag $previous_image back as $jenkins_image" >&2
+  fi
+  if [[ -n "$kept_previous" ]]; then
+    docker image rm "$previous_image" >/dev/null 2>&1 || true
+  fi
+  rm -rf ${cleanup_paths[@]+"${cleanup_paths[@]}"}
+}
+trap on_exit EXIT
 
 # A private directory for the env files this run renders from the store: /run/yggdrasil for root;
 # else the user's own runtime directory (a tmpfs only they read), else a directory of theirs under
@@ -137,7 +176,7 @@ publish_traefik_config() {
 
 if [[ -n "$last_good" ]]; then
   :
-elif [[ "$command" == up ]]; then
+elif [[ -n "$brings_up" ]]; then
   render_traefik_config "$secrets"
 else
   [[ -n "$render_dir" ]] || run_dir
@@ -146,6 +185,18 @@ fi
 use_traefik_config
 
 compose() { docker compose --env-file "$env_file" -f "$root/platform/compose.yml" "$@"; }
+
+# When update-plugins last fetched the Jenkins plugins, passed to every build of the controller's image (the
+# Dockerfile's PLUGINS_REFRESHED says why); none before the first.
+plugins_stamp_file=$secrets/jenkins-plugins-refreshed
+YGG_JENKINS_PLUGINS_REFRESHED=""
+if [[ -f "$plugins_stamp_file" ]]; then
+  YGG_JENKINS_PLUGINS_REFRESHED=$(<"$plugins_stamp_file")
+fi
+export YGG_JENKINS_PLUGINS_REFRESHED
+# The controller's image, as compose.yml names it, and the tag update-plugins keeps the one it ran under meanwhile.
+jenkins_image=yggdrasil/jenkins:local
+previous_image=yggdrasil/jenkins:previous
 
 # COMPOSE_PROFILES of the settings as ",a,b,", so that a profile is found as ",name,".
 # shellcheck source=/dev/null
@@ -210,7 +261,7 @@ credentials_rendered="" YGG_JENKINS_CREDENTIALS_FILE=/dev/null YGG_JENKINS_CREDE
 if [[ -n "$credentials_dir" ]]; then
   [[ "$credentials_dir" == /* ]] \
     || die "JENKINS_CREDENTIALS_DIR in $env_file must be an absolute path, not '$credentials_dir'"
-  if [[ "$command" == up ]]; then
+  if [[ -n "$brings_up" ]]; then
     credentials_into=$secrets
   else
     [[ -n "$render_dir" ]] || run_dir
@@ -226,7 +277,7 @@ if [[ -n "$credentials_dir" ]]; then
     YGG_CASC_CONFIG+=",/etc/jenkins/casc.credentials.yaml"
     YGG_JENKINS_CREDENTIALS_HASH=$({ cat "$credentials_rendered"; stat -c '%n %s %Y' "$credentials_dir"/*; } | sha256sum | cut -d' ' -f1)
     YGG_JENKINS_CREDENTIALS_FILE=$credentials_rendered
-    [[ "$command" == up ]] && YGG_JENKINS_CREDENTIALS_FILE=$secrets/jenkins-credentials.yaml
+    [[ -n "$brings_up" ]] && YGG_JENKINS_CREDENTIALS_FILE=$secrets/jenkins-credentials.yaml
   else
     credentials_rendered=""
   fi
@@ -327,28 +378,148 @@ check_apps_profile() {
     || die "ENVIRONMENTS is set but COMPOSE_PROFILES lacks apps: add apps to COMPOSE_PROFILES (the status API and console moved to that profile in this release)"
 }
 
+# up, once its checks passed: publishes what it rendered and brings the stack up.
+bring_up() {
+  local network
+  for network in edge telemetry; do
+      docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
+  done
+  # The agent's deploy locks (scripts/deploy.sh): the agent's container root is this user.
+  install -d -m 700 "$secrets/locks"
+  publish_traefik_config
+  if [[ -n "$credentials_rendered" ]]; then
+    mv -f "$credentials_rendered" "$secrets/jenkins-credentials.yaml"
+  else
+    rm -f "$secrets/jenkins-credentials.yaml"
+  fi
+  compose up --detach --build --remove-orphans --wait
+  compose ps
+  if [[ -n "$from_store" ]]; then
+    install -d -m 700 "$secrets/last-good"
+    install -m 600 "$env_file" "$acme_file" "$traefik_file" "$secrets/last-good/"
+  fi
+}
+
+# image_id <image>: the image's id, "" when there is none.
+image_id() { docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true; }
+
+# plugin_versions <image>: "<plugin> <version>" per line, sorted, of the plugins the image installs (each one's
+# manifest, read the way the image's own jenkins-support reads it).
+plugin_versions() {
+  # shellcheck disable=SC2016 # expanded by the container's shell
+  docker run --rm --entrypoint sh "$1" -c 'cd /usr/share/jenkins/ref/plugins && for p in *.jpi; do
+      printf "%s %s\n" "${p%.jpi}" "$(unzip -p "$p" META-INF/MANIFEST.MF | tr -d "\r" | sed -n "s/^Plugin-Version: //p")"
+    done' | sort
+}
+
+# plugin_changes <before> <after>: one line per plugin whose version differs between two plugin_versions lists.
+plugin_changes() {
+  awk 'NF == 0 { next }
+       FILENAME == ARGV[1] { before[$1] = $2; next }
+       !($1 in before) { print "  " $1 ": new, " $2; next }
+       before[$1] != $2 { print "  " $1 ": " before[$1] " -> " $2 }
+       { delete before[$1] }
+       END { for (p in before) print "  " p ": removed (was " before[p] ")" }' \
+    <(printf '%s\n' "$1") <(printf '%s\n' "$2") | sort
+}
+
+# jenkins_cli <command> [<argument>...]: the Jenkins CLI, in the running controller, as its admin; its standard
+# input goes to the command. The password comes from the container's own environment: never on this host's command
+# line. -http, because the CLI's default WebSocket refuses a connection whose origin (localhost) is not the
+# configured JENKINS_URL.
+jenkins_cli() {
+  # shellcheck disable=SC2016 # expanded by the container's shell
+  compose exec -T jenkins sh -c 'cd /tmp \
+      && { [ -s jenkins-cli.jar ] || curl -fsSo jenkins-cli.jar http://localhost:8080/jnlpJars/jenkins-cli.jar; } \
+      && JENKINS_USER_ID=$JENKINS_ADMIN_ID JENKINS_API_TOKEN=$JENKINS_ADMIN_PASSWORD \
+         exec java -jar jenkins-cli.jar -s http://localhost:8080/ -http "$@"' jenkins-cli "$@"
+}
+
+# blocking_builds: how many busy executors keep Jenkins from restarting safely, by Jenkins' own rule (core's
+# RestartListener.Default, what a safe restart waits for). A pipeline does not: in quiet-down it pauses at its next
+# step and carries on after the restart, a running sh step going on on its agent meanwhile. A freestyle build does,
+# until it ends.
+blocking_builds() {
+  jenkins_cli groovy = <<'GROOVY'
+def executors = jenkins.model.Jenkins.get().computers.findAll { it.online }.collectMany { it.allExecutors }
+println executors.count { it.busy && (it.asynchronousExecution == null || it.asynchronousExecution.blocksRestart()) }
+GROOVY
+}
+
+# How long update-plugins waits for Jenkins to be ready to restart, and how often it looks (seconds; the tests
+# shorten both).
+quiet_timeout=${YGG_JENKINS_QUIET_TIMEOUT:-1800}
+quiet_poll=${YGG_JENKINS_QUIET_POLL:-15}
+
+# wait_for_builds: puts the running controller in quiet-down (queued and new builds wait, pipelines pause at their
+# next step) and returns once nothing blocks a restart. Gives up after quiet_timeout, and the quiet-down is
+# cancelled on the way out.
+wait_for_builds() {
+  if [[ -z "$(compose ps --quiet jenkins)" ]]; then
+    return 0
+  fi
+  jenkins_cli quiet-down >&2 \
+    || die "could not put Jenkins in quiet-down to wait for its builds; 'update-plugins --now' restarts it without waiting"
+  quieted=1
+  local waited=0 running
+  while :; do
+    running=$(blocking_builds) \
+      || die "could not ask Jenkins which builds it runs; 'update-plugins --now' restarts it without waiting"
+    [[ "$running" =~ ^[0-9]+$ ]] \
+      || die "Jenkins answered '$running' for its running builds; 'update-plugins --now' restarts it without waiting"
+    if ((running == 0)); then
+      return 0
+    fi
+    if ((waited >= quiet_timeout)); then
+      die "$running build(s) still running after $((quiet_timeout / 60)) minutes; nothing was changed. Run update-plugins again later, or with --now to restart Jenkins under them"
+    fi
+    echo "platform: waiting for $running build(s) that cannot survive a restart (pipelines pause and carry on after it); Jenkins starts no new ones meanwhile" >&2
+    sleep "$quiet_poll"
+    waited=$((waited + quiet_poll))
+  done
+}
+
 case "$command" in
   up)
     check_apps_profile
     check_profile_variables
     use_rootless_engine
-    for network in edge telemetry; do
-      docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
-    done
-    # The agent's deploy locks (scripts/deploy.sh): the agent's container root is this user.
-    install -d -m 700 "$secrets/locks"
-    publish_traefik_config
-    if [[ -n "$credentials_rendered" ]]; then
-      mv -f "$credentials_rendered" "$secrets/jenkins-credentials.yaml"
-    else
-      rm -f "$secrets/jenkins-credentials.yaml"
+    bring_up
+    ;;
+  update-plugins)
+    [[ "$profiles" == *,jenkins,* ]] \
+      || die "this host does not run Jenkins (COMPOSE_PROFILES in $env_file has no jenkins): update-plugins is for the Linux DevOps Server"
+    check_apps_profile
+    check_profile_variables
+    use_rootless_engine
+    old_image=$(image_id "$jenkins_image")
+    old_plugins=""
+    if [[ -n "$old_image" ]]; then
+      old_plugins=$(plugin_versions "$jenkins_image") || die "could not read the plugins of $jenkins_image"
+      docker tag "$jenkins_image" "$previous_image"
+      kept_previous=1
+      restore_previous=1
     fi
-    compose up --detach --build --remove-orphans --wait
-    compose ps
-    if [[ -n "$from_store" ]]; then
-      install -d -m 700 "$secrets/last-good"
-      install -m 600 "$env_file" "$acme_file" "$traefik_file" "$secrets/last-good/"
+    echo "platform: building $jenkins_image with the latest compatible plugins" >&2
+    YGG_JENKINS_PLUGINS_REFRESHED=$(date -u +%Y%m%dT%H%M%SZ)
+    compose build jenkins
+    new_plugins=$(plugin_versions "$jenkins_image") || die "could not read the plugins of the new $jenkins_image"
+    if [[ -n "$old_image" && "$new_plugins" == "$old_plugins" ]]; then
+      # on_exit tags the image the controller runs back, so the next `up` does not recreate it for nothing (and
+      # the build's own image goes, untagged).
+      echo "platform: the Jenkins plugins are already up to date; Jenkins was left running" >&2
+      exit 0
     fi
+    if [[ -n "$old_image" ]]; then
+      echo "Jenkins plugins that change:"
+      plugin_changes "$old_plugins" "$new_plugins"
+    fi
+    [[ -n "$now" ]] || wait_for_builds
+    # From here on the new image is the one: every `up` builds it from the same layer.
+    printf '%s\n' "$YGG_JENKINS_PLUGINS_REFRESHED" >"$plugins_stamp_file"
+    restore_previous=""
+    bring_up
+    quieted=""
     ;;
   down) use_rootless_engine; compose down ;;
   ps) use_rootless_engine; compose ps ;;
