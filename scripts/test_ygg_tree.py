@@ -50,13 +50,14 @@ class ParityTests(unittest.TestCase):
     def test_every_platform_sh_command_and_option_is_in_the_tree(self):
         text = (SCRIPTS / "platform.sh").read_text()
         usage = re.search(r'usage="usage: (.*)"', text)[1]
-        names = set(re.findall(r"(?:platform\.sh |\| )([a-z]+)", usage))
-        self.assertEqual(names, {"up", "down", "ps", "config", "logs"})
+        names = set(re.findall(r"(?:platform\.sh |\| )([a-z-]+)", usage))
+        self.assertEqual(names, {"up", "down", "ps", "config", "logs", "update-plugins"})
         for name in names:
             command = tree.find(("platform", name))
             self.assertIsNotNone(command, name)
             self.assertIn("--last-good", [f for a in command.args for f in a.flags])
         self.assertIn("service", [a.dest for a in tree.find(("platform", "logs")).args])
+        self.assertIn("--now", [f for a in tree.find(("platform", "update-plugins")).args for f in a.flags])
 
     def test_deploy_sh_arguments_are_in_the_tree(self):
         self.assertEqual([a.dest for a in tree.find(("deploy",)).args if a.positional],
@@ -150,6 +151,9 @@ class ConfirmationTests(unittest.TestCase):
         for path, values, question in cases:
             self.assertEqual(tree.confirmation(tree.find(path), values, self.ctx), question, path)
         self.assertIn("platform", tree.confirmation(tree.find(("platform", "down")), {}, self.ctx))
+        update = tree.find(("platform", "update-plugins"))
+        self.assertIn("once it can restart safely", tree.confirmation(update, {}, self.ctx))
+        self.assertIn("now, under the builds", tree.confirmation(update, {"now": True}, self.ctx))
 
     def test_harmless_commands_do_not_ask(self):
         self.assertIsNone(tree.confirmation(tree.find(("vars", "import")), {"replace": False}, self.ctx))
