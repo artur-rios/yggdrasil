@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and passed by every `up`, so a later `up` stays on the new plugins
   ([docs/cli.md](docs/cli.md#jenkins-plugins)).
 
+### Changed
+
+- **The console builds with Flutter 3.50.0** (Dart 3.14), from 3.47.4: the Jenkins check and the APK release
+  (`ci/flutter-env.sh`), the web image (`console/Dockerfile`) and the GitHub workflows (`ci.yml`,
+  `release-windows.yml`). Building it by hand needs Flutter 3.50.0 ([CONTRIBUTING.md](CONTRIBUTING.md)). Its
+  Android build moves to the versions Flutter 3.50 requires (Android Gradle Plugin 9.3.1, Kotlin 2.4.20, Gradle
+  9.5.0), and its widgets come from `package:material_ui`, which replaces Flutter's deprecated
+  `package:flutter/material.dart`.
+
 ## [0.13.2] - 2026-11-11
 
 ### Fixed
