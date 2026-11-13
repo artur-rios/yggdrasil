@@ -595,9 +595,11 @@ opens pull requests from `renovate/*` branches into `develop`, and skips a repos
 configuration of its own (no onboarding pull requests).
 
 The image is the `-full` variant, which comes with the package managers and toolchains Renovate runs to update
-lockfiles (npm, cargo, dotnet, dart and flutter, and the rest). With the default (slim) image, which installs them on
-demand, every lockfile update failed ("Artifact update problem" on the pull request), and the pull requests changed
-the manifest only. It is several GB, so `renovate`'s engine needs the room.
+lockfiles (node and npm, cargo, dotnet, dart and flutter, and the rest). The default (slim) image downloads them on
+demand, several from GitHub releases (node from `containerbase/node-prebuild`). Without `RENOVATE_GITHUB_COM_TOKEN`,
+those lookups meet GitHub's anonymous rate limit: the log shows `Rate limit exceeded for api.github.com` and then
+`No tool releases found`, and the pull request gets "Artifact update problem" with its lockfile left as it was. The
+full image needs no such download. It is several GB, so `renovate`'s engine needs the room.
 
 Its settings are `/etc/yggdrasil-renovate/renovate.env` (`ygg install` copies
 [env/renovate.env.example](../env/renovate.env.example) there: `renovate:renovate`, mode `600`). Fill in as `renovate`

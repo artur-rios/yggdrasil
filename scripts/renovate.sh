@@ -43,10 +43,13 @@ source "$root/scripts/docker-engine.sh"
 
 # The image, an exact version and the digest of its manifest list: what runs against every repository with a
 # push token changes with a commit here (reviewed), never because a tag moved. The -full image, which comes with
-# the package managers and toolchains Renovate runs to update lockfiles (npm, cargo, dotnet, dart and flutter, and
-# the rest): with the default (slim) image, which installs them on demand through containerbase, every lockfile
-# update failed ("Artifact update problem" on the pull request), so its pull requests changed the manifest and left
-# the lockfile stale. It is several GB, against the slim image's few hundred MB. Update both parts together: the
+# the package managers and toolchains Renovate runs to update lockfiles (node and npm, cargo, dotnet, dart and
+# flutter, and the rest). The default (slim) image downloads them on demand through containerbase, several of them
+# from GitHub releases (node from containerbase/node-prebuild): without RENOVATE_GITHUB_COM_TOKEN those lookups
+# meet GitHub's anonymous rate limit, the tool is not found, and the lockfile update fails ("Artifact update
+# problem" on the pull request, a manifest-only change). The full image needs no such download; the token is still
+# worth setting, for release notes and for dependencies whose versions come from GitHub. It is several GB, against
+# the slim image's few hundred MB. Update both parts together: the
 # digest of renovate/renovate:<version>-full on Docker Hub
 # (`docker buildx imagetools inspect renovate/renovate:<version>-full`), after reading the release notes.
 RENOVATE_IMAGE=renovate/renovate:44.181.0-full@sha256:581faffea07b4c6112b0d3be88721f4b03ed0e21a230a8a45037cf6276bb0311
