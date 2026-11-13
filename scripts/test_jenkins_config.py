@@ -61,6 +61,12 @@ class JenkinsPluginsTests(unittest.TestCase):
                        "github-branch-source", "basic-branch-build-strategies"):
             self.assertIn(plugin, plugins)
 
+    def test_given_the_compose_service_when_read_then_an_image_upgrades_plugins_updated_in_the_ui(self):
+        # The image's entrypoint copies its plugins into Jenkins' volume at every start, but skips for good a plugin
+        # updated in the Jenkins UI since ("has been manually upgraded"), so update-plugins could never reach it
+        # again. With this it upgrades them too once it has a newer version.
+        self.assertEqual(jenkins_service()["environment"].get("PLUGINS_FORCE_UPGRADE"), "true")
+
 
 @unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
 class JenkinsJobTests(unittest.TestCase):

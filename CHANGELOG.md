@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ygg platform update-plugins` could not update a plugin once it had been updated in the Jenkins UI.** At every
+  start, the Jenkins image copies its plugins into Jenkins' volume, but it skips for good a plugin whose installed
+  version moved past the one the image first put there (`SKIPPED … has been manually upgraded` in
+  `/var/jenkins_home/copy_reference_file.log`): such a plugin stayed at the version picked in the UI, and the UI kept
+  listing its update, whatever image `update-plugins` built. The controller now starts with
+  `PLUGINS_FORCE_UPGRADE=true`, with which the image also upgrades such a plugin once it has a newer version (never
+  downgrading one), as [docs/cli.md](docs/cli.md#jenkins-plugins) already said it did. `platform.sh up` on the DevOps
+  Server recreates the controller with it, which restarts Jenkins: run it while no build runs. That restart upgrades
+  the plugins the image has newer versions of; `update-plugins` afterwards brings any others to the latest.
+
 ## [0.13.3] - 2026-11-13
 
 ### Added
