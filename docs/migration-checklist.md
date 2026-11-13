@@ -24,22 +24,22 @@ nearly every clone dirty; Windows git does not.
 - **Prepared branch** is filled when a repository's `feature/move-to-forgejo` branch is ready (never pushed);
   **Moved** is filled by the owner after the cutover.
 
-62 repositories. By kind (a repository can be of several): 5 application, 12 library, 12 ci, 24 site, 4 archived, 9 fork, 15 code only. Clones: 59 clean, 3 missing.
+62 repositories. By kind (a repository can be of several): 5 application, 12 library, 31 ci, 24 site, 4 archived, 9 fork, 1 code only. Clones: 59 clean, 3 missing.
 
 | Repository | Kind | GitHub | Jobs | Secrets | Pages / Vercel | Dependabot | Branch model | Clone | Notes | Prepared branch | Moved |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| ai-coding-skills | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy) |  | none |  | release | clean (develop) |  | `feature/move-to-forgejo`@a8e14db | 2026-10-27 |
+| ai-coding-skills | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>yggdrasil.yml/lint on jenkins → check lint |  | none |  | release | clean (develop) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint`, its own check | `feature/move-to-forgejo`@a8e14db | 2026-10-27 |
 | alexandria-api | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/check on ubuntu-latest → check check<br>ci.yml/performance on ubuntu-latest → check performance |  | none | cargo, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@1b78189 | 2026-10-27 |
 | alexandria-docs | site | plain | deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages) |  | Pages |  | basic | clean (main) |  | `feature/move-to-forgejo`@8347506 | 2026-10-27 |
 | alexandria-ui | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/analyze on ubuntu-latest → check analyze<br>ci.yml/test on windows-latest stays (Actions)<br>ci.yml/test on ubuntu-latest → check test<br>ci.yml/integration on windows-latest stays (Actions)<br>ci.yml/integration on ubuntu-latest → check integration<br>ci.yml/build on windows-latest stays (Actions)<br>ci.yml/build on ubuntu-latest → check build<br>release.yml/on-main on ubuntu-latest → release (release.build)<br>release.yml/windows on windows-latest stays (Actions)<br>release.yml/linux on ubuntu-latest → release (release.build)<br>release.yml/release on ubuntu-latest → release (release.build) |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@d8691c5 | 2026-10-27 |
-| algorithm-practice | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| artur-rios | code only | plain |  |  | none |  | basic | clean (main) |  | `feature/move-to-forgejo`@644bac5 | 2026-10-31 |
-| ballz | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
+| algorithm-practice | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| artur-rios | ci | plain | yggdrasil.yml/lint on jenkins → check lint |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint`, its own check | `feature/move-to-forgejo`@644bac5 | 2026-10-31 |
+| ballz | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | cerberus-api | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>tests.yml/test on ubuntu-latest → check test<br>tests.yml/docker on ubuntu-latest → check docker | `REPORTGENERATOR_LICENSE` | none | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@0a0d512 | 2026-10-27 |
 | cerberus-docs | site | not on GitHub Actions | yggdrasil.yml/build on jenkins → check build |  | none | none | basic |  | Created on Forgejo after the move: it had no GitHub workflows, so its job is its own check |  |  |
 | cerberus-ui | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build.yml/gate on ubuntu-latest → check gate<br>build.yml/web on ubuntu-latest → check web<br>build.yml/android on ubuntu-latest → check android<br>build.yml/windows on windows-latest stays (Actions)<br>build.yml/linux on ubuntu-latest → check linux<br>check-generated.yml/drift on ubuntu-latest → check drift<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test<br>ci.yml/web-bundle on ubuntu-latest → check web-bundle |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@93f5b36 | 2026-10-27 |
 | chimera | application | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test<br>ci.yml/browser-tests on ubuntu-latest → check browser-tests<br>ci.yml/safari-tests on macos-latest stays (Actions)<br>ci.yml/native-tests on windows-latest stays (Actions)<br>ci.yml/native-tests on ubuntu-latest → check native-tests<br>ci.yml/cross-platform on ubuntu-latest → check cross-platform<br>ci.yml/container on ubuntu-latest → check container<br>ci.yml/accessibility-performance on ubuntu-latest → check accessibility-performance<br>dotnet-clean.yml/cleanup-contract on ubuntu-latest → check cleanup-contract<br>dotnet-clean.yml/cleanup-contract on windows-latest stays (Actions)<br>dotnet-library-scaffold.yml/generated-library on ubuntu-latest → check generated-library<br>dotnet-library-scaffold.yml/generated-library on windows-latest stays (Actions)<br>dotnet-project.yml/evaluate-projects on ubuntu-latest → check evaluate-projects<br>dotnet-project.yml/evaluate-projects on windows-latest stays (Actions)<br>dotnet-version.yml/version-contract on ubuntu-latest → check version-contract<br>dotnet-version.yml/version-contract on windows-latest stays (Actions)<br>dotnet-workflows.yml/build-contract on ubuntu-latest → check build-contract<br>dotnet-workflows.yml/build-contract on windows-latest stays (Actions)<br>minimal-dotnet-library.yml/minimal-library on ubuntu-latest → check minimal-library<br>minimal-dotnet-library.yml/minimal-library on windows-latest stays (Actions)<br>periodic-terminal.yml/terminal-contract on windows-latest stays (Actions)<br>release-artifacts.yml/verify on ubuntu-latest → release (release.build)<br>release-artifacts.yml/package-windows on windows-latest stays (Actions)<br>release-artifacts.yml/package-linux on ubuntu-latest → release (release.build)<br>release-artifacts.yml/validate-artifacts on ubuntu-latest → release (release.build)<br>release-artifacts.yml/publish on ubuntu-latest → release (release.build) |  | none |  | release | clean (develop) |  | `feature/move-to-forgejo`@1273a10 | 2026-10-29 |
-| cli-utils | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
+| cli-utils | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | coding-challenge-library | ci | plain | tests.yml/test on ubuntu-latest → check test<br>tests.yml/docker on ubuntu-latest → check docker |  | none |  | basic | clean (main) |  | `feature/move-to-forgejo`@f0b02c7 | 2026-10-27 |
 | dotnet-common | archived | archived |  |  | none |  | basic | clean (main) |  |  |  |
 | dotnet-configuration | library, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs-and-coverage-report.yml/build on ubuntu-latest goes (Pages)<br>build-docs-and-coverage-report.yml/deploy on ubuntu-latest goes (Pages)<br>publish-package.yml/package-and-publish-lib on ubuntu-latest → publish (publish.nuget)<br>run-tests.yml/unit-tests on ubuntu-latest → check unit-tests<br>run-tests.yml/functional-tests on ubuntu-latest → check functional-tests | `GITHUB_TOKEN`, `NUGET_API_KEY`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@93b613d | 2026-10-27 |
@@ -52,45 +52,45 @@ nearly every clone dirty; Windows git does not.
 | dotnet-messaging | library, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs-and-coverage-report.yml/build on ubuntu-latest goes (Pages)<br>build-docs-and-coverage-report.yml/deploy on ubuntu-latest goes (Pages)<br>publish-package.yml/package-and-publish-lib on ubuntu-latest → publish (publish.nuget)<br>run-tests.yml/unit-tests on ubuntu-latest → check unit-tests<br>run-tests.yml/functional-tests on ubuntu-latest → check functional-tests | `GITHUB_TOKEN`, `NUGET_API_KEY`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@5112afd | 2026-10-27 |
 | dotnet-output | library, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs-and-coverage-report.yml/build on ubuntu-latest goes (Pages)<br>build-docs-and-coverage-report.yml/deploy on ubuntu-latest goes (Pages)<br>publish-package.yml/package-and-publish-lib on ubuntu-latest → publish (publish.nuget)<br>run-tests.yml/unit-tests on ubuntu-latest → check unit-tests<br>run-tests.yml/functional-tests on ubuntu-latest → check functional-tests | `GITHUB_TOKEN`, `NUGET_API_KEY`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@45bb9f3 | 2026-10-27 |
 | dotnet-test-util | library, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs-and-coverage-report.yml/build on ubuntu-latest goes (Pages)<br>build-docs-and-coverage-report.yml/deploy on ubuntu-latest goes (Pages)<br>publish-package.yml/package-and-publish-lib on ubuntu-latest → publish (publish.nuget)<br>run-tests.yml/unit-tests on ubuntu-latest → check unit-tests<br>run-tests.yml/functional-tests on ubuntu-latest → check functional-tests | `GITHUB_TOKEN`, `NUGET_API_KEY`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@652f985 | 2026-10-27 |
-| dotnet-tools | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
+| dotnet-tools | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | dotnet-util | library, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs-and-coverage-report.yml/build on ubuntu-latest goes (Pages)<br>build-docs-and-coverage-report.yml/deploy on ubuntu-latest goes (Pages)<br>publish-package.yml/package-and-publish-lib on ubuntu-latest → publish (publish.nuget)<br>run-tests.yml/unit-tests on ubuntu-latest → check unit-tests<br>run-tests.yml/functional-tests on ubuntu-latest → check functional-tests | `GITHUB_TOKEN`, `NUGET_API_KEY`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@18d618b | 2026-10-27 |
 | dotnet-validation | library, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs-and-coverage-report.yml/build on ubuntu-latest goes (Pages)<br>build-docs-and-coverage-report.yml/deploy on ubuntu-latest goes (Pages)<br>publish-package.yml/package-and-publish-lib on ubuntu-latest → publish (publish.nuget)<br>run-tests.yml/unit-tests on ubuntu-latest → check unit-tests<br>run-tests.yml/functional-tests on ubuntu-latest → check functional-tests | `GITHUB_TOKEN`, `NUGET_API_KEY`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@9e73a91 | 2026-10-27 |
 | dotnet-webapi-util | library, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs-and-coverage-report.yml/build on ubuntu-latest goes (Pages)<br>build-docs-and-coverage-report.yml/deploy on ubuntu-latest goes (Pages)<br>publish-package.yml/package-and-publish-lib on ubuntu-latest → publish (publish.nuget)<br>run-tests.yml/unit-tests on ubuntu-latest → check unit-tests<br>run-tests.yml/functional-tests on ubuntu-latest → check functional-tests | `GITHUB_TOKEN`, `NUGET_API_KEY`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@6ac2044 | 2026-10-27 |
 | eocp-ecommerce-system-api | archived | archived |  |  | none |  | basic | clean (main) |  |  |  |
 | eocp-ecommerce-system-email-templates | archived | archived |  |  | none |  | basic | clean (main) |  |  |  |
 | eocp-ecommerce-system-ui | archived | archived |  |  | none |  | basic | clean (main) |  |  |  |
-| file-tree-generator | site (Vercel), fork | fork |  |  | none |  | basic | clean (main) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none) |  |  |
+| file-tree-generator | site (Vercel), fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none); Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | fortuna-api | application | plain | audit.yml/audit on ubuntu-latest → check audit<br>branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>check-openapi.yml/check on ubuntu-latest → check check<br>native-core.yml/msrv on ubuntu-latest → check msrv<br>native-core.yml/build on ubuntu-latest → check build<br>native-core.yml/build on windows-latest stays (Actions)<br>tests.yml/test on ubuntu-latest → check test<br>tests.yml/docker on ubuntu-latest → check docker | `GITHUB_TOKEN`, `REPORTGENERATOR_LICENSE` | none | nuget, cargo, github-actions, docker → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@2b3ff9f | 2026-10-28 |
 | fortuna-docs | site | plain | deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages) |  | Pages |  | basic | clean (main) |  | `feature/move-to-forgejo`@c7249a7 | 2026-10-27 |
 | fortuna-ui | application | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build.yml/web on ubuntu-latest → check web<br>build.yml/android on ubuntu-latest → check android<br>build.yml/windows on windows-latest stays (Actions)<br>build.yml/linux on ubuntu-latest → check linux<br>check-generated.yml/api-client-drift on ubuntu-latest → check api-client-drift<br>check-generated.yml/header-drift on ubuntu-latest → check header-drift<br>check-generated.yml/bindings-drift on ubuntu-latest → check bindings-drift<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test |  | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@ccbfb6f | 2026-10-27 |
 | github-readme-stats | site (Vercel), fork | fork | codeql-analysis.yml/CodeQL-Build on ubuntu-latest → check CodeQL-Build<br>deploy-prep.yml/config on ubuntu-latest → check config<br>e2e-test.yml/e2eTests on ubuntu-latest → check e2eTests<br>empty-issues-closer.yml/closeEmptyIssuesAndTemplates on ubuntu-latest → check closeEmptyIssuesAndTemplates<br>generate-theme-doc.yml/generateThemeDoc on ubuntu-latest → check generateThemeDoc<br>label-pr.yml/triage on ubuntu-latest → check triage<br>ossf-analysis.yml/analysis on ubuntu-latest → check analysis<br>preview-theme.yml/previewTheme on ubuntu-latest → check previewTheme<br>prs-cache-clean.yml/cleanup on ubuntu-latest → check cleanup<br>stale-theme-pr-closer.yml/closeOldThemePrs on ubuntu-latest → check closeOldThemePrs<br>test.yml/build on ubuntu-latest → check build<br>theme-prs-closer.yml/close-prs on ubuntu-latest → check close-prs<br>top-issues-dashboard.yml/showAndLabelTopIssues on ubuntu-latest → check showAndLabelTopIssues<br>update-langs.yml/updateLanguages on ubuntu-latest → check updateLanguages | `GH_REPO`, `GITHUB_TOKEN`, `PERSONAL_TOKEN` | Vercel | npm, github-actions, devcontainers → goes (dependabot) | basic | clean (master) |  | `feature/move-to-forgejo`@6ff454d | 2026-10-27 |
-| gui-challenges | fork | fork |  |  | none |  | basic | missing |  |  |  |
+| gui-challenges | ci, fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | missing | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | heimdall-api | application, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build-docs.yml/build on ubuntu-latest goes (Pages)<br>build-docs.yml/deploy on ubuntu-latest goes (Pages)<br>check-openapi.yml/check on ubuntu-latest → check check<br>tests.yml/test on ubuntu-latest → check test<br>tests.yml/docs calls build-docs.yml (judged there)<br>tests.yml/docker on ubuntu-latest → check docker | `GITHUB_TOKEN`, `REPORTGENERATOR_LICENSE` | Pages | nuget, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@23e1a61 | 2026-10-28 |
 | heimdall-docs | site | plain | deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages) |  | Pages |  | basic | clean (main) |  | `feature/move-to-forgejo`@d832794 | 2026-10-27 |
 | heimdall-ui | application | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>build.yml/web on ubuntu-latest → check web<br>build.yml/linux on ubuntu-latest → check linux<br>build.yml/windows on windows-latest stays (Actions)<br>build.yml/android on ubuntu-latest → check android<br>check-api-client.yml/drift on ubuntu-latest → check drift<br>ci.yml/analyze-and-test on ubuntu-latest → check analyze-and-test<br>ci.yml/build-web on ubuntu-latest → check build-web | `HEIMDALL_UI_KEYSTORE_BASE64`, `HEIMDALL_UI_KEYSTORE_PASSWORD`, `HEIMDALL_UI_KEY_ALIAS`, `HEIMDALL_UI_KEY_PASSWORD` | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@c99a397 | 2026-10-27 |
 | hermes-api | application | not on GitHub Actions | yggdrasil.yml/test on jenkins → check test<br>yggdrasil.yml/docker on jenkins → check docker |  | none | none | release |  | Created on Forgejo after the move: it had no GitHub workflows, so its jobs are its own checks |  |  |
-| hugo-theme-nuno | fork | fork |  |  | none |  | basic | missing |  |  |  |
-| hugo-theme-re-terminal | fork | fork |  |  | none |  | basic | clean (main) |  |  |  |
-| hugo-theme-rusty-typewriter | fork | fork |  |  | none |  | basic | clean (main) |  |  |  |
+| hugo-theme-nuno | ci, fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | missing | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| hugo-theme-re-terminal | ci, fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| hugo-theme-rusty-typewriter | ci, fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | instagram-follower-tracker | code only | not on GitHub |  |  | none |  | basic | clean (main) | not on GitHub |  |  |
-| landing-page | fork | fork |  |  | none |  | basic | missing |  |  |  |
+| landing-page | ci, fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | missing | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | maestro | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/analyze-test calls verify.yml (judged there)<br>ci.yml/windows-platform on windows-2025 stays (Actions)<br>ci.yml/linux-platform on ubuntu-24.04 → check linux-platform<br>release.yml/validate-release on ubuntu-24.04 → release (release.build)<br>release.yml/verify calls verify.yml (judged there)<br>release.yml/windows-package on windows-2025 stays (Actions)<br>release.yml/linux-package on ubuntu-24.04 → release (release.build)<br>release.yml/release on ubuntu-24.04 → release (release.build)<br>verify.yml/analyze-test on ubuntu-24.04 → check analyze-test | `MAESTRO_RELEASE_PUBLIC_KEY_BASE64`, `MAESTRO_RELEASE_SECRET_KEY_BASE64` | none | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@6de8636 | 2026-10-28 |
-| maestro-cli | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| ml-accounting-reconciliation | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
+| maestro-cli | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| ml-accounting-reconciliation | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | orpheus | ci, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>docs.yml/build on ubuntu-latest goes (Pages)<br>docs.yml/deploy on ubuntu-latest goes (Pages)<br>release.yml/version on ubuntu-latest → release (release.build)<br>release.yml/linux on ubuntu-latest → release (release.build)<br>release.yml/windows on windows-latest stays (Actions)<br>release.yml/release on ubuntu-latest → release (release.build)<br>verify.yml/linux on ubuntu-latest → check linux<br>verify.yml/windows on windows-latest stays (Actions) | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Pages | pub, github-actions → goes (dependabot) | release | clean (develop) |  | `feature/move-to-forgejo`@96a3767 | 2026-10-27 |
-| personal-blog | site (Vercel) | plain |  |  | Vercel |  | basic | clean (main) |  | `feature/move-to-forgejo`@1092020 | 2026-10-27 |
-| personal-blog-comments | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
+| personal-blog | site (Vercel) | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | Vercel |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks | `feature/move-to-forgejo`@1092020 | 2026-10-27 |
+| personal-blog-comments | ci | plain | yggdrasil.yml/lint on jenkins → check lint |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint`, its own check |  |  |
 | personal-lab | ci, site | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>deploy.yml/build on ubuntu-latest goes (Pages)<br>deploy.yml/deploy on ubuntu-latest goes (Pages)<br>deploy.yml/release on ubuntu-latest goes (Pages) |  | Pages |  | release | clean (develop) |  | `feature/move-to-forgejo`@2dfde56 | 2026-10-27 |
 | personal-page | site (Vercel) | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/lint-and-build on ubuntu-latest → check lint-and-build<br>release.yml/release on ubuntu-latest → release (release.build) |  | none | npm, github-actions → goes (dependabot) | release | clean (develop) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none) | `feature/move-to-forgejo`@d3a2488 | 2026-10-27 |
-| project-euler | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| project-template | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| python-dotnet-tools | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
+| project-euler | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| project-template | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| python-dotnet-tools | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | reveal.js | ci, fork | fork | spellcheck.yml/codespell on ubuntu-latest → check codespell<br>test.yml/build on ubuntu-latest → check build |  | none |  | basic | clean (master) |  | `feature/move-to-forgejo`@3290a3f | 2026-10-29 |
-| sicp-exercises | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| tabnews | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
-| tech-craftsmen-company-page | site (Vercel) | plain |  |  | none |  | basic | clean (main) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none) | `feature/move-to-forgejo`@b99bd84 | 2026-10-27 |
-| under-construction-template | site (Vercel), fork | fork |  |  | none |  | basic | clean (master) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none) | `feature/move-to-forgejo`@c2be3e9 | 2026-10-27 |
-| user-management-api | code only | plain |  |  | none |  | basic | clean (main) |  |  |  |
+| sicp-exercises | ci | plain | yggdrasil.yml/lint on jenkins → check lint |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint`, its own check |  |  |
+| tabnews | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| tech-craftsmen-company-page | site (Vercel) | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none); Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks | `feature/move-to-forgejo`@b99bd84 | 2026-10-27 |
+| under-construction-template | site (Vercel), fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (master) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none); Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks | `feature/move-to-forgejo`@c2be3e9 | 2026-10-27 |
+| user-management-api | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | yggdrasil | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/status on ubuntu-latest → check status<br>ci.yml/console on ubuntu-latest → check console<br>ci.yml/console-windows on windows-latest stays (Actions)<br>ci.yml/platform on ubuntu-latest → check platform<br>ci.yml/pipeline-live on ubuntu-latest → check pipeline-live<br>release.yml/on-main on ubuntu-latest → release (release.build)<br>release.yml/windows on windows-latest stays (Actions)<br>release.yml/android on ubuntu-latest → release (release.build) |  | none | pub, nuget, github-actions → goes (dependabot) | release | clean (feature/plan-5-repositories) |  | `feature/move-to-forgejo`@247ab03 | 2026-10-26 |
 
 ## Check names
@@ -109,6 +109,7 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 
 | Repository | Job | Becomes |
 |---|---|---|
+| ai-coding-skills | `yggdrasil.yml/lint on jenkins` | check `lint` |
 | alexandria-api | `ci.yml/check on ubuntu-latest` | check `lint-and-test` (GitHub: `fmt, clippy, test`) |
 | alexandria-api | `ci.yml/performance on ubuntu-latest` | not required: `performance (non-gating)` stays a GitHub Actions workflow, run on the GitHub copy (pushes only, never gating); neither a catalog check nor an actionsCheck |
 | alexandria-docs | `deploy.yml/build on ubuntu-latest` | check `build` (the site's image, as the Pages build ran on every pull request) |
@@ -120,6 +121,11 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | alexandria-ui | `ci.yml/build on windows-latest` | actionsCheck `Release build (windows)` |
 | alexandria-ui | `ci.yml/build on ubuntu-latest` | check `build` |
 | alexandria-ui | `release.yml/windows on windows-latest` | release.windows |
+| algorithm-practice | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| algorithm-practice | `yggdrasil.yml/build on jenkins` | check `build` |
+| artur-rios | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| ballz | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| ballz | `yggdrasil.yml/build on jenkins` | check `build` |
 | cerberus-api | `tests.yml/test on ubuntu-latest` | check `test` |
 | cerberus-api | `tests.yml/docker on ubuntu-latest` | check `docker` |
 | cerberus-docs | `yggdrasil.yml/build on jenkins` | check `build` (the site's image) |
@@ -153,6 +159,8 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | chimera | `minimal-dotnet-library.yml/minimal-library on windows-latest` | actionsCheck `Minimal library contracts (windows-latest)` |
 | chimera | `periodic-terminal.yml/terminal-contract on windows-latest` | actionsCheck `Windows owned terminal lifecycle` |
 | chimera | `release-artifacts.yml/package-windows on windows-latest` | release.windows |
+| cli-utils | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| cli-utils | `yggdrasil.yml/build on jenkins` | check `build` |
 | coding-challenge-library | `tests.yml/test on ubuntu-latest` | check `test` |
 | coding-challenge-library | `tests.yml/docker on ubuntu-latest` | check `docker` |
 | dotnet-configuration | `run-tests.yml/unit-tests on ubuntu-latest` | check `test` (`ci/test.sh` runs every test category) |
@@ -184,6 +192,8 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | dotnet-test-util | `run-tests.yml/unit-tests on ubuntu-latest` | check `test` (`ci/test.sh` runs every test category) |
 | dotnet-test-util | `run-tests.yml/functional-tests on ubuntu-latest` | check `test` |
 | dotnet-test-util | `build-docs-and-coverage-report.yml/build on ubuntu-latest` | check `coverage` (the report); the site itself is dotnet-test-util-docs's image, which takes it (deploy.inputs) |
+| dotnet-tools | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| dotnet-tools | `yggdrasil.yml/build on jenkins` | check `build` |
 | dotnet-util | `run-tests.yml/unit-tests on ubuntu-latest` | check `test` (`ci/test.sh` runs every test category) |
 | dotnet-util | `run-tests.yml/functional-tests on ubuntu-latest` | check `test` |
 | dotnet-util | `build-docs-and-coverage-report.yml/build on ubuntu-latest` | check `coverage` (the report); the site itself is dotnet-util-docs's image, which takes it (deploy.inputs) |
@@ -193,6 +203,8 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | dotnet-webapi-util | `run-tests.yml/unit-tests on ubuntu-latest` | check `test` (`ci/test.sh` runs every test category) |
 | dotnet-webapi-util | `run-tests.yml/functional-tests on ubuntu-latest` | check `test` |
 | dotnet-webapi-util | `build-docs-and-coverage-report.yml/build on ubuntu-latest` | check `coverage` (the report); the site itself is dotnet-webapi-util-docs's image, which takes it (deploy.inputs) |
+| file-tree-generator | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| file-tree-generator | `yggdrasil.yml/build on jenkins` | check `build` (the site's image) |
 | fortuna-api | `audit.yml/audit on ubuntu-latest` | check `audit` |
 | fortuna-api | `check-openapi.yml/check on ubuntu-latest` | check `check` |
 | fortuna-api | `native-core.yml/msrv on ubuntu-latest` | check `native-msrv` (GitHub: `msrv (rust-version)`; path-filtered) |
@@ -223,6 +235,8 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | github-readme-stats | `theme-prs-closer.yml/close-prs on ubuntu-latest` | dropped: upstream automation: closes theme pull requests sent to upstream (only upstream's repository ran it) |
 | github-readme-stats | `top-issues-dashboard.yml/showAndLabelTopIssues on ubuntu-latest` | dropped: upstream automation: upstream's issue dashboard (only upstream's repository ran it) |
 | github-readme-stats | `update-langs.yml/updateLanguages on ubuntu-latest` | dropped: upstream automation: opens upstream's periodic pull request for its language list (only upstream's repository ran it) |
+| gui-challenges | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| gui-challenges | `yggdrasil.yml/build on jenkins` | check `build` |
 | heimdall-api | `check-openapi.yml/check on ubuntu-latest` | check `check` (path-filtered) |
 | heimdall-api | `tests.yml/test on ubuntu-latest` | check `test` |
 | heimdall-api | `tests.yml/docker on ubuntu-latest` | check `docker` |
@@ -236,17 +250,47 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | heimdall-ui | `ci.yml/build-web on ubuntu-latest` | check `build-web` |
 | hermes-api | `yggdrasil.yml/test on jenkins` | check `test` |
 | hermes-api | `yggdrasil.yml/docker on jenkins` | check `docker` |
+| hugo-theme-nuno | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| hugo-theme-nuno | `yggdrasil.yml/build on jenkins` | check `build` |
+| hugo-theme-re-terminal | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| hugo-theme-re-terminal | `yggdrasil.yml/build on jenkins` | check `build` |
+| hugo-theme-rusty-typewriter | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| hugo-theme-rusty-typewriter | `yggdrasil.yml/build on jenkins` | check `build` |
+| landing-page | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| landing-page | `yggdrasil.yml/build on jenkins` | check `build` |
 | maestro | `ci.yml/windows-platform on windows-2025` | actionsCheck `windows-platform` |
 | maestro | `ci.yml/linux-platform on ubuntu-24.04` | check `linux-platform` |
 | maestro | `release.yml/windows-package on windows-2025` | release.windows |
 | maestro | `verify.yml/analyze-test on ubuntu-24.04` | check `analyze-test` (ci.yml and release.yml called it) |
+| maestro-cli | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| maestro-cli | `yggdrasil.yml/build on jenkins` | check `build` |
+| ml-accounting-reconciliation | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| ml-accounting-reconciliation | `yggdrasil.yml/build on jenkins` | check `build` |
 | orpheus | `release.yml/windows on windows-latest` | release.windows |
 | orpheus | `verify.yml/linux on ubuntu-latest` | check `linux` (GitHub: `Linux and Android`) |
 | orpheus | `verify.yml/windows on windows-latest` | actionsCheck `Windows and the installer` |
+| personal-blog | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| personal-blog | `yggdrasil.yml/build on jenkins` | check `build` (the site's image) |
+| personal-blog-comments | `yggdrasil.yml/lint on jenkins` | check `lint` |
 | personal-lab | `deploy.yml/build on ubuntu-latest` | check `build` (the site's image, as the Pages build ran on every pull request) |
 | personal-page | `ci.yml/lint-and-build on ubuntu-latest` | check `lint-and-build` |
+| project-euler | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| project-euler | `yggdrasil.yml/build on jenkins` | check `build` |
+| project-template | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| project-template | `yggdrasil.yml/build on jenkins` | check `build` |
+| python-dotnet-tools | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| python-dotnet-tools | `yggdrasil.yml/build on jenkins` | check `build` |
 | reveal.js | `spellcheck.yml/codespell on ubuntu-latest` | check `codespell` |
 | reveal.js | `test.yml/build on ubuntu-latest` | check `build` (Node 22 and 24) |
+| sicp-exercises | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| tabnews | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| tabnews | `yggdrasil.yml/build on jenkins` | check `build` |
+| tech-craftsmen-company-page | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| tech-craftsmen-company-page | `yggdrasil.yml/build on jenkins` | check `build` (the site's image) |
+| under-construction-template | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| under-construction-template | `yggdrasil.yml/build on jenkins` | check `build` (the site's image) |
+| user-management-api | `yggdrasil.yml/lint on jenkins` | check `lint` |
+| user-management-api | `yggdrasil.yml/build on jenkins` | check `build` |
 | yggdrasil | `ci.yml/status on ubuntu-latest` | check `status` (GitHub: `Status API`) |
 | yggdrasil | `ci.yml/console on ubuntu-latest` | check `console` (GitHub: `Console`) |
 | yggdrasil | `ci.yml/console-windows on windows-latest` | actionsCheck `Console (Windows)` |
