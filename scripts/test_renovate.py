@@ -227,8 +227,8 @@ class RenovateTests(unittest.TestCase):
     def test_given_a_run_when_started_then_the_image_is_pinned_and_runs_in_the_users_own_engine(self):
         self.assertEqual(self.renovate().returncode, 0)
         # An exact version and its digest, never a moving tag: what runs against the repositories with a push
-        # token is chosen by a commit here.
-        self.assertRegex(self.run_call(), r" renovate/renovate:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}( |$)")
+        # token is chosen by a commit here. The -full variant, which comes with the lockfile tools.
+        self.assertRegex(self.run_call(), r" renovate/renovate:\d+\.\d+\.\d+-full@sha256:[0-9a-f]{64}( |$)")
         # The engine is checked to be rootless before anything runs in it.
         self.assertLess(self.calls().index("docker info --format {{json .SecurityOptions}}"),
                         self.calls().index(self.run_call()))
