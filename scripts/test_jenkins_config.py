@@ -61,11 +61,21 @@ class JenkinsPluginsTests(unittest.TestCase):
                        "github-branch-source", "basic-branch-build-strategies"):
             self.assertIn(plugin, plugins)
 
+    def test_given_the_plugins_when_read_then_the_dark_theme_is_there(self):
+        # Installed in the Jenkins UI it lived in the volume only, where no image could update it or its dependency
+        # (theme-manager). Listed here, the image carries both and update-plugins keeps them current.
+        self.assertIn("dark-theme", read(CONTROLLER / "plugins.txt").split())
+
     def test_given_the_compose_service_when_read_then_an_image_upgrades_plugins_updated_in_the_ui(self):
         # The image's entrypoint copies its plugins into Jenkins' volume at every start, but skips for good a plugin
         # updated in the Jenkins UI since ("has been manually upgraded"), so update-plugins could never reach it
         # again. With this it upgrades them too once it has a newer version.
         self.assertEqual(jenkins_service()["environment"].get("PLUGINS_FORCE_UPGRADE"), "true")
+
+    def test_given_the_compose_service_when_read_then_an_image_upgrades_plugins_installed_in_the_ui(self):
+        # A plugin installed in the UI has no .version_from_image marker, and the entrypoint leaves such a plugin alone,
+        # silently, even once the image carries a newer version of it (dark-theme and theme-manager did).
+        self.assertEqual(jenkins_service()["environment"].get("TRY_UPGRADE_IF_NO_MARKER"), "true")
 
 
 @unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")

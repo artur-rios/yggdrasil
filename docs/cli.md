@@ -365,6 +365,16 @@ the next start; an older image never downgrades it. That takes `PLUGINS_FORCE_UP
 starts with (`platform/compose.yml`): without it the image skips such a plugin at every start from then on
 (`SKIPPED … has been manually upgraded` in `/var/jenkins_home/copy_reference_file.log`), so no image upgrades it again.
 
+A plugin installed in the Jenkins UI, rather than updated there, is in the volume only: no image carries it, so this
+command never updates it. Add it to `plugins.txt` instead; the next image carries it, and the restart upgrades the
+volume's copy when the image's is newer (`TRY_UPGRADE_IF_NO_MARKER=true`, also in `platform/compose.yml`: such a plugin
+has no marker, which the image otherwise reads as "leave it alone"). To list the plugins Jenkins runs that the image
+does not have, as `ygg`:
+
+```bash
+docker exec yggdrasil-jenkins-1 sh -c 'cd /var/jenkins_home/plugins && for f in *.jpi; do [ -f /usr/share/jenkins/ref/plugins/$f ] || echo "${f%.jpi}"; done'
+```
+
 ## Set up an application
 
 `add` asks about the application, then does what [Adding things](setup.md#an-application) lists:
