@@ -371,6 +371,10 @@ services:
       # upgraded"), so no later image, update-plugins' included, would ever upgrade it. With it (any non-empty
       # value), such a plugin is upgraded too once the image's version is newer; it is never downgraded.
       PLUGINS_FORCE_UPGRADE: "true"
+      # A plugin installed in the Jenkins UI has no marker at all, and without this the entrypoint never touches it,
+      # silently. With it, such a plugin is upgraded once the image carries a newer version (one added to
+      # plugins.txt later, say), and gets a marker when the versions are the same; it is never downgraded either.
+      TRY_UPGRADE_IF_NO_MARKER: "true"
       # The configuration files of this installation's git server, comma-separated: scripts/platform.sh
       # picks them from catalog.yaml (casc.yaml, then casc.forgejo.yaml or casc.github.yaml, and
       # casc.github-app.yaml when the GitHub App is used, casc.github-read.yaml on GitHub when the read-only

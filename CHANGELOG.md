@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.5] - 2026-11-13
+
+### Changed
+
+- **The Jenkins controller's image carries the Dark Theme plugin** (`dark-theme` in
+  `platform/jenkins/controller/plugins.txt`, and its dependency Theme Manager). Installed in the Jenkins UI, they were
+  in Jenkins' volume only, where `ygg platform update-plugins` could not update them, and the UI kept offering
+  Theme Manager's update. The controller also starts with `TRY_UPGRADE_IF_NO_MARKER=true`: a plugin installed in the
+  UI has no `.version_from_image` marker, and without it the image leaves such a plugin alone, silently, even when it
+  carries a newer version. `git pull` and `ygg platform update-plugins` on the DevOps Server build them into the image
+  and, at the restart, upgrade the copies in the volume. [docs/cli.md](docs/cli.md#jenkins-plugins) says how to find
+  any other plugin installed that way.
+
 ## [0.13.4] - 2026-11-13
 
 ### Fixed
@@ -1352,7 +1365,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.4...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...HEAD
+[0.13.5]: https://github.com/artur-rios/yggdrasil/compare/v0.13.4...v0.13.5
 [0.13.4]: https://github.com/artur-rios/yggdrasil/compare/v0.13.3...v0.13.4
 [0.13.3]: https://github.com/artur-rios/yggdrasil/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/artur-rios/yggdrasil/compare/v0.13.1...v0.13.2

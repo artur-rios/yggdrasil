@@ -18,3 +18,4 @@ credentials-binding
 timestamper
 ws-cleanup
 prometheus
+dark-theme
