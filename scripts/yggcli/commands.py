@@ -62,12 +62,21 @@ def parser():
     for name, summary in (("up", "start or update the platform"), ("down", "stop the platform"),
                           ("ps", "list the platform's containers"),
                           ("config", "print the platform's resolved Compose file"),
-                          ("logs", "follow the platform's logs")):
-        a = _command(actions, name, summary)
+                          ("logs", "follow the platform's logs"),
+                          ("update-plugins", "rebuild Jenkins with the latest plugins and restart it")):
+        a = _command(actions, name, summary,
+                     "Rebuilds the Jenkins controller's image with the latest compatible plugins and prints which\n"
+                     "change. Then it puts Jenkins in quiet-down, waits until it can restart safely (pipelines pause\n"
+                     "and carry on after the restart; other builds finish first) and brings the platform up on the\n"
+                     "new image. With nothing to change, Jenkins keeps running. On the Linux DevOps Server."
+                     if name == "update-plugins" else None)
         a.add_argument("--last-good", action="store_true",
                        help="read the settings the last successful `up` kept, not the variables store")
         if name == "logs":
             a.add_argument("service", nargs="?", help="only this service of platform/compose.yml")
+        if name == "update-plugins":
+            a.add_argument("--now", action="store_true",
+                           help="restart Jenkins at once, without waiting until it can restart safely")
     s = _command(sub, "check", "which tools and host pieces are there, which are missing",
                  "Shows which tools and host pieces are there and which are missing, for this machine's role:\n"
                  "the one in /etc/yggdrasil-role, else workstation. --role checks another.")

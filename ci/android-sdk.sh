@@ -3,7 +3,7 @@
 # the parts the console's Android build needs and the image lacks, as the GitHub runner had them installed.
 #
 #   platforms;android-37.0   compileSdk = 37 (console/android/app/build.gradle.kts)
-#   ndk;28.2.13676358        flutter.ndkVersion of Flutter 3.47.4 (ci/flutter-env.sh)
+#   ndk;28.2.13676358        flutter.ndkVersion of Flutter 3.50.0 (ci/flutter-env.sh)
 #
 # Left to Gradle, the build installs them itself but then fails to find the platform it has just installed
 # ("Failed to find target with hash string 'android-37'"). The SDK in ghcr.io/cirruslabs/flutter is root's

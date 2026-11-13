@@ -594,6 +594,13 @@ package-manager code while holding a token that can push. It visits only the rep
 opens pull requests from `renovate/*` branches into `develop`, and skips a repository that has no Renovate
 configuration of its own (no onboarding pull requests).
 
+The image is the `-full` variant, which comes with the package managers and toolchains Renovate runs to update
+lockfiles (node and npm, cargo, dotnet, dart and flutter, and the rest). The default (slim) image downloads them on
+demand, several from GitHub releases (node from `containerbase/node-prebuild`). Without `RENOVATE_GITHUB_COM_TOKEN`,
+those lookups meet GitHub's anonymous rate limit: the log shows `Rate limit exceeded for api.github.com` and then
+`No tool releases found`, and the pull request gets "Artifact update problem" with its lockfile left as it was. The
+full image needs no such download. It is several GB, so `renovate`'s engine needs the room.
+
 Its settings are `/etc/yggdrasil-renovate/renovate.env` (`ygg install` copies
 [env/renovate.env.example](../env/renovate.env.example) there: `renovate:renovate`, mode `600`). Fill in as `renovate`
 (`RENOVATE_TOKEN`, the `renovate` Forgejo user's token with `write:repository`, `write:issue`, `read:user` and
@@ -613,8 +620,10 @@ the same run-scoped env file as the Forgejo token (never an argument), and never
 (`renovate github token`) while it is empty, and says nothing of its value.
 
 To update Renovate, change `RENOVATE_IMAGE` in `scripts/renovate.sh` to a newer version and its digest
-(`docker buildx imagetools inspect renovate/renovate:<version>`) in a pull request, after reading the release
-notes.
+(`docker buildx imagetools inspect renovate/renovate:<version>-full`) in a pull request, after reading the release
+notes. Pulling the new image once by hand, as `renovate`, before the next run keeps a multi-GB download out of
+the timer's run:
+`sudo -u renovate env XDG_RUNTIME_DIR=/run/user/$(id -u renovate) DOCKER_HOST=unix:///run/user/$(id -u renovate)/docker.sock docker pull <image>`.
 
 ### Heimdall's security signals
 

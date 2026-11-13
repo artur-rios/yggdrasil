@@ -138,6 +138,8 @@ def run(argv):
              *(["--leave-running"] if args.leave_running else []))
     if command == "platform":
         words = [args.action] + (["--last-good"] if args.last_good else [])
+        if getattr(args, "now", False):
+            words.append("--now")
         if getattr(args, "service", None):
             words.append(args.service)
         _exec(["bash", str(context.SCRIPTS / "platform.sh"), *words])

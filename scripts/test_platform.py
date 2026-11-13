@@ -55,6 +55,23 @@ class PlatformTests(unittest.TestCase):
                           'echo "YGG_JENKINS_CREDENTIALS_FILE=${YGG_JENKINS_CREDENTIALS_FILE:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "YGG_JENKINS_CREDENTIALS_HASH=${YGG_JENKINS_CREDENTIALS_HASH:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "YGG_JENKINS_CONFIG_HASH=${YGG_JENKINS_CONFIG_HASH:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "YGG_JENKINS_PLUGINS_REFRESHED=${YGG_JENKINS_PLUGINS_REFRESHED:-}" >>"$FAKE_DOCKER_LOG"\n'
+                          '# The controller\'s image and its plugins, for update-plugins, when a test sets them up\n'
+                          '# (use_jenkins_images): each tag is a file of $FAKE_STATE/tags holding its image.\n'
+                          'state=${FAKE_STATE:-}\n'
+                          'tag_file() { echo "$state/tags/${1//[\\/:]/_}"; }\n'
+                          'if [[ -n "$state" ]]; then\n'
+                          '  case " $* " in\n'
+                          '    " image inspect "*) cat "$(tag_file "${@: -1}")" 2>/dev/null || exit 1 ;;\n'
+                          '    " image rm "*) rm -f "$(tag_file "${@: -1}")" ;;\n'
+                          '    *" build jenkins "*) cat "$state/built" >"$(tag_file yggdrasil/jenkins:local)" ;;\n'
+                          '    " tag "*) cat "$(tag_file "$2")" >"$(tag_file "$3")" || exit 1 ;;\n'
+                          '    " run --rm --entrypoint sh "*) cat "$state/plugins-$(cat "$(tag_file "$5")")" ;;\n'
+                          '    *" ps --quiet jenkins "*) cat "$state/running" ;;\n'
+                          '    *" jenkins-cli groovy = "*)\n'
+                          '      head -n 1 "$state/busy"; [[ $(wc -l <"$state/busy") -le 1 ]] || sed -i 1d "$state/busy" ;;\n'
+                          '  esac\n'
+                          'fi\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
                           '  echo "traefik-config-file: $YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
                           '  cat "$YGG_TRAEFIK_CONFIG_FILE" >>"$FAKE_DOCKER_LOG"\n'
@@ -427,6 +444,140 @@ class PlatformTests(unittest.TestCase):
         path = self.temp / "catalog.yaml"
         path.write_text(github_catalog() + "\n" + forge_block)
         self.env["YGG_CATALOG"] = str(path)
+
+    # update-plugins
+
+    OLD_PLUGINS = "git 5.1\njunit 1300\ntimestamper 1.27\n"
+    NEW_PLUGINS = "git 5.2\njunit 1300\nprometheus 800\n"
+
+    def use_jenkins_images(self, old, new, old_plugins, new_plugins, running="abc123\n", busy="0\n"):
+        """The fake engine's controller image: `old` is tagged now ("" for none), a build tags `new`; each one's
+        plugins; the running controller's container ("" for none); and the builds blocking a restart that each
+        look reports, in turn (the last one again once they run out)."""
+        state = self.temp / "state"
+        (state / "tags").mkdir(parents=True)
+        if old:
+            (state / "tags" / "yggdrasil_jenkins_local").write_text(old + "\n")
+        (state / "built").write_text(new + "\n")
+        for image, plugins in ((old, old_plugins), (new, new_plugins)):
+            if image:
+                (state / f"plugins-{image}").write_text(plugins)
+        (state / "running").write_text(running)
+        (state / "busy").write_text(busy)
+        self.env.update(FAKE_STATE=str(state), YGG_JENKINS_QUIET_POLL="0")
+        return state
+
+    def update_plugins(self, *options, platform_env=None):
+        (self.secrets / "platform.env").write_text(TRAEFIK_ENV + (platform_env or self.JENKINS + self.GITHUB_APP))
+        return self.run_platform("update-plugins", *options)
+
+    def refreshed_stamp(self):
+        path = self.secrets / "jenkins-plugins-refreshed"
+        return path.read_text().strip() if path.exists() else None
+
+    def test_given_changed_plugins_when_update_plugins_then_it_waits_for_the_builds_and_brings_jenkins_up(self):
+        self.use_jenkins_images("sha:old", "sha:new", self.OLD_PLUGINS, self.NEW_PLUGINS, busy="2\n0\n")
+        result = self.update_plugins()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[:4], ["Jenkins plugins that change:", "  git: 5.1 -> 5.2",
+                                                          "  prometheus: new, 800",
+                                                          "  timestamper: removed (was 1.27)"])
+        self.assertIn("waiting for 2 build(s) that cannot survive a restart", result.stderr)
+        calls = self.docker_calls()
+        build, quiet, up = calls.index("build jenkins"), calls.index("jenkins-cli quiet-down"), calls.index("up --detach")
+        self.assertLess(build, quiet)
+        self.assertLess(quiet, up)
+        self.assertNotIn("cancel-quiet-down", calls)
+        stamp = self.refreshed_stamp()
+        self.assertRegex(stamp, r"^\d{8}T\d{6}Z$")
+        # The build that fetched them and the up after it both pass the new value.
+        self.assertIn(f"YGG_JENKINS_PLUGINS_REFRESHED={stamp}\n", calls[build:quiet])
+        self.assertIn(f"YGG_JENKINS_PLUGINS_REFRESHED={stamp}\n", calls[up:])
+        self.assertEqual(self.tags(), {"yggdrasil_jenkins_local": "sha:new"})
+
+    def tags(self):
+        """The fake engine's tags of the controller's image, and the image each one names."""
+        return {p.name: p.read_text().strip() for p in (self.temp / "state" / "tags").iterdir()}
+
+    def test_given_changed_plugins_when_update_plugins_then_the_old_image_is_kept_under_a_tag_during_the_build(self):
+        self.use_jenkins_images("sha:old", "sha:new", self.OLD_PLUGINS, self.NEW_PLUGINS)
+        self.assertEqual(self.update_plugins().returncode, 0)
+        calls = self.docker_calls()
+        self.assertLess(calls.index("docker tag yggdrasil/jenkins:local yggdrasil/jenkins:previous"),
+                        calls.index("build jenkins"))
+        self.assertIn("docker image rm yggdrasil/jenkins:previous", calls)
+
+    def test_given_no_change_when_update_plugins_then_jenkins_keeps_running_on_its_image(self):
+        self.use_jenkins_images("sha:old", "sha:new", self.OLD_PLUGINS, self.OLD_PLUGINS)
+        result = self.update_plugins()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already up to date", result.stderr)
+        calls = self.docker_calls()
+        self.assertNotIn("quiet-down", calls)
+        self.assertNotIn("up --detach", calls)
+        self.assertEqual(self.tags(), {"yggdrasil_jenkins_local": "sha:old"})
+        self.assertIsNone(self.refreshed_stamp())
+
+    def test_given_now_when_update_plugins_then_it_does_not_wait(self):
+        self.use_jenkins_images("sha:old", "sha:new", self.OLD_PLUGINS, self.NEW_PLUGINS, busy="3\n")
+        result = self.update_plugins("--now")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        self.assertNotIn("quiet-down", calls)
+        self.assertIn("up --detach", calls)
+        self.assertIsNotNone(self.refreshed_stamp())
+
+    def test_given_builds_that_outlast_the_wait_when_update_plugins_then_nothing_changes(self):
+        self.use_jenkins_images("sha:old", "sha:new", self.OLD_PLUGINS, self.NEW_PLUGINS, busy="1\n")
+        self.env["YGG_JENKINS_QUIET_TIMEOUT"] = "0"
+        (self.secrets / "jenkins-plugins-refreshed").write_text("20261001T000000Z\n")
+        result = self.update_plugins()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("still running", result.stderr)
+        calls = self.docker_calls()
+        self.assertIn("jenkins-cli cancel-quiet-down", calls)
+        self.assertNotIn("up --detach", calls)
+        # Tagged back and the stamp kept: the next up builds the image Jenkins runs, from its cached layer.
+        self.assertEqual(self.tags(), {"yggdrasil_jenkins_local": "sha:old"})
+        self.assertEqual(self.refreshed_stamp(), "20261001T000000Z")
+
+    def test_given_jenkins_answers_no_number_when_update_plugins_then_it_stops_and_cancels_the_quiet_down(self):
+        self.use_jenkins_images("sha:old", "sha:new", self.OLD_PLUGINS, self.NEW_PLUGINS, busy="ERROR: no\n")
+        result = self.update_plugins()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Jenkins answered 'ERROR: no'", result.stderr)
+        self.assertIn("jenkins-cli cancel-quiet-down", self.docker_calls())
+        self.assertNotIn("up --detach", self.docker_calls())
+        self.assertEqual(self.tags(), {"yggdrasil_jenkins_local": "sha:old"})
+
+    def test_given_jenkins_not_running_when_update_plugins_then_it_brings_it_up_without_waiting(self):
+        self.use_jenkins_images("sha:old", "sha:new", self.OLD_PLUGINS, self.NEW_PLUGINS, running="")
+        result = self.update_plugins()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("quiet-down", self.docker_calls())
+        self.assertIn("up --detach", self.docker_calls())
+
+    def test_given_no_image_yet_when_update_plugins_then_it_builds_one_and_brings_jenkins_up(self):
+        self.use_jenkins_images("", "sha:new", "", self.NEW_PLUGINS, running="")
+        result = self.update_plugins()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("plugins that change", result.stdout)
+        self.assertIn("up --detach", self.docker_calls())
+
+    def test_given_a_host_without_jenkins_when_update_plugins_then_it_is_refused(self):
+        result = self.update_plugins(platform_env="COMPOSE_PROFILES=forge\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not run Jenkins", result.stderr)
+        self.assertNotIn("build jenkins", self.docker_calls())
+
+    def test_given_a_saved_stamp_when_up_then_the_controller_is_built_with_it(self):
+        (self.secrets / "jenkins-plugins-refreshed").write_text("20261101T120000Z\n")
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("YGG_JENKINS_PLUGINS_REFRESHED=20261101T120000Z\n", self.docker_calls())
+
+    def test_given_now_on_another_command_then_it_is_a_usage_error(self):
+        self.assertEqual(self.run_platform("up", "--now").returncode, 1)
 
     def test_given_the_jenkins_profile_without_a_library_version_when_up_then_it_is_refused(self):
         result = self.up("COMPOSE_PROFILES=forge,jenkins\nJENKINS_URL=https://jenkins.example.com/\n"

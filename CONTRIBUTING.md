@@ -19,7 +19,7 @@ What CI uses for each part of the repository:
 | Part | Needs |
 |---|---|
 | Status API (`status/`) | [.NET SDK 10.0](https://dotnet.microsoft.com/download), Docker to build its image |
-| Console (`console/`) | [Flutter](https://docs.flutter.dev/get-started/install) 3.47.4 (stable channel); Java 17 for the Android APK |
+| Console (`console/`) | [Flutter](https://docs.flutter.dev/get-started/install) 3.50.0 (stable channel); Java 17 for the Android APK |
 | Console for Windows | Visual Studio with the "Desktop development with C++" workload, including the ATL component (`flutter_secure_storage` uses it), Windows **Developer Mode** (Flutter links plugins with symlinks), and [Inno Setup](https://jrsoftware.org/isinfo.php) 6 for the installer |
 | Platform (`scripts/`, `github/`, `platform/`, `stacks/`, `catalog.yaml`) | Python 3 with PyYAML (`pip install pyyaml`; Ubuntu: `apt install python3-yaml`), ShellCheck, Docker with Compose |
 

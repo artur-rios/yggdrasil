@@ -355,7 +355,12 @@ services:
 
   jenkins:
     profiles: [jenkins]
-    build: ./jenkins/controller
+    build:
+      context: ./jenkins/controller
+      args:
+        # Set by scripts/platform.sh from <secrets>/jenkins-plugins-refreshed: see the Dockerfile.
+        PLUGINS_REFRESHED: ${YGG_JENKINS_PLUGINS_REFRESHED:-}
+    # scripts/platform.sh's update-plugins reads and tags this image by name.
     image: yggdrasil/jenkins:local
     restart: unless-stopped
     logging: *logging

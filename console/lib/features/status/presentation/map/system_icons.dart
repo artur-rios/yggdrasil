@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// The icon of a catalog `icon` name; [Icons.hub] for a name this build does
 /// not know, or none.

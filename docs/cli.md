@@ -83,7 +83,7 @@ The top menu groups the commands by task:
 | **Applications** | This host's applications (each opens its variables, below), `deploy`, `add`, `config` |
 | **Environments** | `env status`, `env start`, `env stop` |
 | **Variables and secrets** | Browse any scope (same screen as an application's), and every `vars` command |
-| **Platform** | `platform up`, `down`, `ps`, `logs`, `config` |
+| **Platform** | `platform up`, `down`, `ps`, `logs`, `config`, `update-plugins` |
 | **Host** | `check`, `install`, `agent`, `backup`, `self-install` |
 | **Catalog** | Every `catalog` command |
 | **Help and version** | `help`, `version`, `completion` |
@@ -189,6 +189,7 @@ reads it as `ygg` inside its container, can still read it. Changes you don't app
 | `ygg env status \| start <environment> \| stop <environment> [--force]` | Environments | This host's environments |
 | `ygg vars <command>` | Variables and secrets | The variables store: `init`, `set`, `get`, `list`, `unset`, `edit`, `history`, `rollback`, `import`, `export`, `render`, `render-platform`, `backup`, `check` ([variables.md](variables.md#commands)) |
 | `ygg platform up \| down \| ps \| config \| logs [<service>] [--last-good]` | Platform | This host's platform stack (`scripts/platform.sh`) |
+| `ygg platform update-plugins [--now] [--last-good]` | Platform | Jenkins' plugins, on the Linux DevOps Server: rebuilds the controller with the latest compatible ones, then restarts it once it can restart safely ([below](#jenkins-plugins)) |
 | `ygg check [--role dev\|apps\|workstation]` | Host › check | What is installed and what is missing, for the machine's role |
 | `ygg install [--role dev\|apps\|workstation]` | Host › install | Installs what is missing, asking before each part. On a DevOps or Application Server: as the admin |
 | `ygg agent up\|down\|ps\|logs --user ci\|release` | Host › agent | The Jenkins build agent of a service user (`scripts/agent.sh`), as that user. As the admin |
@@ -335,6 +336,29 @@ ygg backup list     # the days and files in ~/backups, and whether the newest da
 
 Run as `ygg`, whose engine holds the data; the nightly timer does it at 03:30. What is backed up and where it goes
 is `backup.conf`; how to set it up and how to restore is in [hosts.md](hosts.md#7-backups-and-restore).
+
+## Jenkins plugins
+
+```bash
+ygg platform update-plugins         # as ygg, on the Linux DevOps Server
+ygg platform update-plugins --now   # without waiting until Jenkins can restart safely
+```
+
+The controller's plugins come from `platform/jenkins/controller/plugins.txt`, which names no versions: building its
+image fetches the latest ones compatible with its Jenkins. A plain `platform up` reuses the plugins already in the
+image's build cache, so only this command fetches newer ones. It builds the new image while Jenkins keeps running and
+prints each plugin that changes (`git: 5.1 -> 5.2`). Then it puts Jenkins in quiet-down, as Jenkins' own safe restart
+does: queued and new builds wait, and a running pipeline pauses at its next step (a running `sh` step goes on on its
+agent) and carries on after the restart. Once nothing blocks a restart, it brings the platform up on the new image, as
+`platform up` does. Every job of an installation is a pipeline, so that is usually at once; a job of another kind
+(freestyle) runs to its end first. With nothing to change, it stops before the quiet-down and Jenkins keeps running.
+
+If something still blocks a restart after 30 minutes, it gives up and changes nothing: the quiet-down is cancelled and
+the next `platform up` keeps the plugins Jenkins has. Run it again later, or with `--now`, which restarts Jenkins under
+it. When it last fetched the plugins is in `/etc/yggdrasil/jenkins-plugins-refreshed`.
+
+Jenkins itself is not updated here: its version is the `FROM` line of the controller's Dockerfile, which Renovate
+moves. A plugin updated in the Jenkins UI stays in Jenkins' volume until an image brings a newer version of it.
 
 ## Set up an application
 

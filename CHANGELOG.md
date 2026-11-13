@@ -7,6 +7,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-11-13
+
+### Added
+
+- **`ygg platform update-plugins`** (`scripts/platform.sh update-plugins`), on the Linux DevOps Server. `plugins.txt`
+  names no versions, but `platform up` builds the controller from Docker's cache, so its plugins stayed as they were
+  at the first build. The command rebuilds the image with the latest compatible plugins and prints which change.
+  Then it puts Jenkins in quiet-down, waits until nothing blocks a restart, as Jenkins' safe restart does (pipelines
+  pause and carry on after it; other builds finish first), and brings the platform up on the new image. `--now`
+  skips the wait; with nothing to change, Jenkins keeps running. The controller's
+  Dockerfile takes a `PLUGINS_REFRESHED` build argument for this, saved in `/etc/yggdrasil/jenkins-plugins-refreshed`
+  and passed by every `up`, so a later `up` stays on the new plugins
+  ([docs/cli.md](docs/cli.md#jenkins-plugins)).
+
+### Changed
+
+- **The console builds with Flutter 3.50.0** (Dart 3.14), from 3.47.4: the Jenkins check and the APK release
+  (`ci/flutter-env.sh`), the web image (`console/Dockerfile`) and the GitHub workflows (`ci.yml`,
+  `release-windows.yml`). Building it by hand needs Flutter 3.50.0 ([CONTRIBUTING.md](CONTRIBUTING.md)). Its
+  Android build moves to the versions Flutter 3.50 requires (Android Gradle Plugin 9.3.1, Kotlin 2.4.20, Gradle
+  9.5.0), and its widgets come from `package:material_ui`, which replaces Flutter's deprecated
+  `package:flutter/material.dart`.
+- **Renovate runs the `-full` image** (`renovate/renovate:44.181.0-full`), which comes with the package managers and
+  toolchains it runs to update lockfiles. The default image downloads them on demand, several from GitHub releases,
+  and without a GitHub token those lookups meet GitHub's anonymous rate limit: the tool is not found, the lockfile
+  update fails ("Artifact update problem"), and the pull request changes the manifest only (Renovate's npm pull
+  requests, for one). The image is several GB: pull it once as `renovate` before the next run
+  ([docs/hosts.md](docs/hosts.md#renovate-the-daily-run)).
+
 ## [0.13.2] - 2026-11-11
 
 ### Fixed
@@ -1309,7 +1338,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/artur-rios/yggdrasil/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/artur-rios/yggdrasil/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/artur-rios/yggdrasil/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/artur-rios/yggdrasil/compare/v0.12.3...v0.13.0

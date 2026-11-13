@@ -205,6 +205,15 @@ class MachineCommandTests(unittest.TestCase):
     def test_given_backup_with_another_action_then_it_is_a_usage_error(self):
         self.assertEqual(ygg("backup", "restore").returncode, 2)
 
+    def test_given_platform_update_plugins_when_parsed_then_platform_sh_gets_it_with_its_options(self):
+        platform_sh = ["bash", str(SCRIPTS / "platform.sh")]
+        self.assertEqual(self.handed_over("platform", "update-plugins"), platform_sh + ["update-plugins"])
+        self.assertEqual(self.handed_over("platform", "update-plugins", "--now", "--last-good"),
+                         platform_sh + ["update-plugins", "--last-good", "--now"])
+
+    def test_given_now_on_another_platform_action_then_it_is_a_usage_error(self):
+        self.assertEqual(ygg("platform", "up", "--now").returncode, 2)
+
     def test_given_the_ygg_sh_fallback_without_python_then_check_and_install_keep_their_role(self):
         text = (SCRIPTS / "ygg.sh").read_text()
         self.assertIn('exec bash "$here/host.sh" "$@"', text)
