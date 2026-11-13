@@ -28,9 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   9.5.0), and its widgets come from `package:material_ui`, which replaces Flutter's deprecated
   `package:flutter/material.dart`.
 - **Renovate runs the `-full` image** (`renovate/renovate:44.181.0-full`), which comes with the package managers and
-  toolchains it runs to update lockfiles. With the default image, which installs them on demand, every lockfile
-  update failed ("Artifact update problem"), so Renovate's npm, pub and cargo pull requests changed the manifest only
-  and failed their checks. The image is several GB: pull it once as `renovate` before the next run
+  toolchains it runs to update lockfiles. The default image downloads them on demand, several from GitHub releases,
+  and without a GitHub token those lookups meet GitHub's anonymous rate limit: the tool is not found, the lockfile
+  update fails ("Artifact update problem"), and the pull request changes the manifest only (Renovate's npm pull
+  requests, for one). The image is several GB: pull it once as `renovate` before the next run
   ([docs/hosts.md](docs/hosts.md#renovate-the-daily-run)).
 
 ## [0.13.2] - 2026-11-11
