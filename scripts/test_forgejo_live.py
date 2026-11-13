@@ -1037,11 +1037,16 @@ class ForgejoLiveTests(ForgejoClient, unittest.TestCase):
         (mirror,) = self.api[OWNER].request("GET", path)
         if not (mirror.get("last_error") or "").strip():
             return True
-        self.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/push_mirrors-sync")
-        # One sync at a time: Forgejo stamps last_update when a sync ends, failed or not. Asking again before
-        # this one has ended would start the race over.
-        self.eventually(lambda: self.api[OWNER].request("GET", path)[0].get("last_update") != mirror.get("last_update"),
-                        "the requested mirror sync", seconds=60)
+        # Forgejo runs this sync before it answers, so it has ended when the request returns: one sync at a time,
+        # and the next call reads its result. Waiting for last_update to move instead could wait forever: Forgejo
+        # stamps it in whole seconds, and a sync to a local address can end in the same second as the one that
+        # failed. A sync that fails answers 500 and keeps its error as the mirror's last one, so the next call
+        # asks again.
+        try:
+            self.api[OWNER].request("POST", f"/repos/{OWNER}/{repo}/push_mirrors-sync")
+        except rules.ApiError as error:
+            if error.status != 500:
+                raise
         return False
 
     def test_given_a_repository_when_migrate_mirrors_it_then_forgejo_pushes_its_branches_and_a_new_tag_to_the_target(self):

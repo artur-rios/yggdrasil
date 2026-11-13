@@ -358,7 +358,12 @@ the next `platform up` keeps the plugins Jenkins has. Run it again later, or wit
 it. When it last fetched the plugins is in `/etc/yggdrasil/jenkins-plugins-refreshed`.
 
 Jenkins itself is not updated here: its version is the `FROM` line of the controller's Dockerfile, which Renovate
-moves. A plugin updated in the Jenkins UI stays in Jenkins' volume until an image brings a newer version of it.
+moves.
+
+A plugin updated in the Jenkins UI stays at that version until an image brings a newer one, which then replaces it at
+the next start; an older image never downgrades it. That takes `PLUGINS_FORCE_UPGRADE=true`, which the controller
+starts with (`platform/compose.yml`): without it the image skips such a plugin at every start from then on
+(`SKIPPED … has been manually upgraded` in `/var/jenkins_home/copy_reference_file.log`), so no image upgrades it again.
 
 ## Set up an application
 
