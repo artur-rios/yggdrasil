@@ -366,6 +366,11 @@ services:
     logging: *logging
     environment:
       JAVA_OPTS: -Djenkins.install.runSetupWizard=false
+      # At every start the image's entrypoint copies its plugins into the volume, upgrading those it has newer
+      # versions of. Without this it skips for good a plugin updated in the Jenkins UI since ("has been manually
+      # upgraded"), so no later image, update-plugins' included, would ever upgrade it. With it (any non-empty
+      # value), such a plugin is upgraded too once the image's version is newer; it is never downgraded.
+      PLUGINS_FORCE_UPGRADE: "true"
       # The configuration files of this installation's git server, comma-separated: scripts/platform.sh
       # picks them from catalog.yaml (casc.yaml, then casc.forgejo.yaml or casc.github.yaml, and
       # casc.github-app.yaml when the GitHub App is used, casc.github-read.yaml on GitHub when the read-only
