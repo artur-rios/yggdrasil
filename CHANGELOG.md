@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.4] - 2026-11-13
+
 ### Fixed
 
 - **`ygg platform update-plugins` could not update a plugin once it had been updated in the Jenkins UI.** At every
@@ -1350,7 +1352,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.3...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.4...HEAD
+[0.13.4]: https://github.com/artur-rios/yggdrasil/compare/v0.13.3...v0.13.4
 [0.13.3]: https://github.com/artur-rios/yggdrasil/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/artur-rios/yggdrasil/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/artur-rios/yggdrasil/compare/v0.13.0...v0.13.1
