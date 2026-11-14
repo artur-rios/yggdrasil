@@ -392,8 +392,16 @@ bring_up() {
   else
     rm -f "$secrets/jenkins-credentials.yaml"
   fi
+  # The controller's container before and after: a new one may have missed the jobs it created (load_new_jobs).
+  local controller=""
+  if [[ "$profiles" == *,jenkins,* ]]; then
+    controller=$(compose ps --quiet jenkins 2>/dev/null) || controller=""
+  fi
   compose up --detach --build --remove-orphans --wait
   compose ps
+  if [[ "$profiles" == *,jenkins,* && "$(compose ps --quiet jenkins 2>/dev/null || true)" != "$controller" ]]; then
+    load_new_jobs
+  fi
   if [[ -n "$from_store" ]]; then
     install -d -m 700 "$secrets/last-good"
     install -m 600 "$env_file" "$acme_file" "$traefik_file" "$secrets/last-good/"
@@ -477,6 +485,65 @@ wait_for_builds() {
     sleep "$quiet_poll"
     waited=$((waited + quiet_poll))
   done
+}
+
+# How long `up` waits for a new controller to finish starting before it looks for the jobs it missed, and how often
+# it asks (seconds; the tests shorten both).
+start_timeout=${YGG_JENKINS_START_TIMEOUT:-600}
+start_poll=${YGG_JENKINS_START_POLL:-5}
+
+# load_new_jobs: once a new controller has started, has it load the jobs it created but dropped, by reloading its
+# Configuration as Code. The job script of casc.yaml runs early in Jenkins' startup, before the job directories are
+# loaded but after Jenkins listed the ones it will load, and core then drops every item it did not load from disk
+# ("Cleaning up obsolete items deleted from the disk"): a new catalog entry's job was written and dropped, and came
+# back only at the next start. A reload runs the same script once Jenkins is up, which registers it; for the jobs
+# Jenkins has, it changes nothing. It runs only when a job directory has no job, and it never stops the platform:
+# a failure is a warning, with what to do by hand.
+load_new_jobs() {
+  local waited=0 answer
+  while :; do
+    # The answer's first line is `starting` until Jenkins reaches COMPLETED, then `ready`, followed by one
+    # `registered <job>` per job the reload brought in and one `unregistered <job>` per job directory still without
+    # a job. A refused CLI (Jenkins not answering yet) is an empty answer.
+    answer=$(jenkins_cli groovy = 2>/dev/null <<'GROOVY'
+def j = jenkins.model.Jenkins.get()
+if (j.initLevel != hudson.init.InitMilestone.COMPLETED) {
+  println 'starting'
+  return
+}
+def unloaded = {
+  (new File(j.rootDir, 'jobs').listFiles() ?: []).findAll { new File(it, 'config.xml').isFile() }*.name
+    .findAll { j.getItem(it) == null }.sort()
+}
+def missing = unloaded()
+if (missing) {
+  io.jenkins.plugins.casc.ConfigurationAsCode.get().configure()
+}
+def left = unloaded()
+println 'ready'
+(missing - left).each { println 'registered ' + it }
+left.each { println 'unregistered ' + it }
+GROOVY
+    ) || answer=""
+    [[ "$answer" != ready* ]] || break
+    if ((waited >= start_timeout)); then
+      echo "platform: could not check that Jenkins loaded every job: it did not answer as started within $((start_timeout / 60)) minutes. If a new catalog entry has no job, restart the controller once it is idle: docker restart yggdrasil-jenkins-1" >&2
+      return 0
+    fi
+    sleep "$start_poll"
+    waited=$((waited + start_poll))
+  done
+  local line unregistered=()
+  while IFS= read -r line; do
+    case "$line" in
+      "registered "*) echo "platform: Jenkins loaded the new job ${line#registered }" >&2 ;;
+      "unregistered "*) unregistered+=("${line#unregistered }") ;;
+    esac
+  done <<<"$answer"
+  if ((${#unregistered[@]})); then
+    echo "platform: Jenkins has no job for these job directories even after reloading its configuration: ${unregistered[*]}. Look for the reason in its log (scripts/platform.sh logs jenkins); restarting the controller once it is idle loads what it can: docker restart yggdrasil-jenkins-1" >&2
+  fi
+  return 0
 }
 
 case "$command" in

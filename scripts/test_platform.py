@@ -68,8 +68,25 @@ class PlatformTests(unittest.TestCase):
                           '    " tag "*) cat "$(tag_file "$2")" >"$(tag_file "$3")" || exit 1 ;;\n'
                           '    " run --rm --entrypoint sh "*) cat "$state/plugins-$(cat "$(tag_file "$5")")" ;;\n'
                           '    *" ps --quiet jenkins "*) cat "$state/running" ;;\n'
+                          '    # `up` recreates the controller when a test gave it a new container (running-after).\n'
+                          '    *" up --detach "*) if [[ -f "$state/running-after" ]]; then\n'
+                          '        cp "$state/running-after" "$state/running"; fi ;;\n'
+                          '    # The job registration script (it reloads Configuration as Code) answers from register.<n>,\n'
+                          '    # the last one again once they run out, and fails on one that says FAIL; any other\n'
+                          '    # script is blocking_builds, answering from busy.\n'
                           '    *" jenkins-cli groovy = "*)\n'
-                          '      head -n 1 "$state/busy"; [[ $(wc -l <"$state/busy") -le 1 ]] || sed -i 1d "$state/busy" ;;\n'
+                          '      if [[ $(cat) == *ConfigurationAsCode* ]]; then\n'
+                          '        echo "register-jobs" >>"$FAKE_DOCKER_LOG"\n'
+                          '        calls=$(( $(cat "$state/register-calls" 2>/dev/null || echo 0) + 1 ))\n'
+                          '        echo "$calls" >"$state/register-calls"\n'
+                          '        answer="$state/register.$calls"\n'
+                          '        [[ -f "$answer" ]] \\\n'
+                          '          || answer="$state/$(ls "$state" | grep "^register\\.[0-9]" | sort -t. -k2 -n | tail -n 1)"\n'
+                          '        [[ $(cat "$answer") != FAIL ]] || exit 1\n'
+                          '        cat "$answer"\n'
+                          '      else\n'
+                          '        head -n 1 "$state/busy"; [[ $(wc -l <"$state/busy") -le 1 ]] || sed -i 1d "$state/busy"\n'
+                          '      fi ;;\n'
                           '  esac\n'
                           'fi\n'
                           'if [[ -n "${YGG_TRAEFIK_CONFIG_FILE:-}" ]]; then\n'
@@ -569,6 +586,77 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("does not run Jenkins", result.stderr)
         self.assertNotIn("build jenkins", self.docker_calls())
+
+    # The jobs a recreated controller has on disk but did not load. Configuration as Code creates a new catalog
+    # entry's job during the controller's startup, after Jenkins listed the job directories it loads, and core
+    # then drops every item it did not load from disk: the job is back only at the next start. So once `up`
+    # gave Jenkins a new container, it reloads Configuration as Code if a job directory has no job.
+
+    def use_controller(self, before, after, *answers):
+        """The fake engine's controller container before `up` and after it ("" for none), and what the
+        registration script answers, in turn (the last one again once they run out; FAIL fails the call)."""
+        state = self.temp / "state"
+        (state / "tags").mkdir(parents=True, exist_ok=True)
+        (state / "running").write_text(before)
+        (state / "running-after").write_text(after)
+        (state / "busy").write_text("0\n")
+        for number, answer in enumerate(answers, 1):
+            (state / f"register.{number}").write_text(answer)
+        self.env.update(FAKE_STATE=str(state), YGG_JENKINS_START_POLL="0")
+
+    def test_given_a_recreated_controller_with_unloaded_jobs_when_up_then_it_reloads_and_names_them(self):
+        self.use_controller("old\n", "new\n", "ready\nregistered ballz\nregistered tabnews\n")
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.docker_calls().count("register-jobs"), 1)
+        self.assertIn("platform: Jenkins loaded the new job ballz", result.stderr)
+        self.assertIn("platform: Jenkins loaded the new job tabnews", result.stderr)
+        # After the stack is up, never before: it needs the new controller.
+        calls = self.docker_calls()
+        self.assertLess(calls.index("up --detach"), calls.index("register-jobs"))
+
+    def test_given_a_recreated_controller_with_every_job_loaded_when_up_then_it_says_nothing(self):
+        self.use_controller("old\n", "new\n", "ready\n")
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.docker_calls().count("register-jobs"), 1)
+        self.assertNotIn("new job", result.stderr)
+
+    def test_given_the_same_controller_when_up_then_its_jobs_are_left_alone(self):
+        self.use_controller("same\n", "same\n", "ready\nregistered ballz\n")
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("register-jobs", self.docker_calls())
+
+    def test_given_a_controller_still_starting_when_up_then_it_waits_until_jenkins_is_ready(self):
+        # Starting: the CLI is refused (FAIL) or Jenkins has not reached COMPLETED (starting).
+        self.use_controller("", "new\n", "FAIL", "starting\n", "ready\nregistered ballz\n")
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.docker_calls().count("register-jobs"), 3)
+        self.assertIn("platform: Jenkins loaded the new job ballz", result.stderr)
+
+    def test_given_a_job_still_unloaded_after_the_reload_when_up_then_it_warns_and_the_platform_stays_up(self):
+        self.use_controller("old\n", "new\n", "ready\nunregistered broken-job\n")
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("broken-job", result.stderr)
+        self.assertIn("docker restart", result.stderr)
+
+    def test_given_a_controller_that_does_not_start_in_time_when_up_then_it_warns_and_the_platform_stays_up(self):
+        self.use_controller("old\n", "new\n", "starting\n")
+        self.env["YGG_JENKINS_START_TIMEOUT"] = "0"
+        result = self.up(self.JENKINS + self.GITHUB_APP)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.docker_calls().count("register-jobs"), 1)
+        self.assertIn("could not check that Jenkins loaded every job", result.stderr)
+
+    def test_given_a_host_without_jenkins_when_up_then_no_job_is_looked_for(self):
+        self.use_controller("old\n", "new\n", "ready\nregistered ballz\n")
+        result = self.up("ENVIRONMENTS=production\nCOMPOSE_PROFILES=apps\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("register-jobs", self.docker_calls())
+        self.assertNotIn("ps --quiet jenkins", self.docker_calls())
 
     def test_given_a_saved_stamp_when_up_then_the_controller_is_built_with_it(self):
         (self.secrets / "jenkins-plugins-refreshed").write_text("20261101T120000Z\n")

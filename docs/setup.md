@@ -1678,8 +1678,11 @@ until they start again. For the Jenkins controller `platform.sh up` sees to it: 
 controller mounts from the checkout (the catalog, `casc*.yaml`, the Jenkinsfile and job scripts,
 `agents.groovy`) into a label, so a pulled change to any of them recreates the controller. That stops the
 builds running on it, so pull while it is idle. The status API has no such label: restart it as above.
-Jenkins creates new jobs and agents only when it starts; it never deletes agents (remove them in
-**Manage Jenkins → Nodes**).
+Jenkins creates new agents only when it starts, and new jobs when `platform.sh up` recreates it: a start
+alone writes a new catalog entry's job and drops it again (Jenkins loads only the job directories it listed
+before its Configuration as Code ran), so once the new controller is up, `up` reloads its Configuration as
+Code if a job directory has no job, and prints `Jenkins loaded the new job <job>` for each one. It never
+deletes agents (remove them in **Manage Jenkins → Nodes**).
 
 ## The pipeline
 
