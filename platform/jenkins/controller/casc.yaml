@@ -68,9 +68,11 @@ jobs:
   - script: |
       // One multibranch job per application in catalog.yaml (mounted read-only from this
       // repository) and per `repositories` entry (a library, a CI-only repository, yggdrasil
-      // itself), so adding either to the catalog is all it takes to get its job: the next restart or
-      // Configuration as Code reload creates it. Platform components (kind platform) are not
-      // deployed by Jenkins and get none.
+      // itself), so adding either to the catalog is all it takes to get its job: `scripts/platform.sh up`
+      // recreates the controller, and a Configuration as Code reload creates it. A start alone writes a
+      // new job and then drops it (core loads only the job directories it listed before this script
+      // ran), so `up` reloads once the new controller is up (load_new_jobs). Platform components (kind
+      // platform) are not deployed by Jenkins and get none.
       //
       // The branch source follows `forge.type`, read from the catalog like the applications are, with
       // catalog.py's defaults: no forge block means GitHub. Forgejo is read through the Gitea plugin

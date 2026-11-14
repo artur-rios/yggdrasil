@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.7] - 2026-11-14
+
+### Fixed
+
+- **A new catalog entry's Jenkins job appeared only after a second restart of the controller.** The job script
+  of `platform/jenkins/controller/casc.yaml` runs early in Jenkins' startup, after Jenkins listed the job
+  directories it will load, so it wrote the new job and Jenkins core then dropped it ("Cleaning up obsolete
+  items deleted from the disk"): the directory was there, the job was not, until the next start. 0.13.6's
+  nineteen new entries hit it. `scripts/platform.sh up` (and `update-plugins`) now waits for a new controller to
+  finish starting and, when a job directory has no job, reloads its Configuration as Code, which registers it,
+  printing `Jenkins loaded the new job <job>` for each. It only warns, and the platform stays up, when Jenkins
+  does not answer within ten minutes (`YGG_JENKINS_START_TIMEOUT`) or a job still does not load.
+- **docs/setup.md left out the bot accounts' access for a new repository on Forgejo.** Only moving from GitHub ran
+  `migrate.py collaborators`, so a repository added later had no `jenkins` collaborator, and its first builds failed
+  on `HTTP 403: user should have a permission to write to a repo`, as 0.13.6's nineteen did. "Adding things" now
+  has that step for an application, and a new "A repository that is not deployed" with every step in order.
+
 ## [0.13.6] - 2026-11-13
 
 ### Added
@@ -1382,7 +1399,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.7...HEAD
+[0.13.7]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...v0.13.7
 [0.13.6]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...v0.13.6
 [0.13.5]: https://github.com/artur-rios/yggdrasil/compare/v0.13.4...v0.13.5
 [0.13.4]: https://github.com/artur-rios/yggdrasil/compare/v0.13.3...v0.13.4

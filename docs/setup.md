@@ -1678,8 +1678,11 @@ until they start again. For the Jenkins controller `platform.sh up` sees to it: 
 controller mounts from the checkout (the catalog, `casc*.yaml`, the Jenkinsfile and job scripts,
 `agents.groovy`) into a label, so a pulled change to any of them recreates the controller. That stops the
 builds running on it, so pull while it is idle. The status API has no such label: restart it as above.
-Jenkins creates new jobs and agents only when it starts; it never deletes agents (remove them in
-**Manage Jenkins → Nodes**).
+Jenkins creates new agents only when it starts, and new jobs when `platform.sh up` recreates it: a start
+alone writes a new catalog entry's job and drops it again (Jenkins loads only the job directories it listed
+before its Configuration as Code ran), so once the new controller is up, `up` reloads its Configuration as
+Code if a job directory has no job, and prints `Jenkins loaded the new job <job>` for each one. It never
+deletes agents (remove them in **Manage Jenkins → Nodes**).
 
 ## The pipeline
 
@@ -2042,7 +2045,12 @@ Details: [cli.md](cli.md#start-and-stop-environments).
 
 1. **Catalog:** add it under its system (or a new system) in `catalog.yaml`: `id`, `kind`, `health`, and if they apply `host`, `metrics` and `checks`. Add `environments` only if it doesn't deploy everywhere.
 2. **Stack files** in `stacks/`, as in [step 4](#4-write-the-stack-files).
-3. **The application's repository**, as in [step 5](#5-prepare-each-application-repository). Add it to the GitHub App's repositories ([step 7.5](#75-install-the-app-on-the-repositories)).
+3. **The application's repository**, as in [step 5](#5-prepare-each-application-repository). On GitHub, add it to the
+   GitHub App's repositories ([step 7.5](#75-install-the-app-on-the-repositories)). On Forgejo, give the bot accounts
+   their access to it, as in [9.7](#97-the-forgejo-accounts-and-tokens): `python3 scripts/migrate.py collaborators
+   --only <repository>` (with the owner's `FORGE_TOKEN`) once the repository exists. Without it Jenkins can neither
+   scan it nor report its checks: its first builds fail on `HTTP 403: user should have a permission to write to a
+   repo`.
 4. **Env files** on each host it deploys to, as in [step 11](#11-application-env-files).
 5. **Apply:**
    - push the catalog and stack files to `main` of your fork
@@ -2082,6 +2090,27 @@ production on the Application Server, say): no new platform, agent or DNS record
      On an existing GitHub installation, add it by hand to the `main` rulesets of the repositories that
      have not adopted `yggdrasil.yml`, as in the case above.
 5. **Env files:** for each application on the new host, as in [step 11](#11-application-env-files).
+
+### A repository that is not deployed
+
+A library, a CI-only repository, anything with checks and no deployment: a [`repositories`](catalog.md#repositories)
+entry. Nothing is deployed from it.
+
+1. **Catalog:** add it under `repositories`: its `id` (the repository's name), `checks`, and `rules: basic` for one
+   that lives on `main` (or a fork's `master`) without `develop`.
+2. **The repository:** a `yggdrasil.yml` at its root that defines every one of those checks
+   ([Repository pipeline file](catalog.md#repository-pipeline-file)), checked with
+   `python3 scripts/pipeline_config.py describe <id> <its checkout>` against the new catalog.
+3. **Bot access**, on Forgejo: `python3 scripts/migrate.py collaborators --only <id>` (the owner's `FORGE_TOKEN`), as
+   for an application above. On GitHub, the App's repositories ([step 7.5](#75-install-the-app-on-the-repositories)).
+4. **Apply**, in this order:
+   - push the catalog to `main` of your fork (a release)
+   - on the Linux DevOps Server, pull and `scripts/platform.sh up` as in
+     [Where Jenkins and the hosts read the catalog](#where-jenkins-and-the-hosts-read-the-catalog): Jenkins creates the
+     job, and `up` prints `Jenkins loaded the new job <id>`
+   - `python3 scripts/rules.py <id>`: the branch rules and the webhook that tells Jenkins about pushes and pull
+     requests (with `FORGE_JENKINS_URL` and `FORGE_WEBHOOK_SECRET`, [step 12](#12-apply-the-branch-rules))
+   - the job builds the default branch once it scans it; **Scan Repository Now** on the job does it at once
 
 ### A system
 
