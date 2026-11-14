@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.7] - 2026-11-14
+
 ### Fixed
 
 - **A new catalog entry's Jenkins job appeared only after a second restart of the controller.** The job script
@@ -1397,7 +1399,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.7...HEAD
+[0.13.7]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...v0.13.7
 [0.13.6]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...v0.13.6
 [0.13.5]: https://github.com/artur-rios/yggdrasil/compare/v0.13.4...v0.13.5
 [0.13.4]: https://github.com/artur-rios/yggdrasil/compare/v0.13.3...v0.13.4
