@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A new catalog entry's Jenkins job appeared only after a second restart of the controller.** The job script
+  of `platform/jenkins/controller/casc.yaml` runs early in Jenkins' startup, after Jenkins listed the job
+  directories it will load, so it wrote the new job and Jenkins core then dropped it ("Cleaning up obsolete
+  items deleted from the disk"): the directory was there, the job was not, until the next start. 0.13.6's
+  nineteen new entries hit it. `scripts/platform.sh up` (and `update-plugins`) now waits for a new controller to
+  finish starting and, when a job directory has no job, reloads its Configuration as Code, which registers it,
+  printing `Jenkins loaded the new job <job>` for each. It only warns, and the platform stays up, when Jenkins
+  does not answer within ten minutes (`YGG_JENKINS_START_TIMEOUT`) or a job still does not load.
+
 ## [0.13.6] - 2026-11-13
 
 ### Added
