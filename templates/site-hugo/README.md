@@ -4,6 +4,17 @@ A [Hugo](https://gohugo.io/) site, built in a pinned `hugomods/hugo` image (Hugo
 by [static-web-server](https://static-web-server.net/). A theme installed with npm (Docsy) is installed with
 `npm ci` when there is a `package-lock.json`.
 
+Docsy 0.17 and newer compile their SCSS with [Dart Sass](https://sass-lang.com/dart-sass/), which the image does
+not have. Add it to the site's `package.json` as a dev dependency, next to the theme:
+
+```bash
+npm install --save-dev sass-embedded
+```
+
+The lock file pins and hashes it, and Renovate updates it with the other npm packages. Hugo runs `sass` from the
+`PATH` and does not look in `node_modules/.bin` on its own, so the `Dockerfile` and the `build` check put that
+directory on the `PATH` after `npm ci`. Without the package, a Docsy 0.17 build fails on its SCSS.
+
 ## Files to copy
 
 | From this template | To the repository |

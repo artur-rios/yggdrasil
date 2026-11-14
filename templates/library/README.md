@@ -73,6 +73,12 @@ The image builds `docs/` with Hugo (extended, Node and npm, pinned), `npm ci` fo
 static-web-server on port 8080 as a non-root user. `/healthz` answers 200, from a file of its own: the image has no
 shell, so no `HEALTHCHECK`.
 
+Docsy 0.17 and newer compile their SCSS with [Dart Sass](https://sass-lang.com/dart-sass/), which the image does
+not have: add it to `docs/package.json` as a dev dependency, next to the theme
+(`npm install --save-dev sass-embedded` in `docs/`). The lock file pins and hashes it, and Renovate updates it with
+the other npm packages. Hugo runs `sass` from the `PATH` and does not look in `node_modules/.bin` on its own, so
+the `Dockerfile` puts that directory on the `PATH` after `npm ci`.
+
 Build arguments, passed by `templates/stacks/site.yml`:
 
 | Argument | Comes from |

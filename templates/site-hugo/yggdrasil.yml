@@ -9,8 +9,10 @@
 # The deploy builds the image (the Dockerfile) with the same Hugo; this check builds the site on a pull request
 # before it can reach develop, so a broken page or a theme that no longer installs is caught there. List it in the
 # application's `checks` in catalog.yaml. For a site whose Hugo directory is not the root, cd into it first.
+# node_modules/.bin is on the PATH for the same reason as in the Dockerfile: Docsy 0.17 and newer run the
+# sass-embedded package's `sass` from there.
 
 checks:
   build:
     image: hugomods/hugo:debian-node-lts-0.165.0@sha256:eef6a12572c8cf3fea72fb034606f3e6a0821368682139378608eabc94e67c87
-    run: "[ ! -f package-lock.json ] || npm ci; hugo --environment production --minify --gc --destination /tmp/site"
+    run: "[ ! -f package-lock.json ] || npm ci; PATH=\"$PWD/node_modules/.bin:$PATH\" hugo --environment production --minify --gc --destination /tmp/site"
