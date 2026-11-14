@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.6] - 2026-11-13
+
+### Added
+
+- **Every repository has a pipeline: a `lint` check and, where there is something to build, a `build` check.**
+  Nineteen repositories that had no Jenkins job are now `repositories` entries of the catalog (`rules: basic`,
+  never deployed, nothing released): algorithm-practice, artur-rios, ballz, cli-utils, dotnet-tools, gui-challenges,
+  the three Hugo themes, landing-page, maestro-cli, ml-accounting-reconciliation, personal-blog-comments,
+  project-euler, project-template, python-dotnet-tools, sicp-exercises, tabnews and user-management-api.
+  artur-rios, personal-blog-comments and sicp-exercises have only `lint`. Each repository's own `yggdrasil.yml`
+  defines the checks, in a pull request of its own. The sites deployed with no checks (personal-blog,
+  under-construction-template, file-tree-generator, tech-craftsmen-company-page) get `lint` and `build` (the
+  Dockerfile's image, as a deploy builds it), and ai-coding-skills gets `lint`; their deploys are unchanged. Once
+  this is on `main`, pull and restart Jenkins on the Linux DevOps Server so it creates the new jobs
+  ([setup.md](docs/setup.md#where-jenkins-and-the-hosts-read-the-catalog)), and run
+  `python3 scripts/rules.py <repository>` for each new entry ([setup.md](docs/setup.md#an-application), Apply).
+
 ## [0.13.5] - 2026-11-13
 
 ### Changed
@@ -1365,7 +1382,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...HEAD
+[0.13.6]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...v0.13.6
 [0.13.5]: https://github.com/artur-rios/yggdrasil/compare/v0.13.4...v0.13.5
 [0.13.4]: https://github.com/artur-rios/yggdrasil/compare/v0.13.3...v0.13.4
 [0.13.3]: https://github.com/artur-rios/yggdrasil/compare/v0.13.2...v0.13.3

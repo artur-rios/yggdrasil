@@ -143,7 +143,8 @@ repositories:
 
   # CI only: checks, and the branch rules they had on GitHub (release where a branch-policy workflow
   # existed, basic where none did). Nothing is released.
-  - id: ai-coding-skills # only its branch policy ran on GitHub
+  - id: ai-coding-skills # skills are Markdown: lint only (markdownlint, codespell, each skill's front matter)
+    checks: [lint]
     rules: release
   - id: alexandria-api
     checks: [lint-and-test]
@@ -160,6 +161,68 @@ repositories:
     rules: basic
   - id: reveal.js # a fork: its default branch is master
     checks: [codespell, build]
+    rules: basic
+
+  # Build and lint only: repositories that had no pipeline at all. Nothing is deployed from them and nothing is
+  # released; each yggdrasil.yml defines `lint` and `build` (`lint` alone where there is nothing to build: a README,
+  # exercises). All live on main (the forks: their own default branch), hence rules: basic: the checks run and
+  # report on every pull request and push, and Forgejo requires none of them.
+  - id: algorithm-practice # .NET
+    checks: [lint, build]
+    rules: basic
+  - id: artur-rios # the profile README
+    checks: [lint]
+    rules: basic
+  - id: ballz # Vite
+    checks: [lint, build]
+    rules: basic
+  - id: cli-utils # shell scripts
+    checks: [lint, build]
+    rules: basic
+  - id: dotnet-tools # shell scripts and templates
+    checks: [lint, build]
+    rules: basic
+  - id: gui-challenges # a fork: static pages
+    checks: [lint, build]
+    rules: basic
+  - id: hugo-theme-nuno # a fork: Hugo theme, built with its example site
+    checks: [lint, build]
+    rules: basic
+  - id: hugo-theme-re-terminal # a fork: Hugo theme, built with its demo site
+    checks: [lint, build]
+    rules: basic
+  - id: hugo-theme-rusty-typewriter # a fork: Hugo theme, built with its example site
+    checks: [lint, build]
+    rules: basic
+  - id: landing-page # a fork: Next.js
+    checks: [lint, build]
+    rules: basic
+  - id: maestro-cli # Python
+    checks: [lint, build]
+    rules: basic
+  - id: ml-accounting-reconciliation # Python
+    checks: [lint, build]
+    rules: basic
+  - id: personal-blog-comments # a README: the blog's comments live in its issues
+    checks: [lint]
+    rules: basic
+  - id: project-euler # .NET
+    checks: [lint, build]
+    rules: basic
+  - id: project-template # .NET
+    checks: [lint, build]
+    rules: basic
+  - id: python-dotnet-tools # Python
+    checks: [lint, build]
+    rules: basic
+  - id: sicp-exercises # Scheme exercises: lint only
+    checks: [lint]
+    rules: basic
+  - id: tabnews # Next.js
+    checks: [lint, build]
+    rules: basic
+  - id: user-management-api # .NET
+    checks: [lint, build]
     rules: basic
 
   # Released by their owner's v* tags on main: Jenkins builds the release files (Windows ones through
@@ -698,7 +761,7 @@ systems:
         health: http://personal-blog:8080/healthz
         domain: artur-rios.tech
         host: blog
-        checks: []
+        checks: [lint, build] # build: the Dockerfile's image, as a deploy builds it
         environments:
           production: { trigger: branch, branches: main }
       # The repository is the repositories entry personal-lab, which the owner's tags release; the site
@@ -721,7 +784,7 @@ systems:
         health: http://under-construction-template:8080/healthz
         domain: artur-rios.tech
         host: placeholder
-        checks: []
+        checks: [lint, build] # build: the Dockerfile's image, as a deploy builds it
         environments:
           production: { trigger: branch, branches: master }
       # A fork of woochanleee/project-tree-generator, whose default branch is main; it was a Vercel project.
@@ -731,7 +794,7 @@ systems:
         health: http://file-tree-generator:8080/healthz
         domain: artur-rios.tech
         host: file-tree
-        checks: []
+        checks: [lint, build] # build: the Dockerfile's image, as a deploy builds it
         environments:
           production: { trigger: branch, branches: main }
 
@@ -748,7 +811,7 @@ systems:
         domain: techcraftsmen.net
         host: www
         apex: true # techcraftsmen.net redirects to www (its stack)
-        checks: []
+        checks: [lint, build] # build: the Dockerfile's image, as a deploy builds it
         environments:
           homologation: {}
           production: {}
