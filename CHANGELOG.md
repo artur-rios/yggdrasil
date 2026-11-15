@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A docs site made from `templates/library/` or `templates/site-hugo/` failed to build on Docsy 0.17 or newer.**
+  Docsy 0.17 compiles its SCSS with Dart Sass, which Hugo runs as `sass` from the `PATH`, and the pinned
+  `hugomods/hugo` image has none. The two Dockerfiles, and the `build` check of `templates/site-hugo/yggdrasil.yml`,
+  now put the site's `node_modules/.bin` on the `PATH` after `npm ci`, and both READMEs say to add `sass-embedded`
+  to the site's `package.json` as a dev dependency, as the existing docs sites did.
+
 ## [0.13.7] - 2026-11-14
 
 ### Fixed

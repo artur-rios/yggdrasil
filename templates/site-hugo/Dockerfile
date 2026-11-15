@@ -14,6 +14,10 @@
 # A theme installed with npm (Docsy: @docsy/theme in package.json, themesDir = node_modules) is installed with
 # `npm ci` when HUGO_DIR has a package-lock.json. The image has Hugo extended, Node and npm, no Go and no git:
 # a theme as a Hugo module, or enableGitInfo, needs the "go-git" variant of the image.
+#
+# Docsy 0.17 and newer compile their SCSS with Dart Sass, which Hugo runs as `sass` from the PATH, and the image has
+# none. Add the sass-embedded package to package.json's devDependencies: pinned and hashed by the lock file like the
+# theme, the install puts it in node_modules/.bin, and the build puts that directory on the PATH.
 FROM hugomods/hugo:debian-node-lts-0.165.0@sha256:eef6a12572c8cf3fea72fb034606f3e6a0821368682139378608eabc94e67c87 AS build
 
 WORKDIR /src
@@ -30,6 +34,7 @@ ENV HUGO_GIT_COMMIT=${GIT_COMMIT} \
 RUN set -eu; \
     cd "$HUGO_DIR"; \
     if [ -f package-lock.json ]; then npm ci; fi; \
+    export PATH="$PWD/node_modules/.bin:$PATH"; \
     if [ -n "$PUBLIC_HOST" ]; then base="https://$PUBLIC_HOST$PUBLIC_PATH/"; else base="$PUBLIC_PATH/"; fi; \
     hugo --environment production --minify --gc --baseURL "$base" --destination /out
 
