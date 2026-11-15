@@ -30,6 +30,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import yaml
+
 import pipeline_config as pc
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -190,6 +192,23 @@ class TemplateFilesTests(unittest.TestCase):
                 self.assertRegex(text, r"(?m)^ARG PUBLIC_HOST\b")
                 self.assertRegex(text, r"--baseURL")
                 self.assertIn("https://$PUBLIC_HOST$PUBLIC_PATH/", text)
+
+    def test_given_the_hugo_templates_when_read_then_hugo_runs_with_node_modules_bin_on_the_path_after_npm_ci(self):
+        # Docsy 0.17 and newer compile their SCSS with Dart Sass: Hugo runs `sass` from the PATH, the image has
+        # none, and the site's sass-embedded package puts one in node_modules/.bin, where Hugo does not look.
+        for name in ("site-hugo", "library"):
+            text = (TEMPLATES / name / "Dockerfile").read_text()
+            with self.subTest(template=name):
+                install = text.index("npm ci")
+                path = text.index('export PATH="$PWD/node_modules/.bin:$PATH"')
+                self.assertLess(install, path)
+                self.assertLess(path, text.index("hugo --environment"))
+                self.assertIn("sass-embedded", text)
+        check = yaml.safe_load((TEMPLATES / "site-hugo" / "yggdrasil.yml").read_text())["checks"]["build"]["run"]
+        self.assertRegex(check, r'npm ci; PATH="\$PWD/node_modules/\.bin:\$PATH" hugo ')
+        for name in ("site-hugo", "library"):
+            with self.subTest(readme=name):
+                self.assertIn("sass-embedded", (TEMPLATES / name / "README.md").read_text())
 
     def test_given_the_library_dockerfile_when_read_then_it_builds_the_docs_with_the_coverage_report_from_the_deploy_input(self):
         text = (TEMPLATES / "library" / "Dockerfile").read_text()

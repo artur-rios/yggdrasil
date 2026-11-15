@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.8] - 2026-11-14
+
+### Fixed
+
+- **A docs site made from `templates/library/` or `templates/site-hugo/` failed to build on Docsy 0.17 or newer.**
+  Docsy 0.17 compiles its SCSS with Dart Sass, which Hugo runs as `sass` from the `PATH`, and the pinned
+  `hugomods/hugo` image has none. The two Dockerfiles, and the `build` check of `templates/site-hugo/yggdrasil.yml`,
+  now put the site's `node_modules/.bin` on the `PATH` after `npm ci`, and both READMEs say to add `sass-embedded`
+  to the site's `package.json` as a dev dependency, as the existing docs sites did.
+
 ## [0.13.7] - 2026-11-14
 
 ### Fixed
@@ -1399,7 +1409,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.7...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...HEAD
+[0.13.8]: https://github.com/artur-rios/yggdrasil/compare/v0.13.7...v0.13.8
 [0.13.7]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...v0.13.7
 [0.13.6]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...v0.13.6
 [0.13.5]: https://github.com/artur-rios/yggdrasil/compare/v0.13.4...v0.13.5
