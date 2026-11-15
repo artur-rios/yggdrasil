@@ -1588,7 +1588,10 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
   says why it kept any other. For each repository with something to delete it removes the `release/*` protection,
   deletes the branches and puts the protection back, so non-owners can push to `release/*` for those moments. If the
   protection cannot be put back the run stops and names the repository: `python3 scripts/rules.py <repository>`
-  restores it.
+  restores it. With a `mirror` it then asks Forgejo to sync each repository that lost a branch: a push mirror syncs
+  on a push and every 8 hours, and a deletion is not a push, so the GitHub copy would otherwise keep the branches
+  until the next scheduled sync. A sync Forgejo refuses is a note in the output, not a failure, since that next sync
+  still drops them.
 - `merge-pr` on Forgejo waits when Forgejo answers "try again later": right after new commit statuses are
   posted Forgejo checks the pull request again in the background and refuses to merge meanwhile, so the
   command retries for about a minute (every 3 seconds, up to 20 times) before it fails. Any other refusal
