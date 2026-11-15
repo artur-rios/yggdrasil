@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **`scripts/prune_release_branches.py` syncs the GitHub mirror after it deletes.** A Forgejo push mirror syncs on a
+  push and on its 8-hour interval, and deleting a branch is not a push, so the deleted `release/*` branches stayed on
+  the GitHub copy for up to 8 hours. With a `mirror` in the catalog, each repository that lost a branch now has its
+  push mirrors synced (`POST /repos/<owner>/<repo>/push_mirrors-sync`) once its protection is back; `--dry-run` says
+  it would. A sync Forgejo refuses is reported and does not fail the run: the next scheduled sync still drops the
+  branches.
+
 ## [0.13.8] - 2026-11-14
 
 ### Fixed

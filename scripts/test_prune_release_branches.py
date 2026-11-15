@@ -30,6 +30,8 @@ CATALOG = {
 
 CATALOG_GITHUB = {key: value for key, value in CATALOG.items() if key != "forge"}
 
+CATALOG_MIRRORED = {**CATALOG, "mirror": {"github": OWNER}}
+
 # What rules.py keeps on Forgejo for release/*, written out by hand: the restored rule must equal it.
 RELEASE_RULE = {"rule_name": "release/*", "enable_push": True, "enable_push_whitelist": True,
                 "push_whitelist_usernames": [OWNER], "enable_merge_whitelist": False, "apply_to_admins": False}
@@ -44,6 +46,8 @@ class Repo:
         self.open_pulls = list(open_pulls)
         self.contains = set(contains)
         self.rules = {"release/*": dict(RELEASE_RULE)} if rule else {}
+        # The branches each mirror sync found on the server: what it would have left on the GitHub copy.
+        self.syncs = []
 
 
 class FakeForgejo:
@@ -99,6 +103,9 @@ class FakeForgejo:
         if section == "branch_protections" and method == "POST":
             repo.rules[body["rule_name"]] = dict(body)
             return dict(body)
+        if section == "push_mirrors-sync" and method == "POST":
+            repo.syncs.append(set(repo.branches))
+            return None
         raise AssertionError(f"unexpected request: {method} {path}")
 
 
@@ -267,6 +274,56 @@ class FailureTests(unittest.TestCase):
         out, exit_ = run(["shop-api"], FakeForgejo({"shop-api": repo}, self.refuse("DELETE", "branch_protections")))
         self.assertIsNotNone(exit_)
         self.assertIn("release/1.0.0", repo.branches)
+
+
+class MirrorTests(unittest.TestCase):
+    # A push mirror syncs on a push and every few hours, and a branch deletion is not a push: without a sync
+    # asked for here, the deleted branches would stay on the GitHub copy until the next scheduled one.
+
+    def test_given_a_mirror_when_a_branch_is_deleted_then_the_mirror_syncs_after_the_deletion(self):
+        repo = released()
+        out, exit_ = run(["shop-api"], FakeForgejo({"shop-api": repo}), catalog=CATALOG_MIRRORED)
+        self.assertIsNone(exit_, out)
+        self.assertEqual(repo.syncs, [{"develop", "main"}])
+
+    def test_given_a_mirror_when_a_branch_is_deleted_then_it_syncs_after_the_protection_is_back(self):
+        fake = FakeForgejo({"shop-api": released()})
+        run(["shop-api"], fake, catalog=CATALOG_MIRRORED)
+        writes = [(method, path.rsplit("/", 1)[-1]) for method, path, _ in fake.writes()]
+        self.assertEqual(writes[-2:], [("POST", "branch_protections"), ("POST", "push_mirrors-sync")])
+
+    def test_given_a_mirror_when_nothing_is_deleted_then_it_is_not_synced(self):
+        repo = released(contains=[("tag-sha", "rel")])
+        run(["shop-api"], FakeForgejo({"shop-api": repo}), catalog=CATALOG_MIRRORED)
+        self.assertEqual(repo.syncs, [])
+
+    def test_given_a_mirror_and_a_dry_run_when_run_then_it_is_not_synced_and_the_run_says_it_would(self):
+        repo = released()
+        fake = FakeForgejo({"shop-api": repo})
+        out, exit_ = run(["--dry-run", "shop-api"], fake, catalog=CATALOG_MIRRORED)
+        self.assertEqual((fake.writes(), repo.syncs), ([], []))
+        self.assertIn("would sync", out)
+
+    def test_given_no_mirror_when_a_branch_is_deleted_then_no_sync_is_asked_for(self):
+        fake = FakeForgejo({"shop-api": released()})
+        run(["shop-api"], fake)
+        self.assertNotIn("push_mirrors-sync", " ".join(path for _, path, _ in fake.calls))
+
+    def test_given_a_mirror_that_refuses_to_sync_when_run_then_the_run_succeeds_and_says_when_it_catches_up(self):
+        # The branches are gone from Forgejo, which is what the run is for; the mirror's next scheduled sync
+        # still drops them from the copy, so a refused sync is a note, not a failure.
+        repo = released()
+        fake = FakeForgejo({"shop-api": repo}, FailureTests.refuse("POST", "push_mirrors-sync"))
+        out, exit_ = run(["shop-api"], fake, catalog=CATALOG_MIRRORED)
+        self.assertIsNone(exit_, out)
+        self.assertEqual(set(repo.branches), {"develop", "main"})
+        self.assertIn("next scheduled sync", out)
+
+    def test_given_a_mirror_when_the_server_refused_every_deletion_then_it_is_not_synced(self):
+        repo = released()
+        fake = FakeForgejo({"shop-api": repo}, FailureTests.refuse("DELETE", "branches/release%2F1.0.0"))
+        run(["shop-api"], fake, catalog=CATALOG_MIRRORED)
+        self.assertEqual(repo.syncs, [])
 
 
 class CommandTests(unittest.TestCase):

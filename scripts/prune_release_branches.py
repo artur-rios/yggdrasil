@@ -21,6 +21,11 @@ FORGE_TOKEN must be the owner's: only a repository administrator may change a pr
 rules.py reads it, and goes only in the Authorization header. --dry-run reads from the server, so it needs
 the token too, but sends no write.
 
+With a GitHub mirror (the catalog's `mirror`), a repository that lost a branch then has its push mirrors
+synced. A push mirror syncs on a push and on its interval, and a deletion is not a push, so without this
+the deleted branches would stay on the GitHub copy until the next scheduled sync. A sync the server
+refuses is only a note: the branches are gone from Forgejo, and that next sync still drops them.
+
 A branch the server will not delete is reported, the others still go, the protection still comes back,
 and the run exits 1 at the end. A protection that cannot be put back stops the run at once, so no further
 repository is opened up, and names the command that restores it."""
@@ -113,8 +118,18 @@ def _restore(api, base, r):
             time.sleep(RESTORE_WAIT)
 
 
-def prune_repository(api, owner, r, dry_run, say):
-    """Deletes the release branches of one repository that can go. The ones the server refused, as a list."""
+def _sync_mirror(api, base, say):
+    """Asks Forgejo to push the repository's push mirrors now, so the copy drops the deleted branches too."""
+    try:
+        api.request("POST", f"{base}/push_mirrors-sync")
+        say("  GitHub mirror sync requested")
+    except rules.ApiError as error:
+        say(f"  GitHub mirror not synced ({error}): its next scheduled sync drops the deleted branches")
+
+
+def prune_repository(api, owner, r, dry_run, say, mirrored=False):
+    """Deletes the release branches of one repository that can go, then syncs its GitHub mirror when it has
+    one and a branch went. The ones the server refused, as a list."""
     base = f"/repos/{owner}/{r.repo}"
     say(f"{owner}/{r.repo}")
     doomed = _candidates(api, base, r, say)
@@ -124,6 +139,8 @@ def prune_repository(api, owner, r, dry_run, say):
     if dry_run:
         for name in doomed:
             say(f"  would delete {name}")
+        if mirrored:
+            say("  would sync the GitHub mirror")
         return []
 
     protected = any((p.get("rule_name") or p.get("branch_name")) == RELEASE_RULE
@@ -143,6 +160,8 @@ def prune_repository(api, owner, r, dry_run, say):
         if protected:
             _restore(api, base, r)
             say(f"  protection of '{RELEASE_RULE}' restored")
+    if mirrored and len(refused) < len(doomed):
+        _sync_mirror(api, base, say)
     return refused
 
 
@@ -174,6 +193,7 @@ def main(argv=None):
     if not token:
         sys.exit("no Forgejo token: set FORGE_TOKEN (the owner's: changing a protection needs an administrator)")
     api = rules.Api(forge["api"], token, "token")
+    mirrored = rules.catalog_module.mirror(catalog) is not None
 
     def say(line):
         print(line, flush=True)
@@ -183,7 +203,8 @@ def main(argv=None):
         if only and r.repo not in only:
             continue
         try:
-            refused += [f"{r.repo}: {name}" for name in prune_repository(api, catalog["owner"], r, dry_run, say)]
+            kept = prune_repository(api, catalog["owner"], r, dry_run, say, mirrored)
+            refused += [f"{r.repo}: {name}" for name in kept]
         except NotRestored as error:
             sys.exit(f"{r.repo}: the {RELEASE_RULE} protection is OFF and could not be put back ({error}). "
                      f"Restore it with: python3 scripts/rules.py {r.repo}")
