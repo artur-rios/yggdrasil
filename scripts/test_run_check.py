@@ -535,9 +535,12 @@ class ToolchainCacheTests(RunCheckHarness):
 
     def test_given_another_check_fetching_when_the_wait_runs_out_then_the_check_runs_without_the_cache(self):
         (self.cache / "flutter").mkdir()
-        holder = subprocess.Popen(["flock", str(self.cache / "flutter" / ".lock"), "sleep", "30"])
+        # In a session of its own, so the cleanup ends the sleep (which holds the lock) along with flock, and with no
+        # output of ours to keep open.
+        holder = subprocess.Popen(["flock", str(self.cache / "flutter" / ".lock"), "sleep", "30"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         self.addCleanup(holder.wait)
-        self.addCleanup(holder.kill)
+        self.addCleanup(lambda: holder.poll() is None and os.killpg(holder.pid, signal.SIGKILL))
         deadline = time.time() + 10
         # Taken once a non-blocking flock of the same file fails.
         while subprocess.run(["flock", "-n", str(self.cache / "flutter" / ".lock"), "true"]).returncode == 0:

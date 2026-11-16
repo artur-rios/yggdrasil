@@ -189,9 +189,13 @@ fi
 
 # With an overlay, its run directory is removed afterwards, so docker runs as a child: the signals Jenkins sends to
 # stop a build go on to it (and from it to the container), and its exit code is this script's.
+# The trap is set first: a signal between the start and `child=$!` is remembered and passed on right after, not lost
+# with this script (TERM would end it while docker went on running).
+child="" stopped=""
+trap 'stopped=1; if [[ -n "$child" ]]; then kill -TERM "$child" 2>/dev/null || true; fi' TERM INT HUP
 "${run[@]}" "$image" "$@" &
 child=$!
-trap 'kill -TERM "$child" 2>/dev/null || true' TERM INT HUP
+if [[ -n "$stopped" ]]; then kill -TERM "$child" 2>/dev/null || true; fi
 while :; do
   code=0
   wait "$child" || code=$?
