@@ -25,6 +25,11 @@
 #                          Testcontainers does) and a second container on the same engine reaches it at the
 #                          TESTCONTAINERS_HOST_OVERRIDE a check gets: the host's own address, as agent.sh gives
 #                          the build agent, through run-check.sh.
+#   toolchain overlay      a container on ci's engine gets a directory of ci's home the way run-check.sh gives a
+#                          check its cached Flutter SDK (scripts/toolchains.sh): a volume of type overlay, the
+#                          directory its lower layer. The container reads the directory's file through it, rewrites
+#                          one, adds one and deletes one; afterwards the directory is as it was and the writes are in
+#                          the upper one. Needed before agent.env's YGG_TOOLCHAIN_CACHE is set.
 # apps only:
 #   client addresses      a `look`: the last 10 distinct client addresses in Traefik's access log, to compare with
 #                         the admin's own address as Cloudflare saw it (docs/hosts.md, Client addresses).
@@ -112,14 +117,24 @@ user_docker_input() {
 # The containers this script starts, all on ci's engine. Removed (by name, so also a leftover of a killed run)
 # before the proofs and on every way out of the script: the EXIT trap runs on a normal exit, on `die` and on the
 # signals below.
-PROVE_CONTAINERS=(ygg-prove-probe ygg-prove-server ygg-prove-client)
+PROVE_CONTAINERS=(ygg-prove-probe ygg-prove-server ygg-prove-client ygg-prove-overlay)
 cleanup_needed=""
+# The directory prove_toolchain_overlay made in ci's home, while there is one.
+overlay_dir=""
 cleanup() {
   local name
   [[ -n "$cleanup_needed" ]] || return 0
   for name in "${PROVE_CONTAINERS[@]}"; do
     ci_docker rm -f "$name" >/dev/null 2>&1 || true
   done
+  remove_overlay_dir
+}
+# The overlay's work directory can be left with mode 000, which ci (no capabilities on the host) cannot descend.
+remove_overlay_dir() {
+  [[ -n "$overlay_dir" ]] || return 0
+  # shellcheck disable=SC2016 # expanded by the sh it is given to, not by this shell
+  run_as_user ci sh -c 'chmod -R u+rwx "$1" 2>/dev/null; rm -rf "$1"' sh "$overlay_dir" >/dev/null 2>&1 || true
+  overlay_dir=""
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -333,6 +348,52 @@ prove_testcontainers() {
   fi
 }
 
+# ---- (dev) the toolchain overlay ----------------------------------------------------------------
+
+# What the container does with the overlay at /sdk: reads the cached file, rewrites it, adds a file and deletes
+# one, and reads its own rewrite back. A broken overlay (writes reaching the lower directory, no mount at all)
+# shows on the host side, below.
+# shellcheck disable=SC2016 # expanded by the sh it is given to, not by this shell
+OVERLAY_SCRIPT='printf "read:%s\n" "$(cat /sdk/cached.txt)"; echo rewritten >/sdk/cached.txt; echo added >/sdk/added.txt; rm /sdk/deleted.txt; printf "back:%s\n" "$(cat /sdk/cached.txt)"'
+prove_toolchain_overlay() {
+  local name="toolchain overlay" home out status after
+  if [[ -n "$ci_problem" ]]; then
+    fail "$name" "$ci_problem: nothing proven"
+    return 0
+  fi
+  home=$(passwd_field ci 6)
+  # In ci's home, where YGG_TOOLCHAIN_CACHE is (under the agent's workdir): the same file system as the real one.
+  # shellcheck disable=SC2016 # expanded by the sh it is given to, not by this shell
+  if ! overlay_dir=$(run_as_user ci mktemp -d "$home/.ygg-prove-overlay.XXXXXX" 2>/dev/null) || [[ -z "$overlay_dir" ]] \
+      || ! run_as_user ci sh -c 'mkdir "$1/lower" "$1/upper" "$1/work" && echo cached >"$1/lower/cached.txt" && echo deleted >"$1/lower/deleted.txt"' sh "$overlay_dir" 2>/dev/null; then
+    overlay_dir=""
+    fail "$name" "could not make a directory in ci's home ($home) as ci: nothing proven"
+    return 0
+  fi
+  status=0
+  out=$(ci_docker run --rm --name ygg-prove-overlay \
+    --mount "type=volume,dst=/sdk,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$overlay_dir/lower,upperdir=$overlay_dir/upper,workdir=$overlay_dir/work\"" \
+    "$TAR_IMAGE" sh -c "$OVERLAY_SCRIPT" 2>&1) || status=$?
+  # What the host sees afterwards, as ci: the lower directory's two files, and the upper one's addition.
+  # shellcheck disable=SC2016 # expanded by the sh it is given to, not by this shell
+  after=$(run_as_user ci sh -c 'printf "lower:%s\n" "$(cat "$1/lower/cached.txt" 2>/dev/null)"
+    if [ -e "$1/lower/deleted.txt" ]; then echo "kept:yes"; else echo "kept:no"; fi
+    if [ -e "$1/lower/added.txt" ]; then echo "leaked:yes"; else echo "leaked:no"; fi
+    printf "upper:%s\n" "$(cat "$1/upper/added.txt" 2>/dev/null)"' sh "$overlay_dir" 2>/dev/null) || after=""
+  remove_overlay_dir
+  if ((status != 0)); then
+    fail "$name" "ci's engine could not mount an overlay volume (Linux 5.11 or later, a rootless engine): $(head -n1 <<<"$out" | cut -c1-110). Leave YGG_TOOLCHAIN_CACHE unset"
+  elif [[ "$out" != *read:cached* || "$out" != *back:rewritten* ]]; then
+    fail "$name" "the container did not read and write the directory through the overlay: leave YGG_TOOLCHAIN_CACHE unset"
+  elif [[ "$after" != *lower:cached* || "$after" != *kept:yes* || "$after" != *leaked:no* ]]; then
+    fail "$name" "the container's writes reached the lower directory: a check could change the cached SDK. Leave YGG_TOOLCHAIN_CACHE unset"
+  elif [[ "$after" != *upper:added* ]]; then
+    fail "$name" "the container's writes are not in the upper directory: not the overlay run-check.sh relies on. Leave YGG_TOOLCHAIN_CACHE unset"
+  else
+    ok "$name" "a container on ci's engine read, rewrote, added and deleted through an overlay of a directory in ci's home, which stayed as it was: YGG_TOOLCHAIN_CACHE can be set"
+  fi
+}
+
 # ---- (apps) real client addresses ---------------------------------------------------------------
 
 # Traefik logs every request as one JSON line on its stdout (traefik_config.py: accessLog, format json), so the
@@ -382,6 +443,7 @@ if [[ "$role" == dev ]]; then
   ci_engine_problem
   prove_ci_container
   prove_testcontainers
+  prove_toolchain_overlay
 else
   prove_client_addresses
 fi

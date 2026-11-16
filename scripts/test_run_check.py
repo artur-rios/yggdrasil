@@ -5,11 +5,15 @@ the way `docker run` exits with its command's exit code. Nothing here needs a re
 the `docker run` the script builds, which is what decides where the workspace and the credentials end up.
 """
 
+import hashlib
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
+import tarfile
 import tempfile
+import time
 import unittest
 
 SCRIPT = pathlib.Path(__file__).resolve().parent / "run-check.sh"
@@ -38,7 +42,9 @@ ROUTE_TABLE = (
 
 
 @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
-class RunCheckTests(unittest.TestCase):
+class RunCheckHarness(unittest.TestCase):
+    """The fake docker and the helpers; the tests are in the classes below."""
+
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp(prefix="run-check-test-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
@@ -72,6 +78,8 @@ class RunCheckTests(unittest.TestCase):
         arguments = self.docker_arguments()
         return [arguments[i:i + 2] for i in range(len(arguments) - 1)]
 
+
+class RunCheckTests(RunCheckHarness):
     def test_given_a_check_when_run_then_the_workspace_is_mounted_at_the_same_path(self):
         # The agent's `docker run` is executed by the host's engine, so the path inside the container must be
         # the one the agent checked out into, or the check would see an empty directory.
@@ -243,6 +251,335 @@ class RunCheckTests(unittest.TestCase):
                           ["unit", "img", "relative/path", "--", "x"],       # the path must mean the same on both sides
                           ["unit", "img", str(self.root / "nope"), "--", "x"],
                           ["unit", "img", workspace, "--env-file", "--", "x"]):
+            with self.subTest(arguments=arguments):
+                result = self.run_check(*arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("usage", result.stderr)
+                self.assertFalse(self.log.exists(), "docker must not run")
+
+
+# What a check's container is given with --toolchains: the cached SDK as an overlay at FLUTTER_IN_CONTAINER.
+SDK_IN_CONTAINER = "/opt/yggdrasil/flutter"
+VERSION = "3.50.0"
+OTHER_VERSION = "3.51.0"
+
+
+def flutter_archive(path, marker="the pinned release"):
+    """A tar.xz shaped like Flutter's release archive (flutter/bin/flutter, executable). Returns its SHA-256."""
+    with tempfile.TemporaryDirectory() as staging:
+        bin_dir = pathlib.Path(staging) / "flutter" / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "flutter").write_text(f"#!/bin/sh\necho {marker}\n")
+        (bin_dir / "flutter").chmod(0o755)
+        with tarfile.open(path, "w:xz") as archive:
+            archive.add(pathlib.Path(staging) / "flutter", arcname="flutter")
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+@unittest.skipUnless(shutil.which("xz") and shutil.which("flock"), "needs xz and flock, as the ci agent has")
+class ToolchainCacheTests(RunCheckHarness):
+    """--toolchains: the pinned Flutter SDK fetched into the cache once and given to each check as an overlay.
+
+    Flutter's archive is a small one served from a file:// URL (YGG_FLUTTER_ARCHIVE_URL, a format with %s for the
+    version), so curl, sha256sum, tar and flock are the real ones: only docker is a fake.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.cache = self.root / "toolchains"
+        self.cache.mkdir()
+        self.archives = self.root / "archives"
+        self.archives.mkdir()
+        self.sum = flutter_archive(self.archives / f"flutter_linux_{VERSION}-stable.tar.xz")
+        self.env["YGG_FLUTTER_ARCHIVE_URL"] = f"file://{self.archives}/flutter_linux_%s-stable.tar.xz"
+        self.pin(VERSION, self.sum)
+
+    def pin(self, version, checksum, file="ci/flutter-env.sh", checkout=None):
+        """Writes the two pin lines the way the repositories' ci/flutter-env.sh has them."""
+        path = (checkout or self.workspace) / file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# shellcheck shell=bash\n# renovate: datasource=github-tags depName=flutter/flutter\n"
+                        f"FLUTTER_VERSION={version}\nFLUTTER_SHA256={checksum}\n\n"
+                        "FLUTTER_SDK_DIR=${FLUTTER_SDK_DIR:-${TMPDIR:-/tmp}/flutter-$FLUTTER_VERSION}\n")
+
+    def other_release(self):
+        """Another release in Flutter's archive; returns its SHA-256."""
+        return flutter_archive(self.archives / f"flutter_linux_{OTHER_VERSION}-stable.tar.xz", marker="another")
+
+    def run_with_cache(self, *options, **env):
+        return self.run_check("unit", "img", str(self.workspace), "--toolchains", str(self.cache), *options,
+                              "--", "sh", "-c", "ci/test.sh", **env)
+
+    def sdk(self, version=VERSION, checksum=None):
+        return self.cache / "flutter" / f"{version}-{checksum or self.sum}"
+
+    def cached(self):
+        """The SDK directories in the cache (not the lock, the stamps or a fetch in progress)."""
+        flutter = self.cache / "flutter"
+        return sorted(p.name for p in flutter.iterdir() if p.is_dir() and not p.name.startswith(".")) \
+            if flutter.exists() else []
+
+    def overlay(self):
+        """The overlay options of the --mount run-check.sh gave docker, as a dict, or None without one."""
+        arguments = self.docker_arguments()
+        if "--mount" not in arguments:
+            return None
+        field = arguments[arguments.index("--mount") + 1]
+        options = field[field.index('"volume-opt=o=') + len('"volume-opt=o='):-1]
+        return dict(option.split("=", 1) for option in options.split(","))
+
+    def test_given_a_pinned_flutter_and_an_empty_cache_when_run_then_the_sdk_is_fetched_and_given_as_an_overlay(self):
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.sdk() / "bin" / "flutter").is_file())
+        arguments = self.docker_arguments()
+        field = arguments[arguments.index("--mount") + 1]
+        self.assertTrue(field.startswith(f"type=volume,dst={SDK_IN_CONTAINER},volume-driver=local,"
+                                         "volume-opt=type=overlay,volume-opt=device=overlay,"), field)
+        overlay = self.overlay()
+        # The cached SDK is only ever the overlay's lower, read-only, layer: the check writes to its own directory.
+        self.assertEqual(overlay["lowerdir"], str(self.sdk()))
+        self.assertTrue(overlay["upperdir"].startswith(f"{self.cache}/runs/"), overlay)
+        self.assertEqual(pathlib.Path(overlay["workdir"]).parent, pathlib.Path(overlay["upperdir"]).parent)
+        self.assertIn(["-e", f"FLUTTER_SDK_DIR={SDK_IN_CONTAINER}"], self.pairs())
+        self.assertNotIn(f"{self.sdk()}:", "\n".join(arguments), "the cache itself is never bind-mounted")
+        self.assertEqual(arguments[arguments.index("img"):], ["img", "sh", "-c", "ci/test.sh"])
+        self.assertIn(f"Flutter {VERSION} from the toolchain cache", result.stderr)
+
+    def test_given_a_check_that_ended_when_run_with_an_overlay_then_its_run_directory_is_gone(self):
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(pathlib.Path(self.overlay()["upperdir"]).parent.exists())
+        self.assertEqual(list((self.cache / "runs").iterdir()), [])
+        self.assertFalse([p for p in (self.cache / "flutter").iterdir() if p.name.startswith(".incoming")])
+        self.assertTrue(pathlib.Path(f"{self.sdk()}.used").is_file())
+
+    def test_given_an_overlay_that_left_its_work_directory_closed_when_the_check_ends_then_it_is_still_removed(self):
+        # The kernel leaves <workdir>/work with mode 000; the ci user, its owner, can't descend it as it is.
+        self.fake("docker", "#!/usr/bin/env bash\n"
+                            "printf '%s\\n' \"$@\" >\"$FAKE_DOCKER_LOG\"\n"
+                            "for a in \"$@\"; do\n"
+                            "  case $a in type=volume,*) w=${a#*workdir=}; w=${w%\\\"}; u=${a#*upperdir=}; u=${u%%,*} ;; esac\n"
+                            "done\n"
+                            "echo written >\"$u/lockfile\"; mkdir \"$w/work\"; touch \"$w/work/index\"; chmod 000 \"$w/work\"\n")
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list((self.cache / "runs").iterdir()), [])
+
+    def test_given_a_run_directory_a_killed_agent_left_when_a_check_runs_then_it_is_removed_after_a_day(self):
+        self.assertEqual(self.run_with_cache().returncode, 0)
+        old, recent = self.cache / "runs" / "oldrun01", self.cache / "runs" / "newrun01"
+        for run in (old, recent):
+            (run / "upper").mkdir(parents=True)
+            (run / "work" / "work").mkdir(parents=True)
+            (run / "work" / "work" / "index").touch()
+            (run / "work" / "work").chmod(0)
+        self.addCleanup(lambda: recent.exists() and (recent / "work" / "work").chmod(0o700))
+        two_days_ago = time.time() - 2 * 86400
+        os.utime(old, (two_days_ago, two_days_ago))
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists(), "a run directory of a check that may still run is kept")
+
+    def test_given_a_failing_check_when_run_with_an_overlay_then_its_exit_code_is_returned(self):
+        result = self.run_with_cache(FAKE_DOCKER_EXIT="3")
+        self.assertEqual(result.returncode, 3)
+        self.assertIsNotNone(self.overlay())
+        self.assertEqual(list((self.cache / "runs").iterdir()), [])
+
+    def test_given_a_cached_sdk_when_run_again_then_nothing_is_downloaded(self):
+        self.assertEqual(self.run_with_cache().returncode, 0)
+        # Without the archive a second fetch would fail, and the check would run without the overlay.
+        shutil.rmtree(self.archives)
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.overlay()["lowerdir"], str(self.sdk()))
+        self.assertNotIn("fetching", result.stderr)
+
+    def test_given_an_archive_that_is_not_the_pinned_one_when_run_then_nothing_is_cached_and_the_check_fetches_its_own(self):
+        self.pin(VERSION, "0" * 64)
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+        self.assertNotIn("FLUTTER_SDK_DIR", "\n".join(self.docker_arguments()))
+        self.assertEqual(self.cached(), [])
+        self.assertIn("not the pinned", result.stderr)
+
+    def test_given_an_archive_that_cannot_be_downloaded_when_run_then_the_check_fetches_its_own(self):
+        shutil.rmtree(self.archives)
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+        self.assertEqual(self.cached(), [])
+        self.assertIn("could not download", result.stderr)
+
+    def test_given_a_branch_pinning_another_release_when_run_then_the_sdk_other_repositories_use_is_untouched(self):
+        # Every repository pinning a release gets the same SDK. A branch that pins another one gets a directory
+        # of its own, fetched only from Flutter's archive and kept only when its checksum is the pinned one: never
+        # a different SDK under the name another pin uses.
+        self.assertEqual(self.run_with_cache().returncode, 0)
+        before = (self.sdk() / "bin" / "flutter").read_bytes()
+        other = self.other_release()
+        self.pin(OTHER_VERSION, other)
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.overlay()["lowerdir"], str(self.sdk(OTHER_VERSION, other)))
+        self.assertEqual((self.sdk() / "bin" / "flutter").read_bytes(), before)
+        self.assertEqual(self.cached(), sorted([self.sdk().name, self.sdk(OTHER_VERSION, other).name]))
+
+    def test_given_a_branch_pinning_a_known_release_with_another_checksum_when_run_then_nothing_is_cached(self):
+        # The checksum, not the version, decides: a pin of the cached version with a made-up checksum names no
+        # SDK, and its fetch fails the checksum, so the check fetches its own (and fails it the same way).
+        self.assertEqual(self.run_with_cache().returncode, 0)
+        self.pin(VERSION, "f" * 64)
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+        self.assertEqual(self.cached(), [self.sdk().name])
+
+    def test_given_the_pin_in_ci_pins_sh_when_run_then_it_is_used(self):
+        # alexandria-ui keeps its pins in ci/pins.sh, which its ci/flutter-env.sh sources.
+        (self.workspace / "ci" / "flutter-env.sh").write_text(". ci/pins.sh\n")
+        self.pin(VERSION, self.sum, file="ci/pins.sh")
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.overlay()["lowerdir"], str(self.sdk()))
+
+    def test_given_a_quoted_pin_with_windows_line_ends_when_run_then_it_is_used(self):
+        (self.workspace / "ci" / "flutter-env.sh").write_text(
+            f'FLUTTER_VERSION="{VERSION}"\r\nFLUTTER_SHA256=\'{self.sum}\'\r\n')
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.overlay()["lowerdir"], str(self.sdk()))
+
+    def test_given_a_pin_that_is_not_plain_data_when_run_then_the_check_runs_without_the_cache(self):
+        # The checkout is the branch's: its pin is read, never run, and anything but a plain value is no pin.
+        marker = self.root / "ran"
+        for text in (f"FLUTTER_VERSION=$(touch {marker}; echo {VERSION})\nFLUTTER_SHA256={self.sum}\n",
+                     f"FLUTTER_VERSION=${{OTHER:-{VERSION}}}\nFLUTTER_SHA256={self.sum}\n",
+                     f"FLUTTER_VERSION={VERSION}/../../x\nFLUTTER_SHA256={self.sum}\n",
+                     f"FLUTTER_VERSION={VERSION}\nFLUTTER_SHA256={self.sum.upper()}\n",
+                     f"FLUTTER_VERSION=\"{VERSION}'\nFLUTTER_SHA256={self.sum}\n",
+                     f"FLUTTER_SHA256={self.sum}\n"):
+            with self.subTest(text=text):
+                (self.workspace / "ci" / "flutter-env.sh").write_text(text)
+                result = self.run_with_cache()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNone(self.overlay())
+                self.assertFalse(marker.exists())
+                self.assertEqual(self.cached(), [])
+
+    def test_given_two_files_pinning_different_releases_when_run_then_the_check_runs_without_the_cache(self):
+        self.pin(OTHER_VERSION, self.sum, file="ci/pins.sh")
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+
+    def test_given_a_pin_file_that_is_a_link_when_run_then_it_is_not_read(self):
+        # A link could lead the agent to read a file outside the checkout.
+        real = self.root / "elsewhere.sh"
+        (self.workspace / "ci" / "flutter-env.sh").rename(real)
+        (self.workspace / "ci" / "flutter-env.sh").symlink_to(real)
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+
+    def test_given_no_pin_when_run_then_the_check_runs_as_without_the_option(self):
+        (self.workspace / "ci" / "flutter-env.sh").unlink()
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+        self.assertNotIn("FLUTTER_SDK_DIR", "\n".join(self.docker_arguments()))
+
+    def test_given_a_checkout_under_the_workspace_when_run_then_its_pin_is_read(self):
+        # The branch policy mounts the whole workspace and runs in its app/.
+        app = self.workspace / "app"
+        (self.workspace / "ci" / "flutter-env.sh").unlink()
+        self.pin(VERSION, self.sum, checkout=app)
+        result = self.run_with_cache("--checkout", str(app))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.overlay()["lowerdir"], str(self.sdk()))
+
+    def test_given_a_cache_path_that_cannot_be_an_overlay_option_when_run_then_the_check_runs_without_it(self):
+        odd = self.root / "tool,chains"
+        odd.mkdir()
+        result = self.run_check("unit", "img", str(self.workspace), "--toolchains", str(odd), "--", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+        self.assertIn("running unit without it", result.stderr)
+
+    def test_given_an_sdk_no_check_used_for_a_month_when_another_is_fetched_then_it_is_removed(self):
+        self.assertEqual(self.run_with_cache().returncode, 0)
+        old = self.sdk()
+        month_ago = time.time() - 31 * 86400
+        os.utime(f"{old}.used", (month_ago, month_ago))
+        stale = self.cache / "flutter" / ".incoming.abcdef"
+        stale.mkdir()
+        two_days_ago = time.time() - 2 * 86400
+        os.utime(stale, (two_days_ago, two_days_ago))
+        other = self.other_release()
+        self.pin(OTHER_VERSION, other)
+        result = self.run_with_cache()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.cached(), [self.sdk(OTHER_VERSION, other).name])
+        self.assertFalse(pathlib.Path(f"{old}.used").exists())
+        self.assertFalse(stale.exists())
+
+    def test_given_an_sdk_used_this_month_when_another_is_fetched_then_it_stays(self):
+        self.assertEqual(self.run_with_cache().returncode, 0)
+        other = self.other_release()
+        self.pin(OTHER_VERSION, other)
+        self.assertEqual(self.run_with_cache().returncode, 0)
+        self.assertIn(self.sdk().name, self.cached())
+
+    def test_given_another_check_fetching_when_the_wait_runs_out_then_the_check_runs_without_the_cache(self):
+        (self.cache / "flutter").mkdir()
+        holder = subprocess.Popen(["flock", str(self.cache / "flutter" / ".lock"), "sleep", "30"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        deadline = time.time() + 10
+        # Taken once a non-blocking flock of the same file fails.
+        while subprocess.run(["flock", "-n", str(self.cache / "flutter" / ".lock"), "true"]).returncode == 0:
+            self.assertLess(time.time(), deadline, "the lock was never taken")
+            time.sleep(0.05)
+        result = self.run_with_cache(YGG_TOOLCHAIN_LOCK_WAIT="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.overlay())
+        self.assertEqual(self.cached(), [])
+
+    def test_given_a_stop_while_the_check_runs_when_run_with_an_overlay_then_docker_gets_it_and_the_run_directory_goes(self):
+        # Jenkins stops a build with TERM: docker must still get it (it passes it on to the container), as when the
+        # script exec'd docker, and the run directory must not stay behind.
+        started = self.root / "started"
+        self.fake("docker", "#!/usr/bin/env bash\n"
+                            "printf '%s\\n' \"$@\" >\"$FAKE_DOCKER_LOG\"\n"
+                            f"trap 'echo stopped >>\"{started}\"; exit 143' TERM\n"
+                            f"echo running >\"{started}\"\n"
+                            "sleep 30 &\n"
+                            "wait\n")
+        process = subprocess.Popen(["bash", str(SCRIPT), "unit", "img", str(self.workspace), "--toolchains",
+                                    str(self.cache), "--", "true"], env=self.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        deadline = time.time() + 30
+        while not started.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(started.exists(), "docker never started")
+        process.send_signal(signal.SIGTERM)
+        _, stderr = process.communicate(timeout=30)
+        self.assertEqual(process.returncode, 143, stderr)
+        self.assertIn("stopped", started.read_text())
+        self.assertEqual(list((self.cache / "runs").iterdir()), [])
+
+    def test_given_bad_toolchain_options_when_run_then_it_is_a_usage_error(self):
+        workspace = str(self.workspace)
+        for arguments in (["unit", "img", workspace, "--toolchains", "--", "x"],
+                          ["unit", "img", workspace, "--checkout", workspace, "--", "x"],   # only with --toolchains
+                          ["unit", "img", workspace, "--toolchains", str(self.cache), "--checkout", str(self.root),
+                           "--", "x"],                                                     # outside the workspace
+                          ["unit", "img", workspace, "--toolchains", str(self.cache), "--checkout",
+                           f"{workspace}/../elsewhere", "--", "x"]):
             with self.subTest(arguments=arguments):
                 result = self.run_check(*arguments)
                 self.assertEqual(result.returncode, 2, result.stderr)

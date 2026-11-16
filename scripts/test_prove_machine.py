@@ -80,6 +80,9 @@ FAKES = {
     #   FAKE_PROBE_SILENT    the probe prints nothing at all
     #   FAKE_SERVER_FAILS, FAKE_NO_PORT, FAKE_NO_ANSWER, FAKE_NO_GATEWAY   the Testcontainers proof (with
     #                        FAKE_NO_ROUTE for `ip`)
+    #   FAKE_OVERLAY_REFUSED, FAKE_OVERLAY_LEAKS, FAKE_OVERLAY_NO_UPPER   the toolchain overlay: the engine can't
+    #                        mount it; its writes reach the lower directory; they are nowhere on the host. Without
+    #                        them the fake does what an overlay does, on the directories the --mount names.
     "docker": r"""
         echo "docker as=${FAKE_AS_USER:-} host=${DOCKER_HOST:-} ${*//$'
 '/ }" >>"$FAKE_STATE/calls"
@@ -110,6 +113,26 @@ FAKES = {
               *ygg-prove-server*)
                 [[ -z "${FAKE_SERVER_FAILS:-}" ]] || { echo "port is already allocated" >&2; exit 125; }
                 echo "server-container-id"
+                ;;
+              *ygg-prove-overlay*)
+                lower="" upper=""
+                for argument in "$@"; do
+                  if [[ "$argument" == type=volume,* ]]; then
+                    lower=${argument#*lowerdir=}; lower=${lower%%,*}
+                    upper=${argument#*upperdir=}; upper=${upper%%,*}
+                  fi
+                done
+                if [[ -n "${FAKE_OVERLAY_REFUSED:-}" ]]; then
+                  echo "docker: Error response from daemon: failed to mount local volume: mount overlay: invalid argument" >&2
+                  exit 125
+                fi
+                echo "read:$(cat "$lower/cached.txt")"
+                if [[ -n "${FAKE_OVERLAY_LEAKS:-}" ]]; then
+                  echo rewritten >"$lower/cached.txt"; echo added >"$lower/added.txt"; rm -f "$lower/deleted.txt"
+                elif [[ -z "${FAKE_OVERLAY_NO_UPPER:-}" ]]; then
+                  echo added >"$upper/added.txt"
+                fi
+                echo "back:rewritten"
                 ;;
               *ygg-prove-client*)
                 cat >"$FAKE_STATE/client-stdin"
@@ -170,7 +193,10 @@ class ProveMachineTests(unittest.TestCase):
             path.chmod(0o755)
         (self.state / "calls").write_text("")
         (self.state / "ps").write_text(HEALTHY_PS)
-        (self.state / "passwd").write_text(PASSWD)
+        # ci's home is a real directory: the toolchain overlay proof makes its directories there, as ci.
+        self.ci_home = self.root / "home-ci"
+        self.ci_home.mkdir()
+        (self.state / "passwd").write_text(PASSWD.replace("/home/ci", str(self.ci_home)))
         # What exists on the machine and only root can see (the sockets and directories of other users).
         (self.state / "exists").write_text(
             "/run/user/1001/docker.sock\n/run/user/1001\n/home/ygg\n/etc/yggdrasil\n")
@@ -499,7 +525,7 @@ class ProveMachineTests(unittest.TestCase):
                 (self.state / "calls").write_text("")
                 self.prove("dev", **env)
                 removed = self.docker_calls(" rm ")
-                for name in ("ygg-prove-server", "ygg-prove-client", "ygg-prove-probe"):
+                for name in ("ygg-prove-server", "ygg-prove-client", "ygg-prove-probe", "ygg-prove-overlay"):
                     self.assertTrue(any(name in line and "as=ci" in line and " -f " in line for line in removed),
                                     f"{name} not removed: {removed}")
                 # And the last thing done with docker is the removal, so nothing is left behind.
@@ -619,12 +645,72 @@ class ProveMachineTests(unittest.TestCase):
 
     # ---- exit code, secrets ----------------------------------------------------------------------------
 
+    # ---- (dev) the toolchain overlay -----------------------------------------------------------------
+
+    def overlay_dirs(self):
+        return sorted(self.ci_home.glob(".ygg-prove-overlay.*"))
+
+    def test_given_an_overlay_that_works_when_proved_then_toolchain_overlay_is_ok_and_nothing_is_left(self):
+        result = self.prove("dev")
+        self.assertEqual(self.status_of(result, "toolchain overlay"), "ok", result.stdout + result.stderr)
+        self.assertIn("YGG_TOOLCHAIN_CACHE can be set", self.rows(result)["toolchain overlay"][1])
+        self.assertEqual(self.overlay_dirs(), [])
+
+    def test_given_the_overlay_when_started_then_it_is_ci_s_engine_mounting_a_directory_of_ci_s_home(self):
+        # The way run-check.sh gives a check its SDK: a volume of type overlay, its options quoted for docker's CSV.
+        self.prove("dev")
+        runs = self.docker_runs("ygg-prove-overlay")
+        self.assertEqual(len(runs), 1, runs)
+        run = runs[0]
+        self.assertIn("as=ci host=unix:///run/user/1002/docker.sock", run)
+        self.assertIn("--rm", run)
+        self.assertIn('type=volume,dst=/sdk,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,'
+                      f'"volume-opt=o=lowerdir={self.ci_home}/.ygg-prove-overlay.', run)
+        self.assertIn(TAR_IMAGE, run)
+        self.assertNotIn(" -v ", run)
+        # The directories were made as ci, from /, by sudo.
+        self.assertTrue(any(line.startswith("sudo -u ci ") and "mktemp -d" in line for line in self.calls()))
+
+    def test_given_an_engine_that_cannot_mount_an_overlay_when_proved_then_toolchain_overlay_fails(self):
+        result = self.prove("dev", FAKE_OVERLAY_REFUSED="1")
+        self.assertEqual(self.status_of(result, "toolchain overlay"), "FAIL")
+        detail = self.rows(result)["toolchain overlay"][1]
+        self.assertIn("could not mount an overlay", detail)
+        self.assertIn("Leave YGG_TOOLCHAIN_CACHE unset", detail)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.overlay_dirs(), [])
+
+    def test_given_writes_that_reach_the_lower_directory_when_proved_then_toolchain_overlay_fails(self):
+        # The one outcome that would let a check change the cached SDK.
+        result = self.prove("dev", FAKE_OVERLAY_LEAKS="1")
+        self.assertEqual(self.status_of(result, "toolchain overlay"), "FAIL")
+        self.assertIn("reached the lower directory", self.rows(result)["toolchain overlay"][1])
+        self.assertEqual(self.overlay_dirs(), [])
+
+    def test_given_writes_that_are_nowhere_on_the_host_when_proved_then_toolchain_overlay_fails(self):
+        result = self.prove("dev", FAKE_OVERLAY_NO_UPPER="1")
+        self.assertEqual(self.status_of(result, "toolchain overlay"), "FAIL")
+        self.assertIn("not in the upper directory", self.rows(result)["toolchain overlay"][1])
+
+    def test_given_a_home_ci_cannot_write_when_proved_then_toolchain_overlay_fails_without_a_container(self):
+        (self.state / "passwd").write_text(PASSWD.replace("/home/ci", str(self.root / "no-such-home")))
+        result = self.prove("dev")
+        self.assertEqual(self.status_of(result, "toolchain overlay"), "FAIL")
+        self.assertIn("could not make a directory", self.rows(result)["toolchain overlay"][1])
+        self.assertEqual(self.docker_runs("ygg-prove-overlay"), [])
+
+    def test_given_an_engine_that_does_not_answer_when_proved_then_toolchain_overlay_proves_nothing(self):
+        result = self.prove("dev", FAKE_ENGINE_DOWN="1")
+        self.assertEqual(self.status_of(result, "toolchain overlay"), "FAIL")
+        self.assertIn("nothing proven", self.rows(result)["toolchain overlay"][1])
+        self.assertEqual(self.overlay_dirs(), [])
+
     def test_given_a_healthy_dev_machine_when_proved_then_every_row_is_ok_and_the_exit_is_zero(self):
         result = self.prove("dev")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual({status for status, _ in self.rows(result).values()}, {"ok"}, result.stdout)
-        self.assertEqual(set(self.rows(result)),
-                         {"no root services", "ci -> ygg (host)", "ci -> ygg (docker)", "testcontainers"})
+        self.assertEqual(set(self.rows(result)), {"no root services", "ci -> ygg (host)", "ci -> ygg (docker)",
+                                                  "testcontainers", "toolchain overlay"})
 
     def test_given_one_failure_among_the_proofs_when_proved_then_the_others_still_run_and_the_exit_is_one(self):
         (self.state / "ps").write_text(HEALTHY_PS + " 4242     0 traefik\n")

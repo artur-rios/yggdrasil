@@ -726,6 +726,7 @@ applications, which are not leftovers.
 | `/etc/yggdrasil-role` | The role: `dev` or `apps`. `ygg check` and `ygg install` without `--role` use it. Written before the first step that changes anything, so an install that stops halfway keeps its role. |
 | `/opt/yggdrasil` | Owned by `ygg`, mode `755`: `ygg` deploys from this checkout, and the backup unit runs its `scripts/backup.sh`. `ygg install` refuses to run from a checkout anywhere else. |
 | `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`; `renovate` gets `renovate.env`. Files `600`. A file that is already there is never touched. |
+| `/home/ci/agent/toolchains` (DevOps Server) | The `ci` agent's toolchain cache, when its `agent.env` names it (`YGG_TOOLCHAIN_CACHE`): the Flutter SDKs the repositories pin, about 2.5 GB each, owned by `ci`, mode `700`, made by `ygg agent up --user ci`. A check gets an SDK as an overlay and never writes this directory; a release never uses it ([setup.md, The toolchain cache](setup.md#the-toolchain-cache)). Not backed up: everything in it is fetched again when it is missing. |
 | `/etc/yggdrasil/cloudflare-ips` (Application Server) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
 | `/etc/yggdrasil/traefik.yml` | Not written by `ygg install`: `platform.sh up` renders Traefik's static configuration there (as `ygg`, mode `600`) once the engine is checked, and Traefik's container mounts it. The other commands (`down`, `ps`, `logs`, `config`) render a throwaway copy and leave this one alone. It stays there so that Traefik starts again after a crash or a reboot; deleting it takes ingress down at the next restart of the container, until the next `platform.sh up`. `platform.sh` refuses to run as root, since a root-owned file here is one the rootless Traefik can't read. |
 | `ufw` rules | Dev: `OpenSSH`, `80,443/tcp`, `2222/tcp`. Apps: `OpenSSH`, and for each Cloudflare range `allow proto tcp from <range> to any port 80,443 comment yggdrasil-cloudflare`. The defaults: `deny incoming`, `allow outgoing`. Then `ufw` is turned on, with SSH allowed first so the session that runs the install is not cut. `ygg check` reports any other rule that lets everyone in. |
@@ -799,7 +800,8 @@ empty ([cli.md, Build agents](cli.md#build-agents)). `scripts/prove-machine.sh d
 `/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that
 the path exists) so a green row means something. `scripts/prove-machine.sh dev` (or `apps`), run once by the admin on
 a new machine, proves the rest on the real thing: from a container of `ci`'s engine, `ygg`'s socket, home and secrets
-are out of reach; Testcontainers reaches a published port; no service runs as root; and, on the Application Server, which
+are out of reach; Testcontainers reaches a published port; a container can be given a directory of `ci`'s as an overlay that keeps its
+writes to itself (the toolchain cache); no service runs as root; and, on the Application Server, which
 client addresses Traefik logs ([cutover.md, 2.6](cutover.md#26-the-rootless-proofs)).
 
 ## 6. Credentials

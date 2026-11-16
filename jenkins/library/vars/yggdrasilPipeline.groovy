@@ -763,8 +763,13 @@ boolean branchPolicy(Map ctx, Map state) {
                     printf 'YGGDRASIL_DIR=%s\\n' "$WORKSPACE/yggdrasil"
                   } >"$env_file"
                   # The whole workspace is mounted (the yggdrasil checkout next to the application's);
-                  # the command runs in the application's root, as every check does.
-                  bash yggdrasil/scripts/run-check.sh branch-policy "$YGG_IMAGE" "$WORKSPACE" --env-file "$env_file" \\
+                  # the command runs in the application's root, as every check does. The ci agent's toolchain
+                  # cache, when it has one (agent.env's YGG_TOOLCHAIN_CACHE), reads the pin from that root.
+                  set --
+                  if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then
+                    set -- --toolchains "$YGG_TOOLCHAIN_CACHE" --checkout "$WORKSPACE/app"
+                  fi
+                  bash yggdrasil/scripts/run-check.sh branch-policy "$YGG_IMAGE" "$WORKSPACE" --env-file "$env_file" "$@" \\
                     -- sh -c 'cd app && exec sh -c "$1"' sh "$YGG_RUN"
                 ''', returnStatus: true)
               }
@@ -853,11 +858,14 @@ boolean runCheck(Map ctx, Map state, Map check) {
           withCheckCredentials(check, state.entry, 'credentials') { String envFile ->
             withEnv(["YGG_CHECK_NAME=${check.name}", "YGG_CHECK_IMAGE=${check.image}", "YGG_CHECK_RUN=${check.run}",
                      "YGG_CHECK_DOCKER=${check.docker == true ? '1' : ''}", "YGG_CHECK_ENV_FILE=${envFile}"]) {
-              // run-check.sh takes the command in exec form: sh -c runs the file's `run` line as written.
+              // run-check.sh takes the command in exec form: sh -c runs the file's `run` line as written. The
+              // toolchain cache is the ci agent's own (agent.env's YGG_TOOLCHAIN_CACHE; the release agent has
+              // none): only a check and the branch policy are given it, never a release step.
               code = sh(script: '''
                 set --
                 if [ -n "$YGG_CHECK_DOCKER" ]; then set -- "$@" --docker; fi
                 if [ -n "$YGG_CHECK_ENV_FILE" ]; then set -- "$@" --env-file "$YGG_CHECK_ENV_FILE"; fi
+                if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then set -- "$@" --toolchains "$YGG_TOOLCHAIN_CACHE"; fi
                 bash yggdrasil/scripts/run-check.sh "$YGG_CHECK_NAME" "$YGG_CHECK_IMAGE" "$WORKSPACE/app" "$@" \\
                   -- sh -c "$YGG_CHECK_RUN"
               ''', returnStatus: true)

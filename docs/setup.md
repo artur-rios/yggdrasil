@@ -1082,6 +1082,16 @@ its containers at. Leave it out: `ygg agent up` uses the host's own primary IPv4
 engines' published ports answer from a container, and prints it
 ([cli.md, Build agents](cli.md#build-agents)).
 
+The `ci` agent's `agent.env` may set `YGG_TOOLCHAIN_CACHE=/home/ci/agent/toolchains`, where the checks get the
+Flutter SDK their repository pins instead of each fetching its own ([The toolchain cache](#the-toolchain-cache)).
+Prove first that `ci`'s engine can give a check an overlay, then set it and `ygg agent up --user ci` again:
+
+```bash
+cd /opt/yggdrasil && scripts/prove-machine.sh dev   # the row "toolchain overlay" must be ok
+```
+
+Never set it for `release`: `agent.sh` refuses it there.
+
 An agent started by an earlier release needs `ygg agent up --user ci` (and `release`; it runs `scripts/agent.sh up`) again: `build-agent.yml`
 now hands the agent `YGG_DOCKER_SOCKET`, the host path of the user's socket, which a check that sets
 `docker: true` needs, and `TESTCONTAINERS_HOST_OVERRIDE`, the host's address, where such a check reaches the
@@ -1790,6 +1800,57 @@ job, **Build with Parameters** with `DEPLOY_TO` left empty; or push a new commit
 `forge.jenkinsUser` merges into an application's `main`, and only a release pull request it built itself, so
 this matters for `develop` and for the `main` of an `owner-tag` repository, which you merge.
 
+### The toolchain cache
+
+Every Flutter repository pins its SDK in `ci/flutter-env.sh` (or `ci/pins.sh`, which it sources) and fetches it there
+when `FLUTTER_SDK_DIR` holds none: a 1.5 GB archive and 2.5 GB unpacked, in every check, about a minute and a half
+of each one's time on the `ci` agent. With a toolchain cache (`YGG_TOOLCHAIN_CACHE` in the `ci` agent's
+`agent.env`, [9.8](#98-the-ci-and-release-agents)), `scripts/run-check.sh` does that once per machine instead:
+
+- It reads the checkout's `FLUTTER_VERSION=` and `FLUTTER_SHA256=` lines as data (each whole line a plain
+  `x.y.z` or 64 lowercase hex digits, quoted or not; never sourced). A file whose two values disagree with the
+  other's, or that sets either from anything else, gets no cache.
+- It looks for `<cache>/flutter/<version>-<sha256>/`. When it is not there it downloads that version's archive
+  from Flutter's release bucket (the URL is fixed; only the version is the checkout's), checks its SHA-256 against
+  the pin, unpacks it next to the cache and renames it into place. One check fetches while the others wait for it
+  (a lock, up to 20 minutes); one that can't get the SDK runs as before and fetches its own.
+- The check gets the SDK as a Docker volume of type **overlay** at `/opt/yggdrasil/flutter`, with
+  `FLUTTER_SDK_DIR` naming it, so its `ci/flutter-env.sh` uses it and fetches nothing. The cached directory is
+  only the overlay's lower, read-only, layer: Flutter writes into its own SDK on every run (its lock file, its
+  stamps), and those writes land in `<cache>/runs/<id>/`, which `run-check.sh` removes when the check ends.
+
+The checks get it and the branch policy gets it (its pin is read from the application's root); nothing else does.
+**A release builds from scratch**, on the release agent, which has no cache: `agent.sh` refuses
+`YGG_TOOLCHAIN_CACHE` for it, and the library never passes one to a release step. What a release ships must come
+from its tag and nothing a branch's check could have touched (the reason the release agent exists,
+[hosts.md](hosts.md#devops-server)).
+
+**What a branch can and cannot do to it.** A check runs whatever its branch says, so the cache is built to need no
+trust in it:
+
+- the SDK is fetched by `run-check.sh` in the agent, never by repository code, from Flutter's own archive only, and
+  kept only when the archive's checksum is the pinned one. The directory is named by both, so a branch that pins
+  another release (a real one, since the checksum must match what Google publishes) gets a directory of its own,
+  and the one other repositories' pins name is never written again;
+- a check never sees the cache's directory, only its overlay, and cannot remount it: what it writes into its SDK
+  is thrown away;
+- a **`docker: true`** check holds the `ci` engine, and through it can mount anything the `ci` user owns, the cache
+  included: the [accepted risk](#accepted-risks) of checks running side by side, which already lets such a check
+  reach the other checks' workspaces. It does not reach a release.
+
+Disk: each pinned release is about 2.5 GB, and a check's writes while it runs are a few megabytes. A release no
+check has used for 30 days is removed the next time another is fetched; a run directory left by a stopped agent,
+after a day. To look, as the admin: `sudo -u ci du -sh /home/ci/agent/toolchains/flutter/*`. To empty it, remove
+`flutter/` while no check runs; the next check fetches again. To switch the cache off, remove
+`YGG_TOOLCHAIN_CACHE` from `agent.env` and `ygg agent up --user ci`.
+
+**Not cached (yet).** Gradle and the Android NDK (orpheus, the console), `apt-get install`s (fortuna-ui's
+`bindings-drift`), and the NuGet, npm and pub packages are still fetched by every check that needs them. They differ
+from an SDK in one way that matters: the tools write them, so a cache of them is written by checks, and a branch's
+check could then leave a package that a later check of another branch runs. A safe cache of those needs a scope per
+repository, writes kept from pull requests (only builds of `develop` and `main` adding to it), and the same
+overlay for everything else; that is a change of its own.
+
 ### GitHub Actions and the skip
 
 Windows and macOS builds cannot run in Jenkins; they stay GitHub Actions jobs, the catalog's `actionsChecks`.
@@ -2007,7 +2068,9 @@ whose files fail pushes nothing.
   shared `ci` engine a check can then read the env files and workspaces of checks running at the same moment. So
   a credential you allow a repository's checks (`credentials` in the catalog) is reachable by anyone who can push
   a branch to a repository while one of its checks runs. Allow none you would not give them. Jenkins' write tokens
-  are never reachable this way: the `ci` agent never holds them, and a `renovate/*` build gets no credential.
+  are never reachable this way: the `ci` agent never holds them, and a `renovate/*` build gets no credential. The
+  same engine holds the [toolchain cache](#the-toolchain-cache): such a check could change a cached SDK that later
+  checks use (never a release, which builds from scratch on the release agent).
 - **No per-job authorization.** Jenkins lets every logged-in user do anything (`loggedInUsersCanDoAnything`), and
   the owner is its only user. Anyone you add can approve a deploy, run `release-resume` or read a credential.
 - **Webhooks are not verified** by Jenkins ([9.4](#94-jenkins-and-the-webhook)): a forged one only starts a scan.

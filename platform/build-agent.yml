@@ -37,6 +37,9 @@ services:
       # a published port on the host only. scripts/run-check.sh hands it to a --docker check, and falls back to
       # the gateway when it is empty.
       TESTCONTAINERS_HOST_OVERRIDE: ${TESTCONTAINERS_HOST_OVERRIDE:-}
+      # The ci agent's toolchain cache (scripts/toolchains.sh), when agent.env names one: under the workdir, so it
+      # is mounted below at the same path too. The pipeline library hands it to run-check.sh for checks only.
+      YGG_TOOLCHAIN_CACHE: ${YGG_TOOLCHAIN_CACHE:-}
     volumes:
       - ${DOCKER_SOCKET}:/var/run/docker.sock
       # The same path on both sides: a check's `docker run -v $WORKSPACE:...` goes to the host's
