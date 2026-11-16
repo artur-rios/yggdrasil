@@ -62,7 +62,7 @@ mirrors, is [cutover.md](cutover.md) (carried out for this installation on 2026-
 | Purpose | Git server, CI/CD, AI development | Every environment of every application |
 | Runs | Traefik, Forgejo, the Jenkins controller, monitoring, the CI agent and its checks, Renovate, AI sessions | Traefik, status API, console, monitoring, the applications, the deploy agent |
 | Compose profiles in `platform.env` | `forge,jenkins`, run by `ygg` | `apps,agent`, run by `ygg` |
-| Build agents | `ci` (4 executors) and `release` (1), each started by `ygg agent up --user …` ([agent.env](#6-credentials), [setup.md 9.8](setup.md#98-the-ci-and-release-agents)) | none: its deploy agent is the `agent` profile |
+| Build agents | `ci` (10 executors, at most 4 checks at a time) and `release` (1), each started by `ygg agent up --user …` ([agent.env](#6-credentials), [setup.md 9.8](setup.md#98-the-ci-and-release-agents)) | none: its deploy agent is the `agent` profile |
 | Public names | `git.techcraftsmen.net`, `jenkins.techcraftsmen.net`, and its own dashboards: `traefik-dev.techcraftsmen.net`, `grafana-dev.techcraftsmen.net` | **`techcraftsmen.net`**: the applications and APIs, `yggdrasil.`, `traefik.`, `grafana.`. **`artur-rios.tech`**: the static and docs sites |
 | Cloudflare | DNS only (grey cloud) | Proxied (orange cloud) |
 | Inbound ports | 22 (SSH), 80, 443, 2222 (Forgejo's git over SSH) | 22; 80 and 443 only from Cloudflare's address ranges |
@@ -96,7 +96,13 @@ Other things to know:
   it. If a port is not allowed in `ufw`, nobody reaches it.
 - **Size.** The CPU is the shared resource on the DevOps Server. The `ci` user is capped at 6 of the 8
   CPUs and 20 GB of memory, so AI sessions stay responsive during a build. The caps are on the
-  user's systemd slice, so they cover the user's whole engine, not one container.
+  user's systemd slice, so they cover the user's whole engine, not one container. Within them the `ci`
+  agent runs at most **four checks at a time** (about 1.5 CPUs and 5 GB each: a .NET test with coverage,
+  a Flutter build or a Testcontainers check needs one to two CPUs and several GB at its peak). The four
+  are the `ci-check` lockable resources of
+  [casc.yaml](../platform/jenkins/controller/casc.yaml), not the agent's executors: the agent has ten, so
+  the short steps of a build (reading `yggdrasil.yml`, the branch policy, seconds of `git` and Python)
+  always find one instead of queueing behind the checks. Raise the checks only with the slice.
 
 ## 2. Domains and Cloudflare
 

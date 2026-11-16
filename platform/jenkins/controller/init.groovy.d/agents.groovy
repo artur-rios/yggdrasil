@@ -6,8 +6,13 @@
 // disableConcurrentBuilds), and deploy.sh names everything per environment.
 //
 // Two more agents are always created, for the pipeline's checks and releases:
-//   ci       4 executors, label ci       runs the repositories' checks (pull request builds included)
+//   ci       10 executors, label ci      reads yggdrasil.yml, runs the branch policy and the repositories'
+//                                        checks (pull request builds included)
 //   release  1 executor, label release   builds, signs and validates release files, one at a time
+// The ci agent runs at most 4 checks at a time, whatever its executors: each check takes one of the
+// ci-check lockable resources (casc.yaml) before it asks for an executor, so the machine is no busier
+// than with 4 executors. The other 6 are for the short steps (reading yggdrasil.yml, the branch policy,
+// a sync's gathering, tag-check), which would otherwise queue behind every check for an executor.
 // Neither holds a write credential: they check out with the read-only forge-read credential, and
 // everything that changes the forge runs on forge.publishAgent. Their containers are started on the
 // host by platform/build-agent.yml, one for each of the ci and release users. `ci` and `release` are
@@ -17,8 +22,8 @@
 // must be the YGG_AGENT_WORKDIR of that user's env/agent.env, the directory build-agent.yml mounts at
 // the same path in the agent and on the host. scripts/run-check.sh hands a workspace to the host's
 // engine by its path, so a workspace anywhere else would be an empty directory in the check's
-// container. A ci or release node whose root differs from the setting is replaced on start (same name,
-// so the same agent secret); the environment agents keep /home/jenkins/agent.
+// container. A ci or release node whose root, executors or label differ from these is replaced on start
+// (same name, so the same agent secret); the environment agents keep /home/jenkins/agent.
 //
 // An environment's agent is its `agent` option, or its id. Environments that only deploy by hand
 // (trigger: manual, no `agent` set, and no application overriding either) need no agent. Agents
@@ -55,7 +60,7 @@ catalog.environments.each { environment ->
 
 // The agents of the pipeline itself, by name, with the setting that names each one's work directory.
 def buildAgents = [
-  ci: [executors: 4, label: 'ci', workdir: 'CI_AGENT_WORKDIR'],
+  ci: [executors: 10, label: 'ci', workdir: 'CI_AGENT_WORKDIR'],
   release: [executors: 1, label: 'release', workdir: 'RELEASE_AGENT_WORKDIR'],
 ]
 def clashes = agents.findAll { buildAgents.containsKey(it) }
@@ -74,11 +79,13 @@ buildAgents.each { name, options ->
 
 def jenkins = Jenkins.get()
 
-// keepInStep: a node that exists with another remote root is replaced (the build agents follow their
-// setting); otherwise an existing node is left as it is.
+// keepInStep: a node that exists with another remote root, number of executors or label is replaced (the
+// build agents follow their setting and this script); otherwise an existing node is left as it is.
 def create = { String name, int executors, String label, String remoteFS = '/home/jenkins/agent', boolean keepInStep = false ->
   def existing = jenkins.getNode(name)
-  if (existing != null && (!keepInStep || existing.remoteFS == remoteFS)) return
+  def inStep = existing != null && existing.remoteFS == remoteFS && existing.numExecutors == executors &&
+    existing.labelString == label
+  if (existing != null && (!keepInStep || inStep)) return
   def launcher = new JNLPLauncher()
   launcher.webSocket = true
   def agent = new DumbSlave(name, remoteFS, launcher)
@@ -88,7 +95,8 @@ def create = { String name, int executors, String label, String remoteFS = '/hom
   agent.retentionStrategy = new RetentionStrategy.Always()
   // addNode replaces a node of the same name.
   jenkins.addNode(agent)
-  println existing == null ? "yggdrasil: created agent '${name}'" : "yggdrasil: agent '${name}' now works in ${remoteFS}"
+  def changed = "agent '${name}' now works in ${remoteFS} with ${executors} executor(s), label ${label}"
+  println existing == null ? "yggdrasil: created agent '${name}'" : "yggdrasil: ${changed}"
 }
 
 agents.each { name -> create(name, 2, name) }
