@@ -307,8 +307,9 @@ Fill it in as that file says:
 | `JENKINS_AGENT_SECRET` | The node's secret, from its page in Jenkins once the node exists |
 | `YGG_AGENT_WORKDIR` | Absolute, owned by the user: `/home/ci/agent` for `ci`, `/home/release/agent` for `release`. Mounted at the same path in the agent and on the host, so a check's `docker run -v $WORKSPACE:…` finds the same directory in the engine. Also empty in the template |
 | `TESTCONTAINERS_HOST_OVERRIDE` | **Optional**, commented out in the template. Where a check's Testcontainers reaches the containers it starts; see below |
+| `YGG_TOOLCHAIN_CACHE` | **Optional**, `ci` only, commented out in the template. Where the checks get their pinned Flutter SDK: `/home/ci/agent/toolchains`; see below |
 
-An empty or missing variable stops `agent.sh` before anything starts, and says which, except the optional one. The
+An empty or missing variable stops `agent.sh` before anything starts, and says which, except the optional ones. The
 Compose project is
 `yggdrasil-agent-<name>` (so the two agents never share one), from
 [platform/build-agent.yml](../platform/build-agent.yml). `up` builds the agent's image and starts it, waiting
@@ -326,6 +327,15 @@ that dials the host's own address goes out through `slirp4netns` and is handed b
 (another interface of the host, say), set `TESTCONTAINERS_HOST_OVERRIDE=<address>` in `agent.env` and run
 `ygg agent up` again. When neither is found, the value is empty and `run-check.sh` falls back to the gateway.
 An agent started before this existed has no value: run `ygg agent up --user ci` (and `release`) again.
+
+**The toolchain cache.** With `YGG_TOOLCHAIN_CACHE` set, a check whose repository pins a Flutter SDK gets it from that
+directory, fetched once per machine, as a copy-on-write overlay, instead of fetching 1.5 GB itself, and every check
+gets its repository's package cache the same way, which the passing checks of a push to `develop`, `main` or `master`
+add to ([setup.md, The toolchain cache](setup.md#the-toolchain-cache)). `agent.sh` refuses a value that is not an absolute path
+under `YGG_AGENT_WORKDIR` (which the agent mounts at the same path, as it must for the engine to find it), one with
+characters other than letters, digits, `.`, `_`, `-` and `/` (it is written into the overlay's mount options), and
+any value for the `release` agent; `up` creates the directory (`700`) and prints it. Prove the overlay on the
+machine first (`scripts/prove-machine.sh dev`, row `toolchain overlay`).
 
 ## Backups
 

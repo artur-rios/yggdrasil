@@ -7,6 +7,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Checks no longer download Flutter.** Every check of the eight Flutter repositories (chimera, orpheus, maestro,
+  alexandria-ui, heimdall-ui, cerberus-ui, fortuna-ui and the console) fetched the pinned SDK itself, 1.5 GB to
+  download and 2.5 GB to unpack, about a minute and a half of each check (fortuna-ui's `api-client-drift` takes
+  2.5 minutes on a quiet agent, its `header-drift` in the same image without Flutter 0.1, and its own work with a
+  warm SDK 39 seconds). With a toolchain cache (`YGG_TOOLCHAIN_CACHE` in the `ci` agent's `agent.env`),
+  `scripts/run-check.sh --toolchains` reads the checkout's `FLUTTER_VERSION` and `FLUTTER_SHA256` (in
+  `ci/flutter-env.sh` or `ci/pins.sh`, as data), fetches that release once per machine from Flutter's archive into
+  `<cache>/flutter/<version>-<sha256>/`, kept only when its checksum is the pinned one, and gives the check that
+  directory as a copy-on-write overlay at `/opt/yggdrasil/flutter` with `FLUTTER_SDK_DIR` naming it, so the
+  repository's own script fetches nothing. A check's writes into its SDK go to a run directory that is removed
+  when it ends; a branch pinning something else gets a directory of its own. The pipeline library passes the
+  cache to the checks and the branch policy only: a release builds from scratch on the release agent, which
+  `agent.sh` refuses a cache for. A new `scripts/toolchains.sh` holds the cache's logic, a new row
+  `toolchain overlay` in `scripts/prove-machine.sh dev` proves the engine can mount such an overlay, and the build
+  agent's image gets `xz-utils`. **Upgrading:** nothing changes until the `ci` agent has a cache: prove the overlay
+  (`scripts/prove-machine.sh dev`), set `YGG_TOOLCHAIN_CACHE=/home/ci/agent/toolchains` in
+  `/etc/yggdrasil-ci/agent.env`, `ygg agent up --user ci`, and set `YGGDRASIL_LIBRARY_VERSION` to this release with
+  `scripts/platform.sh up`.
+- **Checks keep what they download, per repository.** With the same cache, every check gets its repository's package
+  snapshot (`<cache>/packages/<repository>/`) as an overlay at `/opt/yggdrasil/cache`, with `PUB_CACHE`,
+  `GRADLE_USER_HOME`, `NUGET_PACKAGES`, `npm_config_cache` and `APT_CONFIG` (`apt-get` keeps its `.deb` files there)
+  pointing into it, and in an image with `ANDROID_HOME` the snapshot's NDKs at `$ANDROID_HOME/ndk`: pub's packages,
+  Gradle's distributions and dependencies, the NDK Gradle installs (orpheus, the console), NuGet's and npm's packages
+  and fortuna-ui's clang are downloaded once instead of in every check. A check's writes are its own, unless it
+  passed on a push to `develop`, `main` or `master` (`run-check.sh --promote`, which the library passes only then):
+  what it added becomes the repository's next snapshot, hard links to the last one plus the new files, its deletions
+  applied. A pull request, Renovate's included, never writes a cache, and no repository sees another's: these packages
+  are written by the tools and never checked again, so a cache holds only what was merged into that repository. A
+  replaced snapshot is kept a day, a cache starts over every 30 days, and one no check used for 30 days is removed. A
+  new `scripts/package_cache.py` makes and keeps the snapshots. Not covered: platforms `sdkmanager` installs into the
+  image's own SDK, and `docker build` steps.
+
 ### Changed
 
 - **Builds no longer wait behind the checks for a `ci` executor.** The `ci` agent had four executors, and each

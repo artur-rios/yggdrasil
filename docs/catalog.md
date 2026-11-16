@@ -271,6 +271,19 @@ the tag's checkout with `RELEASE_TAG` and `RELEASE_VERSION` in its environment; 
   draft's files that are not in its set. Only `files` reach the release: anything `finalize` writes elsewhere in
   the workspace (the upload set's own directory included) is left out.
 
+**A pinned Flutter SDK.** A check (and the `branchPolicy`) of a repository whose `ci/flutter-env.sh` or `ci/pins.sh`
+has the lines `FLUTTER_VERSION=<x.y.z>` and `FLUTTER_SHA256=<64 hex digits>` gets that SDK at `/opt/yggdrasil/flutter`,
+with `FLUTTER_SDK_DIR` naming it, when the `ci` agent has a toolchain cache: a script that honours `FLUTTER_SDK_DIR`
+(as every repository's `ci/flutter-env.sh` does) then skips its own download. Nothing in this file turns it on or off;
+a release step never gets it ([setup.md, The toolchain cache](setup.md#the-toolchain-cache)).
+
+**Package caches.** With the same cache, every check has `PUB_CACHE`, `GRADLE_USER_HOME`, `NUGET_PACKAGES`,
+`npm_config_cache` and `APT_CONFIG` set to its repository's package cache under `/opt/yggdrasil/cache`, and, in an image
+with `ANDROID_HOME`, the cache's NDKs at `$ANDROID_HOME/ndk`. A script should leave those as they are (set them
+itself and it downloads as before) and never assume `~/.pub-cache`, `~/.gradle` or `~/.nuget/packages`. What a check
+downloads is kept only when it passes on a push to `develop`, `main` or `master`
+([setup.md, Package caches](setup.md#package-caches)).
+
 Every file the release uploads, from any step, must have its own name (a release shows one file per name):
 two files named alike fail the release before anything irreversible, a library's NuGet push included.
 

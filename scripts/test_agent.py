@@ -51,6 +51,7 @@ class AgentTests(unittest.TestCase):
                           'echo "YGG_AGENT_WORKDIR=${YGG_AGENT_WORKDIR:-}" >>"$FAKE_DOCKER_LOG"\n'
                           'echo "TESTCONTAINERS_HOST_OVERRIDE=${TESTCONTAINERS_HOST_OVERRIDE-<unset>}"'
                           ' >>"$FAKE_DOCKER_LOG"\n'
+                          'echo "YGG_TOOLCHAIN_CACHE=${YGG_TOOLCHAIN_CACHE-<unset>}" >>"$FAKE_DOCKER_LOG"\n'
                           'if [[ "${1:-}" == info ]]; then\n'
                           '  echo "${FAKE_DOCKER_INFO:-$FAKE_ROOTLESS_INFO}"\n'
                           'fi\n')
@@ -66,6 +67,7 @@ class AgentTests(unittest.TestCase):
                         FAKE_ROOTLESS_INFO='["name=seccomp","name=rootless"]',
                         DOCKER_HOST="unix:///run/user/1001/docker.sock")
         self.env.pop("TESTCONTAINERS_HOST_OVERRIDE", None)
+        self.env.pop("YGG_TOOLCHAIN_CACHE", None)
         self.bin = bin_dir
 
     def agent_env(self, **overrides):
@@ -220,6 +222,54 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.compose_override(), "")
         self.assertIn("gateway", result.stderr)
 
+    # ---- YGG_TOOLCHAIN_CACHE: the ci agent's toolchain cache (scripts/toolchains.sh) ----------------------
+
+    def compose_value(self, name):
+        """The value of `name` in agent.sh's environment when it ran `docker compose`."""
+        lines = self.docker_calls().splitlines()
+        compose = next(i for i, line in enumerate(lines) if line.startswith("docker compose"))
+        return next(line for line in lines[compose:] if line.startswith(f"{name}=")).partition("=")[2]
+
+    def test_given_no_toolchain_cache_in_agent_env_when_up_then_compose_gets_none(self):
+        # As with the host override, only agent.env counts: not one in the caller's environment.
+        self.agent_env()
+        self.env["YGG_TOOLCHAIN_CACHE"] = str(self.workdir / "from-the-caller")
+        result = self.run_agent("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.compose_value("YGG_TOOLCHAIN_CACHE"), "")
+        self.assertFalse((self.workdir / "from-the-caller").exists())
+
+    def test_given_a_toolchain_cache_under_the_workdir_when_up_then_it_is_created_and_handed_to_compose(self):
+        cache = self.workdir / "toolchains"
+        self.agent_env(YGG_TOOLCHAIN_CACHE=f"{cache}/")
+        result = self.run_agent("up")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(cache.is_dir())
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.compose_value("YGG_TOOLCHAIN_CACHE"), str(cache))
+        self.assertIn(str(cache), result.stderr)
+
+    def test_given_a_toolchain_cache_the_agent_cannot_use_when_up_then_it_is_refused(self):
+        # Outside the workdir the agent would not see it at its host path; relative, it means nothing to the
+        # engine; with a comma or a space it could not be an overlay's lower directory.
+        for value in ("toolchains", str(self.temp / "elsewhere"), f"{self.workdir}-other/toolchains",
+                      f"{self.workdir}/../toolchains", f"{self.workdir}/tool,chains", f"{self.workdir}/tool chains"):
+            with self.subTest(value=value):
+                self.log.unlink(missing_ok=True)
+                self.agent_env(YGG_TOOLCHAIN_CACHE=shlex.quote(value))
+                result = self.run_agent("up")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("YGG_TOOLCHAIN_CACHE", result.stderr)
+                self.assertNotIn("docker compose", self.docker_calls())
+
+    def test_given_a_toolchain_cache_for_the_release_agent_when_up_then_it_is_refused(self):
+        # What a branch's check could leave in it must never reach a release.
+        self.agent_env(JENKINS_AGENT_NAME="release", YGG_TOOLCHAIN_CACHE=str(self.workdir / "toolchains"))
+        result = self.run_agent("up")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("release agent", result.stderr)
+        self.assertNotIn("docker compose", self.docker_calls())
+
 
 @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
 class HostPublishedAddressTests(unittest.TestCase):
@@ -306,6 +356,12 @@ class BuildAgentFileTests(unittest.TestCase):
         # or unset one is an empty value, which run-check.sh replaces with the gateway, never a Compose warning.
         environment = self.compose["services"]["agent"]["environment"]
         self.assertEqual(environment["TESTCONTAINERS_HOST_OVERRIDE"], "${TESTCONTAINERS_HOST_OVERRIDE:-}")
+
+    def test_given_the_build_agent_file_when_read_then_the_toolchain_cache_is_in_the_environment(self):
+        # Optional (`:-`), and not mounted on its own: agent.sh keeps it under the workdir, which is.
+        agent = self.compose["services"]["agent"]
+        self.assertEqual(agent["environment"]["YGG_TOOLCHAIN_CACHE"], "${YGG_TOOLCHAIN_CACHE:-}")
+        self.assertFalse([volume for volume in agent["volumes"] if "TOOLCHAIN" in volume])
 
 
 if __name__ == "__main__":

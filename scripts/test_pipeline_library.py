@@ -963,6 +963,64 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("planChecks(ctx, state, mode, deploying, releasing, syncing)", lib.code[slice(*lib.functions["prepare"])])
 
 
+class ToolchainCacheLibraryTests(unittest.TestCase):
+    """Which steps get the ci agent's toolchain cache (scripts/toolchains.sh): a check and the branch policy, which
+    run on the ci agent, and never a release step, which must build from nothing but its tag."""
+
+    def setUp(self):
+        self.lib = library()
+
+    def run_check_calls(self):
+        """{function name: [the line of each run-check.sh call in it]}."""
+        calls = {}
+        for match in re.finditer(r"run-check\.sh [a-z$\"{}_-]+", self.lib.code):
+            calls.setdefault(self.lib.function_at(match.start()), []).append(match.group(0))
+        return calls
+
+    def test_given_a_check_when_read_then_run_check_gets_the_agents_toolchain_cache_when_it_has_one(self):
+        body = self.lib.code[slice(*self.lib.functions["runCheck"])]
+        self.assertIn('if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then\n'
+                      '                  set -- "$@" --toolchains "$YGG_TOOLCHAIN_CACHE" --scope "$YGG_CHECK_SCOPE"\n'
+                      '                  if [ -n "$YGG_CHECK_PROMOTE" ]; then set -- "$@" --promote; fi\n'
+                      '                fi', body)
+        call = body.index('bash yggdrasil/scripts/run-check.sh "$YGG_CHECK_NAME"')
+        self.assertLess(body.index("--toolchains"), call)
+        self.assertIn('"$WORKSPACE/app" "$@"', body[call:])
+
+    def test_given_a_check_when_read_then_its_package_cache_is_its_repository_s(self):
+        # The scope is the job's repository, never anything the repository's file says.
+        body = self.lib.code[slice(*self.lib.functions["runCheck"])]
+        self.assertIn('"YGG_CHECK_SCOPE=${ctx.repo}", "YGG_CHECK_PROMOTE=${keepsPackages() ? \'1\' : \'\'}"', body)
+
+    def test_given_a_build_when_read_then_only_a_push_to_a_protected_branch_keeps_packages(self):
+        # A pull request (a Renovate one included) never writes its repository's package cache.
+        body = self.lib.code[slice(*self.lib.functions["keepsPackages"])]
+        self.assertIn("return !env.CHANGE_ID && ['develop', 'main', 'master'].contains(env.BRANCH_NAME)", body)
+        # Called inside a GString, which the lexer masks: found by its text.
+        callers = {self.lib.function_at(m.start())
+                   for m in re.finditer(r"(?<!boolean )\bkeepsPackages\(\)", self.lib.code)}
+        self.assertEqual(callers, {"runCheck"})
+
+    def test_given_the_branch_policy_when_read_then_run_check_reads_the_pin_from_the_applications_root(self):
+        body = self.lib.code[slice(*self.lib.functions["branchPolicy"])]
+        self.assertIn('set -- --toolchains "$YGG_TOOLCHAIN_CACHE" --checkout "$WORKSPACE/app"', body)
+        call = body.index("bash yggdrasil/scripts/run-check.sh branch-policy")
+        self.assertIn('--env-file "$env_file" "$@"', body[call:call + 200])
+
+    def test_given_the_release_steps_when_read_then_none_gets_the_toolchain_cache(self):
+        # A check runs any branch's code, and a docker: true one holds the ci engine: what such a check could leave
+        # in the cache must never reach what a release ships.
+        others = set(self.run_check_calls()) - {"runCheck", "branchPolicy"}
+        self.assertTrue(others, "the release steps run run-check.sh too")
+        for function in others:
+            body = self.lib.code[slice(*self.lib.functions[function])]
+            for word in ("--toolchains", "YGG_TOOLCHAIN_CACHE", "--scope", "--promote", "keepsPackages"):
+                self.assertNotIn(word, body, f"{function} gets the toolchain cache")
+        for match in re.finditer(r"YGG_TOOLCHAIN_CACHE|--toolchains", self.lib.code):
+            self.assertIn(self.lib.function_at(match.start()), {"runCheck", "branchPolicy"},
+                          f"line {self.lib.line(match.start())}")
+
+
 class CiCapacityLibraryTests(unittest.TestCase):
     """How a build waits for the ci agent: checks take one of the ci-check slots before they ask for an
     executor, so the ci agent's other executors stay free for the short steps; and a job that has nothing of
