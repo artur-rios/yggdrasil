@@ -84,6 +84,9 @@ class FakeStatusSource implements StatusSource {
 }
 
 /// Pumps the whole app with in-memory stores and [source].
+///
+/// [environmentStore], when given, replaces the in-memory store holding
+/// [environments].
 Future<void> pumpConsole(
   WidgetTester tester, {
   required StatusSource source,
@@ -91,6 +94,7 @@ Future<void> pumpConsole(
     production,
     homologation,
   ],
+  EnvironmentStore? environmentStore,
   Map<String, String>? tokens,
   Size size = const Size(1000, 900),
   String? webOrigin,
@@ -107,7 +111,8 @@ Future<void> pumpConsole(
       overrides: <Override>[
         appConfigProvider.overrideWithValue(const AppConfig()),
         environmentStoreProvider.overrideWithValue(
-          InMemoryEnvironmentStore(environments: environments),
+          environmentStore ??
+              InMemoryEnvironmentStore(environments: environments),
         ),
         refreshSettingsStoreProvider.overrideWithValue(
           refreshSettings ?? InMemoryRefreshSettingsStore(),

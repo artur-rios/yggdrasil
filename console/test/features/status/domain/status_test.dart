@@ -22,20 +22,101 @@ ApplicationStatus applicationOf(
   environment,
 ).applications.firstWhere((application) => application.id == id);
 
+Matcher get isInvalidResponse => throwsA(
+  isA<StatusException>().having(
+    (error) => error.kind,
+    'kind',
+    StatusFailureKind.invalidResponse,
+  ),
+);
+
 void main() {
+  group('Status', () {
+    test('given every status, when sorted by severity, then down > degraded '
+        '> unknown > up > stopped > not deployed', () {
+      final sorted = Status.values.toList()
+        ..sort((a, b) => b.severity.compareTo(a.severity));
+
+      expect(sorted, <Status>[
+        Status.down,
+        Status.degraded,
+        Status.unknown,
+        Status.up,
+        Status.stopped,
+        Status.notDeployed,
+      ]);
+    });
+
+    test('given every status, when asked which are problems, then down, '
+        'degraded and unknown are and stopped is not', () {
+      expect(
+        Status.values.where((status) => status.isProblem),
+        unorderedEquals(<Status>[Status.down, Status.degraded, Status.unknown]),
+      );
+    });
+
+    test('given each wire value, when parsed, then it is its own status', () {
+      for (final status in Status.values) {
+        expect(Status.parse(status.wire), status, reason: status.wire);
+      }
+    });
+
+    test('given a missing, non-string or differently cased value, when '
+        'parsed, then it is unknown', () {
+      expect(Status.parse(null), Status.unknown);
+      expect(Status.parse(3), Status.unknown);
+      expect(Status.parse('UP'), Status.unknown);
+      expect(Status.parse('notDeployed'), Status.unknown);
+    });
+  });
+
+  group('ApplicationKind', () {
+    test(
+      'given each known wire value, when parsed, then it is its own kind',
+      () {
+        for (final kind in ApplicationKind.values) {
+          expect(ApplicationKind.parse(kind.wire), kind, reason: kind.wire);
+        }
+      },
+    );
+
+    test('given an unknown or missing kind, when parsed, then it is other', () {
+      expect(ApplicationKind.parse('cron'), ApplicationKind.other);
+      expect(ApplicationKind.parse(null), ApplicationKind.other);
+    });
+  });
+
+  group('IntegrationHealth and DetailsState', () {
+    test('given each wire value, when parsed, then it is its own value', () {
+      for (final health in IntegrationHealth.values) {
+        expect(IntegrationHealth.parse(health.wire), health);
+      }
+      for (final state in DetailsState.values) {
+        expect(DetailsState.parse(state.wire), state);
+      }
+    });
+
+    test('given a missing value, when parsed, then the health is unknown and '
+        'the details not checked', () {
+      expect(IntegrationHealth.parse(null), IntegrationHealth.unknown);
+      expect(DetailsState.parse(null), DetailsState.notChecked);
+    });
+  });
+
   group('HostStatus.fromJson with the v2 contract example', () {
     late HostStatus status;
 
     setUp(() => status = parseStatusBody(contractExampleJson()));
 
-    test('reads the host fields', () {
+    test('given the example, when parsed, then the host fields are read', () {
       expect(status.contractVersion, 2);
       expect(status.host, 'example.com');
       expect(status.generatedAt, DateTime.utc(2026, 10, 8, 18, 4, 11));
       expect(status.status, Status.up);
     });
 
-    test('reads the environments in order', () {
+    test('given the example, when parsed, then the environments are read in '
+        'order and found by id', () {
       expect(
         status.environments.map((e) => (e.id, e.name, e.onDemand, e.status)),
         <(String, String, bool, Status)>[
@@ -45,11 +126,13 @@ void main() {
         ],
       );
       expect(status.environment('production')!.name, 'Production');
+      expect(status.environmentName('production'), 'Production');
       expect(status.environment('local'), isNull);
       expect(status.environmentName('local'), 'local');
     });
 
-    test('reads each system per environment', () {
+    test('given the example, when parsed, then each system is read per '
+        'environment', () {
       expect(status.systems.map((system) => system.id), <String>[
         'heimdall',
         'fortuna',
@@ -76,7 +159,8 @@ void main() {
       expect(heimdall.applications, hasLength(6));
     });
 
-    test('the platform system appears in every environment', () {
+    test('given the example, when parsed, then the platform system appears '
+        'in every environment', () {
       final yggdrasil = systemOf(status, 'yggdrasil');
 
       expect(yggdrasil.environments, hasLength(3));
@@ -94,7 +178,8 @@ void main() {
       );
     });
 
-    test('reads every application field', () {
+    test('given the example, when parsed, then every application field is '
+        'read', () {
       final application = applicationOf(
         status,
         'heimdall',
@@ -105,6 +190,7 @@ void main() {
       expect(application.id, 'heimdall-api');
       expect(application.name, 'Heimdall API');
       expect(application.kind, ApplicationKind.api);
+      expect(application.kindWire, 'api');
       expect(application.status, Status.up);
       expect(application.url, 'https://heimdall-api.example.com');
       expect(
@@ -133,7 +219,8 @@ void main() {
       expect(probe.error, isNull);
     });
 
-    test('reads a stopped application: a container, no probe', () {
+    test('given a stopped application, when parsed, then it has a container '
+        'and no probe', () {
       final application = applicationOf(
         status,
         'heimdall',
@@ -154,7 +241,8 @@ void main() {
 
     setUp(() => status = v1Status());
 
-    test('reads it as a host with that one environment', () {
+    test('given a v1 response, when parsed, then it is a host with that one '
+        'environment, named after it', () {
       expect(status.contractVersion, 1);
       // The environment's name also names the host, as v1 consoles showed it.
       expect(status.host, 'Production');
@@ -168,7 +256,8 @@ void main() {
       expect(environment.status, Status.degraded);
     });
 
-    test('puts every system\'s applications in that environment', () {
+    test("given a v1 response, when parsed, then every system's applications "
+        'are in that environment', () {
       expect(status.systems.map((system) => system.id), <String>[
         'heimdall',
         'fortuna',
@@ -187,7 +276,8 @@ void main() {
       );
     });
 
-    test('without environmentName, the id names the environment and host', () {
+    test('given a v1 response without environmentName, when parsed, then the '
+        'id names the environment and the host', () {
       final json = jsonDecode(v1ExampleJson()) as Map<String, dynamic>
         ..remove('environmentName');
       final status = HostStatus.fromJson(json);
@@ -196,7 +286,26 @@ void main() {
       expect(status.environments.single.name, 'production');
     });
 
-    test('reads the null fields of a platform component', () {
+    test('given a v1 response without its environment, when parsed, then it '
+        'is an invalid response', () {
+      final json = jsonDecode(v1ExampleJson()) as Map<String, dynamic>
+        ..remove('environment');
+
+      expect(() => parseStatusBody(jsonEncode(json)), isInvalidResponse);
+    });
+
+    test('given a v1 system without applications, when parsed, then it is an '
+        'invalid response', () {
+      final json = jsonDecode(v1ExampleJson()) as Map<String, dynamic>;
+      ((json['systems'] as List<dynamic>).first as Map<String, dynamic>).remove(
+        'applications',
+      );
+
+      expect(() => parseStatusBody(jsonEncode(json)), isInvalidResponse);
+    });
+
+    test('given a platform component, when parsed, then its null fields read '
+        'as null', () {
       final traefik = applicationOf(
         status,
         'yggdrasil',
@@ -213,7 +322,8 @@ void main() {
       expect(traefik.deployment!.image, 'traefik:v3.5');
     });
 
-    test('reads a not deployed application with no container', () {
+    test('given a not deployed application, when parsed, then it has no '
+        'container and no probe', () {
       final jenkins = applicationOf(
         status,
         'yggdrasil',
@@ -228,7 +338,8 @@ void main() {
       expect(jenkins.probe, isNull);
     });
 
-    test('reads a null container health as no health check', () {
+    test('given a null container health, when parsed, then it reads as no '
+        'health check', () {
       final fortunaUi = applicationOf(
         status,
         'fortuna',
@@ -240,7 +351,8 @@ void main() {
       expect(fortunaUi.container!.state, 'running');
     });
 
-    test('a failing HTTP answer has a status code and no error', () {
+    test('given a failing HTTP answer, when parsed, then the probe has a '
+        'status code and no error', () {
       final loki = applicationOf(status, 'yggdrasil', 'production', 'loki');
 
       expect(loki.probe!.healthy, isFalse);
@@ -248,7 +360,7 @@ void main() {
       expect(loki.probe!.error, isNull);
     });
 
-    test('reads the worker kind', () {
+    test('given a worker, when parsed, then its kind is read', () {
       final worker = systemOf(status, 'huginn').applications.single;
 
       expect(worker.kind, ApplicationKind.worker);
@@ -262,7 +374,7 @@ void main() {
 
     setUp(() => status = demoStatus());
 
-    test('reads the default setup', () {
+    test('given the demo, when parsed, then it is the default setup', () {
       expect(status.host, 'example.com');
       // Hermes does not answer and Heimdall depends on it.
       expect(status.status, Status.degraded);
@@ -285,7 +397,8 @@ void main() {
       ]);
     });
 
-    test('the platform components are the same in every environment', () {
+    test('given the demo, when parsed, then the platform components are the '
+        'same in every environment', () {
       final yggdrasil = systemOf(status, 'yggdrasil');
 
       for (final environment in yggdrasil.environments) {
@@ -353,7 +466,18 @@ void main() {
     Map<String, dynamic> firstSystem(Map<String, dynamic> json) =>
         (json['systems'] as List<Object>).single as Map<String, dynamic>;
 
-    test('an unknown status string reads as unknown', () {
+    Map<String, dynamic> firstEnvironment(Map<String, dynamic> json) =>
+        (json['environments'] as List<Object>).single as Map<String, dynamic>;
+
+    Map<String, dynamic> firstApplication(Map<String, dynamic> json) =>
+        (((firstSystem(json)['environments'] as List<Object>).single
+                        as Map<String, dynamic>)['applications']
+                    as List<Object>)
+                .single
+            as Map<String, dynamic>;
+
+    test('given an unknown status string, when parsed, then it reads as '
+        'unknown at every level', () {
       final status = HostStatus.fromJson(minimal(status: 'rebooting'));
 
       expect(status.status, Status.unknown);
@@ -363,7 +487,8 @@ void main() {
       expect(onlyApplication(status).status, Status.unknown);
     });
 
-    test('stopped is read everywhere', () {
+    test('given stopped everywhere, when parsed, then stopped is read at '
+        'every level', () {
       final status = HostStatus.fromJson(minimal(status: 'stopped'));
 
       expect(status.environments.single.status, Status.stopped);
@@ -371,13 +496,8 @@ void main() {
       expect(Status.parse('stopped'), Status.stopped);
     });
 
-    test('a missing or non-string status reads as unknown', () {
-      expect(Status.parse(null), Status.unknown);
-      expect(Status.parse(3), Status.unknown);
-      expect(Status.parse('not_deployed'), Status.notDeployed);
-    });
-
-    test('an unknown kind keeps its wire value', () {
+    test('given an unknown kind, when parsed, then it is other and keeps its '
+        'wire value', () {
       final application = onlyApplication(
         HostStatus.fromJson(minimal(kind: 'cron')),
       );
@@ -386,7 +506,18 @@ void main() {
       expect(application.kindWire, 'cron');
     });
 
-    test('absent optional objects and fields read as null', () {
+    test('given a kind that is not a string, when parsed, then it is other '
+        'with no wire value', () {
+      final application = onlyApplication(
+        HostStatus.fromJson(minimal(kind: 7)),
+      );
+
+      expect(application.kind, ApplicationKind.other);
+      expect(application.kindWire, isNull);
+    });
+
+    test('given absent optional objects and fields, when parsed, then they '
+        'read as null or empty', () {
       final status = HostStatus.fromJson(minimal());
       final application = onlyApplication(status);
 
@@ -395,10 +526,14 @@ void main() {
       expect(application.deployment, isNull);
       expect(application.container, isNull);
       expect(application.probe, isNull);
+      expect(application.details, isNull);
       expect(status.systems.single.description, isNull);
+      expect(status.systems.single.icon, isNull);
+      expect(status.systems.single.environments.single.integrations, isEmpty);
     });
 
-    test('explicit nulls inside objects read as null', () {
+    test('given explicit nulls inside objects, when parsed, then they read as '
+        'null', () {
       final application = onlyApplication(
         HostStatus.fromJson(
           minimal(
@@ -429,12 +564,79 @@ void main() {
 
       expect(application.deployment!.version, isNull);
       expect(application.deployment!.deployedAt, isNull);
+      expect(application.deployment!.deployedAtText, isNull);
       expect(application.container!.restartCount, isNull);
       expect(application.probe!.healthy, isNull);
       expect(application.probe!.checkedAt, isNull);
     });
 
-    test('a deployedAt that is not a date is kept as written', () {
+    test('given optional objects that are not objects, when parsed, then they '
+        'read as null', () {
+      final application = onlyApplication(
+        HostStatus.fromJson(
+          minimal(
+            extra: <String, dynamic>{
+              'deployment': 'v1',
+              'container': <Object>[],
+              'probe': true,
+              'details': 'reported',
+            },
+          ),
+        ),
+      );
+
+      expect(application.deployment, isNull);
+      expect(application.container, isNull);
+      expect(application.probe, isNull);
+      expect(application.details, isNull);
+    });
+
+    test('given numbers sent as decimals and a healthy that is not a bool, '
+        'when parsed, then the numbers are truncated and healthy is null', () {
+      final application = onlyApplication(
+        HostStatus.fromJson(
+          minimal(
+            extra: <String, dynamic>{
+              'container': <String, dynamic>{'restartCount': 2.0},
+              'probe': <String, dynamic>{
+                'healthy': 'yes',
+                'statusCode': 200.0,
+                'latencyMs': 12.7,
+              },
+            },
+          ),
+        ),
+      );
+
+      expect(application.container!.restartCount, 2);
+      expect(application.probe!.statusCode, 200);
+      expect(application.probe!.latencyMs, 12);
+      expect(application.probe!.healthy, isNull);
+    });
+
+    test(
+      'given numbers sent as strings, when parsed, then they read as null',
+      () {
+        final application = onlyApplication(
+          HostStatus.fromJson(
+            minimal(
+              extra: <String, dynamic>{
+                'probe': <String, dynamic>{
+                  'statusCode': '200',
+                  'latencyMs': '5',
+                },
+              },
+            ),
+          ),
+        );
+
+        expect(application.probe!.statusCode, isNull);
+        expect(application.probe!.latencyMs, isNull);
+      },
+    );
+
+    test('given a deployedAt that is not a date, when parsed, then it is kept '
+        'as written', () {
       final application = onlyApplication(
         HostStatus.fromJson(
           minimal(
@@ -449,15 +651,34 @@ void main() {
       expect(application.deployment!.deployedAtText, 'last tuesday');
     });
 
-    test('an unreadable date reads as null', () {
-      final json = minimal()..['generatedAt'] = 'yesterday';
-
-      expect(HostStatus.fromJson(json).generatedAt, isNull);
+    test('given an unreadable or non-string date, when parsed, then it reads '
+        'as null', () {
+      expect(
+        HostStatus.fromJson(minimal()..['generatedAt'] = 'yesterday')
+            .generatedAt,
+        isNull,
+      );
+      expect(
+        HostStatus.fromJson(minimal()..['generatedAt'] = 1760000000)
+            .generatedAt,
+        isNull,
+      );
     });
 
-    test('an environment without a name is called by its id', () {
+    test('given a date with an offset, when parsed, then it is the same '
+        'moment in UTC', () {
+      final status = HostStatus.fromJson(
+        minimal()..['generatedAt'] = '2026-10-08T15:04:11-03:00',
+      );
+
+      expect(status.generatedAt, DateTime.utc(2026, 10, 8, 18, 4, 11));
+      expect(status.generatedAt!.isUtc, isTrue);
+    });
+
+    test('given an environment without a name and a non-boolean onDemand, '
+        'when parsed, then it is called by its id and is not on demand', () {
       final json = minimal();
-      ((json['environments'] as List<Object>).single as Map<String, dynamic>)
+      firstEnvironment(json)
         ..remove('name')
         ..['onDemand'] = 'yes';
       final environment = HostStatus.fromJson(json).environments.single;
@@ -467,7 +688,19 @@ void main() {
       expect(environment.onDemand, isFalse);
     });
 
-    test('a system environment the host does not list is still shown', () {
+    test('given an environment with a blank name, when parsed, then it is '
+        'called by its id', () {
+      final json = minimal();
+      firstEnvironment(json)['name'] = '   ';
+
+      expect(
+        HostStatus.fromJson(json).environments.single.name,
+        'homologation',
+      );
+    });
+
+    test('given a system environment the host does not list, when parsed, '
+        'then it is still shown, after the known ones', () {
       final json = minimal();
       final environments = firstSystem(json)['environments'] as List<Object>;
       environments.insert(0, <String, dynamic>{
@@ -485,13 +718,56 @@ void main() {
       expect(status.environmentName('staging'), 'staging');
     });
 
-    test('unknown extra fields are ignored', () {
+    test(
+      'given system environments in another order than the host, when '
+      'parsed, then they follow the host, unknown ones in the order sent',
+      () {
+        final json = minimal();
+        json['environments'] = <Object>[
+          for (final id in <String>[
+            'development',
+            'homologation',
+            'production',
+          ])
+            <String, dynamic>{'id': id, 'status': 'up'},
+        ];
+        firstSystem(json)['environments'] = <Object>[
+          for (final id in <String>[
+            'qa',
+            'production',
+            'staging',
+            'development',
+            'homologation',
+          ])
+            <String, dynamic>{
+              'environment': id,
+              'status': 'up',
+              'applications': <Object>[],
+            },
+        ];
+
+        expect(
+          HostStatus.fromJson(json).systems.single.environments
+              .map((e) => e.environment),
+          <String>[
+            'development',
+            'homologation',
+            'production',
+            'qa',
+            'staging',
+          ],
+        );
+      },
+    );
+
+    test('given unknown extra fields, when parsed, then they are ignored', () {
       final json = minimal()..['future'] = <String, dynamic>{'x': 1};
 
       expect(HostStatus.fromJson(json).host, 'example.com');
     });
 
-    test('a missing systems list is an invalid response', () {
+    test('given a response without systems, when parsed, then it is an '
+        'invalid response', () {
       expect(
         () => parseStatusBody(
           jsonEncode(<String, dynamic>{
@@ -499,75 +775,99 @@ void main() {
             'environments': <Object>[],
           }),
         ),
-        throwsA(
-          isA<StatusException>().having(
-            (error) => error.kind,
-            'kind',
-            StatusFailureKind.invalidResponse,
-          ),
-        ),
+        isInvalidResponse,
       );
       expect(
         () =>
             parseStatusBody(jsonEncode(<String, dynamic>{'environment': 'x'})),
-        throwsA(isA<StatusException>()),
+        isInvalidResponse,
       );
     });
 
-    test('a v2 response without a host or environments is invalid', () {
+    test('given a v2 response without a host or environments, when parsed, '
+        'then it is an invalid response', () {
       expect(
         () => parseStatusBody(jsonEncode(minimal()..remove('host'))),
-        throwsA(isA<StatusException>()),
+        isInvalidResponse,
+      );
+      expect(
+        () => parseStatusBody(jsonEncode(minimal()..['host'] = '')),
+        isInvalidResponse,
       );
       expect(
         () => parseStatusBody(jsonEncode(minimal()..remove('environments'))),
-        throwsA(isA<StatusException>()),
+        isInvalidResponse,
       );
     });
 
-    test('a v2 system without its environments list is invalid', () {
+    test('given a v2 system without its environments list, when parsed, then '
+        'it is an invalid response', () {
       final json = minimal();
       firstSystem(json).remove('environments');
 
-      expect(
-        () => parseStatusBody(jsonEncode(json)),
-        throwsA(isA<StatusException>()),
-      );
+      expect(() => parseStatusBody(jsonEncode(json)), isInvalidResponse);
     });
 
-    test('a system without an id is an invalid response', () {
+    test('given a system without an id or a name, when parsed, then it is an '
+        'invalid response', () {
+      for (final key in <String>['id', 'name']) {
+        final json = minimal();
+        firstSystem(json).remove(key);
+
+        expect(
+          () => parseStatusBody(jsonEncode(json)),
+          isInvalidResponse,
+          reason: key,
+        );
+      }
+    });
+
+    test('given an environment without an id, when parsed, then it is an '
+        'invalid response', () {
       final json = minimal();
-      firstSystem(json).remove('id');
+      firstEnvironment(json).remove('id');
 
-      expect(
-        () => parseStatusBody(jsonEncode(json)),
-        throwsA(isA<StatusException>()),
-      );
+      expect(() => parseStatusBody(jsonEncode(json)), isInvalidResponse);
     });
 
-    test('an environment without an id is an invalid response', () {
+    test('given an application without an id or a name, when parsed, then it '
+        'is an invalid response', () {
+      for (final key in <String>['id', 'name']) {
+        final json = minimal();
+        firstApplication(json).remove(key);
+
+        expect(
+          () => parseStatusBody(jsonEncode(json)),
+          isInvalidResponse,
+          reason: key,
+        );
+      }
+    });
+
+    test('given a list with an element that is not an object, when parsed, '
+        'then it is an invalid response', () {
       final json = minimal();
-      ((json['environments'] as List<Object>).single as Map<String, dynamic>)
-          .remove('id');
+      (json['systems'] as List<Object>).add('heimdall');
 
-      expect(
-        () => parseStatusBody(jsonEncode(json)),
-        throwsA(isA<StatusException>()),
-      );
+      expect(() => parseStatusBody(jsonEncode(json)), isInvalidResponse);
     });
 
-    test('a body that is not JSON is an invalid response', () {
+    test('given integrations that are not a list, when parsed, then the '
+        'system has none', () {
+      final json = minimal();
+      ((firstSystem(json)['environments'] as List<Object>).single
+              as Map<String, dynamic>)['integrations'] =
+          'none';
+
       expect(
-        () => parseStatusBody('<html>502 Bad Gateway</html>'),
-        throwsA(
-          isA<StatusException>().having(
-            (error) => error.kind,
-            'kind',
-            StatusFailureKind.invalidResponse,
-          ),
-        ),
+        HostStatus.fromJson(json)
+            .systems
+            .single
+            .environments
+            .single
+            .integrations,
+        isEmpty,
       );
-      expect(() => parseStatusBody('[]'), throwsA(isA<StatusException>()));
     });
   });
 
@@ -621,7 +921,8 @@ void main() {
       return json;
     }
 
-    test('reads icon, onDemand, integrations and details', () {
+    test('given icon, onDemand, integrations and details, when parsed, then '
+        'all are read', () {
       final status = HostStatus.fromJson(withNewFields());
       final system = status.systems.first;
       final environment = system.environments.last;
@@ -654,7 +955,8 @@ void main() {
       expect(details.services.last.reason, isNull);
     });
 
-    test('a response without the new fields still parses', () {
+    test('given responses without the new fields, when parsed, then they '
+        'still parse with none of them', () {
       for (final status in <HostStatus>[
         parseStatusBody(contractExampleJson()),
         v1Status(),
@@ -674,7 +976,8 @@ void main() {
       }
     });
 
-    test('an unrecognised integration status is unknown', () {
+    test('given an unrecognised integration status, when parsed, then it is '
+        'unknown', () {
       final json = withNewFields();
       final system =
           (json['systems'] as List<dynamic>).first as Map<String, dynamic>;
@@ -694,13 +997,123 @@ void main() {
       );
     });
 
-    test('an unrecognised details state is not checked', () {
+    test('given an integration without a check, when parsed, then the check '
+        'is empty', () {
+      final integration = IntegrationStatus.fromJson(<String, dynamic>{
+        'from': 'heimdall-api',
+        'system': 'hermes',
+      });
+
+      expect(integration.check, isEmpty);
+      expect(integration.status, IntegrationHealth.unknown);
+      expect(integration.reason, isNull);
+    });
+
+    test('given an integration without its caller, when parsed, then it '
+        'throws a format error', () {
+      expect(
+        () => IntegrationStatus.fromJson(<String, dynamic>{'system': 'hermes'}),
+        throwsFormatException,
+      );
+    });
+
+    test('given an unrecognised details state, when parsed, then it is not '
+        'checked with no services', () {
       final details = ApplicationDetails.fromJson(<String, dynamic>{
         'state': 'sleeping',
       });
 
       expect(details.state, DetailsState.notChecked);
       expect(details.services, isEmpty);
+      expect(details.checkedAt, isNull);
     });
+
+    test('given a reported service without a status, when parsed, then the '
+        'status is empty', () {
+      final service = ReportedService.fromJson(<String, dynamic>{
+        'name': 'Cache',
+      });
+
+      expect(service.status, isEmpty);
+      expect(service.reason, isNull);
+    });
+
+    test('given a reported service without a name, when parsed, then it '
+        'throws a format error', () {
+      expect(
+        () => ReportedService.fromJson(<String, dynamic>{'status': 'Healthy'}),
+        throwsFormatException,
+      );
+    });
+  });
+
+  group("the fixtures follow the contract's rollup rule", () {
+    // docs/status-api.md: the one rule used at every level.
+    Status rollup(Iterable<Status> members) {
+      final deployed = members.where((s) => s != Status.notDeployed).toList();
+
+      if (deployed.isEmpty) {
+        return Status.notDeployed;
+      }
+
+      final running = deployed.where((s) => s != Status.stopped).toList();
+
+      if (running.isEmpty) {
+        return Status.stopped;
+      }
+
+      if (running.every((s) => s == Status.down)) {
+        return Status.down;
+      }
+
+      if (running.any((s) => s == Status.down || s == Status.degraded)) {
+        return Status.degraded;
+      }
+
+      return running.contains(Status.unknown) ? Status.unknown : Status.up;
+    }
+
+    for (final (name, load) in <(String, HostStatus Function())>[
+      ('demo', demoStatus),
+      ('contract example', () => parseStatusBody(contractExampleJson())),
+      ('v1 example', v1Status),
+    ]) {
+      test('given the $name fixture, when each level is rolled up, then it '
+          'matches the status the fixture states', () {
+        final host = load();
+
+        // Platform components count as stopped where the environment is.
+        final stopped = <String>{
+          for (final e in host.environments)
+            if (e.status == Status.stopped) e.id,
+        };
+
+        for (final system in host.systems) {
+          for (final environment in system.environments) {
+            expect(
+              environment.status,
+              rollup(
+                environment.applications.map(
+                  (a) =>
+                      a.kind == ApplicationKind.platform &&
+                          stopped.contains(environment.environment)
+                      ? Status.stopped
+                      : a.status,
+                ),
+              ),
+              reason: '${system.id} in ${environment.environment}',
+            );
+          }
+
+          expect(
+            system.status,
+            rollup(system.environments.map((e) => e.status)),
+            reason: system.id,
+          );
+        }
+
+        expect(host.status, rollup(host.environments.map((e) => e.status)));
+      });
+    }
   });
 }

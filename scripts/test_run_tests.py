@@ -13,10 +13,21 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 import run_tests
 
 RUNNER = pathlib.Path(__file__).resolve().parent / "run_tests.py"
+
+# A test that ends its process before unittest prints its last lines: the chunk's output has no "Ran" line.
+DYING = """
+    import os
+    import unittest
+
+    class Dying(unittest.TestCase):
+        def test_dies(self):
+            os._exit(3)
+"""
 
 PASSING = """
     import unittest
@@ -110,6 +121,30 @@ class RunTestsTests(unittest.TestCase):
                          {"run": 12, "failures": 1, "errors": 2, "skipped": 3})
         self.assertEqual(run_tests.counts("Ran 1 test in 0.1s\n\nOK\n"), {"run": 1})
         self.assertIsNone(run_tests.counts("Traceback (most recent call last):\n"))
+
+    def test_given_a_chunk_whose_process_dies_when_run_then_it_is_an_error_and_its_output_is_shown(self):
+        self.module("test_passing", PASSING)
+        self.module("test_dying", DYING)
+        run = self.run_runner("-j", "2")
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("FAIL  test_dying.Dying", run.stdout)
+        self.assertTrue(run.stdout.rstrip().endswith("FAILED (errors=1, skipped=1)"), run.stdout)
+
+    def test_given_workers_asked_on_the_command_line_when_counted_then_they_win(self):
+        with mock.patch.dict(run_tests.os.environ, {"YGG_TEST_WORKERS": "5"}):
+            self.assertEqual(run_tests.workers_wanted(3), 3)
+
+    def test_given_ygg_test_workers_when_counted_then_it_is_the_number(self):
+        with mock.patch.dict(run_tests.os.environ, {"YGG_TEST_WORKERS": "5"}):
+            self.assertEqual(run_tests.workers_wanted(None), 5)
+
+    def test_given_neither_when_counted_then_it_is_the_processors_up_to_the_maximum_and_at_least_one(self):
+        environment = {k: v for k, v in run_tests.os.environ.items() if k != "YGG_TEST_WORKERS"}
+        with mock.patch.dict(run_tests.os.environ, environment, clear=True):
+            for processors, expected in ((2, 2), (64, run_tests.MAX_WORKERS), (None, 1)):
+                cpu_count = mock.patch.object(run_tests.os, "cpu_count", return_value=processors)
+                with self.subTest(processors=processors), cpu_count:
+                    self.assertEqual(run_tests.workers_wanted(None), expected)
 
 
 if __name__ == "__main__":

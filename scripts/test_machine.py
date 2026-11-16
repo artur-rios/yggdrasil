@@ -635,11 +635,6 @@ class MachineRoleTests(unittest.TestCase):
             result.stderr,
         )
 
-    def test_given_role_dev_when_installed_then_the_role_file_says_dev(self):
-        self.install("dev")
-        self.assertEqual(self.etc("yggdrasil-role").read_text().split(), ["dev"])
-        self.assertEqual(self.etc("yggdrasil-role").stat().st_mode & 0o777, 0o644)
-
     def test_given_the_role_flag_when_installed_then_it_is_the_same_as_the_bare_role(self):
         result = self.host("install", "--role", "apps")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -720,20 +715,6 @@ class MachineRoleTests(unittest.TestCase):
         line = next(line for line in result.stdout.splitlines() if "rootful docker" in line)
         self.assertIn("ok", line.split("rootful docker")[0])
 
-    def test_given_role_apps_when_installed_then_unprivileged_ports_start_at_80(self):
-        self.install("apps")
-        path = self.etc("sysctl.d/90-yggdrasil.conf")
-        self.assertEqual(path.read_text(), SYSCTL)
-        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
-        calls = self.calls()
-        self.assertIn("sysctl --system", calls)
-        self.assertLess(calls.index(f"sudo tee {path}"), calls.index("sysctl --system"))
-
-    def test_given_role_apps_when_installed_then_rootlesskit_may_use_user_namespaces(self):
-        self.install("apps")
-        self.assertEqual(self.etc("apparmor.d/usr.bin.rootlesskit").read_text(), APPARMOR)
-        self.assertIn("systemctl restart apparmor.service", self.calls())
-
     def ship_apparmor_profile(self):
         """The system's own rootlesskit profile, as Ubuntu 26.04's apparmor package installs it."""
         path = self.etc("apparmor.d/rootlesskit")
@@ -772,11 +753,6 @@ class MachineRoleTests(unittest.TestCase):
         self.assertIn(unload, calls)
         self.assertLess(calls.index(unload), calls.index("systemctl restart apparmor.service"))
         self.assertEqual(self.etc("apparmor.d/rootlesskit").read_text(), APPARMOR_SHIPPED)
-
-    def test_given_role_apps_when_installed_then_the_user_slice_delegates_controllers(self):
-        self.install("apps")
-        self.assertEqual(self.etc("systemd/system/user@.service.d/delegate.conf").read_text(), DELEGATE)
-        self.assertIn("systemctl daemon-reload", self.calls())
 
     def test_given_role_apps_when_installed_twice_then_each_system_file_is_written_once_with_the_same_content(self):
         self.install("apps")
@@ -856,14 +832,6 @@ class MachineRoleTests(unittest.TestCase):
         self.assertNotIn("== System ==", bare.stdout)
 
     # ---- Before any step: sudo, the checkout and the role file ----------------------------------
-
-    def test_given_role_dev_when_installed_then_sudo_is_asked_for_before_anything_else(self):
-        self.install("dev")
-        sudo_calls = [call for call in self.calls() if call.startswith("sudo ")]
-        # Asked once, up front: without a ticket the check rows that need root say "not checked" and
-        # queue nothing, and install would trust them.
-        self.assertEqual(sudo_calls[0], "sudo -v")
-        self.assertEqual(sudo_calls.count("sudo -v"), 1)
 
     def test_given_sudo_refusing_the_admin_when_installing_then_it_stops_with_nothing_changed(self):
         (self.state / "sudo-v-fails").write_text("")
@@ -990,22 +958,6 @@ class MachineRoleTests(unittest.TestCase):
             self.assertTrue(line.startswith("  ok "), line)
             self.assertIn("no sudo", line)
 
-    def test_given_role_apps_when_installed_then_only_ygg_is_created(self):
-        self.install("apps")
-        self.assertEqual(list(self.users()), ["ygg"])
-        self.assertEqual(self.users()["ygg"][6], "/bin/bash")
-        self.assertEqual(len([call for call in self.calls() if call.startswith("useradd")]), 1)
-        self.assertFalse(self.etc("yggdrasil-ci").exists())
-        self.assertEqual(list(self.etc("systemd/system").glob("user-*.slice.d")), [])
-
-    def test_given_role_dev_when_installed_then_ci_release_and_renovate_cannot_log_in(self):
-        self.install("dev")
-        users = self.users()
-        for user in ("ci", "release", "renovate"):
-            self.assertEqual(users[user][6], "/usr/sbin/nologin", user)
-        for user in ("ygg", "dev"):
-            self.assertEqual(users[user][6], "/bin/bash", user)
-
     def test_given_a_user_with_the_wrong_shell_when_installed_then_it_is_put_right_without_a_new_user(self):
         self.install("dev")
         self.passwd.write_text(self.passwd.read_text().replace(
@@ -1015,14 +967,6 @@ class MachineRoleTests(unittest.TestCase):
         self.install("dev")
         self.assertEqual(self.users()["ci"][6], "/usr/sbin/nologin")
         self.assertEqual(len([call for call in self.calls() if call.startswith("useradd")]), 5)
-
-    def test_given_role_dev_when_installed_then_ci_is_capped_at_six_cpus_and_20g(self):
-        self.install("dev")
-        uid = self.users()["ci"][2]
-        path = self.etc(f"systemd/system/user-{uid}.slice.d/limits.conf")
-        self.assertEqual(path.read_text(), LIMITS)
-        calls = self.calls()
-        self.assertGreater(len(calls) - 1 - calls[::-1].index("systemctl daemon-reload"), calls.index(f"sudo tee {path}"))
 
     def low_ports_file(self, user):
         return self.etc(f"systemd/system/user-{self.users()[user][2]}.slice.d/50-yggdrasil-ports.conf")
@@ -1104,28 +1048,6 @@ class MachineRoleTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(path.read_text(), "PermitRootLogin yes\n")
 
-    def test_given_role_dev_when_hardened_then_only_the_admin_ygg_and_dev_may_log_in(self):
-        self.install("dev")
-        path = self.etc("ssh/sshd_config.d/00-yggdrasil.conf")
-        self.assertEqual(path.read_text(), SSH_DEV)
-        calls = self.calls()
-        self.assertLess(calls.index("sshd -t"), calls.index("systemctl try-reload-or-restart ssh"))
-        self.assertLess(calls.index(f"sudo tee {path}"), calls.index("sshd -t"))
-
-    def test_given_role_apps_when_hardened_then_only_the_admin_and_ygg_may_log_in(self):
-        self.install("apps")
-        self.assertIn("AllowUsers admin ygg\n", self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text())
-
-    def test_given_role_dev_when_hardened_then_the_admins_key_goes_to_ygg_and_dev_only(self):
-        self.install("dev")
-        for user in ("ygg", "dev"):
-            keys = self.homes / user / ".ssh" / "authorized_keys"
-            self.assertEqual(keys.read_text(), KEY, user)
-            self.assertEqual(keys.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(self.owners()[str(keys)], f"{user}:{user}")
-        for user in ("ci", "release", "renovate"):
-            self.assertFalse((self.homes / user / ".ssh").exists(), user)
-
     def test_given_a_user_with_its_own_keys_when_hardened_then_they_are_kept(self):
         mine = self.homes / "ygg" / ".ssh" / "authorized_keys"
         mine.parent.mkdir(parents=True)
@@ -1159,27 +1081,6 @@ class MachineRoleTests(unittest.TestCase):
         stdout, rows = self.rows("dev")
         self.assertIn("ygg:ygg", self.row(rows, "checkout owner"))
 
-    def test_given_role_dev_when_installed_then_every_secrets_directory_is_closed_to_its_user(self):
-        self.install("dev")
-        owners = self.owners()
-        env = pathlib.Path(__file__).resolve().parent.parent / "env"
-        expected = {
-            "ygg": {"platform.env": "platform.env.example", "acme.env": "acme.env.example"},
-            "ci": {"agent.env": "agent.env.example"},
-            "release": {"agent.env": "agent.env.example"},
-            "renovate": {"renovate.env": "renovate.env.example"},
-            "dev": {},
-        }
-        for user, files in expected.items():
-            directory = self.etc("yggdrasil" if user == "ygg" else f"yggdrasil-{user}")
-            self.assertEqual(directory.stat().st_mode & 0o777, 0o750, directory)
-            self.assertEqual(owners[str(directory)], f"{user}:{user}")
-            self.assertEqual(sorted(p.name for p in directory.iterdir()), sorted(files), user)
-            for name, template in files.items():
-                self.assertEqual((directory / name).read_text(), (env / template).read_text())
-                self.assertEqual((directory / name).stat().st_mode & 0o777, 0o600)
-                self.assertEqual(owners[str(directory / name)], f"{user}:{user}")
-
     def test_given_a_secrets_file_already_there_when_installed_then_it_is_kept(self):
         mine = self.etc("yggdrasil/platform.env")
         mine.parent.mkdir(parents=True)
@@ -1188,16 +1089,6 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(mine.read_text(), "DOMAIN=mine.example.com\n")
         self.assertTrue(self.etc("yggdrasil/acme.env").exists())
         self.assertNotIn(str(mine), self.owners())
-
-    def test_given_role_apps_when_installed_then_only_yggs_secrets_are_made(self):
-        self.install("apps")
-        self.assertEqual(
-            sorted(p.name for p in self.etc("yggdrasil").iterdir()), ["acme.env", "cloudflare-ips", "platform.env", "security-signals-production.env"])
-        self.assertEqual(sorted(p.name for p in self.sysroot.joinpath("etc").glob("yggdrasil-*")), ["yggdrasil-role"])
-
-    def test_given_role_apps_when_installed_then_security_updates_are_automatic(self):
-        self.install("apps")
-        self.assertEqual(self.etc("apt/apt.conf.d/20auto-upgrades").read_text(), UPGRADES)
 
     def test_given_role_dev_when_checked_then_a_service_user_in_the_sudo_group_is_reported(self):
         self.install("dev")
@@ -1305,17 +1196,6 @@ class MachineRoleTests(unittest.TestCase):
 
     def test_given_ufw_showing_openssh_by_its_ports_in_verbose_when_apps_is_checked_then_ssh_is_allowed(self):
         self.assert_openssh_seen_in("apps")
-
-    def test_given_role_apps_when_the_firewall_is_set_then_cloudflare_ips_is_written_for_traefik(self):
-        result = self.install("apps")
-        # Traefik reads the file when platform.sh renders its configuration, not before.
-        self.assertIn("after the next 'scripts/platform.sh up' as ygg", result.stdout)
-        path = self.etc("yggdrasil/cloudflare-ips")
-        self.assertEqual(path.read_text(), "".join(line + "\n" for line in CLOUDFLARE_V4 + CLOUDFLARE_V6))
-        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
-        self.assertEqual(self.owners()[str(path)], "ygg:ygg")
-        # The file's directory is ygg's secrets directory: writing the file doesn't open it up.
-        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o750)
 
     def test_given_a_firewall_set_when_installed_again_then_no_rule_is_added_twice(self):
         self.install("apps")
@@ -1735,23 +1615,6 @@ class MachineRoleTests(unittest.TestCase):
         self.assertIsNone(self.row(rows, "engine ci"))
         self.assertFalse([line for line in rows if "→" in line], stdout)
 
-    def test_given_a_nologin_user_when_its_engine_is_installed_then_the_commands_run_as_that_user(self):
-        self.install("dev")
-        self.assertEqual(self.users()["ci"][6], "/usr/sbin/nologin")
-        calls = self.calls()
-        uid = self.uid_of("ci")
-        env = f"XDG_RUNTIME_DIR=/run/user/{uid} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"
-        setup = f"sudo -u ci env {env} dockerd-rootless-setuptool.sh install"
-        self.assertIn(setup, calls)
-        # From /, not from the admin's closed home: ci can't enter that, and it has no shell to ask for.
-        self.assertEqual(calls[calls.index(setup) + 1], "as ci in /")
-        self.assertFalse([c for c in calls if c.startswith(("sudo -s", "sudo -i", "su "))], calls)
-        # Every call made as ci has its runtime directory and bus.
-        as_ci = [c for c in calls if c.startswith(("sudo -u ci ", "sudo -n -u ci "))]
-        self.assertTrue(as_ci)
-        for call in as_ci:
-            self.assertIn(env, call)
-
     def test_given_an_engine_when_installed_then_it_keeps_client_addresses(self):
         self.install("dev")
         for user in DEV_USERS:
@@ -1973,10 +1836,6 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(self.override_of("ygg").read_text(), OVERRIDE)
         self.assertIn(self.as_user("ygg", "systemctl --user restart docker"), self.calls())
 
-    def test_given_a_fresh_engine_when_installed_then_it_is_not_restarted(self):
-        self.install("dev")
-        self.assertFalse([c for c in self.calls() if "systemctl --user restart" in c], self.calls())
-
     def test_given_a_stopped_engine_and_no_dropin_when_installed_then_it_is_not_restarted(self):
         self.install("apps")
         self.override_of("ygg").unlink()
@@ -2007,24 +1866,6 @@ class MachineRoleTests(unittest.TestCase):
             "HEIMDALL_SIGNAL_HEARTBEAT_URL=https://hc-ping.example.com/uuid\n")
         self.last_run("success")
 
-    def test_given_role_apps_when_installed_then_ygg_has_the_production_signals_timer_enabled(self):
-        self.install("apps")
-        for name in self.SIGNAL_UNITS:
-            self.assertEqual((self.unit_dir() / name).read_text(), self.repo_unit(name))
-        calls = self.calls()
-        enable = self.as_user("ygg", f"systemctl --user enable --now {self.SIGNAL_TIMER}")
-        self.assertIn(enable, calls)
-        self.assertLess(calls.index(self.as_user("ygg", "systemctl --user enable --now docker")), calls.index(enable))
-        self.assertLess(calls.index(self.as_user("ygg", "tee", str(self.unit_dir() / self.SIGNAL_UNITS[1]))), calls.index(enable))
-        self.assertEqual([c for c in calls if c.startswith("sudo") and "yggdrasil-security-signals" in c and " enable " in c], [enable])
-
-    def test_given_role_apps_when_installed_then_the_settings_are_the_closed_template(self):
-        self.install("apps")
-        env = pathlib.Path(__file__).resolve().parent.parent / "env"
-        self.assertEqual(self.signal_settings().read_text(), (env / "security-signals.env.example").read_text())
-        self.assertEqual(self.signal_settings().stat().st_mode & 0o777, 0o600)
-        self.assertEqual(self.owners()[str(self.signal_settings())], "ygg:ygg")
-
     def test_given_a_machine_whose_secrets_are_already_right_when_installed_then_the_template_is_still_copied(self):
         self.install("apps")
         self.signal_settings().unlink()
@@ -2041,13 +1882,6 @@ class MachineRoleTests(unittest.TestCase):
         before = self.signal_settings().read_text()
         self.install("apps")
         self.assertEqual(self.signal_settings().read_text(), before)
-
-    def test_given_role_dev_when_installed_then_there_is_no_signals_timer(self):
-        self.install("dev")
-        for name in self.SIGNAL_UNITS:
-            self.assertFalse((self.unit_dir() / name).exists(), name)
-        self.assertFalse([c for c in self.calls() if "yggdrasil-security-signals" in c])
-        self.assertFalse(self.signal_settings().exists())
 
     def test_given_role_apps_when_installed_again_then_the_timer_is_not_touched(self):
         self.install("apps")
@@ -2490,6 +2324,197 @@ class MachineRoleTests(unittest.TestCase):
         self.assertTrue(line.startswith("  !! "), line)
         self.assertIn("exit-code", line)
         self.assertIn("journalctl --user -u yggdrasil-renovate", line)
+
+
+def without_inherited_tests(cls):
+    """A subclass of a TestCase that keeps its base's helpers and runs only the tests it defines itself:
+    the inherited ones already run in the base."""
+    for name in dir(cls):
+        if name.startswith("test") and name not in vars(cls):
+            setattr(cls, name, None)
+    return cls
+
+
+@without_inherited_tests
+class InstalledRoleTests(MachineRoleTests):
+    """Tests that only read what one `host.sh install <ROLE>` left behind: the class installs once and its
+    tests share that machine. An installation starts thousands of processes (the fakes) and is most of what
+    such a test costs. A test that changes the machine, or runs host.sh again, belongs in MachineRoleTests,
+    with a machine of its own."""
+
+    ROLE = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        machine = MachineRoleTests()
+        cls.addClassCleanup(machine.doCleanups)
+        machine.setUp()
+        cls.installation = machine.install(cls.ROLE)
+        cls.machine = machine
+
+    def setUp(self):
+        # The installed machine's sandbox (temp, state, sysroot, homes, env, ...) instead of one of its own.
+        for name, value in vars(self.machine).items():
+            if not name.startswith("_"):
+                setattr(self, name, value)
+
+
+@without_inherited_tests
+class InstalledDevTests(InstalledRoleTests):
+    ROLE = "dev"
+
+    def test_given_role_dev_when_installed_then_the_role_file_says_dev(self):
+        self.assertEqual(self.etc("yggdrasil-role").read_text().split(), ["dev"])
+        self.assertEqual(self.etc("yggdrasil-role").stat().st_mode & 0o777, 0o644)
+
+    def test_given_role_dev_when_installed_then_sudo_is_asked_for_before_anything_else(self):
+        sudo_calls = [call for call in self.calls() if call.startswith("sudo ")]
+        # Asked once, up front: without a ticket the check rows that need root say "not checked" and
+        # queue nothing, and install would trust them.
+        self.assertEqual(sudo_calls[0], "sudo -v")
+        self.assertEqual(sudo_calls.count("sudo -v"), 1)
+
+    def test_given_role_dev_when_installed_then_ci_release_and_renovate_cannot_log_in(self):
+        users = self.users()
+        for user in ("ci", "release", "renovate"):
+            self.assertEqual(users[user][6], "/usr/sbin/nologin", user)
+        for user in ("ygg", "dev"):
+            self.assertEqual(users[user][6], "/bin/bash", user)
+
+    def test_given_role_dev_when_installed_then_ci_is_capped_at_six_cpus_and_20g(self):
+        uid = self.users()["ci"][2]
+        path = self.etc(f"systemd/system/user-{uid}.slice.d/limits.conf")
+        self.assertEqual(path.read_text(), LIMITS)
+        calls = self.calls()
+        self.assertGreater(len(calls) - 1 - calls[::-1].index("systemctl daemon-reload"), calls.index(f"sudo tee {path}"))
+
+    def test_given_role_dev_when_hardened_then_only_the_admin_ygg_and_dev_may_log_in(self):
+        path = self.etc("ssh/sshd_config.d/00-yggdrasil.conf")
+        self.assertEqual(path.read_text(), SSH_DEV)
+        calls = self.calls()
+        self.assertLess(calls.index("sshd -t"), calls.index("systemctl try-reload-or-restart ssh"))
+        self.assertLess(calls.index(f"sudo tee {path}"), calls.index("sshd -t"))
+
+    def test_given_role_dev_when_hardened_then_the_admins_key_goes_to_ygg_and_dev_only(self):
+        for user in ("ygg", "dev"):
+            keys = self.homes / user / ".ssh" / "authorized_keys"
+            self.assertEqual(keys.read_text(), KEY, user)
+            self.assertEqual(keys.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self.owners()[str(keys)], f"{user}:{user}")
+        for user in ("ci", "release", "renovate"):
+            self.assertFalse((self.homes / user / ".ssh").exists(), user)
+
+    def test_given_role_dev_when_installed_then_every_secrets_directory_is_closed_to_its_user(self):
+        owners = self.owners()
+        env = pathlib.Path(__file__).resolve().parent.parent / "env"
+        expected = {
+            "ygg": {"platform.env": "platform.env.example", "acme.env": "acme.env.example"},
+            "ci": {"agent.env": "agent.env.example"},
+            "release": {"agent.env": "agent.env.example"},
+            "renovate": {"renovate.env": "renovate.env.example"},
+            "dev": {},
+        }
+        for user, files in expected.items():
+            directory = self.etc("yggdrasil" if user == "ygg" else f"yggdrasil-{user}")
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o750, directory)
+            self.assertEqual(owners[str(directory)], f"{user}:{user}")
+            self.assertEqual(sorted(p.name for p in directory.iterdir()), sorted(files), user)
+            for name, template in files.items():
+                self.assertEqual((directory / name).read_text(), (env / template).read_text())
+                self.assertEqual((directory / name).stat().st_mode & 0o777, 0o600)
+                self.assertEqual(owners[str(directory / name)], f"{user}:{user}")
+
+    def test_given_a_nologin_user_when_its_engine_is_installed_then_the_commands_run_as_that_user(self):
+        self.assertEqual(self.users()["ci"][6], "/usr/sbin/nologin")
+        calls = self.calls()
+        uid = self.uid_of("ci")
+        env = f"XDG_RUNTIME_DIR=/run/user/{uid} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"
+        setup = f"sudo -u ci env {env} dockerd-rootless-setuptool.sh install"
+        self.assertIn(setup, calls)
+        # From /, not from the admin's closed home: ci can't enter that, and it has no shell to ask for.
+        self.assertEqual(calls[calls.index(setup) + 1], "as ci in /")
+        self.assertFalse([c for c in calls if c.startswith(("sudo -s", "sudo -i", "su "))], calls)
+        # Every call made as ci has its runtime directory and bus.
+        as_ci = [c for c in calls if c.startswith(("sudo -u ci ", "sudo -n -u ci "))]
+        self.assertTrue(as_ci)
+        for call in as_ci:
+            self.assertIn(env, call)
+
+    def test_given_a_fresh_engine_when_installed_then_it_is_not_restarted(self):
+        self.assertFalse([c for c in self.calls() if "systemctl --user restart" in c], self.calls())
+
+    def test_given_role_dev_when_installed_then_there_is_no_signals_timer(self):
+        for name in self.SIGNAL_UNITS:
+            self.assertFalse((self.unit_dir() / name).exists(), name)
+        self.assertFalse([c for c in self.calls() if "yggdrasil-security-signals" in c])
+        self.assertFalse(self.signal_settings().exists())
+
+
+@without_inherited_tests
+class InstalledAppsTests(InstalledRoleTests):
+    ROLE = "apps"
+
+    def test_given_role_apps_when_installed_then_unprivileged_ports_start_at_80(self):
+        path = self.etc("sysctl.d/90-yggdrasil.conf")
+        self.assertEqual(path.read_text(), SYSCTL)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+        calls = self.calls()
+        self.assertIn("sysctl --system", calls)
+        self.assertLess(calls.index(f"sudo tee {path}"), calls.index("sysctl --system"))
+
+    def test_given_role_apps_when_installed_then_rootlesskit_may_use_user_namespaces(self):
+        self.assertEqual(self.etc("apparmor.d/usr.bin.rootlesskit").read_text(), APPARMOR)
+        self.assertIn("systemctl restart apparmor.service", self.calls())
+
+    def test_given_role_apps_when_installed_then_the_user_slice_delegates_controllers(self):
+        self.assertEqual(self.etc("systemd/system/user@.service.d/delegate.conf").read_text(), DELEGATE)
+        self.assertIn("systemctl daemon-reload", self.calls())
+
+    def test_given_role_apps_when_installed_then_only_ygg_is_created(self):
+        self.assertEqual(list(self.users()), ["ygg"])
+        self.assertEqual(self.users()["ygg"][6], "/bin/bash")
+        self.assertEqual(len([call for call in self.calls() if call.startswith("useradd")]), 1)
+        self.assertFalse(self.etc("yggdrasil-ci").exists())
+        self.assertEqual(list(self.etc("systemd/system").glob("user-*.slice.d")), [])
+
+    def test_given_role_apps_when_hardened_then_only_the_admin_and_ygg_may_log_in(self):
+        self.assertIn("AllowUsers admin ygg\n", self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text())
+
+    def test_given_role_apps_when_installed_then_only_yggs_secrets_are_made(self):
+        self.assertEqual(
+            sorted(p.name for p in self.etc("yggdrasil").iterdir()), ["acme.env", "cloudflare-ips", "platform.env", "security-signals-production.env"])
+        self.assertEqual(sorted(p.name for p in self.sysroot.joinpath("etc").glob("yggdrasil-*")), ["yggdrasil-role"])
+
+    def test_given_role_apps_when_installed_then_security_updates_are_automatic(self):
+        self.assertEqual(self.etc("apt/apt.conf.d/20auto-upgrades").read_text(), UPGRADES)
+
+    def test_given_role_apps_when_the_firewall_is_set_then_cloudflare_ips_is_written_for_traefik(self):
+        result = self.installation
+        # Traefik reads the file when platform.sh renders its configuration, not before.
+        self.assertIn("after the next 'scripts/platform.sh up' as ygg", result.stdout)
+        path = self.etc("yggdrasil/cloudflare-ips")
+        self.assertEqual(path.read_text(), "".join(line + "\n" for line in CLOUDFLARE_V4 + CLOUDFLARE_V6))
+        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.owners()[str(path)], "ygg:ygg")
+        # The file's directory is ygg's secrets directory: writing the file doesn't open it up.
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o750)
+
+    def test_given_role_apps_when_installed_then_ygg_has_the_production_signals_timer_enabled(self):
+        for name in self.SIGNAL_UNITS:
+            self.assertEqual((self.unit_dir() / name).read_text(), self.repo_unit(name))
+        calls = self.calls()
+        enable = self.as_user("ygg", f"systemctl --user enable --now {self.SIGNAL_TIMER}")
+        self.assertIn(enable, calls)
+        self.assertLess(calls.index(self.as_user("ygg", "systemctl --user enable --now docker")), calls.index(enable))
+        self.assertLess(calls.index(self.as_user("ygg", "tee", str(self.unit_dir() / self.SIGNAL_UNITS[1]))), calls.index(enable))
+        self.assertEqual([c for c in calls if c.startswith("sudo") and "yggdrasil-security-signals" in c and " enable " in c], [enable])
+
+    def test_given_role_apps_when_installed_then_the_settings_are_the_closed_template(self):
+        env = pathlib.Path(__file__).resolve().parent.parent / "env"
+        self.assertEqual(self.signal_settings().read_text(), (env / "security-signals.env.example").read_text())
+        self.assertEqual(self.signal_settings().stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.owners()[str(self.signal_settings())], "ygg:ygg")
 
 
 class PruneUnitTests(unittest.TestCase):

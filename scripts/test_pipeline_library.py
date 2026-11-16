@@ -349,7 +349,7 @@ class PipelineLibraryTests(unittest.TestCase):
         # them pending. catalog.py validates the names with the same rule, so a name the library would refuse
         # is a catalog error instead.
         context = field_literal(self.lib, "STATUS_CONTEXT")[1]
-        self.assertEqual(f"^{context}\Z", catalog_module.STATUS_CONTEXT.pattern)
+        self.assertEqual(rf"^{context}\Z",catalog_module.STATUS_CONTEXT.pattern)
         pattern = re.compile(context)
         catalog = catalog_module.load()
         entries = ([application for system in catalog["systems"] for application in system.get("applications") or []]

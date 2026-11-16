@@ -315,7 +315,7 @@ class TheUnits(unittest.TestCase):
     def timer(self):
         return (UNITS / "yggdrasil-security-signals@.timer").read_text()
 
-    def test_the_service_runs_the_script_for_its_instance_on_the_users_engine(self):
+    def test_given_the_service_unit_when_started_then_it_runs_the_script_for_its_instance_on_the_users_engine_as_a_oneshot_with_a_timeout(self):
         service = self.service()
         self.assertIn("ExecStart=/opt/yggdrasil/scripts/security-signals.sh run %i\n", service)
         self.assertIn("Environment=DOCKER_HOST=unix://%t/docker.sock\n", service)
@@ -324,16 +324,16 @@ class TheUnits(unittest.TestCase):
         self.assertIn("Type=oneshot\n", service)
         self.assertRegex(service, r"TimeoutStartSec=\d+")
 
-    def test_the_timer_runs_every_fifteen_minutes_and_catches_up(self):
+    def test_given_the_timer_unit_when_enabled_then_it_runs_every_fifteen_minutes_and_catches_up(self):
         timer = self.timer()
         self.assertIn("OnCalendar=*:0/15\n", timer)
         self.assertIn("Persistent=true\n", timer)
         self.assertIn("WantedBy=timers.target\n", timer)
 
-    def test_the_script_is_executable_as_the_unit_runs_it_directly(self):
+    def test_given_the_unit_runs_the_script_directly_when_its_mode_is_read_then_the_script_is_executable(self):
         self.assertTrue(os.access(SCRIPT, os.X_OK))
 
-    def test_the_template_has_the_settings_the_script_reads_and_no_values(self):
+    def test_given_the_settings_template_when_read_then_it_has_the_settings_the_script_reads_and_no_values(self):
         lines = [l for l in TEMPLATE.read_text().splitlines() if l and not l.startswith("#")]
         self.assertEqual(sorted(lines), sorted([
             "HEIMDALL_SIGNAL_HERMES_API_KEY=", "HEIMDALL_SIGNAL_ALERT_TO=", "HEIMDALL_SIGNAL_HEARTBEAT_URL=",

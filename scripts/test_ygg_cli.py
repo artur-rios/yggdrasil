@@ -317,14 +317,14 @@ class NumberedMenuTests(unittest.TestCase):
     def menu(self, *lines):
         return ygg(env=self.env, input="".join(line + "\n" for line in lines))
 
-    def test_a_secret_is_shown_only_when_asked(self):
+    def test_given_a_secret_in_the_numbered_menu_when_show_value_is_asked_then_it_is_shown_once_and_only_then(self):
         result = self.menu("Applications", "heimdall-api", "production", "HEIMDALL_MASTER_USER_PASSWORD",
                            "Show value", "", "q")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("s3cr3t-value"), 1)
         self.assertIn("yggdrasil › Applications › heimdall-api › production", result.stdout)
 
-    def test_a_secret_changed_from_the_menu_never_reaches_the_output(self):
+    def test_given_a_secret_in_the_numbered_menu_when_it_is_changed_then_the_new_value_is_stored_and_never_reaches_the_output(self):
         result = self.menu("Applications", "heimdall-api", "production", "HEIMDALL_MASTER_USER_PASSWORD",
                            "Change value", "n3w-value", "1", "q")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -333,13 +333,13 @@ class NumberedMenuTests(unittest.TestCase):
         got = ygg("vars", "get", "heimdall-api@production", "HEIMDALL_MASTER_USER_PASSWORD", "--reveal", env=self.env)
         self.assertEqual(got.stdout, "n3w-value\n")
 
-    def test_a_command_form_runs_its_command_line(self):
+    def test_given_a_command_form_in_the_numbered_menu_when_run_then_it_runs_its_command_line(self):
         result = self.menu("Variables and secrets", "vars get", "scope", "platform", "key", "DOMAIN", "▶ Run", "", "q")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("$ ygg vars get platform DOMAIN", result.stdout)
         self.assertIn("example.com", result.stdout)
 
-    def test_end_of_input_leaves_the_menu(self):
+    def test_given_the_numbered_menu_when_input_ends_then_it_leaves_the_menu(self):
         self.assertEqual(self.menu("Catalog").returncode, 0)
 
 
@@ -363,7 +363,7 @@ class PromptFallbackTests(unittest.TestCase):
 
 
 class InterruptTests(unittest.TestCase):
-    def test_ctrl_c_outside_a_command_exits_130_without_a_traceback(self):
+    def test_given_no_running_command_when_ctrl_c_is_pressed_then_ygg_exits_130_without_a_traceback(self):
         import contextlib
         import io
         from unittest import mock
@@ -407,32 +407,32 @@ class CompletionTests(unittest.TestCase):
     def words(self, line):
         return self.complete.complete(line, self.ctx)
 
-    def test_commands_and_subcommands(self):
+    def test_given_a_partial_command_line_when_completed_then_the_commands_and_subcommands_are_offered(self):
         self.assertIn("vars", self.words("ygg "))
         self.assertEqual(self.words("ygg va"), ["vars"])
         self.assertEqual(self.words("ygg vars g"), ["get"])
         self.assertEqual(self.words("ygg completion "), ["bash"])
 
-    def test_scopes_are_completed_after_the_last_word_break(self):
+    def test_given_a_partial_scope_when_completed_then_it_is_completed_after_the_last_word_break(self):
         self.assertEqual(self.words("ygg vars get heimdall-api@pr"), ["production"])
         self.assertIn("production", self.words("ygg vars get heimdall-api@"))
 
-    def test_keys_of_the_scope_typed_before(self):
+    def test_given_a_scope_typed_before_when_a_key_is_completed_then_the_keys_of_that_scope_are_offered(self):
         self.assertEqual(self.words("ygg vars get heimdall-api@production "), ["HEIMDALL_X"])
         self.assertEqual(self.words("ygg vars set platform DOM"), ["DOMAIN="])
 
-    def test_options_and_typed_values(self):
+    def test_given_a_partial_option_or_value_when_completed_then_the_options_and_typed_values_are_offered(self):
         self.assertEqual(self.words("ygg vars get platform DOMAIN --re"), ["--reveal"])
         self.assertEqual(self.words("ygg vars history --limit "), [])
         self.assertIn("traefik", self.words("ygg platform logs "))
 
-    def test_the_script_is_valid_bash_and_registers_ygg(self):
+    def test_given_completion_bash_when_run_then_the_script_is_valid_bash_and_registers_ygg(self):
         result = ygg("completion", "bash")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("complete -o default -F _ygg ygg", result.stdout)
         self.assertEqual(subprocess.run(["bash", "-n"], input=result.stdout, text=True).returncode, 0)
 
-    def test_complete_entry_point_prints_one_word_per_line(self):
+    def test_given_the_complete_entry_point_when_called_then_it_prints_one_word_per_line(self):
         self.assertEqual(ygg("__complete", "ygg vars g").stdout, "get\n")
 
 
@@ -443,7 +443,7 @@ class SelfInstallTests(unittest.TestCase):
         (self.dir / "bin").mkdir()
         self.env = dict(os.environ, YGG_BIN_DIR=str(self.dir / "bin"), YGG_COMPLETION_DIR=str(self.dir / "completion"))
 
-    def test_it_links_and_writes_then_says_it_is_done(self):
+    def test_given_self_install_when_run_twice_then_it_links_and_writes_then_says_it_is_done(self):
         first = ygg("self-install", env=self.env)
         self.assertEqual(first.returncode, 0, first.stderr)
         link = self.dir / "bin" / "ygg"
@@ -453,13 +453,13 @@ class SelfInstallTests(unittest.TestCase):
         self.assertIn("already runs", second.stdout)
         self.assertIn("up to date", second.stdout)
 
-    def test_a_file_in_the_way_is_not_replaced(self):
+    def test_given_a_file_in_the_way_when_self_install_runs_then_it_is_not_replaced_and_the_install_fails(self):
         (self.dir / "bin" / "ygg").write_text("#!/bin/sh\n")
         result = ygg("self-install", env=self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("not a link", result.stderr)
 
-    def test_without_sudo_it_says_so_and_fails(self):
+    def test_given_no_sudo_when_self_install_runs_then_it_says_so_and_fails(self):
         import contextlib
         import io
         from unittest import mock

@@ -3,6 +3,8 @@
     python3 -m unittest discover -s scripts
 """
 
+import contextlib
+import io
 import os
 import pathlib
 import shutil
@@ -10,8 +12,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
+
+import catalog
+import jenkins_credentials
 
 SCRIPT = pathlib.Path(__file__).resolve().parent / "jenkins_credentials.py"
 
@@ -104,6 +110,29 @@ class JenkinsCredentialsTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(SCRIPT), str(self.temp / "nope")], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("not a directory", result.stderr)
+
+    def test_given_a_directory_named_as_an_allowed_id_when_rendered_then_it_is_refused_as_not_a_file(self):
+        allowed = jenkins_credentials.allowed_ids(catalog.load())
+        (self.dir / allowed[0]).mkdir()
+        result = self.render()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{allowed[0]}: not a file", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_given_no_directory_or_two_when_run_then_it_is_a_usage_error(self):
+        for argv in ([], [str(self.dir), str(self.dir)]):
+            with self.subTest(argv=argv):
+                result = subprocess.run([sys.executable, str(SCRIPT), *argv], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("jenkins_credentials.py", result.stderr)
+
+    def test_given_a_catalog_that_cannot_be_read_when_rendered_then_it_exits_with_one_naming_the_error(self):
+        err = io.StringIO()
+        broken = catalog.CatalogError("catalog.yaml: broken")
+        with mock.patch.object(catalog, "load", side_effect=broken), contextlib.redirect_stderr(err):
+            status = jenkins_credentials.main([str(self.dir)])
+        self.assertEqual(status, 1)
+        self.assertEqual(err.getvalue(), "jenkins_credentials: catalog.yaml: broken\n")
 
 
 if __name__ == "__main__":

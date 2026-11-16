@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
-import 'package:yggdrasil_console/features/status/presentation/layout.dart';
 import 'package:yggdrasil_console/features/status/presentation/map/map_layout.dart';
 
 const SystemNode heimdall = SystemNode('heimdall');
@@ -50,6 +49,12 @@ SystemStatus system(
   ],
 );
 
+/// [id] calling every target in [calls], in production.
+SystemStatus calling(String id, List<IntegrationStatus> calls) => system(
+  id,
+  integrations: <String, List<IntegrationStatus>>{'production': calls},
+);
+
 HostStatus hostWith(List<SystemStatus> systems) => HostStatus(
   host: 'example.com',
   generatedAt: null,
@@ -61,44 +66,19 @@ HostStatus hostWith(List<SystemStatus> systems) => HostStatus(
 /// Catalog order, as in `catalog.yaml`: the chain does not start at the first
 /// system.
 HostStatus chain() => hostWith(<SystemStatus>[
-  system(
-    'heimdall',
-    integrations: <String, List<IntegrationStatus>>{
-      'production': <IntegrationStatus>[toSystem('heimdall-api', 'hermes')],
-    },
-  ),
-  system(
-    'hermes',
-    integrations: <String, List<IntegrationStatus>>{
-      'production': <IntegrationStatus>[toExternal('hermes-api', 'Mailgun')],
-    },
-  ),
-  system(
-    'fortuna',
-    integrations: <String, List<IntegrationStatus>>{
-      'production': <IntegrationStatus>[toSystem('fortuna-api', 'heimdall')],
-    },
-  ),
+  calling('heimdall', <IntegrationStatus>[toSystem('heimdall-api', 'hermes')]),
+  calling('hermes', <IntegrationStatus>[toExternal('hermes-api', 'Mailgun')]),
+  calling('fortuna', <IntegrationStatus>[toSystem('fortuna-api', 'heimdall')]),
 ]);
 
 bool adjacent((int, int) a, (int, int) b) =>
     (a.$1 - b.$1).abs() + (a.$2 - b.$2).abs() == 1;
 
 void main() {
-  group('mapColumnsFor', () {
-    test('3 on a phone, 4 on a tablet, 5 on a computer', () {
-      expect(mapColumnsFor(320), 3);
-      expect(mapColumnsFor(599), 3);
-      expect(mapColumnsFor(600), 4);
-      expect(mapColumnsFor(1199), 4);
-      expect(mapColumnsFor(1200), 5);
-    });
-  });
-
   group('computeMapLayout', () {
     for (final columns in <int>[3, 4, 5]) {
-      test('a chain of integrations occupies adjacent cells at every column '
-          'count ($columns)', () {
+      test('given a chain of integrations and $columns columns, when laid '
+          'out, then each link occupies adjacent cells', () {
         final layout = computeMapLayout(chain(), columns);
         final path = <MapNode>[fortuna, heimdall, hermes, mailgun];
 
@@ -112,7 +92,8 @@ void main() {
       });
     }
 
-    test('layout depends on the host, not the selected environment', () {
+    test('given integrations spread over environments, when laid out, then '
+        'the layout is the same as with them all in one', () {
       final together = hostWith(<SystemStatus>[
         system(
           'a',
@@ -147,16 +128,12 @@ void main() {
       }
     });
 
-    test('unconnected systems follow, in catalog order', () {
+    test('given unconnected systems, when laid out, then they follow the '
+        'connected ones, in catalog order, boustrophedon', () {
       final layout = computeMapLayout(
         hostWith(<SystemStatus>[
           system('a'),
-          system(
-            'b',
-            integrations: <String, List<IntegrationStatus>>{
-              'production': <IntegrationStatus>[toSystem('b-api', 'c')],
-            },
-          ),
+          calling('b', <IntegrationStatus>[toSystem('b-api', 'c')]),
           system('c'),
           system('d'),
         ]),
@@ -171,15 +148,11 @@ void main() {
       expect(layout.rows, 2);
     });
 
-    test('an external appears once however many callers it has', () {
+    test('given an external with several callers, when laid out, then it '
+        'appears once', () {
       final layout = computeMapLayout(
         hostWith(<SystemStatus>[
-          system(
-            'a',
-            integrations: <String, List<IntegrationStatus>>{
-              'production': <IntegrationStatus>[toExternal('a-api', 'Mailgun')],
-            },
-          ),
+          calling('a', <IntegrationStatus>[toExternal('a-api', 'Mailgun')]),
           system(
             'b',
             integrations: <String, List<IntegrationStatus>>{
@@ -197,18 +170,20 @@ void main() {
       expect(layout.nodes, hasLength(3));
     });
 
-    test('an integration with an end not on the host draws nothing', () {
+    test('given integrations with an end not on the host or a system calling '
+        'itself, when laid out, then nothing is drawn for them', () {
       final host = hostWith(<SystemStatus>[
-        system(
-          'a',
-          integrations: <String, List<IntegrationStatus>>{
-            'production': <IntegrationStatus>[
-              toSystem('a-api', 'nowhere'),
-              toSystem('gone-api', 'a'),
-              toSystem('a-api', 'a'),
-            ],
-          },
-        ),
+        calling('a', <IntegrationStatus>[
+          toSystem('a-api', 'nowhere'),
+          toSystem('gone-api', 'a'),
+          toSystem('a-api', 'a'),
+          // Neither a system nor an external.
+          const IntegrationStatus(
+            from: 'a-api',
+            check: 'c',
+            status: IntegrationHealth.up,
+          ),
+        ]),
       ]);
       final layout = computeMapLayout(host, 3);
 
@@ -219,7 +194,84 @@ void main() {
       }
     });
 
-    test('empty rows collapse only when every cell is empty', () {
+    test('given an integration between two systems and one to an external, '
+        'when its ends are asked, then they are the caller and the target', () {
+      final layout = computeMapLayout(chain(), 3);
+
+      expect(layout.endsOf(toSystem('heimdall-api', 'hermes')), (
+        heimdall,
+        hermes,
+      ));
+      expect(layout.endsOf(toExternal('hermes-api', 'Mailgun')), (
+        hermes,
+        mailgun,
+      ));
+    });
+
+    test(
+      'given a cycle with no system that only calls, when laid out, then '
+      'it starts at the first caller in catalog order and stays adjacent',
+      () {
+        final layout = computeMapLayout(
+          hostWith(<SystemStatus>[
+            calling('a', <IntegrationStatus>[toSystem('a-api', 'b')]),
+            calling('b', <IntegrationStatus>[toSystem('b-api', 'c')]),
+            calling('c', <IntegrationStatus>[toSystem('c-api', 'a')]),
+          ]),
+          3,
+        );
+
+        expect(layout.nodes, <MapNode>[
+          const SystemNode('a'),
+          const SystemNode('b'),
+          const SystemNode('c'),
+        ]);
+        expect(layout.rows, 1);
+      },
+    );
+
+    test('given two separate groups, when laid out, then each group is '
+        'contiguous, in the catalog order of their first member', () {
+      final layout = computeMapLayout(
+        hostWith(<SystemStatus>[
+          calling('a', <IntegrationStatus>[toSystem('a-api', 'c')]),
+          calling('b', <IntegrationStatus>[toSystem('b-api', 'd')]),
+          system('c'),
+          system('d'),
+        ]),
+        5,
+      );
+
+      expect(layout.nodes, <MapNode>[
+        const SystemNode('a'),
+        const SystemNode('c'),
+        const SystemNode('b'),
+        const SystemNode('d'),
+      ]);
+    });
+
+    test('given a host with no systems, when laid out, then it has no nodes '
+        'and no rows', () {
+      final layout = computeMapLayout(hostWith(const <SystemStatus>[]), 3);
+
+      expect(layout.nodes, isEmpty);
+      expect(layout.rows, 0);
+      expect(layout.drawnRows(const <MapNode>[]), isEmpty);
+    });
+
+    test('given exactly one full row of systems, when laid out, then there '
+        'is one row', () {
+      final layout = computeMapLayout(
+        hostWith(<SystemStatus>[for (final id in 'abc'.split('')) system(id)]),
+        3,
+      );
+
+      expect(layout.rows, 1);
+      expect(layout.cellOf(const SystemNode('c')), (0, 2));
+    });
+
+    test('given rows with nothing shown in them, when drawn, then only those '
+        'rows collapse', () {
       // 3 columns: a b c / f e d / g
       final layout = computeMapLayout(
         hostWith(<SystemStatus>[
@@ -246,18 +298,38 @@ void main() {
     });
   });
 
+  group('MapNode', () {
+    test('given nodes with the same id or name, when compared, then they are '
+        'equal, and a system never equals an external', () {
+      expect(const SystemNode('a'), SystemNode('a'.toLowerCase()));
+      expect(
+        const SystemNode('a').hashCode,
+        SystemNode('a'.toLowerCase()).hashCode,
+      );
+      expect(const ExternalNode('a'), ExternalNode('a'.toLowerCase()));
+      expect(const SystemNode('a'), isNot(const ExternalNode('a')));
+      expect(const SystemNode('a'), isNot(const SystemNode('b')));
+    });
+  });
+
   group('distanceToSegment', () {
     const a = Offset.zero;
     const b = Offset(10, 0);
 
-    test('distanceToSegment measures to the nearest point', () {
+    test('given points beside and past a segment, when measured, then it is '
+        'the distance to the nearest point of it', () {
       expect(distanceToSegment(const Offset(5, 3), a, b), 3);
       // Past either end, the distance is to that end.
       expect(distanceToSegment(const Offset(13, 4), a, b), 5);
       expect(distanceToSegment(const Offset(-3, 4), a, b), 5);
     });
 
-    test('a segment of no length is a point', () {
+    test('given a point on the segment, when measured, then it is 0', () {
+      expect(distanceToSegment(const Offset(4, 0), a, b), 0);
+    });
+
+    test('given a segment of no length, when measured, then it is the '
+        'distance to that point', () {
       expect(distanceToSegment(const Offset(3, 4), a, a), 5);
     });
   });
