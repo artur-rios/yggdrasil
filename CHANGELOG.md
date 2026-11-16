@@ -75,6 +75,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   instead. It now draws the segments with none marked, and tapping one chooses it. With an environment selected,
   tapping the selected segment still does nothing. The overview always passes a selection, so the screen itself
   was not affected.
+- **Closing the console during a load no longer raises an error.** When the status provider was disposed (the
+  app closing, or a test ending) while a host's map or details were still being fetched, the answer read the
+  disposed provider's state and failed with `Cannot use the Ref of NotifierProvider<StatusController, ...> after it
+  has been disposed`. A load that is still pending, or whose answer comes after the disposal, is now dropped.
 
 ## [0.13.8] - 2026-11-14
 

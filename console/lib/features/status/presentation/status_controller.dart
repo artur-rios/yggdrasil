@@ -90,6 +90,11 @@ class StatusController extends Notifier<StatusViewState> {
   }
 
   Future<void> refresh() async {
+    // The load scheduled by [build] may run after the provider is gone.
+    if (!ref.mounted) {
+      return;
+    }
+
     final environment = state.environment;
 
     if (environment == null || state.loading) {
@@ -150,7 +155,10 @@ class StatusController extends Notifier<StatusViewState> {
     );
   }
 
+  /// Whether an answer about [environment] is still wanted: the provider was
+  /// not disposed meanwhile and the screen still shows that environment.
   bool _isShowing(Environment environment) =>
+      ref.mounted &&
       state.environment?.id == environment.id &&
       state.environment?.baseUrl == environment.baseUrl;
 }
