@@ -94,6 +94,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   in microseconds, which a browser only moves every millisecond, so the second host shared the first one's id
   (and its saved token). An id made in the same microsecond as the previous one now takes the next microsecond.
   Ids keep their `env-<base 36>` form, and the ids of hosts already saved are unchanged.
+- **Closing the console while a host was being saved no longer raises an error or loses its token.** When the
+  environments provider was disposed (the app closing, or a test ending) while a host, its token or the selection
+  was being written, the next step read the disposed provider and failed with `Cannot use the Ref of
+  AsyncNotifierProvider<EnvironmentsController, EnvironmentsState> after it has been disposed`. A save stopped
+  there, after the host list was written but before its token, so the new host came back next launch without its
+  token and not selected; a removal kept the removed host's token. The same error came from naming a host after its
+  first response (between a status load's map and its details), choosing a host, setting a token and adding the
+  demo. Every write that has started now finishes, and only the on-screen update is dropped. Naming a host, or
+  adding the demo, that has not started writing when the provider goes is dropped; the next response names the
+  host again.
 
 ## [0.13.8] - 2026-11-14
 
