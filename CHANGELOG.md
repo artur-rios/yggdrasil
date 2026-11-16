@@ -79,6 +79,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   app closing, or a test ending) while a host's map or details were still being fetched, the answer read the
   disposed provider's state and failed with `Cannot use the Ref of NotifierProvider<StatusController, ...> after it
   has been disposed`. A load that is still pending, or whose answer comes after the disposal, is now dropped.
+- **Two hosts added in the same millisecond on the web console got the same id.** A new host's id was the time
+  in microseconds, which a browser only moves every millisecond, so the second host shared the first one's id
+  (and its saved token). An id made in the same microsecond as the previous one now takes the next microsecond.
+  Ids keep their `env-<base 36>` form, and the ids of hosts already saved are unchanged.
 
 ## [0.13.8] - 2026-11-14
 
