@@ -454,5 +454,18 @@ void main() {
         'derived from a URL', () {
       expect(newEnvironmentId(), matches(RegExp(r'^env-[0-9a-z]+$')));
     });
+
+    test('given a clock that does not move, as on the web within a '
+        'millisecond, when ids are made, then each is new', () {
+      final moment = DateTime.utc(2026, 11, 16, 12);
+      DateTime now() => moment;
+
+      final ids = <String>[for (var i = 0; i < 3; i++) newEnvironmentId(now)];
+
+      expect(ids.toSet(), hasLength(3));
+      for (final id in ids) {
+        expect(id, matches(RegExp(r'^env-[0-9a-z]+$')));
+      }
+    });
   });
 }

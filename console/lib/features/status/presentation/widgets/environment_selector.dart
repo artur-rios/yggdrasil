@@ -65,6 +65,9 @@ class EnvironmentSelector extends StatelessWidget {
                   ),
               ],
               selected: <String>{?selectedId},
+              // Nothing may be selected yet; once something is, a choice
+              // cannot be taken back to none.
+              emptySelectionAllowed: selectedId == null,
               onSelectionChanged: (selection) => onSelected(selection.first),
             ),
           );

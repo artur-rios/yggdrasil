@@ -259,6 +259,18 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
   }
 }
 
-/// A new, unique environment id.
-String newEnvironmentId() =>
-    'env-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
+/// The time in the last id [newEnvironmentId] made, in microseconds.
+int _lastIdMicros = 0;
+
+/// A new, unique environment id: `env-` and the time in microseconds, in base
+/// 36.
+///
+/// On the web the clock only moves every millisecond, so an id made in the
+/// same millisecond as the last one takes the next microsecond instead.
+/// [now] is the clock, for tests.
+String newEnvironmentId([DateTime Function() now = DateTime.now]) {
+  final micros = now().microsecondsSinceEpoch;
+  _lastIdMicros = micros > _lastIdMicros ? micros : _lastIdMicros + 1;
+
+  return 'env-${_lastIdMicros.toRadixString(36)}';
+}

@@ -507,6 +507,61 @@ void main() {
     });
   });
 
+  group('disposal during a load', () {
+    test('given a load not yet started, when the container is disposed, then '
+        'the load is dropped without an error', () async {
+      final source = FakeStatusSource();
+      final container = ProviderContainer(
+        overrides: <Override>[
+          environmentStoreProvider.overrideWithValue(
+            InMemoryEnvironmentStore(
+              environments: const <Environment>[production],
+            ),
+          ),
+          tokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+          statusRepositoryProvider.overrideWithValue(StatusRepository(source)),
+        ],
+      );
+      await container.read(environmentsControllerProvider.future);
+
+      // The build schedules the load; the container goes before it runs.
+      container.read(statusControllerProvider);
+      container.dispose();
+      await pumpEventQueue();
+
+      expect(source.calls, isEmpty);
+    });
+
+    test('given the map out, when the container is disposed and the map '
+        'comes, then it is dropped without an error', () async {
+      final map = Completer<HostStatus>();
+      final source = FakeStatusSource((_, _) => map.future);
+      final container = await loadedContainer(source);
+      expect(statusOf(container).loading, isTrue);
+
+      container.dispose();
+      map.complete(answerFrom('map'));
+      await pumpEventQueue();
+
+      expect(source.detailsCalls, isEmpty);
+    });
+
+    test('given the details out, when the container is disposed and the '
+        'details come, then they are dropped without an error', () async {
+      final details = Completer<HostStatus?>();
+      final source = FakeStatusSource((_, _) async => answerFrom('map'))
+        ..respondDetails = (_, _) => details.future;
+      final container = await loadedContainer(source);
+      expect(statusOf(container).loading, isTrue);
+
+      container.dispose();
+      details.complete(answerFrom('details'));
+      await pumpEventQueue();
+
+      expect(source.detailsCalls, hasLength(1));
+    });
+  });
+
   test('given no override, when the repository is read, then it says it '
       'must be overridden', () {
     final container = ProviderContainer();

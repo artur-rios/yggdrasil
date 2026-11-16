@@ -67,6 +67,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   it would. A sync Forgejo refuses is reported and does not fail the run: the next scheduled sync still drops the
   branches.
 
+### Fixed
+
+- **The console's environment selector no longer fails with nothing selected.** `EnvironmentSelector` takes a
+  `selectedId` that may be `null`, but its segmented layout (four environments or fewer, with room for them)
+  hit Flutter's `SegmentedButton` assertion (`selected.length > 0 || emptySelectionAllowed`) and drew an error
+  instead. It now draws the segments with none marked, and tapping one chooses it. With an environment selected,
+  tapping the selected segment still does nothing. The overview always passes a selection, so the screen itself
+  was not affected.
+- **Closing the console during a load no longer raises an error.** When the status provider was disposed (the
+  app closing, or a test ending) while a host's map or details were still being fetched, the answer read the
+  disposed provider's state and failed with `Cannot use the Ref of NotifierProvider<StatusController, ...> after it
+  has been disposed`. A load that is still pending, or whose answer comes after the disposal, is now dropped.
+- **Two hosts added in the same millisecond on the web console got the same id.** A new host's id was the time
+  in microseconds, which a browser only moves every millisecond, so the second host shared the first one's id
+  (and its saved token). An id made in the same microsecond as the previous one now takes the next microsecond.
+  Ids keep their `env-<base 36>` form, and the ids of hosts already saved are unchanged.
+
 ## [0.13.8] - 2026-11-14
 
 ### Fixed
