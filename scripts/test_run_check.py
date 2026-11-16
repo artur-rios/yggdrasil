@@ -561,9 +561,12 @@ class ToolchainCacheTests(RunCheckHarness):
         started = self.root / "started"
         self.fake("docker", "#!/usr/bin/env bash\n"
                             "printf '%s\\n' \"$@\" >\"$FAKE_DOCKER_LOG\"\n"
-                            f"trap 'echo stopped >>\"{started}\"; exit 143' TERM\n"
+                            # The sleep keeps none of the test's pipes open and goes with the fake: communicate()
+                            # below must not wait for it.
+                            f"trap 'kill \"$sleeper\" 2>/dev/null; echo stopped >>\"{started}\"; exit 143' TERM\n"
+                            "sleep 30 </dev/null >/dev/null 2>&1 &\n"
+                            "sleeper=$!\n"
                             f"echo running >\"{started}\"\n"
-                            "sleep 30 &\n"
                             "wait\n")
         process = subprocess.Popen(["bash", str(SCRIPT), "unit", "img", str(self.workspace), "--toolchains",
                                     str(self.cache), "--", "true"], env=self.env,
