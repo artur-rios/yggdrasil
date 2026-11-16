@@ -179,6 +179,10 @@ class SelectedHostEnvironmentController extends Notifier<String?> {
   /// The user chose before the remembered value was read.
   bool _changed = false;
 
+  /// Counts the builds, so a read started for a host selected before can tell
+  /// it is no longer the latest: its answer is about another host.
+  int _build = 0;
+
   @override
   String? build() {
     final hostId = ref.watch(
@@ -188,20 +192,23 @@ class SelectedHostEnvironmentController extends Notifier<String?> {
     );
 
     _changed = false;
+    final build = ++_build;
 
     if (hostId != null) {
-      unawaited(_load(hostId));
+      unawaited(_load(hostId, build));
     }
 
     return null;
   }
 
-  Future<void> _load(String hostId) async {
+  Future<void> _load(String hostId, int build) async {
     final remembered = await ref
         .read(refreshSettingsStoreProvider)
         .readEnvironmentFor(hostId);
 
-    if (ref.mounted && !_changed) {
+    // A rebuild keeps `ref.mounted` true, so a read for the host selected
+    // before can answer after the current host's: only the latest one counts.
+    if (ref.mounted && build == _build && !_changed) {
       state = remembered;
     }
   }
