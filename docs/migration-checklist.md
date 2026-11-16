@@ -24,7 +24,7 @@ nearly every clone dirty; Windows git does not.
 - **Prepared branch** is filled when a repository's `feature/move-to-forgejo` branch is ready (never pushed);
   **Moved** is filled by the owner after the cutover.
 
-62 repositories. By kind (a repository can be of several): 5 application, 12 library, 31 ci, 24 site, 4 archived, 9 fork, 1 code only. Clones: 59 clean, 3 missing.
+62 repositories. By kind (a repository can be of several): 5 application, 12 library, 30 ci, 24 site, 5 archived, 9 fork, 1 code only. Clones: 59 clean, 3 missing.
 
 | Repository | Kind | GitHub | Jobs | Secrets | Pages / Vercel | Dependabot | Branch model | Clone | Notes | Prepared branch | Moved |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -90,7 +90,7 @@ nearly every clone dirty; Windows git does not.
 | tabnews | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
 | tech-craftsmen-company-page | site (Vercel) | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none); Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks | `feature/move-to-forgejo`@b99bd84 | 2026-10-27 |
 | under-construction-template | site (Vercel), fork | fork | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (master) | the spec's table says site (Vercel); no vercel.json found (information only: Vercel's git integration needs none); Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks | `feature/move-to-forgejo`@c2be3e9 | 2026-10-27 |
-| user-management-api | ci | plain | yggdrasil.yml/lint on jenkins → check lint<br>yggdrasil.yml/build on jenkins → check build |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks): `lint` and `build`, its own checks |  |  |
+| user-management-api | archived | archived |  |  | none |  | basic | clean (main) | Given a pipeline on Jenkins on 2026-11-13 (it had no checks), then archived on Forgejo and GitHub on 2026-11-16: it left the catalog, with its `lint` and `build` checks |  |  |
 | yggdrasil | ci | plain | branch-policy.yml/branch-policy on ubuntu-latest goes (branch-policy)<br>ci.yml/status on ubuntu-latest → check status<br>ci.yml/console on ubuntu-latest → check console<br>ci.yml/console-windows on windows-latest stays (Actions)<br>ci.yml/platform on ubuntu-latest → check platform<br>ci.yml/pipeline-live on ubuntu-latest → check pipeline-live<br>release.yml/on-main on ubuntu-latest → release (release.build)<br>release.yml/windows on windows-latest stays (Actions)<br>release.yml/android on ubuntu-latest → release (release.build) |  | none | pub, nuget, github-actions → goes (dependabot) | release | clean (feature/plan-5-repositories) |  | `feature/move-to-forgejo`@247ab03 | 2026-10-26 |
 
 ## Check names
@@ -289,8 +289,6 @@ and macOS jobs, by the name GitHub reports). `scripts/test_catalog.py` checks th
 | tech-craftsmen-company-page | `yggdrasil.yml/build on jenkins` | check `build` (the site's image) |
 | under-construction-template | `yggdrasil.yml/lint on jenkins` | check `lint` |
 | under-construction-template | `yggdrasil.yml/build on jenkins` | check `build` (the site's image) |
-| user-management-api | `yggdrasil.yml/lint on jenkins` | check `lint` |
-| user-management-api | `yggdrasil.yml/build on jenkins` | check `build` |
 | yggdrasil | `ci.yml/status on ubuntu-latest` | check `status` (GitHub: `Status API`) |
 | yggdrasil | `ci.yml/console on ubuntu-latest` | check `console` (GitHub: `Console`) |
 | yggdrasil | `ci.yml/console-windows on windows-latest` | actionsCheck `Console (Windows)` |
