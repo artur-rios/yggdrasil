@@ -79,6 +79,12 @@ FAKES = {
     "ssh": r"""
         echo "ssh $*" >>"$FAKE_LOG"
     """,
+    # Today is the day the test started ($FAKE_TODAY), so a run that crosses midnight still writes into the
+    # directory the test looks at. Any other date is the real one's.
+    "date": r"""
+        if [[ "$*" == +%F ]]; then echo "$FAKE_TODAY"; exit 0; fi
+        exec "$FAKE_REAL_DATE" "$@"
+    """,
 }
 
 THREE_KINDS = "forgejo\nvolume yggdrasil_jenkins_home\npostgres app-db-1 postgres\n"
@@ -110,6 +116,8 @@ class BackupTests(unittest.TestCase):
             "YGG_SECRETS_DIR": str(self.secrets),
             "DOCKER_HOST": f"unix://{self.temp}/docker.sock",
             "FAKE_LOG": str(self.log),
+            "FAKE_TODAY": self.today,
+            "FAKE_REAL_DATE": shutil.which("date"),
         }
         self.env.pop("XDG_RUNTIME_DIR", None)
 
