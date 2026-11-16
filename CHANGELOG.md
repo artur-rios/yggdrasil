@@ -9,6 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Builds no longer wait behind the checks for a `ci` executor.** The `ci` agent had four executors, and each
+  stage of a build asked for one again: reading `yggdrasil.yml` and the branch policy, seconds of work, queued
+  behind every check of every other build (20 to 67 minutes on a busy day, most of a .NET library's 40 to 106).
+  The `ci` agent now has ten executors, and a check first takes one of four `ci-check` lockable resources,
+  declared in `platform/jenkins/controller/casc.yaml`, waiting for it without holding an executor: still at most
+  four checks at once, the same load on the `ci` user's six CPUs and 20 GB, and six executors always free for the
+  short steps. `init.groovy.d/agents.groovy` now also replaces a `ci` or `release` node whose executors or label
+  differ from its own (it already did for the work directory), so the running `ci` node gets its ten on the next
+  start. **Upgrading:** set `YGGDRASIL_LIBRARY_VERSION` to this release and run `scripts/platform.sh up` from
+  this release's checkout, as for every release: the library takes the `ci-check` resources the controller's
+  Configuration as Code declares, and a check run without them fails with the reason.
+- **A library's docs site no longer builds the library's pull requests.** A job that is not its repository's
+  deciding entry and has no `checks` or `actionsChecks` of its own (`<library>-docs`, `orpheus-docs`,
+  `personal-lab-site`, `dotnet-libraries-docs`) ran Read yggdrasil.yml and Branch policy on every pull request,
+  two `ci` executors to report the `branch-policy` status the library's own build reports on the same commit.
+  Such a build now ends at once, before any agent, and so does its push to a branch it deploys nothing from
+  (`develop`). Its deploys (a docs site's push to `main`) are unchanged.
 - **`scripts/prune_release_branches.py` syncs the GitHub mirror after it deletes.** A Forgejo push mirror syncs on a
   push and on its 8-hour interval, and deleting a branch is not a push, so the deleted `release/*` branches stayed on
   the GitHub copy for up to 8 hours. With a `mirror` in the catalog, each repository that lost a branch now has its

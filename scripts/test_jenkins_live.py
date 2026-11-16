@@ -1143,9 +1143,9 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
 
     def test_given_another_ci_work_directory_when_the_controller_restarts_then_the_ci_node_moves(self):
         before, after = self.first_boot["nodes"], self.second_boot["nodes"]
-        self.assertEqual(before["ci"], {"remoteFS": str(self.temp / "agents" / "ci-before"), "executors": 4,
+        self.assertEqual(before["ci"], {"remoteFS": str(self.temp / "agents" / "ci-before"), "executors": 10,
                                         "labels": "ci"})
-        self.assertEqual(after["ci"], {"remoteFS": str(self.ci_workdir), "executors": 4, "labels": "ci"})
+        self.assertEqual(after["ci"], {"remoteFS": str(self.ci_workdir), "executors": 10, "labels": "ci"})
         self.assertEqual(before["release"], after["release"])
         self.assertEqual(after["release"], {"remoteFS": str(self.release_workdir), "executors": 1, "labels": "release"})
         self.assertEqual(after["vps"], {"remoteFS": "/home/jenkins/agent", "executors": 2, "labels": "vps"})

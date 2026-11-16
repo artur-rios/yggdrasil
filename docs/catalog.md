@@ -120,6 +120,11 @@ library>`), or an application and its docs site (two applications with one `repo
   are required.
 - **One `yggdrasil.yml`**, read by every job of the repository; each job runs only its own entry's
   `checks` ([below](#repository-pipeline-file)).
+- **One branch policy.** Every job of the repository would report the same `branch-policy` status on the same
+  commit. A job that is not the deciding entry's and whose entry has no `checks` and no `actionsChecks` (a
+  library's docs site) does nothing on a pull request, nor on a push it deploys nothing from: it ends green at
+  once, without a `ci` executor, and the deciding entry's job reports the branch policy. Its pushes that deploy
+  (the docs site's to `main`) build as before, with `deploy.inputs`.
 
 ```yaml
 repositories:

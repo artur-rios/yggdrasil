@@ -49,6 +49,28 @@ security:
 unclassified:
   location:
     url: "${JENKINS_URL}"
+  # How many checks the ci agent runs at a time: one ci-check resource each. A check takes one (the
+  # library's runCheck, lock(label: 'ci-check')) before it asks for a ci executor, and waits for it
+  # without holding one; the ci agent's other executors (agents.groovy) are left to the short steps
+  # (reading yggdrasil.yml, the branch policy), which then never queue behind a check. Four, as the ci
+  # agent's executors were: the ci user is capped at six CPUs and 20 GB (docs/hosts.md), and a .NET
+  # test with coverage, a Flutter build or a Testcontainers check takes one to two CPUs and several GB.
+  # Add or remove entries to change it (a Configuration as Code reload applies it); a resource that is
+  # removed while a check holds it is kept until that check ends.
+  lockableResourcesManager:
+    declaredResources:
+      - name: "ci-check-1"
+        labels: "ci-check"
+        description: "One check at a time on the ci agent"
+      - name: "ci-check-2"
+        labels: "ci-check"
+        description: "One check at a time on the ci agent"
+      - name: "ci-check-3"
+        labels: "ci-check"
+        description: "One check at a time on the ci agent"
+      - name: "ci-check-4"
+        labels: "ci-check"
+        description: "One check at a time on the ci agent"
   timestamper:
     allPipelines: true
   # The one Jenkinsfile of the installation. Jenkins never reads a repository's own Jenkinsfile: a

@@ -903,7 +903,7 @@ from step 3:
      repository without a `yggdrasil.yml` has nothing to check, so its builds say what they did not do
      and end green;
    - one agent per host it deploys to, named after the environments' `agent` (`vps` for the
-     default Application Server: **Manage Jenkins → Nodes**), and the two build agents, `ci` (4 executors) and
+     default Application Server: **Manage Jenkins → Nodes**), and the two build agents, `ci` (10 executors) and
      `release` (1), all offline for now. The build agents come up in [9.8](#98-the-ci-and-release-agents);
    - the `actions-release` and `release-resume` jobs ([Finishing a release that
      stopped](#finishing-a-release-that-stopped)), and the `tag-check` job, which checks every day that each
@@ -1058,7 +1058,7 @@ rootless engine of its own service user (`ygg install --role dev` made them, [ho
 
 | Agent | User | Executors | Runs |
 |---|---|---|---|
-| `ci` | `ci` | 4 | Every check, the branch policy and reading `yggdrasil.yml`. Capped at six CPUs and 20 GB |
+| `ci` | `ci` | 10 | Every check, the branch policy and reading `yggdrasil.yml`. At most four checks at a time (the `ci-check` lockable resources), so six executors are always left to the short steps. Capped at six CPUs and 20 GB |
 | `release` | `release` | 1 | The release build, its validation, a library's packing and push of NuGet packages, and reading an owner's tag |
 
 Neither holds a write credential; they check out with the read-only credential. Jenkins creates both nodes
@@ -1763,7 +1763,10 @@ file's other checks are another entry's of the same repository, and that job run
 ([Repository pipeline file](catalog.md#repository-pipeline-file)). Each check runs through
 `scripts/run-check.sh`, in its `image`, as root of the `ci` user's engine (the service user on the host), on
 the checkout, with its `run` line given to `sh -c`; `docker: true` also gives it that engine's socket
-(Testcontainers). Up to four run at once. Its `credentials` are written to a private file and handed to the
+(Testcontainers). Up to four run at once: a check first takes one of the four `ci-check` lockable resources
+(`platform/jenkins/controller/casc.yaml`, **Manage Jenkins → Lockable Resources**), waiting for it without
+holding an executor, and only then a `ci` executor. The `ci` agent has ten, so reading `yggdrasil.yml` and the
+branch policy never queue behind the checks. Its `credentials` are written to a private file and handed to the
 container as environment variables: only ids the catalog allows the repository, never one of the pipeline's
 own (`forge-*`, `github-*`) or the NuGet key, and **never on a `renovate/*` build**. Its test results
 (`junit`) and `archive` are collected whatever the outcome, unless a symbolic link in the checkout leads out
@@ -2147,6 +2150,7 @@ A service's log, as `ygg`: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, 
 | A job's scan finds no branches | Jenkins' read credential cannot see the repository: on GitHub the App isn't installed on it, on Forgejo `jenkins-ci` has no access to it ([9.7](#97-the-forgejo-accounts-and-tokens)). A branch only appears if it is `develop`, `main`, `release/*`, a pull request, or matches an environment's `branches` |
 | Every build fails loading the library (`yggdrasil` not found at a version) | `YGGDRASIL_LIBRARY_VERSION` is not a tag of your fork that Jenkins' read credential can read (`git tag --list 'v*'`); fix it in `platform.env` and `platform.sh up` ([How a build runs](#how-a-build-runs)) |
 | A check starts but its container has an empty workspace, or a build waits for a `ci` executor forever | The `ci` agent is offline, or its `YGG_AGENT_WORKDIR` differs from `CI_AGENT_WORKDIR` in the controller's `platform.env` ([9.8](#98-the-ci-and-release-agents)) |
+| A check fails with `Could not run: ... ci-check ...`, or waits with `[Lock] ... Waiting` while the `ci` agent is idle | The controller runs without this release's Configuration as Code, so the `ci-check` resources are missing, or a build that ended badly still holds one. **Manage Jenkins → Lockable Resources** lists them; `scripts/platform.sh up` with this release's checkout declares them again, and a held one is freed there with **Unlock** |
 | `Not released: the pull request is merged and tagged …` | The release failed after its merge. Run the `release-resume` job with the repository and the tag it names ([Finishing a release that stopped](#finishing-a-release-that-stopped)) |
 | `Not released: the pull request is merged as <sha>, but not tagged …` | The merge went through and the tag did not. Run `release-resume` with the repository, the tag and `COMMIT=<sha>`, as the message says: it tags the merge commit, then releases ([Finishing a release that stopped](#finishing-a-release-that-stopped)) |
 | The build waits at **Deploy without GitHub Actions checks** | The GitHub Actions checks did not finish; click the button to go on without them (Forgejo only publication, `release-resume` later) or **Abort** ([GitHub Actions and the skip](#github-actions-and-the-skip)) |
