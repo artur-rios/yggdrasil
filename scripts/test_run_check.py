@@ -359,10 +359,11 @@ class ToolchainCacheTests(RunCheckHarness):
 
     def test_given_an_overlay_that_left_its_work_directory_closed_when_the_check_ends_then_it_is_still_removed(self):
         # The kernel leaves <workdir>/work with mode 000; the ci user, its owner, can't descend it as it is.
-        self.fake("docker", "#!/usr/bin/env bash\n"
+        # set -e: a fake that could not make the directory would fail the run, not pass the test for nothing.
+        self.fake("docker", "#!/usr/bin/env bash\nset -e\n"
                             "printf '%s\\n' \"$@\" >\"$FAKE_DOCKER_LOG\"\n"
                             "for a in \"$@\"; do\n"
-                            "  case $a in type=volume,*) w=${a#*workdir=}; w=${w%\\\"}; u=${a#*upperdir=}; u=${u%%,*} ;; esac\n"
+                            "  case $a in type=volume,*) w=${a#*workdir=}; w=${w%%,*}; w=${w%\\\"}; u=${a#*upperdir=}; u=${u%%,*} ;; esac\n"
                             "done\n"
                             "echo written >\"$u/lockfile\"; mkdir \"$w/work\"; touch \"$w/work/index\"; chmod 000 \"$w/work\"\n")
         result = self.run_with_cache()
