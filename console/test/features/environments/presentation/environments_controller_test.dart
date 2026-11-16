@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
@@ -449,6 +451,143 @@ void main() {
     });
   });
 
+  group('disposal during a write', () {
+    test('given a new host being saved, when the container is disposed while '
+        'the list is written, then its token and selection are still saved '
+        'without an error', () async {
+      final held = HeldEnvironmentStore();
+      store = held;
+      final (c, controller) = await loaded();
+      held.writing = Completer<void>();
+
+      final saving = controller.save(production, token: 'secret');
+      c.dispose();
+      held.writing!.complete();
+      await saving;
+
+      expect(store.environments, <Environment>[production]);
+      expect(store.selectedId, 'production');
+      expect(tokens.tokens['production'], 'secret');
+    });
+
+    test('given the selected host being removed, when the container is '
+        'disposed while the list is written, then its token is still deleted '
+        'and the next host saved as selected without an error', () async {
+      final held = HeldEnvironmentStore(
+        environments: <Environment>[production, homologation],
+        selectedId: 'production',
+      );
+      store = held;
+      tokens.tokens['production'] = 'secret';
+      final (c, controller) = await loaded();
+      held.writing = Completer<void>();
+
+      final removing = controller.remove('production');
+      c.dispose();
+      held.writing!.complete();
+      await removing;
+
+      expect(store.environments, <Environment>[homologation]);
+      expect(store.selectedId, 'homologation');
+      expect(tokens.tokens, isEmpty);
+    });
+
+    test('given a token being saved, when the container is disposed while it '
+        'is written, then it is saved without an error', () async {
+      final held = HeldTokenStore();
+      tokens = held;
+      store.environments = <Environment>[production];
+      final (c, controller) = await loaded();
+      held.writing = Completer<void>();
+
+      final saving = controller.setToken('production', ' secret ');
+      c.dispose();
+      held.writing!.complete();
+      await saving;
+
+      expect(tokens.tokens['production'], 'secret');
+    });
+
+    test(
+      'given a host being selected, when the container is disposed before '
+      'it is applied, then the selection is still saved without an error',
+      () async {
+        store.environments = <Environment>[production, homologation];
+        final (c, controller) = await loaded();
+
+        final selecting = controller.select('homologation');
+        c.dispose();
+        await selecting;
+
+        expect(store.selectedId, 'homologation');
+      },
+    );
+
+    test('given a placeholder host, when the container is disposed before a '
+        'response name is applied, then the name is dropped without an '
+        'error', () async {
+      final placeholder = production.copyWith(nameFromResponse: true);
+      store.environments = <Environment>[placeholder];
+      final (c, controller) = await loaded();
+
+      final naming = controller.adoptResponseName('production', 'example.com');
+      c.dispose();
+      await naming;
+
+      expect(store.environments, <Environment>[placeholder]);
+    });
+
+    test('given a placeholder host being named, when the container is '
+        'disposed while the list is written, then the name is still saved '
+        'without an error', () async {
+      final placeholder = production.copyWith(nameFromResponse: true);
+      final held = HeldEnvironmentStore(
+        environments: <Environment>[placeholder],
+      );
+      store = held;
+      final (c, controller) = await loaded();
+      held.writing = Completer<void>();
+
+      final naming = controller.adoptResponseName('production', 'example.com');
+      await pumpEventQueue();
+      c.dispose();
+      held.writing!.complete();
+      await naming;
+
+      expect(store.environments!.single.name, 'example.com');
+    });
+
+    test('given the demo being added, when the container is disposed before '
+        'it is applied, then it is dropped without an error', () async {
+      final (c, controller) = await loaded();
+
+      final adding = controller.addDemo();
+      c.dispose();
+      await adding;
+
+      expect(store.environments, isNull);
+    });
+
+    test('given a rebuild while the list is written, when the write is done, '
+        'then the saved host is shown', () async {
+      final held = HeldEnvironmentStore();
+      store = held;
+      final (c, controller) = await loaded();
+      held.writing = Completer<void>();
+
+      final saving = controller.save(production, token: 'secret');
+      c.invalidate(environmentsControllerProvider);
+      await c.read(environmentsControllerProvider.future);
+      held.writing!.complete();
+      await saving;
+
+      final state = stateOf(c);
+      expect(state.environments, <Environment>[production]);
+      expect(state.selected, production);
+      expect(state.withToken, <String>{'production'});
+    });
+  });
+
   group('newEnvironmentId', () {
     test('given a new host, when an id is made, then it is prefixed and not '
         'derived from a URL', () {
@@ -468,4 +607,30 @@ void main() {
       }
     });
   });
+}
+
+/// An [InMemoryEnvironmentStore] whose list is written only once the test
+/// completes [writing].
+class HeldEnvironmentStore extends InMemoryEnvironmentStore {
+  HeldEnvironmentStore({super.environments, super.selectedId});
+
+  Completer<void>? writing;
+
+  @override
+  Future<void> writeEnvironments(List<Environment> environments) async {
+    await writing?.future;
+    await super.writeEnvironments(environments);
+  }
+}
+
+/// An [InMemoryTokenStore] whose tokens are written only once the test
+/// completes [writing].
+class HeldTokenStore extends InMemoryTokenStore {
+  Completer<void>? writing;
+
+  @override
+  Future<void> write(String environmentId, String token) async {
+    await writing?.future;
+    await super.write(environmentId, token);
+  }
 }
