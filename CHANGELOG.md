@@ -67,6 +67,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   it would. A sync Forgejo refuses is reported and does not fail the run: the next scheduled sync still drops the
   branches.
 
+### Removed
+
+- **user-management-api leaves the catalog.** The repository is archived on Forgejo and on GitHub (read-only, `main`
+  its only branch), so yggdrasil no longer gives it branch rules or `lint`/`build` checks. **Upgrading:** on the
+  DevOps Server, as `ygg`, run `cd /opt/yggdrasil && git pull` before the Jenkins controller next restarts: the
+  controller reads that server's own `/opt/yggdrasil/catalog.yaml` when it starts, and one that restarts on the old
+  catalog defines the job again. Check that `grep -c user-management-api /opt/yggdrasil/catalog.yaml` gives `0`.
+  Then delete the `user-management-api` job in Jenkins by hand: the Job DSL in
+  [casc.yaml](platform/jenkins/controller/casc.yaml) has no `removedJobAction`, so it never removes a job it no
+  longer defines. The archived repository gets no pushes, so the job has nothing to build until then.
+
 ### Fixed
 
 - **The console's environment selector no longer fails with nothing selected.** `EnvironmentSelector` takes a
