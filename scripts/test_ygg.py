@@ -47,7 +47,9 @@ FAKE_DOCKER = textwrap.dedent(r"""
 
 
 @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash on a POSIX system")
-class EnvironmentCommandTests(unittest.TestCase):
+class EnvironmentTestCase(unittest.TestCase):
+    """A sandbox for ygg.sh: a fake docker with its containers and a secrets directory. No tests of its own."""
+
     def setUp(self):
         self.temp = pathlib.Path(tempfile.mkdtemp(prefix="ygg-test-"))
         self.addCleanup(shutil.rmtree, self.temp, ignore_errors=True)
@@ -86,6 +88,15 @@ class EnvironmentCommandTests(unittest.TestCase):
         lines = path.read_text().splitlines() if path.exists() else []
         return [line for line in lines if line.split(" ")[0] == command]
 
+    def config(self, answers, *arguments):
+        """ygg.sh config driven through its prompts, with its own TMPDIR to see what it leaves there."""
+        self.tmp = self.temp / "tmp"
+        self.tmp.mkdir(exist_ok=True)
+        return subprocess.run(["bash", str(SCRIPT), "config", *arguments], input=answers, capture_output=True,
+                              text=True, env=dict(self.env, TMPDIR=str(self.tmp)))
+
+
+class EnvironmentCommandTests(EnvironmentTestCase):
     def test_given_a_stopped_on_demand_environment_when_started_then_its_containers_start(self):
         result = self.ygg("env", "start", "development")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -144,13 +155,6 @@ class EnvironmentCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("'staging'", result.stderr)
 
-    def config(self, answers, *arguments):
-        """ygg.sh config driven through its prompts, with its own TMPDIR to see what it leaves there."""
-        self.tmp = self.temp / "tmp"
-        self.tmp.mkdir(exist_ok=True)
-        return subprocess.run(["bash", str(SCRIPT), "config", *arguments], input=answers, capture_output=True,
-                              text=True, env=dict(self.env, TMPDIR=str(self.tmp)))
-
     def test_given_an_application_without_an_env_file_when_configured_then_it_is_written_from_its_stacks(self):
         # Enter: create it; the DOMAIN platform.env doesn't set; 6: Back.
         result = self.config("\ntest.example.com\n6\n", "heimdall-api", "homologation")
@@ -166,7 +170,7 @@ class EnvironmentCommandTests(unittest.TestCase):
         self.assertIn("usage: scripts/ygg.sh env", result.stderr)
 
 
-class VariablesStoreTests(EnvironmentCommandTests):
+class VariablesStoreTests(EnvironmentTestCase):
     def use_store(self):
         import sys
         sys.path.insert(0, str(SCRIPT.parent))
