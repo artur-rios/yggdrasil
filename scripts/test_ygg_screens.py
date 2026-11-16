@@ -48,20 +48,20 @@ class PickerTests(unittest.TestCase):
     def picker(self, **kwargs):
         return screens.Picker(("t",), [sources.Choice("alpha"), sources.Choice("beta", "second")], **kwargs)
 
-    def test_typing_filters_and_enter_picks_the_first_match(self):
+    def test_given_a_picker_when_text_is_typed_and_enter_pressed_then_it_filters_and_picks_the_first_match(self):
         picker = self.picker()
         for key in "be":
             picker.key(key)
         self.assertEqual([r.label for r in picker.view().rows], ["beta"])
         self.assertEqual(picker.key("enter").result, "beta")
 
-    def test_arrows_move_and_esc_cancels(self):
+    def test_given_a_picker_when_arrows_or_esc_are_pressed_then_the_arrows_move_the_cursor_and_esc_cancels(self):
         picker = self.picker()
         picker.key("down")
         self.assertEqual(picker.view().cursor, 1)
         self.assertIs(picker.key("esc").result, screens.CANCEL)
 
-    def test_an_open_picker_takes_typed_text_after_its_check(self):
+    def test_given_an_open_picker_when_text_is_typed_and_entered_then_it_takes_it_after_its_check(self):
         picker = self.picker(open=True, check=sources.check_key)
         for key in "1x":
             picker.key(key)
@@ -72,46 +72,46 @@ class PickerTests(unittest.TestCase):
             picker.key(key)
         self.assertEqual(picker.key("enter").result, "NEW_KEY")
 
-    def test_a_closed_picker_only_filters(self):
+    def test_given_a_closed_picker_when_text_is_entered_then_it_only_filters(self):
         picker = self.picker()
         self.assertIsNone(picker.key(("text", "zzz")))
         self.assertEqual(picker.view().rows, [])
 
-    def test_numbers_and_exact_labels_pick(self):
+    def test_given_a_picker_when_a_number_or_an_exact_label_is_entered_then_it_picks_that_choice_and_an_unknown_number_picks_nothing(self):
         self.assertEqual(self.picker().key(("pick", 2)).result, "beta")
         self.assertEqual(self.picker().key(("text", "alpha")).result, "alpha")
         self.assertIsNone(self.picker().key(("pick", 9)))
 
-    def test_q_types_in_a_picker(self):
+    def test_given_an_open_picker_when_q_is_pressed_then_it_is_typed_into_the_filter(self):
         picker = self.picker(open=True)
         self.assertIsNone(picker.key("q"))
         self.assertEqual(picker.filter, "q")
 
 
 class TextInputTests(unittest.TestCase):
-    def test_typing_and_enter(self):
+    def test_given_a_text_input_when_text_is_typed_and_enter_pressed_then_the_edited_text_is_the_result(self):
         field = screens.TextInput(("t",), "ab")
         field.key("backspace")
         field.key("c")
         self.assertEqual(field.key("enter").result, "ac")
 
-    def test_hidden_input_is_marked_hidden_and_esc_cancels(self):
+    def test_given_a_hidden_text_input_when_drawn_or_esc_is_pressed_then_it_is_marked_hidden_and_esc_cancels(self):
         field = screens.TextInput(("t",), hidden=True)
         self.assertTrue(field.view().hidden)
         self.assertIs(field.key("esc").result, screens.CANCEL)
 
-    def test_an_empty_line_keeps_the_default_unless_hidden(self):
+    def test_given_a_text_input_with_a_default_when_an_empty_line_is_entered_then_it_keeps_the_default_unless_hidden(self):
         self.assertEqual(screens.TextInput(("t",), "d").key(("text", "")).result, "d")
         self.assertEqual(screens.TextInput(("t",), "d", hidden=True).key(("text", "")).result, "")
 
-    def test_a_failing_check_keeps_the_field_open(self):
+    def test_given_a_text_input_with_a_failing_check_when_enter_is_pressed_then_it_keeps_the_field_open_and_says_why(self):
         field = screens.TextInput(("t",), "it's", check=sources.check_value)
         self.assertIsNone(field.key("enter"))
         self.assertIn("single quote", field.view().message)
 
 
 class ConfirmTests(unittest.TestCase):
-    def test_default_is_no_and_y_n_answer(self):
+    def test_given_a_confirm_screen_when_enter_y_or_n_is_pressed_then_the_default_is_no_unless_set_and_y_and_n_answer(self):
         confirm = screens.ConfirmScreen(("t",), "Sure?")
         self.assertEqual(confirm.view().cursor, 1)
         self.assertIs(confirm.key("enter").result, False)
@@ -124,15 +124,15 @@ class MenuTests(unittest.TestCase):
     def setUp(self):
         self.ctx = context.Context(environ={})
 
-    def test_the_top_menu_is_the_groups(self):
+    def test_given_the_menu_when_opened_then_the_top_menu_is_the_groups(self):
         menu = screens.MenuScreen(self.ctx)
         self.assertEqual([r.label for r in menu.view().rows], list(tree.TOP))
 
-    def test_a_group_of_one_command_without_arguments_runs_it(self):
+    def test_given_a_group_of_one_command_without_arguments_when_picked_then_it_runs_the_command(self):
         _, _, runner = drive(screens.MenuScreen(self.ctx), [("text", "Status")])
         self.assertEqual(runner.ran[0].argv, ["status"])
 
-    def test_q_quits_and_question_mark_shows_the_overview(self):
+    def test_given_the_menu_when_q_or_question_mark_is_pressed_then_q_quits_and_question_mark_shows_the_overview(self):
         application, ui, _ = drive(screens.MenuScreen(self.ctx), ["?"])
         self.assertIn("Variables and secrets", ui.views[-1].text)
         application, _, _ = drive(screens.MenuScreen(self.ctx), ["q"])
@@ -153,7 +153,7 @@ class RunnerTests(unittest.TestCase):
             status = app.Runner(pause=pause)(effect, ("yggdrasil", "Host"))
         return status, run, typed
 
-    def test_a_ygg_command_runs_ygg_py_with_the_crumbs(self):
+    def test_given_a_ygg_command_when_run_then_ygg_py_runs_it_with_its_input_and_the_crumbs_and_its_status_is_returned(self):
         status, run, _ = self.run_effect(screens.Run(["vars", "get", "platform", "DOMAIN"], "x\n"))
         self.assertEqual(status, 3)
         argv = run.call_args.args[0]
@@ -161,23 +161,23 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["input"], "x\n")
         self.assertEqual(run.call_args.kwargs["env"]["YGG_CRUMBS"], "yggdrasil › Host")
 
-    def test_a_host_command_runs_host_sh(self):
+    def test_given_a_host_command_when_run_then_host_sh_runs_it(self):
         _, run, _ = self.run_effect(screens.Run(["config", "heimdall-api", "production"], program="host"))
         self.assertEqual(run.call_args.args[0], ["bash", str(context.SCRIPTS / "host.sh"), "config", "heimdall-api",
                                                  "production"])
 
-    def test_without_pause_it_does_not_wait(self):
+    def test_given_no_pause_when_a_command_runs_then_it_does_not_wait(self):
         _, _, typed = self.run_effect(screens.Run(["version"]), pause=False)
         typed.assert_not_called()
 
-    def test_ctrl_c_at_the_pause_returns_to_the_menu(self):
+    def test_given_the_pause_after_a_command_when_ctrl_c_is_pressed_then_it_returns_to_the_menu_with_the_status(self):
         status, _, typed = self.run_effect(screens.Run(["version"]), answer=KeyboardInterrupt)
         typed.assert_called_once()
         self.assertEqual(status, 3)
 
 
 class LineUITests(unittest.TestCase):
-    def test_ctrl_c_at_a_numbered_prompt_goes_back_and_end_of_input_leaves(self):
+    def test_given_a_numbered_prompt_when_ctrl_c_is_pressed_or_input_ends_then_ctrl_c_goes_back_and_end_of_input_leaves(self):
         from unittest import mock
         from yggcli import ui
         stdin = mock.Mock(isatty=lambda: False, readline=mock.Mock(side_effect=[KeyboardInterrupt, ""]))
@@ -187,7 +187,7 @@ class LineUITests(unittest.TestCase):
 
 
 class CursesUITests(unittest.TestCase):
-    def test_a_terminal_too_small_ignores_every_key_but_resize_esc_and_q(self):
+    def test_given_a_terminal_too_small_when_keys_are_pressed_then_every_key_but_resize_esc_and_q_is_ignored(self):
         import curses
         from unittest import mock
         from yggcli import ui
@@ -202,7 +202,7 @@ class CursesUITests(unittest.TestCase):
         self.assertEqual(terminal.read_key(), "esc")
 
 
-    def test_a_failure_after_initscr_ends_curses_before_it_is_raised(self):
+    def test_given_a_failure_after_initscr_when_curses_starts_then_curses_ends_before_the_failure_is_raised(self):
         import curses
         from unittest import mock
         from yggcli import ui
@@ -215,7 +215,7 @@ class CursesUITests(unittest.TestCase):
                 ui.CursesUI(None).__enter__()
             fake.endwin.assert_called_once()
 
-    def test_make_ui_falls_back_to_numbered_lines_without_terminfo(self):
+    def test_given_no_terminfo_when_make_ui_runs_then_it_falls_back_to_numbered_lines(self):
         import curses
         from unittest import mock
         from yggcli import ui
@@ -242,7 +242,7 @@ class InlineUITests(unittest.TestCase):
         import re
         return [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in lines]
 
-    def test_a_hidden_value_is_drawn_as_bullets_and_left_as_hidden(self):
+    def test_given_a_hidden_value_when_drawn_inline_then_it_is_drawn_as_bullets_and_left_as_hidden(self):
         from yggcli import prompt
         screen = screens.TextInput(("Password",), "s3cr3t", hidden=True)
         lines = self.plain(self.render(screen.view()))
@@ -251,7 +251,7 @@ class InlineUITests(unittest.TestCase):
         args = prompt.parser().parse_args(["ask", "Password"])
         self.assertEqual(prompt.shown(args, screen, "s3cr3t"), "(hidden)")
 
-    def test_a_long_question_wraps_and_the_rows_follow_the_cursor(self):
+    def test_given_a_long_question_and_many_rows_when_drawn_inline_then_the_question_wraps_and_the_rows_follow_the_cursor(self):
         question = "word " * 40
         picker = screens.Picker((question,), [sources.Choice(f"option-{n}") for n in range(30)])
         for _ in range(25):
@@ -269,19 +269,19 @@ class FormTests(StoreFixture):
     def form(self, path):
         return screens.FormScreen(self.ctx, ("yggdrasil",), tree.find(path))
 
-    def test_a_form_builds_the_command_line_from_picked_values(self):
+    def test_given_a_form_when_values_are_picked_and_run_then_it_builds_the_command_line_from_them(self):
         form = self.form(("vars", "get"))
         _, ui, runner = drive(form, [("text", "scope"), ("text", "platform"), ("text", "key"), ("text", "DOMAIN"),
                                      ("text", "[ ] --reveal"), ("text", "▶ Run")])
         self.assertEqual(runner.ran[0].argv, ["vars", "get", "platform", "DOMAIN", "--reveal"])
         self.assertIn("ygg vars get platform DOMAIN --reveal", [v.command for v in ui.views])
 
-    def test_a_missing_argument_is_named_and_nothing_runs(self):
+    def test_given_a_form_with_a_missing_argument_when_run_then_the_argument_is_named_and_nothing_runs(self):
         _, ui, runner = drive(self.form(("vars", "get")), [("text", "▶ Run")])
         self.assertEqual(runner.ran, [])
         self.assertEqual(ui.views[-1].message, "scope is needed")
 
-    def test_a_secret_assignment_is_typed_hidden_and_passed_on_stdin(self):
+    def test_given_a_secret_assignment_in_a_form_when_its_value_is_typed_then_it_is_typed_hidden_and_passed_on_stdin(self):
         _, ui, runner = drive(self.form(("vars", "set")), [
             ("text", "scope"), ("text", "heimdall-api@production"),
             ("text", "KEY=value"), ("text", "HEIMDALL_MASTER_USER_PASSWORD"), ("text", "n3w"),
@@ -292,7 +292,7 @@ class FormTests(StoreFixture):
         self.assertEqual(effect.stdin, "n3w\n")
         self.assertNotIn("n3w", " ".join(v.command for v in ui.views))
 
-    def test_with_secret_chosen_first_any_value_is_typed_hidden_and_passed_on_stdin(self):
+    def test_given_secret_chosen_first_in_a_form_when_any_value_is_typed_then_it_is_typed_hidden_and_passed_on_stdin(self):
         _, ui, runner = drive(self.form(("vars", "set")), [
             ("text", "scope"), ("text", "heimdall-api@production"),
             ("text", "--secret | --no-secret"), ("text", "--secret"),
@@ -304,7 +304,7 @@ class FormTests(StoreFixture):
         self.assertEqual(effect.stdin, "sk_live_123\n")
         self.assertNotIn("sk_live_123", " ".join(v.command for v in ui.views))
 
-    def test_choosing_secret_after_plain_values_moves_them_to_stdin_in_order(self):
+    def test_given_plain_values_in_a_form_when_secret_is_chosen_after_them_then_they_move_to_stdin_in_order(self):
         _, ui, runner = drive(self.form(("vars", "set")), [
             ("text", "scope"), ("text", "heimdall-api@production"),
             ("text", "KEY=value"), ("text", "STRIPE_LIVE_VALUE"), ("text", "sk_live_123"),
@@ -319,20 +319,20 @@ class FormTests(StoreFixture):
         after = ui.views[ui.views.index(next(v for v in ui.views if "--secret" in v.command)):]
         self.assertNotIn("sk_live_123", " ".join(v.command + " ".join(r.detail for r in v.rows) for v in after))
 
-    def test_a_plain_assignment_offers_the_current_value(self):
+    def test_given_a_plain_assignment_in_a_form_when_its_value_is_asked_then_it_offers_the_current_value(self):
         _, ui, runner = drive(self.form(("vars", "set")), [
             ("text", "scope"), ("text", "platform"), ("text", "KEY=value"), ("text", "DOMAIN"), ("text", ""),
             ("text", "▶ Run")])
         self.assertEqual(runner.ran[0].argv, ["vars", "set", "platform", "DOMAIN=example.com"])
 
-    def test_a_destructive_command_asks_and_no_runs_nothing(self):
+    def test_given_a_destructive_command_in_a_form_when_run_then_it_asks_and_no_runs_nothing_and_yes_runs_it(self):
         keys = [("text", "scope"), ("text", "platform"), ("text", "KEY"), ("text", "DOMAIN"), ("text", "▶ Run")]
         _, _, runner = drive(self.form(("vars", "unset")), keys + [("text", "No")])
         self.assertEqual(runner.ran, [])
         _, _, runner = drive(self.form(("vars", "unset")), keys + [("text", "Yes")])
         self.assertEqual(runner.ran[0].argv, ["vars", "unset", "platform", "DOMAIN"])
 
-    def test_a_choice_option_and_a_group(self):
+    def test_given_a_choice_option_and_a_group_in_a_form_when_picked_then_the_command_line_has_them(self):
         _, _, runner = drive(self.form(("vars", "check")), [
             ("text", "--platform | --usable"), ("text", "--usable"), ("text", "▶ Run")])
         self.assertEqual(runner.ran[0].argv, ["vars", "check", "--usable"])
@@ -340,14 +340,14 @@ class FormTests(StoreFixture):
             ("text", "[ ] --all"), ("text", "--move-up"), ("text", "no"), ("text", "▶ Run")])
         self.assertEqual(runner.ran[0].argv, ["vars", "import", "--all", "--move-up", "no"])
 
-    def test_backspace_clears_the_field_under_the_cursor(self):
+    def test_given_a_filled_form_field_under_the_cursor_when_backspace_is_pressed_then_the_field_is_cleared(self):
         form = self.form(("vars", "get"))
         drive(form, [("text", "scope"), ("text", "platform")])
         form.cursor = 0
         form.key("backspace")
         self.assertIsNone(form.values.get("scope"))
 
-    def test_a_failed_run_says_so_on_the_form(self):
+    def test_given_a_form_when_its_run_fails_then_it_says_so_on_the_form(self):
         _, ui, _ = drive(self.form(("vars", "get")), [("text", "scope"), ("text", "platform"), ("text", "key"),
                                                        ("text", "NOPE"), ("text", "▶ Run")], statuses=[1])
         self.assertIn("exit 1", ui.views[-1].message)

@@ -54,7 +54,7 @@ class VariablesScreenTests(StoreFixture):
         app.App(ui, screen, executor).run()
         return ui, executor
 
-    def test_the_list_is_the_resolved_set_with_origins_and_secrets_masked(self):
+    def test_given_a_scope_with_inherited_values_and_a_secret_when_its_variables_screen_is_drawn_then_the_list_is_the_resolved_set_with_origins_and_secrets_masked(self):
         rows = {r.label: r for r in self.screen().view().rows}
         self.assertEqual(rows["POSTGRES_HOST"].note, "@production")
         self.assertEqual(rows["LOCALE"].note, "heimdall-api")
@@ -63,7 +63,7 @@ class VariablesScreenTests(StoreFixture):
         self.assertIn("secret", secret.note)
         self.assertIn("+ Add a variable", rows)
 
-    def test_r_reveals_and_hides_every_secret(self):
+    def test_given_the_full_screen_variables_screen_when_r_is_pressed_twice_then_it_reveals_and_hides_every_secret(self):
         self.ctx.full_screen = True
         screen = self.screen()
         screen.key("r")
@@ -72,7 +72,7 @@ class VariablesScreenTests(StoreFixture):
         screen.key("r")
         self.assertNotIn("s3cr3t-value", {r.label: r for r in screen.view().rows}["HEIMDALL_MASTER_USER_PASSWORD"].detail)
 
-    def test_in_the_numbered_menu_show_value_says_it_prints_and_r_asks_first(self):
+    def test_given_the_numbered_menu_when_a_secret_is_opened_or_r_is_pressed_then_show_value_says_it_prints_and_r_asks_first(self):
         self.ctx.full_screen = False
         screen = self.screen()
         _, ui, _ = drive(screen, [("text", "HEIMDALL_MASTER_USER_PASSWORD")])
@@ -88,18 +88,18 @@ class VariablesScreenTests(StoreFixture):
         drive(history, ["r", ("text", "No")])
         self.assertFalse(history.reveal)
 
-    def test_full_screen_show_value_is_drawn_on_this_screen_only(self):
+    def test_given_the_full_screen_menu_when_a_secret_is_opened_then_show_value_is_drawn_on_this_screen_only(self):
         self.ctx.full_screen = True
         _, ui, _ = drive(self.screen(), [("text", "HEIMDALL_MASTER_USER_PASSWORD")])
         row = next(r for r in ui.views[-1].rows if r.label == "Show value")
         self.assertIn("on this screen only", row.detail)
 
-    def test_show_value_draws_the_secret_and_runs_nothing(self):
+    def test_given_a_secret_when_show_value_is_picked_then_it_draws_the_secret_and_runs_nothing(self):
         _, ui, runner = drive(self.screen(), [("text", "HEIMDALL_MASTER_USER_PASSWORD"), ("text", "Show value")])
         self.assertEqual(ui.views[-1].text, "s3cr3t-value")
         self.assertEqual(runner.ran, [])
 
-    def test_change_value_of_a_secret_is_hidden_and_goes_on_stdin(self):
+    def test_given_a_secret_when_its_value_is_changed_then_the_new_value_is_typed_hidden_goes_on_stdin_and_is_stored(self):
         ui, executor = self.run_for_real(self.screen(), [
             ("text", "HEIMDALL_MASTER_USER_PASSWORD"), ("text", "Change value"), ("text", "n3w-value"),
             ("pick", 1)])
@@ -109,7 +109,7 @@ class VariablesScreenTests(StoreFixture):
         self.assertEqual(effect.stdin, "n3w-value\n")
         self.assertEqual(self.get("heimdall-api@production", "HEIMDALL_MASTER_USER_PASSWORD")[0], "n3w-value")
 
-    def test_changing_an_inherited_value_offers_the_shared_scope_first_or_an_override(self):
+    def test_given_an_inherited_value_when_it_is_changed_then_it_offers_the_shared_scope_first_or_an_override_that_leaves_the_shared_value(self):
         screen = self.screen()
         variable = next(v for v in screen.variables if v.key == "POSTGRES_HOST")
         targets = screen.targets(variable)
@@ -121,11 +121,11 @@ class VariablesScreenTests(StoreFixture):
         self.assertEqual(self.get("heimdall-api@production", "POSTGRES_HOST")[0], "db2")
         self.assertEqual(self.get("@production", "POSTGRES_HOST")[0], "postgres")
 
-    def test_mark_as_not_secret_keeps_the_value(self):
+    def test_given_a_secret_when_marked_as_not_secret_then_it_keeps_the_value(self):
         self.run_for_real(self.screen(), [("text", "HEIMDALL_MASTER_USER_PASSWORD"), ("text", "Mark as not secret")])
         self.assertEqual(self.get("heimdall-api@production", "HEIMDALL_MASTER_USER_PASSWORD"), ("s3cr3t-value", False))
 
-    def test_remove_asks_first_and_then_goes_back_to_the_list(self):
+    def test_given_a_variable_when_removed_then_it_asks_first_and_then_goes_back_to_the_list(self):
         _, executor = self.run_for_real(self.screen(), [("text", "LOCALE"), ("text", "Remove"), ("text", "No")])
         self.assertEqual(executor.ran, [])
         screen = self.screen()
@@ -135,7 +135,7 @@ class VariablesScreenTests(StoreFixture):
         application.run()
         self.assertIsNone(self.get("heimdall-api", "LOCALE"))
 
-    def test_history_rolls_a_change_back(self):
+    def test_given_a_changed_variable_when_the_change_is_rolled_back_from_its_history_then_the_previous_value_returns(self):
         self.run_for_real(self.screen(), [("text", "LOCALE"), ("text", "Change value"), ("text", "pt-BR"),
                                           ("text", "heimdall-api")])
         self.assertEqual(self.get("heimdall-api", "LOCALE")[0], "pt-BR")
@@ -146,12 +146,12 @@ class VariablesScreenTests(StoreFixture):
                                           ("text", "Roll back"), ("text", "Yes")])
         self.assertEqual(self.get("heimdall-api", "LOCALE")[0], "en-US")
 
-    def test_add_a_variable_asks_name_kind_value_and_scope(self):
+    def test_given_the_variables_screen_when_a_variable_is_added_then_it_asks_name_kind_value_and_scope(self):
         self.run_for_real(self.screen(), [("text", "+ Add a variable"), ("text", "NEW_TOKEN"), ("text", "secret"),
                                           ("text", "t0k"), ("text", "heimdall-api@production")])
         self.assertEqual(self.get("heimdall-api@production", "NEW_TOKEN"), ("t0k", True))
 
-    def test_a_reference_shows_where_it_points_and_its_value(self):
+    def test_given_a_reference_when_its_value_is_shown_then_it_shows_where_it_points_and_its_value(self):
         screen = self.screen("fortuna-api@production")
         variable = next(v for v in screen.variables if v.key == "FORTUNA_SECRET")
         self.assertEqual(variable.resolved, "s3cr3t-value")
@@ -159,7 +159,7 @@ class VariablesScreenTests(StoreFixture):
         self.assertIn("s3cr3t-value", ui.views[-1].text)
         self.assertIn("${ref:heimdall-api:HEIMDALL_MASTER_USER_PASSWORD}", ui.views[-1].text)
 
-    def test_a_wrong_key_is_explained_and_offers_the_check(self):
+    def test_given_a_wrong_key_when_the_variables_screen_opens_then_it_is_explained_and_offers_the_check(self):
         (self.dir / "vars.key").write_text("not a key\n")
         screen = self.screen()
         view = screen.view()
@@ -168,17 +168,17 @@ class VariablesScreenTests(StoreFixture):
         _, _, runner = drive(self.screen(), [("text", "Check the store")])
         self.assertEqual(runner.ran[0].argv, ["vars", "check", "--usable"])
 
-    def test_d_deploys_and_asks_first_for_an_environment_that_stays_up(self):
+    def test_given_an_environment_that_stays_up_when_d_is_pressed_then_it_asks_first_and_deploys(self):
         _, _, runner = drive(self.screen(), ["d", ("text", "Yes")])
         self.assertEqual(runner.ran[0].argv, ["deploy", "production", "heimdall-api"])
 
-    def test_e_edits_the_scope_and_h_shows_its_history(self):
+    def test_given_the_variables_screen_when_e_or_h_is_pressed_then_e_edits_the_scope_and_h_shows_its_history(self):
         _, _, runner = drive(self.screen(), ["e"])
         self.assertEqual(runner.ran[0].argv, ["vars", "edit", "heimdall-api@production"])
         _, ui, _ = drive(self.screen(), ["h"])
         self.assertTrue(any(r.label.startswith("#") for r in ui.views[-1].rows))
 
-    def test_copy_command_lists_the_command_lines(self):
+    def test_given_a_variable_when_copy_command_is_picked_then_it_lists_the_command_lines(self):
         _, ui, _ = drive(self.screen(), [("text", "LOCALE"), ("text", "Copy command")])
         self.assertIn("ygg vars get heimdall-api LOCALE", ui.views[-1].text)
 
@@ -187,37 +187,37 @@ class ApplicationsScreenTests(StoreFixture):
     def apps(self):
         return variables.ApplicationsScreen(self.ctx, ("yggdrasil", "Applications"))
 
-    def test_it_lists_this_host_s_applications_and_the_group_s_commands(self):
+    def test_given_the_applications_screen_when_drawn_then_it_lists_this_host_s_applications_and_the_group_s_commands(self):
         labels = [r.label for r in self.apps().view().rows]
         self.assertIn("heimdall-api", labels)
         self.assertIn("deploy", labels)
         self.assertIn("add", labels)
 
-    def test_an_application_with_variables_opens_its_screen(self):
+    def test_given_an_application_with_variables_when_picked_then_it_opens_its_screen(self):
         _, ui, _ = drive(self.apps(), [("text", "heimdall-api"), ("text", "production")])
         self.assertIn("HEIMDALL_MASTER_USER_PASSWORD", [r.label for r in ui.views[-1].rows])
 
-    def test_an_application_without_variables_offers_to_create_them(self):
+    def test_given_an_application_without_variables_when_picked_then_it_offers_to_create_them(self):
         _, _, runner = drive(self.apps(), [("text", "heimdall-api"), ("text", "development"), ("text", "Yes")])
         self.assertEqual((runner.ran[0].program, runner.ran[0].argv), ("host", ["create-variables", "heimdall-api", "development"]))
 
-    def test_without_a_store_it_is_host_sh_config(self):
+    def test_given_no_store_when_an_application_is_picked_then_it_is_host_sh_config(self):
         (self.dir / "vars.db").unlink()
         _, _, runner = drive(self.apps(), [("text", "heimdall-api"), ("text", "production")])
         self.assertEqual((runner.ran[0].program, runner.ran[0].argv), ("host", ["config", "heimdall-api", "production"]))
 
 
-    def test_config_opens_the_variables_screen_in_this_menu(self):
+    def test_given_a_store_when_config_is_picked_then_it_opens_the_variables_screen_in_this_menu(self):
         _, ui, runner = drive(self.apps(), [("text", "config"), ("text", "heimdall-api"), ("text", "production")])
         self.assertEqual(runner.ran, [])
         self.assertIn("HEIMDALL_MASTER_USER_PASSWORD", [r.label for r in ui.views[-1].rows])
 
-    def test_without_a_store_config_is_its_form(self):
+    def test_given_no_store_when_config_is_picked_then_it_is_its_form(self):
         (self.dir / "vars.db").unlink()
         application, _, _ = drive(self.apps(), [("text", "config")])
         self.assertIsInstance(application.stack[-1], screens.FormScreen)
 
-    def test_an_application_or_environment_not_on_this_host_is_refused(self):
+    def test_given_an_application_or_environment_not_on_this_host_when_opened_then_it_is_refused(self):
         apps = self.apps()
         self.assertIsNone(apps.open_app("nope"))
         self.assertIn("nope", apps.message)
@@ -227,7 +227,7 @@ class ApplicationsScreenTests(StoreFixture):
         self.assertIn("homologation", apps.message)
 
 class VariablesMenuTests(StoreFixture):
-    def test_browse_a_scope_and_the_vars_commands(self):
+    def test_given_the_variables_menu_when_drawn_or_a_scope_is_browsed_then_it_offers_browse_a_scope_and_the_vars_commands(self):
         menu = variables.VariablesMenu(self.ctx, ("yggdrasil", "Variables and secrets"))
         labels = [r.label for r in menu.view().rows]
         self.assertEqual(labels[0], "Browse a scope")
@@ -235,7 +235,7 @@ class VariablesMenuTests(StoreFixture):
         _, ui, _ = drive(menu, [("text", "Browse a scope"), ("text", "platform")])
         self.assertIn("DOMAIN", [r.label for r in ui.views[-1].rows])
 
-    def test_without_a_store_it_offers_to_create_one(self):
+    def test_given_no_store_when_the_variables_menu_opens_then_it_offers_to_create_one(self):
         (self.dir / "vars.db").unlink()
         menu = variables.VariablesMenu(self.ctx, ("yggdrasil", "Variables and secrets"))
         _, _, runner = drive(menu, [("text", "Create the variables store")], statuses=[0, 0])

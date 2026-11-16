@@ -135,13 +135,13 @@ def stop(pid):
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "needs a Linux pty")
 class FullScreenTests(unittest.TestCase):
-    def test_the_menu_draws_and_q_quits(self):
+    def test_given_ygg_in_a_terminal_when_q_is_pressed_then_the_menu_draws_and_q_quits(self):
         pid, fd = spawn([])
         read_until(fd, "Applications")
         os.write(fd, b"q")
         self.assertEqual(wait(pid), 0)
 
-    def test_filter_enter_and_a_command_run_in_the_terminal(self):
+    def test_given_the_full_screen_menu_when_a_command_is_filtered_and_entered_then_it_runs_in_the_terminal_and_enter_returns_to_the_filtered_group(self):
         pid, fd = spawn([])
         read_until(fd, "Applications")
         os.write(fd, b"Help\r")
@@ -155,7 +155,7 @@ class FullScreenTests(unittest.TestCase):
         os.write(fd, b"q")
         self.assertEqual(wait(pid), 0)
 
-    def test_ctrl_c_at_the_pause_goes_back_to_the_menu(self):
+    def test_given_the_pause_after_a_command_in_the_terminal_when_ctrl_c_is_pressed_then_it_goes_back_to_the_menu(self):
         pid, fd = spawn([])
         read_until(fd, "Applications")
         os.write(fd, b"Help\r")
@@ -171,7 +171,7 @@ class FullScreenTests(unittest.TestCase):
 
 
 
-    def test_a_terminal_without_terminfo_gets_the_numbered_menu(self):
+    def test_given_a_terminal_without_terminfo_when_ygg_starts_then_it_gets_the_numbered_menu(self):
         pid, fd = spawn([], term="xterm-no-such-terminal")
         self.addCleanup(stop, pid)
         seen = read_until(fd, "0) Back")
@@ -203,13 +203,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(wait(pid), 1)
         self.assertNotIn("Traceback", seen)
 
-    def test_an_unknown_application_is_refused(self):
+    def test_given_an_unknown_application_when_ygg_config_opens_it_then_it_is_refused(self):
         self.refused(["nope"], "'nope' is not an application")
 
-    def test_an_environment_not_on_this_host_is_refused(self):
+    def test_given_an_environment_not_on_this_host_when_ygg_config_opens_it_then_it_is_refused(self):
         self.refused(["heimdall-api", "nowhere"], "'nowhere' is not an environment of this host")
 
-    def test_a_long_confirmation_is_shown_in_full(self):
+    def test_given_a_long_confirmation_when_ygg_config_asks_it_in_a_narrow_terminal_then_it_is_shown_in_full(self):
         pid, fd = spawn(["config", "heimdall-api", "development"], env=self.env, cols=60)
         self.addCleanup(stop, pid)
         read_until(fd, "from its stack files?")
@@ -231,16 +231,16 @@ class PromptTests(unittest.TestCase):
         os.close(read_end)
         return status, answer
 
-    def test_choose_answers_on_fd_3(self):
+    def test_given_prompt_choose_when_an_option_is_picked_then_it_answers_on_fd_3(self):
         self.assertEqual(self.prompt(["choose", "Which one?", "alpha", "beta"], b"beta\r"), (0, "beta"))
 
-    def test_esc_cancels_with_status_1(self):
+    def test_given_prompt_choose_when_esc_is_pressed_then_it_cancels_with_status_1(self):
         self.assertEqual(self.prompt(["choose", "Which one?", "alpha", "beta"], b"\x1b")[0], 1)
 
-    def test_ctrl_c_exits_130(self):
+    def test_given_prompt_choose_when_ctrl_c_is_pressed_then_it_exits_130(self):
         self.assertEqual(self.prompt(["choose", "Which one?", "alpha", "beta"], b"\x03")[0], 130)
 
-    def test_ask_and_confirm(self):
+    def test_given_prompt_ask_and_confirm_when_answered_then_they_answer_on_fd_3_and_esc_on_confirm_is_no(self):
         self.assertEqual(self.prompt(["ask", "Name?", "--default", "x"], b"\x15abc\r"), (0, "abc"))
         self.assertEqual(self.prompt(["confirm", "Sure?"], b"y"), (0, "y"))
         self.assertEqual(self.prompt(["confirm", "Sure?", "--yes"], b"\r"), (0, "y"))
@@ -282,7 +282,7 @@ class HostShPromptTests(unittest.TestCase):
         self.addCleanup(stop, pid)
         return pid, fd
 
-    def test_the_callers_receive_the_answers(self):
+    def test_given_host_sh_prompts_in_a_terminal_when_answered_then_the_callers_receive_the_answers(self):
         pid, fd = self.driver(
             'choose c "Pick one?" alpha beta\n'
             'ask a "Name?" dflt\n'
@@ -299,7 +299,7 @@ class HostShPromptTests(unittest.TestCase):
         self.assertEqual(wait(pid), 0)
         self.assertEqual(self.out.read_text(), "beta|abc|-x|yes|no|Back|back")
 
-    def test_the_prompt_is_drawn_below_the_output_and_leaves_its_answer(self):
+    def test_given_output_before_a_host_sh_prompt_when_it_is_answered_then_the_prompt_is_drawn_below_the_output_and_leaves_its_answer(self):
         pid, fd = self.driver('say "Output before the prompt"\n'
                               'choose c "Pick one?" alpha beta\n'
                               'say "Output after it"\n')
@@ -312,7 +312,7 @@ class HostShPromptTests(unittest.TestCase):
         self.assertEqual(screen.unknown, [])
         self.assertEqual(shown, "Output before the prompt\nPick one? beta\nOutput after it")
 
-    def test_a_long_question_is_shown_in_full(self):
+    def test_given_a_long_host_sh_question_when_prompted_in_a_narrow_terminal_then_it_is_shown_in_full_with_its_answer(self):
         question = ("How can Docker check its health from inside the container? (deploy.sh rolls back a "
                     "release that never gets healthy, so pick what the image has)")
         pid, fd = self.driver(f'choose c "{question}" wget curl none\nsay "done: $c"\n', cols=80)
@@ -325,21 +325,21 @@ class HostShPromptTests(unittest.TestCase):
         self.assertEqual(wait(pid), 0)
         self.assertIn(question + ": curl", " ".join(shown.split()))
 
-    def test_ctrl_c_in_a_prompt_stops_the_operation_with_130(self):
+    def test_given_a_host_sh_prompt_when_ctrl_c_is_pressed_then_the_operation_stops_with_130(self):
         pid, fd = self.driver('choose c "Pick one?" alpha beta\nsay "not reached" > "$out"\n')
         read_until(fd, "beta")
         os.write(fd, b"\x03")
         self.assertEqual(wait(pid), 130)
         self.assertFalse(self.out.exists())
 
-    def test_a_terminal_without_terminfo_still_gets_its_answer(self):
+    def test_given_a_terminal_without_terminfo_when_a_host_sh_prompt_is_answered_then_it_still_gets_its_answer(self):
         pid, fd = self.driver('choose c "Pick one?" alpha beta\nprintf %s "$c" > "$out"\n', term="xterm-no-such-terminal")
         read_until(fd, "beta")
         os.write(fd, b"beta\r")
         self.assertEqual(wait(pid), 0)
         self.assertEqual(self.out.read_text(), "beta")
 
-    def test_a_dumb_terminal_gets_the_numbered_prompt(self):
+    def test_given_a_dumb_terminal_when_host_sh_prompts_then_it_gets_the_numbered_prompt(self):
         pid, fd = self.driver('choose c "Pick one?" alpha beta\nprintf %s "$c" > "$out"\n', term="dumb")
         read_until(fd, "2) beta")
         os.write(fd, b"2\n")
