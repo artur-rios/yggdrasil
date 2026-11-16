@@ -70,6 +70,36 @@ void main() {
       );
     });
 
+    testWidgets('given room for every choice and no selection, when drawn, '
+        'then it is a segmented control with nothing marked', (tester) async {
+      await pumpSelector(tester, selectedId: null);
+
+      expect(tester.takeException(), isNull);
+      expect(tester.widget(selector), isA<SegmentedButton<String>>());
+      expect(
+        tester.widget<SegmentedButton<String>>(selector).selected,
+        isEmpty,
+      );
+    });
+
+    testWidgets('given no selection, when a segment is tapped, then its '
+        'environment is chosen', (tester) async {
+      final chosen = await pumpSelector(tester, selectedId: null);
+
+      await tester.tap(inSelector(find.text('Development')));
+
+      expect(chosen, <String>['development']);
+    });
+
+    testWidgets('given a selection, when the selected segment is tapped, then '
+        'nothing is chosen', (tester) async {
+      final chosen = await pumpSelector(tester);
+
+      await tester.tap(inSelector(find.text('Production')));
+
+      expect(chosen, isEmpty);
+    });
+
     testWidgets('given a segment, when tapped, then its environment is '
         'chosen', (tester) async {
       final chosen = await pumpSelector(tester);

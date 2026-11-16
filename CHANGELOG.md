@@ -67,6 +67,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   it would. A sync Forgejo refuses is reported and does not fail the run: the next scheduled sync still drops the
   branches.
 
+### Fixed
+
+- **The console's environment selector no longer fails with nothing selected.** `EnvironmentSelector` takes a
+  `selectedId` that may be `null`, but its segmented layout (four environments or fewer, with room for them)
+  hit Flutter's `SegmentedButton` assertion (`selected.length > 0 || emptySelectionAllowed`) and drew an error
+  instead. It now draws the segments with none marked, and tapping one chooses it. With an environment selected,
+  tapping the selected segment still does nothing. The overview always passes a selection, so the screen itself
+  was not affected.
+
 ## [0.13.8] - 2026-11-14
 
 ### Fixed
