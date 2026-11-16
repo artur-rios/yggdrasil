@@ -183,7 +183,7 @@ toolchain_run_dir() {
 overlay_mount() {
   local destination=$1 lower=$2 dir=$3
   mkdir -p "$dir/upper" "$dir/work" || return 1
-  printf '%s\n' "type=volume,dst=$destination,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$lower,upperdir=$dir/upper,workdir=$dir/work\""
+  printf '%s\n' "type=volume,dst=$destination,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$lower,upperdir=$dir/upper,workdir=$dir/work,userxattr\""
 }
 
 # ---- Package caches: scripts/package_cache.py has the whole story --------------------------------------------

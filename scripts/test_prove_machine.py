@@ -80,9 +80,10 @@ FAKES = {
     #   FAKE_PROBE_SILENT    the probe prints nothing at all
     #   FAKE_SERVER_FAILS, FAKE_NO_PORT, FAKE_NO_ANSWER, FAKE_NO_GATEWAY   the Testcontainers proof (with
     #                        FAKE_NO_ROUTE for `ip`)
-    #   FAKE_OVERLAY_REFUSED, FAKE_OVERLAY_LEAKS, FAKE_OVERLAY_NO_UPPER   the toolchain overlay: the engine can't
-    #                        mount it; its writes reach the lower directory; they are nowhere on the host. Without
-    #                        them the fake does what an overlay does, on the directories the --mount names.
+    #   FAKE_OVERLAY_REFUSED, FAKE_OVERLAY_LEAKS, FAKE_OVERLAY_NO_UPPER, FAKE_OVERLAY_NO_RMDIR   the toolchain
+    #                        overlay: the engine can't mount it; its writes reach the lower directory; they are
+    #                        nowhere on the host; it can't delete a lower directory (no userxattr). Without them the
+    #                        fake does what an overlay does, on the directories the --mount names.
     "docker": r"""
         echo "docker as=${FAKE_AS_USER:-} host=${DOCKER_HOST:-} ${*//$'
 '/ }" >>"$FAKE_STATE/calls"
@@ -129,9 +130,12 @@ FAKES = {
                 echo "read:$(cat "$lower/cached.txt")"
                 if [[ -n "${FAKE_OVERLAY_LEAKS:-}" ]]; then
                   echo rewritten >"$lower/cached.txt"; echo added >"$lower/added.txt"; rm -f "$lower/deleted.txt"
+                  rm -rf "$lower/tree"
                 elif [[ -z "${FAKE_OVERLAY_NO_UPPER:-}" ]]; then
                   echo added >"$upper/added.txt"
                 fi
+                if [[ -z "${FAKE_OVERLAY_NO_RMDIR:-}" ]]; then echo "removed:tree"
+                else echo "rm: can't remove '/sdk/tree/sub': I/O error" >&2; fi
                 echo "back:rewritten"
                 ;;
               *ygg-prove-client*)
@@ -666,6 +670,7 @@ class ProveMachineTests(unittest.TestCase):
         self.assertIn("--rm", run)
         self.assertIn('type=volume,dst=/sdk,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,'
                       f'"volume-opt=o=lowerdir={self.ci_home}/.ygg-prove-overlay.', run)
+        self.assertIn('/work,userxattr"', run)
         self.assertIn(TAR_IMAGE, run)
         self.assertNotIn(" -v ", run)
         # The directories were made as ci, from /, by sudo.
@@ -686,6 +691,12 @@ class ProveMachineTests(unittest.TestCase):
         self.assertEqual(self.status_of(result, "toolchain overlay"), "FAIL")
         self.assertIn("reached the lower directory", self.rows(result)["toolchain overlay"][1])
         self.assertEqual(self.overlay_dirs(), [])
+
+    def test_given_an_overlay_that_cannot_delete_a_lower_directory_when_proved_then_toolchain_overlay_fails(self):
+        # What a rootless engine's overlay without userxattr does: Gradle's cleanup would fail on it.
+        result = self.prove("dev", FAKE_OVERLAY_NO_RMDIR="1")
+        self.assertEqual(self.status_of(result, "toolchain overlay"), "FAIL")
+        self.assertIn("could not delete a directory", self.rows(result)["toolchain overlay"][1])
 
     def test_given_writes_that_are_nowhere_on_the_host_when_proved_then_toolchain_overlay_fails(self):
         result = self.prove("dev", FAKE_OVERLAY_NO_UPPER="1")

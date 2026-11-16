@@ -326,7 +326,8 @@ class ToolchainCacheTests(RunCheckHarness):
             return None
         field = arguments[arguments.index("--mount") + 1]
         options = field[field.index('"volume-opt=o=') + len('"volume-opt=o='):-1]
-        return dict(option.split("=", 1) for option in options.split(","))
+        # A flag (userxattr) is an option without a value.
+        return dict((option.split("=", 1) + [True])[:2] for option in options.split(","))
 
     def test_given_a_pinned_flutter_and_an_empty_cache_when_run_then_the_sdk_is_fetched_and_given_as_an_overlay(self):
         result = self.run_with_cache()
@@ -339,6 +340,8 @@ class ToolchainCacheTests(RunCheckHarness):
         overlay = self.overlay()
         # The cached SDK is only ever the overlay's lower, read-only, layer: the check writes to its own directory.
         self.assertEqual(overlay["lowerdir"], str(self.sdk()))
+        # userxattr: without it an overlay in a user namespace (a rootless engine) cannot delete a lower directory.
+        self.assertIs(overlay["userxattr"], True)
         self.assertTrue(overlay["upperdir"].startswith(f"{self.cache}/runs/"), overlay)
         self.assertEqual(pathlib.Path(overlay["workdir"]).parent, pathlib.Path(overlay["upperdir"]).parent)
         self.assertIn(["-e", f"FLUTTER_SDK_DIR={SDK_IN_CONTAINER}"], self.pairs())
@@ -632,7 +635,7 @@ class PackageCacheRunTests(RunCheckHarness):
                 field = arguments[i + 1]
                 destination = field.split(",")[1].removeprefix("dst=")
                 options = field[field.index('"volume-opt=o=') + len('"volume-opt=o='):-1]
-                found[destination] = dict(option.split("=", 1) for option in options.split(","))
+                found[destination] = dict((option.split("=", 1) + [True])[:2] for option in options.split(","))
         return found
 
     def current(self, scope="orpheus"):
