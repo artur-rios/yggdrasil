@@ -195,7 +195,7 @@ class VariablesStoreTests(EnvironmentTestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("vars.key", result.stderr)
 
-    def test_given_a_reference_unresolved_in_an_environment_this_host_does_not_run_then_ygg_works(self):
+    def test_given_a_reference_unresolved_in_an_environment_this_host_does_not_run_when_env_status_then_ygg_works(self):
         self.use_store()
         import vars as v
         with v.Store.open(self.secrets) as store:
@@ -271,7 +271,7 @@ class VariablesStoreTests(EnvironmentTestCase):
         result = self.ygg("check", PYTHONPATH=str(hidden))
         self.assertIn("package python3-cryptography", result.stdout)
 
-    def test_given_vars_without_a_command_then_it_prints_the_full_help(self):
+    def test_given_vars_without_a_command_when_run_then_it_prints_the_full_help(self):
         result = self.ygg("vars")
         self.assertEqual(result.returncode, 0, result.stderr)
         for part in ("Scopes (where a variable lives):", "Examples:", "Exit status:"):

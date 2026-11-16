@@ -1254,7 +1254,7 @@ class MachineRoleTests(unittest.TestCase):
         # The rest of the machine was set up all the same.
         self.assertTrue(self.etc("yggdrasil-role").exists())
 
-    def test_given_cloudflare_unreachable_after_a_firewall_was_set_then_its_rules_and_file_are_kept(self):
+    def test_given_a_firewall_set_and_cloudflare_unreachable_when_installed_again_then_its_rules_and_file_are_kept(self):
         self.install("apps")
         ips = self.etc("yggdrasil/cloudflare-ips").read_text()
         # The firewall is off (and lets everything in by default), so install puts it right: and the
@@ -1631,7 +1631,7 @@ class MachineRoleTests(unittest.TestCase):
         # A running engine only takes the new addresses when it restarts.
         self.assertIn(self.as_user("ci", "systemctl --user restart docker"), self.calls())
 
-    def test_given_an_engine_installed_twice_then_the_profile_has_one_docker_host_line(self):
+    def test_given_an_engine_already_installed_when_installed_again_then_the_profile_has_one_docker_host_line(self):
         self.install("dev")
         profile = self.home_of("ygg") / ".profile"
         profile.write_text("alias ll='ls -l'\n" + profile.read_text())

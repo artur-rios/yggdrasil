@@ -401,7 +401,7 @@ class DeployTests(unittest.TestCase):
         self.assertNotIn("move to the variables store", result.stderr)
         self.assertTrue(all(not pathlib.Path(p).exists() for p in self.env_files_used()))
 
-    def test_given_a_store_without_variables_for_a_site_that_hands_them_to_its_container_then_it_stops(self):
+    def test_given_a_store_without_variables_for_a_site_that_hands_them_to_its_container_when_deployed_then_it_stops(self):
         # github-readme-stats' stack hands the whole set to the container (env_file: ${APP_ENV_FILE}): its token
         # and whitelist. With none set it was never configured here, as before.
         site = self.given_a_site("github-readme-stats")

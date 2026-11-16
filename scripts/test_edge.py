@@ -93,11 +93,11 @@ class EdgeTests(unittest.TestCase):
                 for label in chains:
                     self.assertTrue(label.endswith(".middlewares=secure-headers-ui@file"), label)
 
-    def test_given_the_personal_page_then_the_whole_env_file_reaches_it(self):
+    def test_given_the_personal_page_when_its_stack_is_read_then_the_whole_env_file_reaches_it(self):
         web = yaml.load((STACKS / "personal-page.yml").read_text(), Loader=ComposeLoader)["services"]["web"]
         self.assertEqual(web["env_file"], "${APP_ENV_FILE:?APP_ENV_FILE is set by scripts/deploy.sh}")
 
-    def test_given_the_contact_route_then_it_is_limited_per_source(self):
+    def test_given_the_contact_route_when_its_labels_are_read_then_it_is_limited_per_source(self):
         limit = "traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit"
         found = dict(label.split("=", 1) for label in labels("personal-page.proxy.yml"))
         self.assertEqual(found[f"{limit}.average"], "1")
@@ -106,7 +106,7 @@ class EdgeTests(unittest.TestCase):
         self.assertEqual(found[f"{limit}.sourcecriterion.ipstrategy.depth"], "1")
         self.assertEqual(found[f"{limit}.sourcecriterion.ipstrategy.ipv6subnet"], "56")
 
-    def test_given_the_contact_route_then_every_unsafe_method_goes_through_the_limit(self):
+    def test_given_the_contact_route_when_its_labels_are_read_then_every_unsafe_method_goes_through_the_limit(self):
         contact = "personal-page-${YGG_ENVIRONMENT}-contact"
         self.assertEqual(rule("personal-page.proxy.yml", contact),
                          "Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh}`)"
@@ -120,16 +120,16 @@ class EdgeTests(unittest.TestCase):
     def internal_api(self):
         return yaml.load((STACKS / INTERNAL_STACK).read_text(), Loader=ComposeLoader)["services"]["api"]
 
-    def test_given_the_internal_api_then_it_has_no_route(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_has_no_route(self):
         self.assertNotIn("labels", self.internal_api())
 
-    def test_given_the_internal_api_then_it_publishes_no_port(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_publishes_no_port(self):
         self.assertEqual(self.internal_api()["ports"], [])
 
-    def test_given_the_internal_api_then_it_joins_the_edge_and_telemetry_networks(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_joins_the_edge_and_telemetry_networks(self):
         self.assertLessEqual({"edge", "telemetry"}, set(self.internal_api()["networks"]))
 
-    def test_given_the_internal_api_then_it_runs_one_container(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_runs_one_container(self):
         api = self.internal_api()
         self.assertNotIn("deploy", api)
         self.assertNotIn("scale", api)
@@ -275,7 +275,7 @@ class EdgeTests(unittest.TestCase):
                 self.assertNotIn("requesthost", label.lower())
                 self.assertFalse(label.startswith(f"{AUTH}.priority"), label)
 
-    def test_given_a_rate_limit_in_a_stack_then_it_counts_the_visitor_cloudflare_reports(self):
+    def test_given_a_rate_limit_in_a_stack_when_its_labels_are_read_then_it_counts_the_visitor_cloudflare_reports(self):
         # Without depth a limit counts the connection's address: behind Cloudflare, an edge address
         # that unrelated visitors share.
         limited = set()
