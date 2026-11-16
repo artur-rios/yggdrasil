@@ -196,12 +196,12 @@ class AllowlistTests(unittest.TestCase):
                 with self.subTest(proxy=proxy, request=f"{method} {path}"):
                     self.assertFalse(passes(allowed, method, path))
 
-    def test_given_the_status_proxy_then_the_container_list_is_all_it_allows(self):
+    def test_given_the_status_proxy_when_its_allowlist_is_read_then_the_container_list_is_all_it_allows(self):
         allow_from, allowed = allowlist(self.services["docker-proxy"])
         self.assertEqual(allowed, {"GET": [r"(/v1\.[0-9]+)?/containers/json"]})
         self.assertEqual(allow_from, "status")
 
-    def test_given_each_proxy_then_only_reads_are_allowed_and_only_from_its_client(self):
+    def test_given_each_proxy_when_its_allowlist_is_read_then_only_reads_are_allowed_and_only_from_its_client(self):
         for proxy, client in PROXIES.items():
             with self.subTest(proxy=proxy):
                 allow_from, allowed = allowlist(self.services[proxy])
@@ -212,7 +212,7 @@ class AllowlistTests(unittest.TestCase):
                 for argument in self.services[proxy]["command"]:
                     self.assertRegex(argument, r"^-(allowfrom|allowGET|allowHEAD)=")
 
-    def test_given_each_pattern_then_the_proxys_own_anchors_hold(self):
+    def test_given_each_pattern_when_the_proxy_anchors_it_then_the_proxys_own_anchors_hold(self):
         # The proxy writes "^" + pattern + "$": a top-level | would leave one side unanchored, and
         # Compose would interpolate a $.
         for proxy in PROXIES:
@@ -223,7 +223,7 @@ class AllowlistTests(unittest.TestCase):
                     self.assertNotIn("$", pattern)
                     self.assertFalse(pattern.startswith("^"))
 
-    def test_given_each_proxy_then_it_is_the_pinned_image_hardened_and_on_a_network_of_its_own(self):
+    def test_given_each_proxy_when_its_service_is_read_then_it_is_the_pinned_image_hardened_and_on_a_network_of_its_own(self):
         images = set()
         for proxy, client in PROXIES.items():
             with self.subTest(proxy=proxy):
@@ -264,19 +264,19 @@ class AllowlistTests(unittest.TestCase):
         # deploy.sh runs in the agent and puts YGG_DOMAIN under a site's host; DOMAIN is only known here.
         self.assertEqual(self.services["agent"]["environment"]["YGG_DOMAIN"], "${DOMAIN}")
 
-    def test_given_the_apps_services_then_they_are_in_the_apps_profile(self):
+    def test_given_the_apps_services_when_their_profiles_are_read_then_they_are_in_the_apps_profile(self):
         for name in ("status", "docker-proxy", "console"):
             with self.subTest(service=name):
                 self.assertEqual(self.services[name]["profiles"], ["apps"])
 
-    def test_given_the_platform_then_only_the_proxies_and_the_agent_mount_the_socket(self):
+    def test_given_the_platform_when_its_volumes_are_read_then_only_the_proxies_and_the_agent_mount_the_socket(self):
         # The agent deploys (docker compose up), so it needs the whole API; it faces no network
         # but its outgoing WebSocket to the Jenkins controller.
         mounting = sorted(name for name, service in self.services.items()
                           if any("docker.sock" in str(volume) for volume in service.get("volumes") or []))
         self.assertEqual(mounting, sorted([*PROXIES, "agent"]))
 
-    def test_given_each_client_then_it_talks_to_its_own_proxy(self):
+    def test_given_each_client_when_its_docker_endpoint_is_read_then_it_talks_to_its_own_proxy(self):
         self.assertEqual(self.services["status"]["environment"]["YGGDRASIL_DOCKER_URL"], "http://docker-proxy:2375")
         # Traefik's configuration is a file now (scripts/traefik_config.py renders it).
         rendered = render({"DOMAIN": "example.com", "ACME_EMAIL": "ops@example.com", "ACME_DNS_PROVIDER": "cloudflare"}, None)

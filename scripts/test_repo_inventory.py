@@ -394,7 +394,7 @@ class KindTests(Fixture):
         self.assertIn("code only", note)
         self.assertIn("1 workflow found", note)
 
-    def test_given_pages_in_a_repository_the_spec_does_not_call_a_site_then_a_note_says_so(self):
+    def test_given_pages_in_a_repository_the_spec_does_not_call_a_site_when_inventoried_then_a_note_says_so(self):
         make_clone(self.root, "some-experiment", {"docs.yml": PAGES})
         self.assertIn("Pages", " ".join(inv.inventory(self.root)[0].notes))
 

@@ -103,33 +103,33 @@ class ParityTests(unittest.TestCase):
 
 
 class ArgvTests(unittest.TestCase):
-    def test_given_positionals_and_a_flag_then_they_come_in_order(self):
+    def test_given_positionals_and_a_flag_when_the_argv_is_built_then_they_come_in_order(self):
         command = tree.find(("vars", "get"))
         argv = tree.argv_for(command, {"scope": "heimdall-api@production", "key": "K", "reveal": True})
         self.assertEqual(argv, ["vars", "get", "heimdall-api@production", "K", "--reveal"])
 
-    def test_given_a_mutually_exclusive_choice_then_only_that_flag_is_written(self):
+    def test_given_a_mutually_exclusive_choice_when_the_argv_is_built_then_only_that_flag_is_written(self):
         command = tree.find(("vars", "set"))
         group = next(a for a in command.args if a.group is not None)
         argv = tree.argv_for(command, {"scope": "platform", "assignments": ["A=1"], group.field: "--no-secret"})
         self.assertEqual(argv, ["vars", "set", "platform", "A=1", "--no-secret"])
 
-    def test_given_an_option_at_its_default_then_it_is_left_out(self):
+    def test_given_an_option_at_its_default_when_the_argv_is_built_then_it_is_left_out(self):
         command = tree.find(("vars", "history"))
         self.assertEqual(tree.argv_for(command, {"limit": "50"}), ["vars", "history"])
         self.assertEqual(tree.argv_for(command, {"limit": "20"}), ["vars", "history", "--limit", "20"])
 
-    def test_given_a_choice_option_then_its_value_follows_the_flag(self):
+    def test_given_a_choice_option_when_the_argv_is_built_then_its_value_follows_the_flag(self):
         command = tree.find(("vars", "import"))
         argv = tree.argv_for(command, {"all": True, "move_up": "yes"})
         self.assertEqual(argv, ["vars", "import", "--all", "--move-up", "yes"])
 
-    def test_given_a_required_argument_missing_then_the_form_says_which(self):
+    def test_given_a_required_argument_missing_when_the_form_is_checked_then_it_says_which(self):
         command = tree.find(("vars", "render"))
         self.assertEqual(tree.missing(command, {"application": "heimdall-api"}), "environment is needed")
         self.assertIsNone(tree.missing(command, {"application": "heimdall-api", "environment": "production"}))
 
-    def test_given_a_later_optional_without_the_earlier_one_then_it_is_refused(self):
+    def test_given_a_later_optional_without_the_earlier_one_when_the_form_is_checked_then_it_is_refused(self):
         command = tree.find(("vars", "history"))
         self.assertEqual(tree.missing(command, {"key": "K"}), "key needs scope first")
 

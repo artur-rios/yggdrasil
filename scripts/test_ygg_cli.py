@@ -41,74 +41,74 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("development", result.stdout)
 
-    def test_given_a_bad_env_usage_then_host_sh_says_how_and_exits_1(self):
+    def test_given_a_bad_env_usage_when_run_through_ygg_then_host_sh_says_how_and_exits_1(self):
         result = self.run_ygg("env", "start", "development", "production")
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage:", result.stderr)
 
-    def test_given_env_help_then_the_env_parser_explains_it(self):
+    def test_given_env_help_when_run_then_the_env_parser_explains_it(self):
         result = self.run_ygg("env", "--help")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage: ygg env", result.stdout)
 
-    def test_given_env_help_after_an_environment_then_it_is_that_action_s_help(self):
+    def test_given_env_help_after_an_environment_when_run_then_it_is_that_action_s_help(self):
         result = self.run_ygg("env", "stop", "production", "--help")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage: ygg env stop", result.stdout)
 
-    def test_given_catalog_environments_then_it_is_catalog_py_output(self):
+    def test_given_catalog_environments_when_run_through_ygg_then_it_is_catalog_py_output(self):
         expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "environments"],
                                   capture_output=True, text=True).stdout
         self.assertEqual(self.run_ygg("catalog", "environments").stdout, expected)
 
-    def test_given_catalog_get_then_the_words_reach_catalog_py_in_order(self):
+    def test_given_catalog_get_when_run_through_ygg_then_the_words_reach_catalog_py_in_order(self):
         result = self.run_ygg("catalog", "get", "heimdall-api", "development", "onDemand")
         self.assertEqual((result.returncode, result.stdout), (0, "true\n"), result.stderr)
 
-    def test_given_catalog_public_host_then_the_three_words_reach_catalog_py_in_order(self):
+    def test_given_catalog_public_host_when_run_through_ygg_then_the_three_words_reach_catalog_py_in_order(self):
         expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "public-host", "heimdall-api",
                                    "development", "example.com"], capture_output=True, text=True)
         result = self.run_ygg("catalog", "public-host", "heimdall-api", "development", "example.com")
         self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
 
-    def test_given_catalog_repository_names_then_it_is_catalog_py_output(self):
+    def test_given_catalog_repository_names_when_run_through_ygg_then_it_is_catalog_py_output(self):
         expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "repository-names"],
                                   capture_output=True, text=True)
         result = self.run_ygg("catalog", "repository-names")
         self.assertEqual(expected.returncode, 0, expected.stderr)
         self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
 
-    def test_given_catalog_public_path_then_it_is_catalog_py_output(self):
+    def test_given_catalog_public_path_when_run_through_ygg_then_it_is_catalog_py_output(self):
         expected = subprocess.run([sys.executable, str(SCRIPTS / "catalog.py"), "public-path", "heimdall-api"],
                                   capture_output=True, text=True)
         result = self.run_ygg("catalog", "public-path", "heimdall-api")
         self.assertEqual((result.returncode, result.stdout), (expected.returncode, expected.stdout), result.stderr)
 
-    def test_given_an_unknown_command_then_it_is_a_usage_error(self):
+    def test_given_an_unknown_command_when_run_then_it_is_a_usage_error(self):
         result = self.run_ygg("nonsense")
         self.assertEqual(result.returncode, 2)
         self.assertIn("ygg", result.stderr)
 
-    def test_given_deploy_without_arguments_then_it_is_a_usage_error(self):
+    def test_given_deploy_without_arguments_when_run_then_it_is_a_usage_error(self):
         self.assertEqual(self.run_ygg("deploy").returncode, 2)
 
-    def test_given_deploy_from_a_missing_checkout_then_host_sh_refuses_it(self):
+    def test_given_deploy_from_a_missing_checkout_when_run_then_host_sh_refuses_it(self):
         result = self.run_ygg("deploy", "development", "heimdall-api", str(self.temp / "nowhere"), "1.0.0")
         self.assertEqual(result.returncode, 1)
         self.assertIn("no such directory", result.stderr)
 
-    def test_given_vars_alone_then_its_help_names_ygg_vars(self):
+    def test_given_vars_alone_when_run_then_its_help_names_ygg_vars(self):
         result = self.run_ygg("vars")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage: ygg vars", result.stdout)
 
-    def test_given_ygg_sh_then_it_is_the_same_program(self):
+    def test_given_ygg_sh_when_run_with_the_same_arguments_then_it_is_the_same_program(self):
         result = subprocess.run(["bash", str(SCRIPTS / "ygg.sh"), "catalog", "owner"], capture_output=True,
                                 text=True, env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, ygg("catalog", "owner", env=self.env).stdout)
 
-    def test_given_the_launcher_through_a_symlink_then_it_runs_its_checkout(self):
+    def test_given_the_launcher_through_a_symlink_when_run_then_it_runs_its_checkout(self):
         link = self.temp / "ygg"
         link.symlink_to(SCRIPTS / "ygg")
         result = subprocess.run([str(link), "catalog", "owner"], capture_output=True, text=True, env=self.env)
@@ -116,7 +116,7 @@ class DispatchTests(unittest.TestCase):
 
 
 class HostShTests(unittest.TestCase):
-    def test_given_an_unknown_operation_then_host_sh_points_to_ygg(self):
+    def test_given_an_unknown_operation_when_passed_to_host_sh_then_host_sh_points_to_ygg(self):
         result = subprocess.run(["bash", str(SCRIPTS / "host.sh"), "menu"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("ygg help", result.stderr)
@@ -194,7 +194,7 @@ class MachineCommandTests(unittest.TestCase):
         self.assertEqual(self.handed_over("agent", "logs", "--user", "release"),
                          self.host_sh("agent", "logs", "release"))
 
-    def test_given_an_agent_for_another_user_or_none_then_it_is_a_usage_error(self):
+    def test_given_an_agent_for_another_user_or_none_when_parsed_then_it_is_a_usage_error(self):
         for arguments in (("agent", "up", "--user", "ygg"), ("agent", "up"), ("agent", "--user", "ci")):
             self.assertEqual(ygg(*arguments).returncode, 2, arguments)
 
@@ -202,7 +202,7 @@ class MachineCommandTests(unittest.TestCase):
         self.assertEqual(self.handed_over("backup", "run"), self.host_sh("backup", "run"))
         self.assertEqual(self.handed_over("backup", "list"), self.host_sh("backup", "list"))
 
-    def test_given_backup_with_another_action_then_it_is_a_usage_error(self):
+    def test_given_backup_with_another_action_when_parsed_then_it_is_a_usage_error(self):
         self.assertEqual(ygg("backup", "restore").returncode, 2)
 
     def test_given_platform_update_plugins_when_parsed_then_platform_sh_gets_it_with_its_options(self):
@@ -211,10 +211,10 @@ class MachineCommandTests(unittest.TestCase):
         self.assertEqual(self.handed_over("platform", "update-plugins", "--now", "--last-good"),
                          platform_sh + ["update-plugins", "--last-good", "--now"])
 
-    def test_given_now_on_another_platform_action_then_it_is_a_usage_error(self):
+    def test_given_now_on_another_platform_action_when_parsed_then_it_is_a_usage_error(self):
         self.assertEqual(ygg("platform", "up", "--now").returncode, 2)
 
-    def test_given_the_ygg_sh_fallback_without_python_then_check_and_install_keep_their_role(self):
+    def test_given_the_ygg_sh_fallback_without_python_when_it_hands_the_arguments_to_host_sh_then_check_and_install_keep_their_role(self):
         text = (SCRIPTS / "ygg.sh").read_text()
         self.assertIn('exec bash "$here/host.sh" "$@"', text)
 
@@ -242,39 +242,39 @@ class MachineOperationTests(unittest.TestCase):
         return subprocess.run(["bash", str(SCRIPTS / "host.sh"), *arguments], capture_output=True, text=True,
                               env=self.env, stdin=subprocess.DEVNULL)
 
-    def test_given_agent_up_for_ci_then_the_checkouts_agent_sh_runs_as_ci(self):
+    def test_given_agent_up_for_ci_when_host_sh_runs_it_then_the_checkouts_agent_sh_runs_as_ci(self):
         result = self.host_sh("agent", "up", "ci")
         self.assertEqual(result.returncode, 0, result.stderr)
         line = self.calls.read_text().strip()
         self.assertTrue(line.startswith("-u ci env XDG_RUNTIME_DIR=/run/user/1001 "), line)
         self.assertTrue(line.endswith(f" {SCRIPTS.parent}/scripts/agent.sh up"), line)
 
-    def test_given_an_agent_command_or_user_it_does_not_know_then_host_sh_refuses_it(self):
+    def test_given_an_agent_command_or_user_it_does_not_know_when_passed_to_host_sh_then_host_sh_refuses_it(self):
         for arguments in (("agent", "restart", "ci"), ("agent", "up", "ygg"), ("agent", "up")):
             result = self.host_sh(*arguments)
             self.assertEqual(result.returncode, 1, arguments)
             self.assertIn("usage:", result.stderr, arguments)
         self.assertFalse(self.calls.exists())
 
-    def test_given_backup_list_then_backup_sh_answers_as_the_caller(self):
+    def test_given_backup_list_when_host_sh_runs_it_then_backup_sh_answers_as_the_caller(self):
         result = self.host_sh("backup", "list")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.calls.exists())
 
-    def test_given_an_unknown_backup_command_then_backup_sh_refuses_it(self):
+    def test_given_an_unknown_backup_command_when_host_sh_runs_it_then_backup_sh_refuses_it(self):
         result = self.host_sh("backup", "restore")
         self.assertEqual(result.returncode, 1)
         self.assertIn("usage: backup.sh", result.stderr)
 
 
 class VersionTests(unittest.TestCase):
-    def test_given_version_then_it_names_version_commit_and_checkout(self):
+    def test_given_version_when_run_then_it_names_version_commit_and_checkout(self):
         for arguments in (("--version",), ("version",)):
             result = ygg(*arguments)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertRegex(result.stdout, r"^yggdrasil \S+ \(\S+\) at /\S+\n$")
 
-    def test_given_no_git_checkout_then_the_version_comes_from_the_changelog(self):
+    def test_given_no_git_checkout_when_the_version_is_read_then_it_comes_from_the_changelog(self):
         from yggcli import context
         directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-version-"))
         self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
@@ -283,14 +283,14 @@ class VersionTests(unittest.TestCase):
 
 
 class HelpCommandTests(unittest.TestCase):
-    def test_given_help_then_the_overview_groups_the_commands(self):
+    def test_given_help_when_run_then_the_overview_groups_the_commands(self):
         for arguments in (("help",), ("--help",), ("-h",)):
             result = ygg(*arguments)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Variables and secrets", result.stdout)
             self.assertIn("vars get", result.stdout)
 
-    def test_given_help_of_a_command_then_it_is_that_command_s_help(self):
+    def test_given_help_of_a_command_when_run_then_it_is_that_command_s_help(self):
         result = ygg("help", "vars", "get")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage: ygg vars get", result.stdout)
@@ -344,12 +344,12 @@ class NumberedMenuTests(unittest.TestCase):
 
 
 class PromptFallbackTests(unittest.TestCase):
-    def test_given_no_terminal_then_prompt_refuses_with_2(self):
+    def test_given_no_terminal_when_prompt_runs_then_it_refuses_with_2(self):
         result = ygg("prompt", "choose", "Which?", "a", "b")
         self.assertEqual(result.returncode, 2)
         self.assertIn("terminal", result.stderr)
 
-    def test_given_any_failure_then_prompt_exits_2_for_the_numbered_prompt(self):
+    def test_given_any_failure_when_the_inline_prompt_starts_then_prompt_exits_2_for_the_numbered_prompt(self):
         import contextlib
         import io
         from unittest import mock
@@ -376,7 +376,7 @@ class InterruptTests(unittest.TestCase):
 class MissingPackagesTests(unittest.TestCase):
     """Without PyYAML, what needs the catalog says what to install instead of a traceback."""
 
-    def test_given_no_pyyaml_then_the_menu_and_the_help_say_how_to_install_it(self):
+    def test_given_no_pyyaml_when_the_menu_or_the_help_runs_then_they_say_how_to_install_it(self):
         hidden = pathlib.Path(tempfile.mkdtemp(prefix="ygg-hidden-"))
         self.addCleanup(shutil.rmtree, hidden, ignore_errors=True)
         (hidden / "yaml").mkdir()

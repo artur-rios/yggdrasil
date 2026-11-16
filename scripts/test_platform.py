@@ -664,7 +664,7 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("YGG_JENKINS_PLUGINS_REFRESHED=20261101T120000Z\n", self.docker_calls())
 
-    def test_given_now_on_another_command_then_it_is_a_usage_error(self):
+    def test_given_now_on_another_command_when_run_then_it_is_a_usage_error(self):
         self.assertEqual(self.run_platform("up", "--now").returncode, 1)
 
     def test_given_the_jenkins_profile_without_a_library_version_when_up_then_it_is_refused(self):
