@@ -37,6 +37,19 @@ class SlowRefreshSettingsStore extends InMemoryRefreshSettingsStore {
   }
 }
 
+/// A store whose remembered environment for each host in [held] is held until
+/// that host's completer completes; other hosts answer at once.
+class HeldRefreshSettingsStore extends InMemoryRefreshSettingsStore {
+  final Map<String, Completer<void>> held = <String, Completer<void>>{};
+
+  @override
+  Future<String?> readEnvironmentFor(String hostId) async {
+    await held[hostId]?.future;
+
+    return super.readEnvironmentFor(hostId);
+  }
+}
+
 /// A container over [source] with [environments] (production by default),
 /// loaded once.
 Future<ProviderContainer> loadedContainer(
@@ -484,6 +497,29 @@ void main() {
           .read(selectedHostEnvironmentProvider.notifier)
           .select('development');
       await environmentsOf(container).select('homologation');
+      await pumpEventQueue();
+
+      expect(container.read(selectedHostEnvironmentProvider), 'production');
+    });
+
+    test("given a host switch while the previous host's memory is read, when "
+        "that read answers last, then the new host's memory stays", () async {
+      final store = HeldRefreshSettingsStore();
+      final productionRead = Completer<void>();
+      store.held['production'] = productionRead;
+      await store.writeEnvironmentFor('production', 'development');
+      await store.writeEnvironmentFor('homologation', 'production');
+      final container = await loadedContainer(
+        FakeStatusSource(),
+        environments: const <Environment>[production, homologation],
+        refreshSettings: store,
+      );
+
+      await environmentsOf(container).select('homologation');
+      await pumpEventQueue();
+      expect(container.read(selectedHostEnvironmentProvider), 'production');
+
+      productionRead.complete();
       await pumpEventQueue();
 
       expect(container.read(selectedHostEnvironmentProvider), 'production');

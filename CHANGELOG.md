@@ -80,6 +80,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Switching hosts keeps the new host's remembered environment.** The overview remembers which environment
+  (development, production...) was chosen on each saved host, and reads it when a host is selected. A read
+  started for the host selected before could answer after the new host's, and then showed the old host's
+  choice on the new host. Only the read for the host selected last applies now. `shared_preferences` answers
+  in order, so it was not seen in practice.
 - **The console's environment selector no longer fails with nothing selected.** `EnvironmentSelector` takes a
   `selectedId` that may be `null`, but its segmented layout (four environments or fewer, with room for them)
   hit Flutter's `SegmentedButton` assertion (`selected.length > 0 || emptySelectionAllowed`) and drew an error
