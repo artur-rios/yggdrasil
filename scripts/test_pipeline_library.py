@@ -979,11 +979,27 @@ class ToolchainCacheLibraryTests(unittest.TestCase):
 
     def test_given_a_check_when_read_then_run_check_gets_the_agents_toolchain_cache_when_it_has_one(self):
         body = self.lib.code[slice(*self.lib.functions["runCheck"])]
-        self.assertIn('if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then set -- "$@" --toolchains "$YGG_TOOLCHAIN_CACHE"; fi',
-                      body)
+        self.assertIn('if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then\n'
+                      '                  set -- "$@" --toolchains "$YGG_TOOLCHAIN_CACHE" --scope "$YGG_CHECK_SCOPE"\n'
+                      '                  if [ -n "$YGG_CHECK_PROMOTE" ]; then set -- "$@" --promote; fi\n'
+                      '                fi', body)
         call = body.index('bash yggdrasil/scripts/run-check.sh "$YGG_CHECK_NAME"')
         self.assertLess(body.index("--toolchains"), call)
         self.assertIn('"$WORKSPACE/app" "$@"', body[call:])
+
+    def test_given_a_check_when_read_then_its_package_cache_is_its_repository_s(self):
+        # The scope is the job's repository, never anything the repository's file says.
+        body = self.lib.code[slice(*self.lib.functions["runCheck"])]
+        self.assertIn('"YGG_CHECK_SCOPE=${ctx.repo}", "YGG_CHECK_PROMOTE=${keepsPackages() ? \'1\' : \'\'}"', body)
+
+    def test_given_a_build_when_read_then_only_a_push_to_a_protected_branch_keeps_packages(self):
+        # A pull request (a Renovate one included) never writes its repository's package cache.
+        body = self.lib.code[slice(*self.lib.functions["keepsPackages"])]
+        self.assertIn("return !env.CHANGE_ID && ['develop', 'main', 'master'].contains(env.BRANCH_NAME)", body)
+        # Called inside a GString, which the lexer masks: found by its text.
+        callers = {self.lib.function_at(m.start())
+                   for m in re.finditer(r"(?<!boolean )\bkeepsPackages\(\)", self.lib.code)}
+        self.assertEqual(callers, {"runCheck"})
 
     def test_given_the_branch_policy_when_read_then_run_check_reads_the_pin_from_the_applications_root(self):
         body = self.lib.code[slice(*self.lib.functions["branchPolicy"])]
@@ -998,7 +1014,7 @@ class ToolchainCacheLibraryTests(unittest.TestCase):
         self.assertTrue(others, "the release steps run run-check.sh too")
         for function in others:
             body = self.lib.code[slice(*self.lib.functions[function])]
-            for word in ("--toolchains", "YGG_TOOLCHAIN_CACHE"):
+            for word in ("--toolchains", "YGG_TOOLCHAIN_CACHE", "--scope", "--promote", "keepsPackages"):
                 self.assertNotIn(word, body, f"{function} gets the toolchain cache")
         for match in re.finditer(r"YGG_TOOLCHAIN_CACHE|--toolchains", self.lib.code):
             self.assertIn(self.lib.function_at(match.start()), {"runCheck", "branchPolicy"},

@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # The ci agent's toolchain cache: pinned SDKs fetched once per machine instead of once per check. Sourced by
-# scripts/run-check.sh (--toolchains), never run. Only the Flutter SDK so far.
+# scripts/run-check.sh (--toolchains), never run. The Flutter SDK here; the package caches are
+# scripts/package_cache.py's, mounted the same way.
 #
 # Where. $YGG_TOOLCHAIN_CACHE of the ci agent (agent.env; agent.sh makes it, under YGG_AGENT_WORKDIR so the
 # agent sees it at its host path, as it does the workspaces). The pipeline library passes it to run-check.sh for
@@ -10,7 +11,9 @@
 #   flutter/<version>-<sha256>.used    touched by every check that uses it (what toolchain_gc goes by)
 #   flutter/.lock                      held while an SDK is fetched, so concurrent checks fetch it once
 #   flutter/.incoming.*                a fetch in progress (or one a killed agent left: removed after a day)
-#   runs/<id>/upper, runs/<id>/work    one check's writes to its SDK, removed when it ends
+#   runs/<id>/                         one check's overlays (flutter/, packages/, ndk/, each with upper/ and
+#                                      work/), and its apt.conf; removed when it ends, or a day later
+#   packages/<repository>/             that repository's package cache: scripts/package_cache.py
 #
 # The pin. What a repository's own ci/flutter-env.sh fetches when FLUTTER_SDK_DIR has no SDK: its
 # FLUTTER_VERSION and FLUTTER_SHA256 lines, in ci/flutter-env.sh or ci/pins.sh. Read as data (the whole line
@@ -30,11 +33,12 @@
 # and stamps, the engine artifacts a build needs), so it cannot run from a read-only one. The check gets a Docker
 # volume of type overlay (the local driver, which a rootless engine on Linux 5.11 or later can mount: prove it
 # with scripts/prove-machine.sh dev, row "toolchain overlay"): the cached SDK is its lower directory, read only,
-# and runs/<id> holds its upper and work directories.
+# and runs/<id>/flutter holds its upper and work directories.
 
 # Flutter's release archive for Linux, stable channel: what every repository's ci/flutter-env.sh fetches too.
 FLUTTER_ARCHIVE_URL=${YGG_FLUTTER_ARCHIVE_URL:-https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_%s-stable.tar.xz}
 # Where the SDK is in a check's container; run-check.sh sets FLUTTER_SDK_DIR to it.
+# shellcheck disable=SC2034 # used by run-check.sh, which sources this file
 FLUTTER_IN_CONTAINER=/opt/yggdrasil/flutter
 # How long a check waits for another one's fetch of the same cache (seconds) before it fetches nothing and
 # runs without the cache; a fetch and unpack takes a few minutes.
@@ -161,17 +165,67 @@ toolchain_remove_run() {
   rm -rf "$1"
 }
 
-# flutter_overlay <dir> <sdk>: makes a run directory for one check and prints the --mount field that gives the
-# check <sdk> as an overlay at FLUTTER_IN_CONTAINER, then the run directory (two lines). The field is quoted for
-# docker's CSV parser: the overlay's options are themselves comma-separated.
-flutter_overlay() {
-  local cache=$1 sdk=$2 run
-  # What a check left when its agent was killed with it (no check runs for a day).
+# toolchain_run_dir <dir>: makes the directory of one check's overlays (runs/<id>, removed when the check ends) and
+# prints it, after removing what checks whose agent was killed with them left a day ago.
+toolchain_run_dir() {
+  local cache=$1 run
+  mkdir -p "$cache/runs" || return 1
   while IFS= read -r -d '' run; do
     toolchain_remove_run "$run"
   done < <(find "$cache/runs" -mindepth 1 -maxdepth 1 -mmin +1440 -print0 2>/dev/null)
-  run=$(mktemp -d "$cache/runs/XXXXXXXX") || return 1
-  mkdir "$run/upper" "$run/work" || { rm -rf "$run"; return 1; }
-  printf '%s\n' "type=volume,dst=$FLUTTER_IN_CONTAINER,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$sdk,upperdir=$run/upper,workdir=$run/work\""
-  printf '%s\n' "$run"
+  mktemp -d "$cache/runs/XXXXXXXX"
+}
+
+# overlay_mount <destination in the container> <lower directory> <directory in the run>: makes <directory>/upper and
+# <directory>/work and prints the --mount field of an overlay of <lower> at <destination>. Quoted for docker's CSV
+# parser: the overlay's options are themselves comma-separated. Every path is of the plain characters
+# toolchain_cache_ok allows, so none can end an option early.
+overlay_mount() {
+  local destination=$1 lower=$2 dir=$3
+  mkdir -p "$dir/upper" "$dir/work" || return 1
+  printf '%s\n' "type=volume,dst=$destination,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$lower,upperdir=$dir/upper,workdir=$dir/work\""
+}
+
+# ---- Package caches: scripts/package_cache.py has the whole story --------------------------------------------
+
+# Where a check sees its repository's package cache, and where each tool is told to keep what it downloads there.
+PACKAGES_IN_CONTAINER=/opt/yggdrasil/cache
+APT_CONFIG_IN_CONTAINER=/opt/yggdrasil/apt.conf
+# shellcheck disable=SC2034 # used by run-check.sh, which sources this file
+PACKAGE_ENVIRONMENT=(
+  "PUB_CACHE=$PACKAGES_IN_CONTAINER/pub"
+  "GRADLE_USER_HOME=$PACKAGES_IN_CONTAINER/gradle"
+  "NUGET_PACKAGES=$PACKAGES_IN_CONTAINER/nuget"
+  "npm_config_cache=$PACKAGES_IN_CONTAINER/npm"
+  "APT_CONFIG=$APT_CONFIG_IN_CONTAINER"
+)
+
+# package_scope_ok <scope>: a repository's name as the catalog allows it (catalog.py's REPOSITORY), which becomes a
+# directory of the cache.
+package_scope_ok() {
+  [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]]
+}
+
+# package_apt_config <file>: writes the apt configuration a check gets as APT_CONFIG: apt-get keeps the packages it
+# downloads in the cache (apt checks each one against the signed index before it uses it). The images' own
+# docker-clean removes /var/cache/apt/archives/*.deb, not this directory.
+package_apt_config() {
+  printf 'Dir::Cache::Archives "%s/apt/archives/";\n' "$PACKAGES_IN_CONTAINER" >"$1"
+}
+
+# image_android_home <image>: the image's ANDROID_HOME (or ANDROID_SDK_ROOT), where Gradle installs the NDK a build
+# asks for; nothing for an image without one, or with one that can't be a mount's destination. Pulls the image when
+# the engine has not got it yet, as `docker run --pull missing` would.
+image_android_home() {
+  local image=$1 environment value
+  environment=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" 2>/dev/null) \
+    || { docker pull --quiet "$image" >/dev/null 2>&1 \
+           && environment=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" 2>/dev/null); } \
+    || return 0
+  value=$(sed -n 's/^ANDROID_HOME=//p' <<<"$environment" | head -n 1)
+  [[ -n "$value" ]] || value=$(sed -n 's/^ANDROID_SDK_ROOT=//p' <<<"$environment" | head -n 1)
+  value=${value%/}
+  if [[ "$value" =~ ^/[A-Za-z0-9._/-]+$ && "$value" != *..* ]]; then
+    printf '%s\n' "$value"
+  fi
 }

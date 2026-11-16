@@ -1083,7 +1083,8 @@ engines' published ports answer from a container, and prints it
 ([cli.md, Build agents](cli.md#build-agents)).
 
 The `ci` agent's `agent.env` may set `YGG_TOOLCHAIN_CACHE=/home/ci/agent/toolchains`, where the checks get the
-Flutter SDK their repository pins instead of each fetching its own ([The toolchain cache](#the-toolchain-cache)).
+Flutter SDK their repository pins instead of each fetching its own, and their repository's package cache
+([The toolchain cache](#the-toolchain-cache)).
 Prove first that `ci`'s engine can give a check an overlay, then set it and `ygg agent up --user ci` again:
 
 ```bash
@@ -1819,7 +1820,8 @@ of each one's time on the `ci` agent. With a toolchain cache (`YGG_TOOLCHAIN_CAC
   only the overlay's lower, read-only, layer: Flutter writes into its own SDK on every run (its lock file, its
   stamps), and those writes land in `<cache>/runs/<id>/`, which `run-check.sh` removes when the check ends.
 
-The checks get it and the branch policy gets it (its pin is read from the application's root); nothing else does.
+The checks and the branch policy get the SDK (the branch policy's pin is read from the application's root), and the
+checks also get their repository's [package cache](#package-caches); nothing else gets either.
 **A release builds from scratch**, on the release agent, which has no cache: `agent.sh` refuses
 `YGG_TOOLCHAIN_CACHE` for it, and the library never passes one to a release step. What a release ships must come
 from its tag and nothing a branch's check could have touched (the reason the release agent exists,
@@ -1838,18 +1840,52 @@ trust in it:
   included: the [accepted risk](#accepted-risks) of checks running side by side, which already lets such a check
   reach the other checks' workspaces. It does not reach a release.
 
-Disk: each pinned release is about 2.5 GB, and a check's writes while it runs are a few megabytes. A release no
+Disk: each pinned Flutter release is about 2.5 GB, and a check's writes while it runs are a few megabytes. A release no
 check has used for 30 days is removed the next time another is fetched; a run directory left by a stopped agent,
 after a day. To look, as the admin: `sudo -u ci du -sh /home/ci/agent/toolchains/flutter/*`. To empty it, remove
 `flutter/` while no check runs; the next check fetches again. To switch the cache off, remove
 `YGG_TOOLCHAIN_CACHE` from `agent.env` and `ygg agent up --user ci`.
 
-**Not cached (yet).** Gradle and the Android NDK (orpheus, the console), `apt-get install`s (fortuna-ui's
-`bindings-drift`), and the NuGet, npm and pub packages are still fetched by every check that needs them. They differ
-from an SDK in one way that matters: the tools write them, so a cache of them is written by checks, and a branch's
-check could then leave a package that a later check of another branch runs. A safe cache of those needs a scope per
-repository, writes kept from pull requests (only builds of `develop` and `main` adding to it), and the same
-overlay for everything else; that is a change of its own.
+#### Package caches
+
+What a check downloads itself is kept too, per repository (`scripts/package_cache.py`): pub's packages, Gradle's
+distributions and dependencies, the Android NDK that Gradle installs, NuGet's and npm's packages, and the `.deb`
+files `apt-get` fetches.
+
+- Every check of a repository gets that repository's current **snapshot** as an overlay at `/opt/yggdrasil/cache`,
+  with `PUB_CACHE`, `GRADLE_USER_HOME`, `NUGET_PACKAGES` and `npm_config_cache` pointing into it, and `APT_CONFIG`
+  naming a file that tells `apt-get` to keep its packages there. An image with an `ANDROID_HOME` (the Flutter image)
+  also gets the snapshot's `android-ndk/` as an overlay at `$ANDROID_HOME/ndk`.
+- What the check writes there is its own and is thrown away, **unless the build is a push to `develop`, `main` or
+  `master` and the check passed**. Then what it added becomes the repository's next snapshot: hard links to the last
+  one plus the new files, so a snapshot costs links, not a copy. A check that only rewrote files (a lock, an index)
+  or wrote logs makes none. Whatever it deleted (overlay whiteouts) and every directory it replaced is applied too,
+  so the snapshot is what the check saw at its end.
+
+**Why per repository, and only from pushes.** An SDK is fetched by yggdrasil and checked against its pin; these are
+written by the tools, inside the check, and pub, Gradle and NuGet never check a cached package again. So a package
+cache is only as trustworthy as the checks that wrote it:
+
+- a repository's checks never see another repository's cache;
+- a **pull request never writes one**, not even its own repository's, a Renovate one included: what can land there is
+  what was merged into a protected branch, the code that repository's later checks run anyway;
+- apt needs none of this (it checks every cached package against the signed index before using it), but it is
+  kept the same way.
+
+A `docker: true` check can change it all the same (the [accepted risk](#accepted-risks)); a release never uses it.
+
+**Until a push of the repository passes, its cache is empty** and its checks download as before. The first check of
+each kind on `develop` fills it.
+
+**Not covered.** The Android platforms that `sdkmanager` installs into the image's own SDK (orpheus' `android-37`): an
+overlay there would hide the image's own platforms. Also `docker build` steps (chimera's `container` check, the docs
+sites' images), whose layers the engine's build cache already keeps.
+
+**Disk and lifetime.** A snapshot that was replaced is kept for a day (a check may still read it), then removed.
+Every 30 days a repository's cache starts over from nothing, so packages nothing uses any more go. A repository
+whose checks have not run for 30 days loses its cache. To look, as the admin:
+`sudo -u ci du -sh /home/ci/agent/toolchains/packages/*`. To empty one, remove its directory while none of its checks
+runs.
 
 ### GitHub Actions and the skip
 
@@ -2069,8 +2105,9 @@ whose files fail pushes nothing.
   a credential you allow a repository's checks (`credentials` in the catalog) is reachable by anyone who can push
   a branch to a repository while one of its checks runs. Allow none you would not give them. Jenkins' write tokens
   are never reachable this way: the `ci` agent never holds them, and a `renovate/*` build gets no credential. The
-  same engine holds the [toolchain cache](#the-toolchain-cache): such a check could change a cached SDK that later
-  checks use (never a release, which builds from scratch on the release agent).
+  same engine holds the [toolchain cache](#the-toolchain-cache): such a check could change a cached SDK or a
+  repository's package snapshot that later checks use (never a release, which builds from scratch on the release
+  agent).
 - **No per-job authorization.** Jenkins lets every logged-in user do anything (`loggedInUsersCanDoAnything`), and
   the owner is its only user. Anyone you add can approve a deploy, run `release-resume` or read a credential.
 - **Webhooks are not verified** by Jenkins ([9.4](#94-jenkins-and-the-webhook)): a forged one only starts a scan.

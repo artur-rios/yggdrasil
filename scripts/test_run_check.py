@@ -590,5 +590,174 @@ class ToolchainCacheTests(RunCheckHarness):
                 self.assertFalse(self.log.exists(), "docker must not run")
 
 
+# A docker that answers `image inspect` with $FAKE_IMAGE_ENV (the image's Env, one per line) and, for `run`, logs
+# its arguments and does what a check that downloads does: $FAKE_DOWNLOAD (a path) written into the upper directory
+# of the overlay at /opt/yggdrasil/cache, $FAKE_NDK_DOWNLOAD into the one at .../ndk. Exits $FAKE_DOCKER_EXIT.
+PACKAGE_DOCKER = r"""#!/usr/bin/env bash
+if [[ "$1" == image ]]; then printf '%s\n' "${FAKE_IMAGE_ENV:-PATH=/usr/bin}"; exit 0; fi
+if [[ "$1" == pull ]]; then exit 0; fi
+printf '%s\n' "$@" >"$FAKE_DOCKER_LOG"
+for argument in "$@"; do
+  case $argument in
+    type=volume,dst=/opt/yggdrasil/cache,*) packages=${argument#*upperdir=}; packages=${packages%%,*} ;;
+    type=volume,dst=*/ndk,*) ndk=${argument#*upperdir=}; ndk=${ndk%%,*} ;;
+  esac
+done
+if [[ -n "${FAKE_DOWNLOAD:-}" ]]; then mkdir -p "$(dirname "$packages/$FAKE_DOWNLOAD")"; echo downloaded >"$packages/$FAKE_DOWNLOAD"; fi
+if [[ -n "${FAKE_NDK_DOWNLOAD:-}" ]]; then mkdir -p "$(dirname "$ndk/$FAKE_NDK_DOWNLOAD")"; echo ndk >"$ndk/$FAKE_NDK_DOWNLOAD"; fi
+exit "${FAKE_DOCKER_EXIT:-0}"
+"""
+
+
+@unittest.skipUnless(shutil.which("python3"), "needs python3, as the ci agent has")
+class PackageCacheRunTests(RunCheckHarness):
+    """--scope and --promote: the repository's package cache, as an overlay, and what a passing check keeps."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake("docker", PACKAGE_DOCKER)
+        self.cache = self.root / "toolchains"
+        self.cache.mkdir()
+
+    def run_with(self, *options, **env):
+        return self.run_check("unit", "img", str(self.workspace), "--toolchains", str(self.cache), *options,
+                              "--", "sh", "-c", "ci/test.sh", **env)
+
+    def mounts(self):
+        """{destination in the container: overlay options as a dict} of every --mount docker got."""
+        arguments = self.docker_arguments()
+        found = {}
+        for i, argument in enumerate(arguments):
+            if argument == "--mount":
+                field = arguments[i + 1]
+                destination = field.split(",")[1].removeprefix("dst=")
+                options = field[field.index('"volume-opt=o=') + len('"volume-opt=o='):-1]
+                found[destination] = dict(option.split("=", 1) for option in options.split(","))
+        return found
+
+    def current(self, scope="orpheus"):
+        link = self.cache / "packages" / scope / "current"
+        return (link.parent / os.readlink(link)) if os.path.islink(link) else None
+
+    def test_given_a_scope_when_run_then_the_repository_s_snapshot_is_an_overlay_and_the_tools_point_into_it(self):
+        result = self.run_with("--scope", "orpheus")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        overlay = self.mounts()["/opt/yggdrasil/cache"]
+        self.assertEqual(overlay["lowerdir"], str(self.current()))
+        self.assertTrue(overlay["upperdir"].startswith(f"{self.cache}/runs/"))
+        for setting in ("PUB_CACHE=/opt/yggdrasil/cache/pub", "GRADLE_USER_HOME=/opt/yggdrasil/cache/gradle",
+                        "NUGET_PACKAGES=/opt/yggdrasil/cache/nuget", "npm_config_cache=/opt/yggdrasil/cache/npm",
+                        "APT_CONFIG=/opt/yggdrasil/apt.conf"):
+            self.assertIn(["-e", setting], self.pairs(), setting)
+        apt = next(b for a, b in self.pairs() if a == "-v" and b.endswith(":/opt/yggdrasil/apt.conf:ro"))
+        self.assertTrue(apt.startswith(f"{self.cache}/runs/"))
+        self.assertNotIn(f"{self.cache}/packages", " ".join(b for a, b in self.pairs() if a == "-v"),
+                         "the cache itself is never bind-mounted")
+        self.assertIn("orpheus's package cache at /opt/yggdrasil/cache", result.stderr)
+        # Removed with the run: but what it said is what apt was told.
+        self.assertEqual(list((self.cache / "runs").iterdir()), [])
+
+    def test_given_the_apt_configuration_when_a_check_runs_then_apt_keeps_its_packages_in_the_cache(self):
+        self.fake("docker", PACKAGE_DOCKER.replace('printf \'%s\\n\' "$@" >"$FAKE_DOCKER_LOG"',
+                                                   'printf \'%s\\n\' "$@" >"$FAKE_DOCKER_LOG"\n'
+                                                   'for a in "$@"; do case $a in *:/opt/yggdrasil/apt.conf:ro) '
+                                                   'cp "${a%%:*}" "$FAKE_DOCKER_LOG.apt" ;; esac; done'))
+        self.assertEqual(self.run_with("--scope", "orpheus").returncode, 0)
+        self.assertEqual(pathlib.Path(f"{self.log}.apt").read_text(),
+                         'Dir::Cache::Archives "/opt/yggdrasil/cache/apt/archives/";\n')
+
+    def test_given_an_image_with_an_android_sdk_when_run_then_its_ndk_directory_is_an_overlay_of_the_cache(self):
+        result = self.run_with("--scope", "orpheus",
+                               FAKE_IMAGE_ENV="PATH=/usr/bin\nANDROID_HOME=/opt/android-sdk-linux\nLANG=C")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        overlay = self.mounts()["/opt/android-sdk-linux/ndk"]
+        self.assertEqual(overlay["lowerdir"], f"{self.current()}/android-ndk")
+        self.assertIn("and /opt/android-sdk-linux/ndk", result.stderr)
+
+    def test_given_an_image_with_only_android_sdk_root_when_run_then_that_one_is_used(self):
+        self.assertEqual(self.run_with("--scope", "orpheus", FAKE_IMAGE_ENV="ANDROID_SDK_ROOT=/sdk/").returncode, 0)
+        self.assertIn("/sdk/ndk", self.mounts())
+
+    def test_given_an_image_without_an_android_sdk_or_with_an_odd_one_when_run_then_no_ndk_overlay(self):
+        for image_env in ("PATH=/usr/bin", "ANDROID_HOME=relative/sdk", "ANDROID_HOME=/opt/a,b",
+                          "ANDROID_HOME=/opt/../etc"):
+            with self.subTest(image_env=image_env):
+                self.assertEqual(self.run_with("--scope", "orpheus", FAKE_IMAGE_ENV=image_env).returncode, 0)
+                self.assertEqual(list(self.mounts()), ["/opt/yggdrasil/cache"])
+
+    def test_given_a_passing_check_of_a_trusted_build_when_run_then_what_it_downloaded_is_in_the_next_snapshot(self):
+        result = self.run_with("--scope", "orpheus", "--promote", FAKE_DOWNLOAD="pub/hosted/pub.dev/http-1.0.0/x",
+                               FAKE_NDK_DOWNLOAD="27.0.1/source.properties",
+                               FAKE_IMAGE_ENV="ANDROID_HOME=/opt/android-sdk-linux")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = self.current()
+        self.assertEqual((first / "pub/hosted/pub.dev/http-1.0.0/x").read_text(), "downloaded\n")
+        self.assertEqual((first / "android-ndk/27.0.1/source.properties").read_text(), "ndk\n")
+        # The next check starts from it.
+        self.assertEqual(self.run_with("--scope", "orpheus").returncode, 0)
+        self.assertEqual(self.mounts()["/opt/yggdrasil/cache"]["lowerdir"], str(first))
+        self.assertEqual(list((self.cache / "runs").iterdir()), [])
+
+    def test_given_a_failing_check_of_a_trusted_build_when_run_then_nothing_is_kept_and_its_code_is_returned(self):
+        self.assertEqual(self.run_with("--scope", "orpheus").returncode, 0)
+        before = self.current()
+        result = self.run_with("--scope", "orpheus", "--promote", FAKE_DOWNLOAD="pub/x", FAKE_DOCKER_EXIT="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.current(), before)
+        self.assertFalse((before / "pub/x").exists())
+
+    def test_given_a_pull_request_s_check_when_run_then_what_it_downloaded_is_thrown_away(self):
+        # Without --promote (the library gives it to pushes of develop, main and master only).
+        self.assertEqual(self.run_with("--scope", "orpheus").returncode, 0)
+        before = self.current()
+        self.assertEqual(self.run_with("--scope", "orpheus", FAKE_DOWNLOAD="pub/evil").returncode, 0)
+        self.assertEqual(self.current(), before)
+        self.assertFalse((before / "pub/evil").exists())
+        self.assertEqual(list((self.cache / "runs").iterdir()), [])
+
+    def test_given_another_repository_when_its_check_runs_then_it_never_sees_this_one_s_cache(self):
+        self.assertEqual(self.run_with("--scope", "orpheus", "--promote", FAKE_DOWNLOAD="pub/x").returncode, 0)
+        self.assertEqual(self.run_with("--scope", "chimera").returncode, 0)
+        lower = self.mounts()["/opt/yggdrasil/cache"]["lowerdir"]
+        self.assertTrue(lower.startswith(f"{self.cache}/packages/chimera/"), lower)
+        self.assertFalse((pathlib.Path(lower) / "pub/x").exists())
+
+    def test_given_a_scope_that_cannot_name_a_cache_when_run_then_the_check_runs_without_one(self):
+        for scope in (".hidden", "a/b", "a,b", "x" * 101):
+            with self.subTest(scope=scope):
+                result = self.run_with("--scope", scope)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.mounts(), {})
+                self.assertNotIn("PUB_CACHE", "\n".join(self.docker_arguments()))
+        self.assertFalse((self.cache / "packages").exists())
+
+    def test_given_a_scope_and_a_flutter_pin_when_run_then_both_overlays_share_one_run_directory(self):
+        archives = self.root / "archives"
+        archives.mkdir()
+        checksum = flutter_archive(archives / f"flutter_linux_{VERSION}-stable.tar.xz")
+        (self.workspace / "ci").mkdir()
+        (self.workspace / "ci" / "flutter-env.sh").write_text(f"FLUTTER_VERSION={VERSION}\nFLUTTER_SHA256={checksum}\n")
+        if not (shutil.which("xz") and shutil.which("flock")):
+            self.skipTest("needs xz and flock")
+        result = self.run_with("--scope", "orpheus",
+                               YGG_FLUTTER_ARCHIVE_URL=f"file://{archives}/flutter_linux_%s-stable.tar.xz")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mounts = self.mounts()
+        self.assertEqual(set(mounts), {SDK_IN_CONTAINER, "/opt/yggdrasil/cache"})
+        runs = {pathlib.Path(m["upperdir"]).parent.parent for m in mounts.values()}
+        self.assertEqual(len(runs), 1, mounts)
+
+    def test_given_bad_package_options_when_run_then_it_is_a_usage_error(self):
+        workspace = str(self.workspace)
+        for arguments in (["unit", "img", workspace, "--scope", "orpheus", "--", "x"],      # only with --toolchains
+                          ["unit", "img", workspace, "--toolchains", str(self.cache), "--promote", "--", "x"],
+                          ["unit", "img", workspace, "--toolchains", str(self.cache), "--scope", "--", "x"]):
+            with self.subTest(arguments=arguments):
+                result = self.run_check(*arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("usage", result.stderr)
+                self.assertFalse(self.log.exists(), "docker must not run")
+
+
 if __name__ == "__main__":
     unittest.main()

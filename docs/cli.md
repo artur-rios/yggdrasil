@@ -329,8 +329,9 @@ that dials the host's own address goes out through `slirp4netns` and is handed b
 An agent started before this existed has no value: run `ygg agent up --user ci` (and `release`) again.
 
 **The toolchain cache.** With `YGG_TOOLCHAIN_CACHE` set, a check whose repository pins a Flutter SDK gets it from that
-directory, fetched once per machine, as a copy-on-write overlay, instead of fetching 1.5 GB itself
-([setup.md, The toolchain cache](setup.md#the-toolchain-cache)). `agent.sh` refuses a value that is not an absolute path
+directory, fetched once per machine, as a copy-on-write overlay, instead of fetching 1.5 GB itself, and every check
+gets its repository's package cache the same way, which the passing checks of a push to `develop`, `main` or `master`
+add to ([setup.md, The toolchain cache](setup.md#the-toolchain-cache)). `agent.sh` refuses a value that is not an absolute path
 under `YGG_AGENT_WORKDIR` (which the agent mounts at the same path, as it must for the engine to find it), one with
 characters other than letters, digits, `.`, `_`, `-` and `/` (it is written into the overlay's mount options), and
 any value for the `release` agent; `up` creates the directory (`700`) and prints it. Prove the overlay on the

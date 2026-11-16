@@ -23,11 +23,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   cache to the checks and the branch policy only: a release builds from scratch on the release agent, which
   `agent.sh` refuses a cache for. A new `scripts/toolchains.sh` holds the cache's logic, a new row
   `toolchain overlay` in `scripts/prove-machine.sh dev` proves the engine can mount such an overlay, and the build
-  agent's image gets `xz-utils`. Gradle, the NDK, apt and the NuGet, npm and pub packages are not cached yet
-  ([setup.md, The toolchain cache](docs/setup.md#the-toolchain-cache) says why). **Upgrading:** nothing changes
-  until the `ci` agent has a cache: prove the overlay (`scripts/prove-machine.sh dev`), set
-  `YGG_TOOLCHAIN_CACHE=/home/ci/agent/toolchains` in `/etc/yggdrasil-ci/agent.env`, `ygg agent up --user ci`, and
-  set `YGGDRASIL_LIBRARY_VERSION` to this release with `scripts/platform.sh up`.
+  agent's image gets `xz-utils`. **Upgrading:** nothing changes until the `ci` agent has a cache: prove the overlay
+  (`scripts/prove-machine.sh dev`), set `YGG_TOOLCHAIN_CACHE=/home/ci/agent/toolchains` in
+  `/etc/yggdrasil-ci/agent.env`, `ygg agent up --user ci`, and set `YGGDRASIL_LIBRARY_VERSION` to this release with
+  `scripts/platform.sh up`.
+- **Checks keep what they download, per repository.** With the same cache, every check gets its repository's package
+  snapshot (`<cache>/packages/<repository>/`) as an overlay at `/opt/yggdrasil/cache`, with `PUB_CACHE`,
+  `GRADLE_USER_HOME`, `NUGET_PACKAGES`, `npm_config_cache` and `APT_CONFIG` (`apt-get` keeps its `.deb` files there)
+  pointing into it, and in an image with `ANDROID_HOME` the snapshot's NDKs at `$ANDROID_HOME/ndk`: pub's packages,
+  Gradle's distributions and dependencies, the NDK Gradle installs (orpheus, the console), NuGet's and npm's packages
+  and fortuna-ui's clang are downloaded once instead of in every check. A check's writes are its own, unless it
+  passed on a push to `develop`, `main` or `master` (`run-check.sh --promote`, which the library passes only then):
+  what it added becomes the repository's next snapshot, hard links to the last one plus the new files, its deletions
+  applied. A pull request, Renovate's included, never writes a cache, and no repository sees another's: these packages
+  are written by the tools and never checked again, so a cache holds only what was merged into that repository. A
+  replaced snapshot is kept a day, a cache starts over every 30 days, and one no check used for 30 days is removed. A
+  new `scripts/package_cache.py` makes and keeps the snapshots. Not covered: platforms `sdkmanager` installs into the
+  image's own SDK, and `docker build` steps.
 
 ### Changed
 
