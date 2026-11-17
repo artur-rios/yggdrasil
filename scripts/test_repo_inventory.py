@@ -446,7 +446,7 @@ class KindTests(Fixture):
         self.assertEqual(12, len([n for n in inv.KINDS["library"]]))
         self.assertEqual(5, len(inv.KINDS["application"]))
         self.assertEqual(12, len(inv.KINDS["ci"]))
-        self.assertEqual(4, len(inv.KINDS["archived"]))
+        self.assertEqual(5, len(inv.KINDS["archived"]))
         self.assertEqual(9, len(inv.KINDS["fork"]))
         # 19 Pages sites and 6 Vercel projects (the spec's 5, and file-tree-generator).
         self.assertEqual(25, len(inv.KINDS["site"]))
