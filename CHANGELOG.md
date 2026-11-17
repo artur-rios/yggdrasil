@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Renovate keeps EF Core and ASP.NET Core on 10.x.** Their 11.x packages support only `net11.0`, and every
+  repository targets .NET 10, so Renovate's pull requests for them could only fail restore with `NU1202`
+  (dotnet-output #27, yggdrasil #206). The shared preset now allows only 10.x and earlier for
+  `Microsoft.AspNetCore.*`, `Microsoft.EntityFrameworkCore*`, `Npgsql.EntityFrameworkCore.*` and `dotnet-ef`.
+  Lift the hold when the repositories move to .NET 11.
 - **Builds no longer wait behind the checks for a `ci` executor.** The `ci` agent had four executors, and each
   stage of a build asked for one again: reading `yggdrasil.yml` and the branch policy, seconds of work, queued
   behind every check of every other build (20 to 67 minutes on a busy day, most of a .NET library's 40 to 106).

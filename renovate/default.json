@@ -15,6 +15,12 @@
       "groupName": "microsoft"
     },
     {
+      "description": "The repositories target .NET 10 (net10.0). EF Core's and ASP.NET Core's 11.x packages support only net11.0, so restore fails with NU1202 (dotnet-output #27, yggdrasil #206); Npgsql's EF Core provider and the dotnet-ef tool follow EF Core. They stay on 10.x until the repositories move to .NET 11: raise this with the target framework. Microsoft.Extensions.* and System.* ship for older frameworks too and are left out; add any other package whose 11.x fails restore the same way.",
+      "matchManagers": ["nuget"],
+      "matchPackageNames": ["Microsoft.AspNetCore.*", "Microsoft.EntityFrameworkCore*", "Npgsql.EntityFrameworkCore.*", "dotnet-ef"],
+      "allowedVersions": "/^([0-9]|10)\\./"
+    },
+    {
       "matchManagers": ["nuget"],
       "matchPackageNames": ["ArturRios.*"],
       "groupName": "arturrios"
