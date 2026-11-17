@@ -83,7 +83,8 @@ KINDS = {
              "dotnet-mediator", "dotnet-messaging", "dotnet-output", "dotnet-test-util", "dotnet-util",
              "dotnet-validation", "dotnet-webapi-util"),
     "archived": ("dotnet-common", "eocp-ecommerce-system-api", "eocp-ecommerce-system-email-templates",
-                 "eocp-ecommerce-system-ui"),
+                 "eocp-ecommerce-system-ui",
+                 "user-management-api"),  # archived on 2026-11-16, after the move: it left the catalog (#211)
     "fork": ("file-tree-generator", "github-readme-stats", "gui-challenges", "hugo-theme-nuno",
              "hugo-theme-re-terminal", "hugo-theme-rusty-typewriter", "landing-page", "reveal.js",
              "under-construction-template"),
