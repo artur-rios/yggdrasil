@@ -232,7 +232,7 @@ are the Linux DevOps Server and the Linux Application Server, the Ubuntu 24.04 o
 | Group | Checks |
 |---|---|
 | **System** | The packages; the machine's own Docker is switched off, and disabled after a reboot, and nobody is in the `docker` group; the three system files (unprivileged ports, AppArmor, cgroup delegation); unattended upgrades |
-| **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` limits and, for `ci`, `release`, `renovate` and `dev`, no port below 1024 (DevOps Server); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
+| **Users** | The role's service users: their shell, a home of mode `750`, no `sudo` or privileged group; the `ci` and `dev` limits and, for `ci`, `release`, `renovate` and `dev`, no port below 1024 (DevOps Server); SSH hardening, **as sshd really runs it** (`sshd -T`), not only the file; the checkout is `ygg`'s; each secrets directory is its user's, mode `750`; the role file |
 | **Firewall** | `ufw` is on and denies incoming by default, with the role's ports, and no other rule lets everyone in (a port, a range or a profile such as `Nginx Full`). On an Application Server, 80 and 443 are open to Cloudflare only, and the rules and `cloudflare-ips` match Cloudflare's current list |
 | **Rootless Docker** | Per user: its engine answers on `/run/user/<uid>/docker.sock` and is rootless; linger is on; the `slirp4netns` settings are there. On a DevOps Server: `ci`, `release`, `dev` and `renovate` cannot read `ygg`'s socket or secrets, and `ci` cannot read `release`'s |
 | **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled; `backup.conf` is there; the last run succeeded (or a warning: never run, failed); the newest day in `~/backups` is at most 36 hours old |
@@ -241,7 +241,7 @@ Rows that ask another user's engine or read a closed directory need `sudo`. `che
 for your password once; if that fails it says so and goes on, and those rows say "not checked".
 
 `install` works on Ubuntu 24.04 or 26.04 LTS only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
-part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci`
+part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci` and `dev`
 limits, the low ports, SSH, the checkout, secrets directories, the firewall, each user's engine, the backup timer and the role
 file. It refuses up front, changing nothing: when it doesn't run from `/opt/yggdrasil` (clone yggdrasil there), when
 `sudo -v` fails (a check that can't run as root would find nothing to do), and when the admin has no

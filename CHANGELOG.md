@@ -7,6 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.12] - 2026-11-18
+
+### Added
+
+- **The `dev` user is set up for AI development.** `ygg install --role dev` now caps `dev` at six CPUs and 8 GB
+  (`limits.conf` on its slice, like `ci`'s 20 GB): its logins, its engine and its containers together, so a test
+  suite that runs away in an AI session is killed inside `dev`'s share, not Forgejo or Jenkins next to it. It
+  also prunes `dev`'s engine every day at 04:00 (`yggdrasil-prune-dev.service` and `.timer`): dangling images and
+  build cache, as `ygg`'s prune does, never a container, a volume or a tagged image, so a database stopped
+  between two sessions stays. `ygg check` has a `dev limits` and a `prune timer dev` row. The install step that
+  was `ci-limits` is `limits`. [hosts.md, AI development as `dev`](docs/hosts.md#ai-development-as-dev) has what
+  the owner adds once, in `dev`'s home: the `claude` account's Forgejo token, the agent, the toolchains and tmux.
+  **Upgrading:** `git pull` the checkout on the DevOps Server, then `ygg install` as the admin: it asks before
+  the `limits` and `prune-timer` steps.
+
 ## [0.13.11] - 2026-11-18
 
 ### Added
@@ -1612,7 +1627,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.11...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...HEAD
+[0.13.12]: https://github.com/artur-rios/yggdrasil/compare/v0.13.11...v0.13.12
 [0.13.11]: https://github.com/artur-rios/yggdrasil/compare/v0.13.10...v0.13.11
 [0.13.10]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...v0.13.10
 [0.13.9]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...v0.13.9
