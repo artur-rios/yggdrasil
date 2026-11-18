@@ -41,7 +41,11 @@
 # what lets a check write into the workspace the agent (also root) checked out, and open the socket.
 #
 # With --docker the Testcontainers settings are:
-#   TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE  the mounted socket's path inside the container
+#   TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE  the socket's host path, $YGG_DOCKER_SOCKET: what Testcontainers mounts
+#                                          into a container it starts that needs the engine (Ryuk, below), whose
+#                                          mount the engine resolves on the host, as it does the check's own. The
+#                                          check itself talks to the engine through DOCKER_HOST, the socket
+#                                          mounted at /var/run/docker.sock.
 #   TESTCONTAINERS_HOST_OVERRIDE           where a started container's published ports are reached, not
 #                                          localhost: the one in the agent's environment, which
 #                                          platform/build-agent.yml gives it from scripts/agent.sh (agent.env's
@@ -51,8 +55,16 @@
 #                                          only, so the gateway refuses it, while the host's address is reached
 #                                          through slirp4netns. When the agent's is empty or unset (an agent
 #                                          started before it had one), the default gateway, as a fallback.
-#   TESTCONTAINERS_RYUK_DISABLED           Ryuk would need the socket mounted by its host path as well, and
-#                                          the --rm and the engine's own cleanup are enough for a CI run.
+#   TESTCONTAINERS_RYUK_DISABLED           false, whatever the image or the repository says. Ryuk, Testcontainers'
+#                                          reaper, is a container each test process starts, which holds a
+#                                          connection from that process and, once it drops, removes every
+#                                          container, network and volume labelled with that process's session:
+#                                          also when the process is killed (a timeout, an aborted build, the
+#                                          memory limit), which no disposal in the tests survives, and never
+#                                          another check's, since each session has its own label. Without it a
+#                                          killed check left its databases running in the engine, and their
+#                                          anonymous volumes behind them. --rm removes the check's container, not
+#                                          the ones it started.
 #
 #     scripts/run-check.sh --print-host-override
 #
@@ -166,8 +178,8 @@ if $with_docker; then
   host=${TESTCONTAINERS_HOST_OVERRIDE:-$(default_gateway)}
   run+=(-v "$YGG_DOCKER_SOCKET:/var/run/docker.sock"
         -e DOCKER_HOST=unix:///var/run/docker.sock
-        -e TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
-        -e TESTCONTAINERS_RYUK_DISABLED=true)
+        -e "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=$YGG_DOCKER_SOCKET"
+        -e TESTCONTAINERS_RYUK_DISABLED=false)
   if [[ -n "$host" ]]; then
     run+=(-e "TESTCONTAINERS_HOST_OVERRIDE=$host")
   else

@@ -111,10 +111,23 @@ class RunCheckTests(RunCheckHarness):
         # The host path of the socket: the engine resolves -v sources on the host, not in the agent.
         self.assertIn(["-v", "/run/user/1001/docker.sock:/var/run/docker.sock"], self.pairs())
         for setting in ("DOCKER_HOST=unix:///var/run/docker.sock",
-                        "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock",
-                        "TESTCONTAINERS_HOST_OVERRIDE=172.17.0.1",
-                        "TESTCONTAINERS_RYUK_DISABLED=true"):
+                        "TESTCONTAINERS_HOST_OVERRIDE=172.17.0.1"):
             self.assertIn(["-e", setting], self.pairs(), setting)
+        self.assertEqual(arguments[arguments.index("dotnet:10"):], ["dotnet:10", "dotnet", "test"])
+
+    def test_given_docker_when_run_then_ryuk_is_on_and_mounts_the_socket_by_its_host_path(self):
+        # Ryuk removes what a test process started when the process ends, killed or not. The engine resolves
+        # the socket Testcontainers mounts into it on the host, as it does the check's own -v: the host path.
+        self.fake("ip", FAKE_IP)
+        result = self.run_check("it", "dotnet:10", str(self.workspace), "--docker", "--", "dotnet", "test",
+                                YGG_DOCKER_SOCKET="/run/user/1001/docker.sock")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = self.docker_arguments()
+        for setting in ("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/run/user/1001/docker.sock",
+                        "TESTCONTAINERS_RYUK_DISABLED=false"):
+            self.assertIn(["-e", setting], self.pairs(), setting)
+        self.assertNotIn("TESTCONTAINERS_RYUK_DISABLED=true", arguments)
+        self.assertNotIn("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock", arguments)
         self.assertEqual(arguments[arguments.index("dotnet:10"):], ["dotnet:10", "dotnet", "test"])
 
     def test_given_ip_without_a_default_route_when_run_then_the_gateway_comes_from_the_route_table(self):

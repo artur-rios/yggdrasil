@@ -237,8 +237,9 @@ services:
       - telemetry
 
   alloy:
-    # Ships every container's stdout to Loki, labelled with the environment its yggdrasil.environment
-    # label names (deploy.sh sets it; platform containers have none). The APIs also keep their rolling
+    # Ships the stdout of every container Compose started to Loki (not a one-off `docker run`'s:
+    # alloy/config.alloy says why), labelled with the environment its yggdrasil.environment label names
+    # (deploy.sh sets it; platform containers have none). The APIs also keep their rolling
     # JSON files in their own volumes; those are the durable copy, this is the searchable one.
     image: grafana/alloy:v1.10.0
     restart: unless-stopped

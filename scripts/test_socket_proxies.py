@@ -47,6 +47,10 @@ PROXIES = {
 }
 
 ID = "4f0d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+# A container `docker run` started, not Compose: no com.docker.compose.* labels, and a name the engine made up.
+# What scripts/backup.sh's tar of a volume is, whose stdout is the archive.
+ONE_OFF_ID = "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d"
+ONE_OFF_NAME = "elastic_gagarin"
 
 # What each client sends. The Go clients negotiate the API version with HEAD /_ping (GET when HEAD
 # fails), then prefix every path with it.
@@ -326,6 +330,7 @@ CONTAINER_LABELS = {
     "traefik.http.services.whoami.loadbalancer.server.port": "8080",
 }
 NETWORKS = {"edge": {"NetworkID": "n1", "EndpointID": "e1", "IPAddress": "172.30.0.5", "Gateway": "172.30.0.1"}}
+ONE_OFF_NETWORKS = {"bridge": {"NetworkID": "n2", "EndpointID": "e2", "IPAddress": "172.17.0.2", "Gateway": "172.17.0.1"}}
 
 
 class FakeDockerHandler(BaseHTTPRequestHandler):
@@ -354,9 +359,15 @@ class FakeDockerHandler(BaseHTTPRequestHandler):
                 "Status": "Up 5 minutes", "Created": int(time.time()) - 300, "Labels": CONTAINER_LABELS,
                 "HostConfig": {"NetworkMode": "edge"}, "NetworkSettings": {"Networks": NETWORKS},
                 "Ports": [], "Mounts": [],
+            }, {
+                "Id": ONE_OFF_ID, "Names": [f"/{ONE_OFF_NAME}"], "Image": "busybox:1", "State": "running",
+                "Status": "Up 5 seconds", "Created": int(time.time()) - 5, "Labels": {},
+                "HostConfig": {"NetworkMode": "bridge"}, "NetworkSettings": {"Networks": ONE_OFF_NETWORKS},
+                "Ports": [], "Mounts": [],
             }], head)
         if route == "/networks":
-            return self.json([{"Name": "edge", "Id": "n1", "Driver": "bridge", "Scope": "local", "Labels": {}}], head)
+            return self.json([{"Name": "edge", "Id": "n1", "Driver": "bridge", "Scope": "local", "Labels": {}},
+                              {"Name": "bridge", "Id": "n2", "Driver": "bridge", "Scope": "local", "Labels": {}}], head)
         if route == "/events":
             return self.stream(b"")
         match = re.fullmatch(r"/containers/([^/]+)/(json|logs)", route)
@@ -372,6 +383,17 @@ class FakeDockerHandler(BaseHTTPRequestHandler):
                            "Env": ["DATABASE_PASSWORD=never-leave-the-host"]},
                 "HostConfig": {"NetworkMode": "edge"},
                 "NetworkSettings": {"Networks": NETWORKS, "Ports": {}},
+            }, head)
+        if match and match.group(1) in (ONE_OFF_ID, ONE_OFF_NAME):
+            if match.group(2) == "logs":
+                return self.stream(bytes([1, 0, 0, 0, 0, 0, 0, 4]) + b"\x1f\x8b\x08\x00")
+            return self.json({
+                "Id": ONE_OFF_ID, "Name": f"/{ONE_OFF_NAME}", "Image": "sha256:def", "RestartCount": 0,
+                "State": {"Status": "running", "Running": True, "StartedAt": "2026-01-01T00:00:00Z",
+                          "FinishedAt": "0001-01-01T00:00:00Z"},
+                "Config": {"Image": "busybox:1", "Labels": {}, "Tty": False, "Env": []},
+                "HostConfig": {"NetworkMode": "bridge"},
+                "NetworkSettings": {"Networks": ONE_OFF_NETWORKS, "Ports": {}},
             }, head)
         return self.json({"message": f"page not found: {path}"}, head, status=404)
 
@@ -587,7 +609,7 @@ class ProxyContainerTests(unittest.TestCase):
         paths = {re.sub(r"^/v1\.[0-9]+", "", path) for _, path in fake.requests}
         self.assertLessEqual({"/_ping", "/version", "/containers/json", f"/containers/{ID}/json", "/events"}, paths)
 
-    def test_given_alloy_behind_its_proxy_when_it_starts_then_it_discovers_and_tails_the_containers(self):
+    def test_given_alloy_behind_its_proxy_when_it_starts_then_it_tails_the_compose_containers_only(self):
         fake = self.fakes["alloy-docker-proxy"]
         fake.requests.clear()
         name, blocked = self.start_client(
@@ -597,8 +619,13 @@ class ProxyContainerTests(unittest.TestCase):
         self.wait_for(lambda: any(path.endswith("/logs") for _, path in fake.requests), "alloy to tail the logs", 60,
                       lambda: self.story(name, fake))
         self.assertEqual(blocked(), [])
+        # The tailers of one discovery start together: a moment more, and the one-off's would have asked too.
+        time.sleep(5)
         paths = {re.sub(r"^/v1\.[0-9]+", "", path) for _, path in fake.requests}
         self.assertLessEqual({"/_ping", "/containers/json", "/networks", f"/containers/{ID}/json", f"/containers/{ID}/logs"}, paths)
+        # A container Compose did not start is never tailed: a backup's tar writes the archive to its stdout.
+        self.assertNotIn(f"/containers/{ONE_OFF_ID}/logs", paths)
+        self.assertNotIn(f"/containers/{ONE_OFF_NAME}/logs", paths)
 
 
 if __name__ == "__main__":

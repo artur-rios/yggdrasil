@@ -95,6 +95,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   started for the host selected before could answer after the new host's, and then showed the old host's
   choice on the new host. Only the read for the host selected last applies now. `shared_preferences` answers
   in order, so it was not seen in practice.
+- **A check's Testcontainers are removed when it ends, even killed.** `scripts/run-check.sh` turned Ryuk,
+  Testcontainers' reaper, off for every `docker: true` check, so what a test process started was removed only by
+  the tests' own disposal, which a killed process never reaches: a check that timed out, was aborted or hit the
+  memory limit left its PostgreSQL containers running in `ci`'s engine (20 of them, up to a week old), and 114
+  anonymous volumes outlived theirs (`system prune` removes a stopped container, not its volumes). Ryuk is now on (`TESTCONTAINERS_RYUK_DISABLED=false`), and
+  `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` is the socket's host path (`YGG_DOCKER_SOCKET`), which the engine
+  resolves when Testcontainers mounts it into Ryuk, as it does the check's own; the check still reaches the engine
+  at `/var/run/docker.sock`. Each test process starts its own Ryuk, which removes that process's containers,
+  networks and volumes, and only those, about ten seconds after its connection drops: checks running at the same
+  time are never touched. A `docker: true` check now pulls `testcontainers/ryuk` too, from Docker Hub like its
+  databases. **Upgrading:** the checks run the `scripts/run-check.sh` of the release the controller pins: set
+  `YGGDRASIL_LIBRARY_VERSION` to this release and run `scripts/platform.sh up`, as for every release.
 - **The console's environment selector no longer fails with nothing selected.** `EnvironmentSelector` takes a
   `selectedId` that may be `null`, but its segmented layout (four environments or fewer, with room for them)
   hit Flutter's `SegmentedButton` assertion (`selected.length > 0 || emptySelectionAllowed`) and drew an error
@@ -105,6 +117,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   app closing, or a test ending) while a host's map or details were still being fetched, the answer read the
   disposed provider's state and failed with `Cannot use the Ref of NotifierProvider<StatusController, ...> after it
   has been disposed`. A load that is still pending, or whose answer comes after the disposal, is now dropped.
+- **Loki keeps the logs of Compose's containers only.** Alloy shipped the output of every container of its
+  engine, and `scripts/backup.sh` tars each volume to a throwaway container's stdout: every night the Jenkins
+  volume's archive, 2.5 to 6 GB of gzip as it grew, went into the DevOps Server's Loki as the log of a container
+  with a made-up name (`elastic_gagarin`), nearly all of its 28 GB (the Application Server's, with small volumes,
+  had 0.2 GB). Since the backup's container keeps no log any more (above), that night's archive no longer
+  reaches Loki; now no container that Compose did not start does either, whatever it prints: `volumes.sh`'s tar,
+  `platform.sh`'s plugin listing, a `docker run` by hand. `platform/alloy/config.alloy` keeps only the targets
+  with a `com.docker.compose.project` label, which every container of `platform.sh` and `deploy.sh` has, in a
+  `discovery.relabel` before `loki.source.docker` (whose own relabel rules only rename labels and never stop a
+  tail). The retention stays 31 days: what is left is about 50 MB a day on the DevOps Server. **Upgrading:** on
+  each server, as `ygg`, `cd /opt/yggdrasil && git pull` and `docker restart yggdrasil-alloy-1`: Alloy reads its
+  configuration, a mounted file, when it starts, and `platform.sh up` does not recreate it for a changed file.
+  The archives already in Loki leave with the retention, over the next 31 days.
 - **Jenkins keeps less of what it built.** Its volume on the DevOps Server was 35.6 GB: `jobs/` 24.8 GB, nearly
   all of it the checks' archives (a .NET API's test results are about 100 MB a build), and `workspace/` 14.4 GB
   on the controller, which builds nothing. Three changes:
