@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ygg check` proves the secrets isolation on a host with the variables store.** The four `→ ygg secrets` rows
+  tried to read `/etc/yggdrasil/platform.env` as `ci`, `release`, `dev` and `renovate`. A host whose platform values
+  moved into the [variables store](docs/variables.md) has no `platform.env` (the import renames it), so on the
+  DevOps Server every row said `not checked`. They now try `vars.key`, the store's key, which decrypts every value,
+  when it is there, and `platform.env` otherwise. Nothing to do when upgrading: `ygg check` reads the checkout.
+
 ## [0.13.9] - 2026-11-18
 
 ### Added
