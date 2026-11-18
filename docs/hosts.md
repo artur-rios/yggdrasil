@@ -1020,6 +1020,7 @@ lines.
 | Item | Becomes | How |
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
+| `forgejo no-attachments` | `forgejo.zip` | the same with `--skip-attachment-data`: no `data/attachments`, where Forgejo keeps both the releases' files and what was uploaded to issues and comments. The releases' files are nearly all of a dump when releases carry installers (11 of the DevOps Server's 12 GB in 2026-11), and the GitHub mirror has a copy of each release's files; the issue uploads are then in no backup. See the restore below |
 | `vars` | `vars.tar.gz` | the [variables store](variables.md) of this machine and its key, `vars.db` and `vars.key` of the secrets directory: a consistent copy (`ygg vars backup`), taken while the store is in use |
 | `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running. The container is named, keeps no log (`--log-driver none`) and is removed when the dump fails or the run stops: a container left running would otherwise write the rest of the archive into an unlimited log |
 | `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user. A stopped one (exited, or created) is started for it and stopped again, unless another container of its project runs by then; a restarting, paused or dead one fails the item |
@@ -1176,7 +1177,10 @@ and the data directory. Put the steps in this order: Forgejo must be stopped whi
    - `mv … attachments`: the dump stores the attachments (release files, issue attachments) as
      `data/attachments`, which the copy above puts in `/var/lib/gitea/attachments`; Forgejo reads them from
      `/var/lib/gitea/data/attachments`. Without this step everything looks restored, and every release file
-     answers `500`.
+     answers `500`. A dump made with `forgejo no-attachments` has none: the database still lists every
+     release file, and each answers `500`, until it is uploaded again from the GitHub mirror's copy of that
+     release (delete the file from the Forgejo release, then upload GitHub's under the same name). Jenkins'
+     `release-resume` does not do it: it never changes a published release, and the files are listed as there.
    - `chown -R 1000:1000`: Forgejo runs as uid 1000 inside the container.
    - `busybox:1.37.0@sha256:…`: the image `backup.sh` and `volumes.sh` use (`TAR_IMAGE` in
      `scripts/docker-engine.sh`), pinned by version and digest so that a restore runs what the tests ran, never

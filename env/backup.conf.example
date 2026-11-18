@@ -20,6 +20,11 @@ BACKUP_TARGET=
 #
 #   forgejo                       Forgejo's own dump (repositories, database, settings), from the
 #                                 `forgejo` service of the yggdrasil Compose project -> forgejo.zip
+#   forgejo no-attachments        the same without data/attachments: the files of the releases,
+#                                 and what was uploaded to issues and comments (Forgejo keeps both
+#                                 there). For a forge whose releases carry big installers that the
+#                                 GitHub mirror's releases also have; issue uploads are then in no
+#                                 backup (docs/hosts.md, Restore)
 #   vars                          this machine's variables store and its key (vars.db, vars.key in
 #                                 the secrets directory), a consistent copy -> vars.tar.gz
 #   volume <name>                 a Docker volume, read-only, as a tar -> volume-<name>.tar.gz
