@@ -1774,7 +1774,9 @@ file's other checks are another entry's of the same repository, and that job run
 ([Repository pipeline file](catalog.md#repository-pipeline-file)). Each check runs through
 `scripts/run-check.sh`, in its `image`, as root of the `ci` user's engine (the service user on the host), on
 the checkout, with its `run` line given to `sh -c`; `docker: true` also gives it that engine's socket
-(Testcontainers). Up to four run at once: a check first takes one of the four `ci-check` lockable resources
+(Testcontainers), with Testcontainers' reaper, Ryuk, on: what a test process starts is removed when the process
+ends, also when the check is killed or times out, and never another check's (each test process labels its own).
+Up to four run at once: a check first takes one of the four `ci-check` lockable resources
 (`platform/jenkins/controller/casc.yaml`, **Manage Jenkins → Lockable Resources**), waiting for it without
 holding an executor, and only then a `ci` executor. The `ci` agent has ten, so reading `yggdrasil.yml` and the
 branch policy never queue behind the checks. Its `credentials` are written to a private file and handed to the

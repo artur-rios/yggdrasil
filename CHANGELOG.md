@@ -90,6 +90,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   started for the host selected before could answer after the new host's, and then showed the old host's
   choice on the new host. Only the read for the host selected last applies now. `shared_preferences` answers
   in order, so it was not seen in practice.
+- **A check's Testcontainers are removed when it ends, even killed.** `scripts/run-check.sh` turned Ryuk,
+  Testcontainers' reaper, off for every `docker: true` check, so what a test process started was removed only by
+  the tests' own disposal, which a killed process never reaches: a check that timed out, was aborted or hit the
+  memory limit left its PostgreSQL containers running in `ci`'s engine (20 of them, up to a week old), and 114
+  anonymous volumes outlived theirs (`system prune` removes a stopped container, not its volumes). Ryuk is now on (`TESTCONTAINERS_RYUK_DISABLED=false`), and
+  `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` is the socket's host path (`YGG_DOCKER_SOCKET`), which the engine
+  resolves when Testcontainers mounts it into Ryuk, as it does the check's own; the check still reaches the engine
+  at `/var/run/docker.sock`. Each test process starts its own Ryuk, which removes that process's containers,
+  networks and volumes, and only those, about ten seconds after its connection drops: checks running at the same
+  time are never touched. A `docker: true` check now pulls `testcontainers/ryuk` too, from Docker Hub like its
+  databases. **Upgrading:** the checks run the `scripts/run-check.sh` of the release the controller pins: set
+  `YGGDRASIL_LIBRARY_VERSION` to this release and run `scripts/platform.sh up`, as for every release.
 - **The console's environment selector no longer fails with nothing selected.** `EnvironmentSelector` takes a
   `selectedId` that may be `null`, but its segmented layout (four environments or fewer, with room for them)
   hit Flutter's `SegmentedButton` assertion (`selected.length > 0 || emptySelectionAllowed`) and drew an error
