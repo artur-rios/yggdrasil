@@ -7,6 +7,186 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.9] - 2026-11-18
+
+### Added
+
+- **Checks no longer download Flutter.** Every check of the eight Flutter repositories (chimera, orpheus, maestro,
+  alexandria-ui, heimdall-ui, cerberus-ui, fortuna-ui and the console) fetched the pinned SDK itself, 1.5 GB to
+  download and 2.5 GB to unpack, about a minute and a half of each check (fortuna-ui's `api-client-drift` takes
+  2.5 minutes on a quiet agent, its `header-drift` in the same image without Flutter 0.1, and its own work with a
+  warm SDK 39 seconds). With a toolchain cache (`YGG_TOOLCHAIN_CACHE` in the `ci` agent's `agent.env`),
+  `scripts/run-check.sh --toolchains` reads the checkout's `FLUTTER_VERSION` and `FLUTTER_SHA256` (in
+  `ci/flutter-env.sh` or `ci/pins.sh`, as data), fetches that release once per machine from Flutter's archive into
+  `<cache>/flutter/<version>-<sha256>/`, kept only when its checksum is the pinned one, and gives the check that
+  directory as a copy-on-write overlay at `/opt/yggdrasil/flutter` with `FLUTTER_SDK_DIR` naming it, so the
+  repository's own script fetches nothing. A check's writes into its SDK go to a run directory that is removed
+  when it ends; a branch pinning something else gets a directory of its own. The pipeline library passes the
+  cache to the checks and the branch policy only: a release builds from scratch on the release agent, which
+  `agent.sh` refuses a cache for. A new `scripts/toolchains.sh` holds the cache's logic, a new row
+  `toolchain overlay` in `scripts/prove-machine.sh dev` proves the engine can mount such an overlay, and the build
+  agent's image gets `xz-utils`. **Upgrading:** nothing changes until the `ci` agent has a cache: prove the overlay
+  (`scripts/prove-machine.sh dev`), set `YGG_TOOLCHAIN_CACHE=/home/ci/agent/toolchains` in
+  `/etc/yggdrasil-ci/agent.env`, `ygg agent up --user ci`, and set `YGGDRASIL_LIBRARY_VERSION` to this release with
+  `scripts/platform.sh up`.
+- **Checks keep what they download, per repository.** With the same cache, every check gets its repository's package
+  snapshot (`<cache>/packages/<repository>/`) as an overlay at `/opt/yggdrasil/cache`, with `PUB_CACHE`,
+  `GRADLE_USER_HOME`, `NUGET_PACKAGES`, `npm_config_cache` and `APT_CONFIG` (`apt-get` keeps its `.deb` files there)
+  pointing into it, and in an image with `ANDROID_HOME` the snapshot's NDKs at `$ANDROID_HOME/ndk`: pub's packages,
+  Gradle's distributions and dependencies, the NDK Gradle installs (orpheus, the console), NuGet's and npm's packages
+  and fortuna-ui's clang are downloaded once instead of in every check. A check's writes are its own, unless it
+  passed on a push to `develop`, `main` or `master` (`run-check.sh --promote`, which the library passes only then):
+  what it added becomes the repository's next snapshot, hard links to the last one plus the new files, its deletions
+  applied. A pull request, Renovate's included, never writes a cache, and no repository sees another's: these packages
+  are written by the tools and never checked again, so a cache holds only what was merged into that repository. A
+  replaced snapshot is kept a day, a cache starts over every 30 days, and one no check used for 30 days is removed. A
+  new `scripts/package_cache.py` makes and keeps the snapshots. Not covered: platforms `sdkmanager` installs into the
+  image's own SDK, and `docker build` steps.
+
+### Changed
+
+- **Renovate keeps EF Core and ASP.NET Core on 10.x.** Their 11.x packages support only `net11.0`, and every
+  repository targets .NET 10, so Renovate's pull requests for them could only fail restore with `NU1202`
+  (dotnet-output #27, yggdrasil #206). The shared preset now allows only 10.x and earlier for
+  `Microsoft.AspNetCore.*`, `Microsoft.EntityFrameworkCore*`, `Npgsql.EntityFrameworkCore.*` and `dotnet-ef`.
+  Lift the hold when the repositories move to .NET 11.
+- **Builds no longer wait behind the checks for a `ci` executor.** The `ci` agent had four executors, and each
+  stage of a build asked for one again: reading `yggdrasil.yml` and the branch policy, seconds of work, queued
+  behind every check of every other build (20 to 67 minutes on a busy day, most of a .NET library's 40 to 106).
+  The `ci` agent now has ten executors, and a check first takes one of four `ci-check` lockable resources,
+  declared in `platform/jenkins/controller/casc.yaml`, waiting for it without holding an executor: still at most
+  four checks at once, the same load on the `ci` user's six CPUs and 20 GB, and six executors always free for the
+  short steps. `init.groovy.d/agents.groovy` now also replaces a `ci` or `release` node whose executors or label
+  differ from its own (it already did for the work directory), so the running `ci` node gets its ten on the next
+  start. **Upgrading:** set `YGGDRASIL_LIBRARY_VERSION` to this release and run `scripts/platform.sh up` from
+  this release's checkout, as for every release: the library takes the `ci-check` resources the controller's
+  Configuration as Code declares, and a check run without them fails with the reason.
+- **A library's docs site no longer builds the library's pull requests.** A job that is not its repository's
+  deciding entry and has no `checks` or `actionsChecks` of its own (`<library>-docs`, `orpheus-docs`,
+  `personal-lab-site`, `dotnet-libraries-docs`) ran Read yggdrasil.yml and Branch policy on every pull request,
+  two `ci` executors to report the `branch-policy` status the library's own build reports on the same commit.
+  Such a build now ends at once, before any agent, and so does its push to a branch it deploys nothing from
+  (`develop`). Its deploys (a docs site's push to `main`) are unchanged.
+- **`scripts/prune_release_branches.py` syncs the GitHub mirror after it deletes.** A Forgejo push mirror syncs on a
+  push and on its 8-hour interval, and deleting a branch is not a push, so the deleted `release/*` branches stayed on
+  the GitHub copy for up to 8 hours. With a `mirror` in the catalog, each repository that lost a branch now has its
+  push mirrors synced (`POST /repos/<owner>/<repo>/push_mirrors-sync`) once its protection is back; `--dry-run` says
+  it would. A sync Forgejo refuses is reported and does not fail the run: the next scheduled sync still drops the
+  branches.
+
+### Removed
+
+- **user-management-api leaves the catalog.** The repository is archived on Forgejo and on GitHub (read-only, `main`
+  its only branch), so yggdrasil no longer gives it branch rules or `lint`/`build` checks. **Upgrading:** on the
+  DevOps Server, as `ygg`, run `cd /opt/yggdrasil && git pull` before the Jenkins controller next restarts: the
+  controller reads that server's own `/opt/yggdrasil/catalog.yaml` when it starts, and one that restarts on the old
+  catalog defines the job again. Check that `grep -c user-management-api /opt/yggdrasil/catalog.yaml` gives `0`.
+  Then delete the `user-management-api` job in Jenkins by hand: the Job DSL in
+  [casc.yaml](platform/jenkins/controller/casc.yaml) has no `removedJobAction`, so it never removes a job it no
+  longer defines. The archived repository gets no pushes, so the job has nothing to build until then.
+
+### Fixed
+
+- **A failed volume backup no longer fills the disk.** `backup.sh` streams a volume's `tar` out of a throwaway
+  container. When writing the archive failed, the `docker` client stopped but the container kept running, and
+  the engine wrote the rest of the archive into the container's log, which nothing limits: on 2026-11-18 a
+  failed Jenkins backup left a 40 GB log on the DevOps Server and filled its disk. The container is now named,
+  keeps no log, and is removed when the dump fails or the run is stopped.
+- **A failed or stopped `volumes.sh` leaves no tar container behind.** `export` streams each volume's `tar` out
+  of a throwaway container the way `backup.sh` did, so a failed write (a full disk) or a stopped run left the
+  container running and writing the rest of the archive into its unlimited log. An `import` stopped half-way
+  left its untar's container holding the volume, so the rollback could not remove it. Both containers are now
+  named, keep no log, and are removed when the tar fails or the run is stopped, the untar's before the
+  rollback removes the volumes.
+- **Every engine that builds or pulls is pruned, every day.** Nothing pruned `ygg`'s engine, where an Application
+  Server's deploys build their images: its build cache reached 139 GB. `renovate`'s kept every Renovate image it
+  ever ran (9.1 GB unused), and `ci`'s weekly prune kept a week of build cache, which a busy week makes 50 GB or
+  more of. `ygg install` (step `prune-timer`) now also gives `ygg`, on both servers, a daily prune of its own
+  (`yggdrasil-prune-ygg.service` and `.timer`, at 02:00): dangling images, build cache no build used for a week,
+  then build cache over 20 GB, least used first. Never `system prune`, a container, a volume or a tagged image:
+  the engine runs the platform and every environment, an on-demand one as stopped containers, and `deploy.sh`'s
+  rollback images (`keepImages`) have no container. `ci`'s and `release`'s prune now runs every day instead of on
+  Sundays, and keeps their build cache under 40 GB too, by a run of its own (`docker builder prune
+  --max-used-space`): BuildKit never removes a record younger than `--filter until`, whatever the limit.
+  `scripts/renovate.sh` removes, after each run, every image of `renovate`'s engine that is not the pinned one and
+  that no container uses. `ygg check` has a `prune timer ygg` row on both roles. **Upgrading:** `git pull` the
+  checkout on both servers, then run `ygg install` (as the admin) on each: it writes the units and enables the
+  timers. Renovate's cleanup needs only the pull.
+- **Switching hosts keeps the new host's remembered environment.** The overview remembers which environment
+  (development, production...) was chosen on each saved host, and reads it when a host is selected. A read
+  started for the host selected before could answer after the new host's, and then showed the old host's
+  choice on the new host. Only the read for the host selected last applies now. `shared_preferences` answers
+  in order, so it was not seen in practice.
+- **A check's Testcontainers are removed when it ends, even killed.** `scripts/run-check.sh` turned Ryuk,
+  Testcontainers' reaper, off for every `docker: true` check, so what a test process started was removed only by
+  the tests' own disposal, which a killed process never reaches: a check that timed out, was aborted or hit the
+  memory limit left its PostgreSQL containers running in `ci`'s engine (20 of them, up to a week old), and 114
+  anonymous volumes outlived theirs (`system prune` removes a stopped container, not its volumes). Ryuk is now on (`TESTCONTAINERS_RYUK_DISABLED=false`), and
+  `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` is the socket's host path (`YGG_DOCKER_SOCKET`), which the engine
+  resolves when Testcontainers mounts it into Ryuk, as it does the check's own; the check still reaches the engine
+  at `/var/run/docker.sock`. Each test process starts its own Ryuk, which removes that process's containers,
+  networks and volumes, and only those, about ten seconds after its connection drops: checks running at the same
+  time are never touched. A `docker: true` check now pulls `testcontainers/ryuk` too, from Docker Hub like its
+  databases. **Upgrading:** the checks run the `scripts/run-check.sh` of the release the controller pins: set
+  `YGGDRASIL_LIBRARY_VERSION` to this release and run `scripts/platform.sh up`, as for every release.
+- **The console's environment selector no longer fails with nothing selected.** `EnvironmentSelector` takes a
+  `selectedId` that may be `null`, but its segmented layout (four environments or fewer, with room for them)
+  hit Flutter's `SegmentedButton` assertion (`selected.length > 0 || emptySelectionAllowed`) and drew an error
+  instead. It now draws the segments with none marked, and tapping one chooses it. With an environment selected,
+  tapping the selected segment still does nothing. The overview always passes a selection, so the screen itself
+  was not affected.
+- **Closing the console during a load no longer raises an error.** When the status provider was disposed (the
+  app closing, or a test ending) while a host's map or details were still being fetched, the answer read the
+  disposed provider's state and failed with `Cannot use the Ref of NotifierProvider<StatusController, ...> after it
+  has been disposed`. A load that is still pending, or whose answer comes after the disposal, is now dropped.
+- **Loki keeps the logs of Compose's containers only.** Alloy shipped the output of every container of its
+  engine, and `scripts/backup.sh` tars each volume to a throwaway container's stdout: every night the Jenkins
+  volume's archive, 2.5 to 6 GB of gzip as it grew, went into the DevOps Server's Loki as the log of a container
+  with a made-up name (`elastic_gagarin`), nearly all of its 28 GB (the Application Server's, with small volumes,
+  had 0.2 GB). Since the backup's container keeps no log any more (above), that night's archive no longer
+  reaches Loki; now no container that Compose did not start does either, whatever it prints: `volumes.sh`'s tar,
+  `platform.sh`'s plugin listing, a `docker run` by hand. `platform/alloy/config.alloy` keeps only the targets
+  with a `com.docker.compose.project` label, which every container of `platform.sh` and `deploy.sh` has, in a
+  `discovery.relabel` before `loki.source.docker` (whose own relabel rules only rename labels and never stop a
+  tail). The retention stays 31 days: what is left is about 50 MB a day on the DevOps Server. **Upgrading:** on
+  each server, as `ygg`, `cd /opt/yggdrasil && git pull` and `docker restart yggdrasil-alloy-1`: Alloy reads its
+  configuration, a mounted file, when it starts, and `platform.sh up` does not recreate it for a changed file.
+  The archives already in Loki leave with the retention, over the next 31 days.
+- **Jenkins keeps less of what it built.** Its volume on the DevOps Server was 35.6 GB: `jobs/` 24.8 GB, nearly
+  all of it the checks' archives (a .NET API's test results are about 100 MB a build), and `workspace/` 14.4 GB
+  on the controller, which builds nothing. Three changes:
+  - A job keeps its last **20** builds (was 50) and the archives of the last **10** (was every kept build): the
+    library's `buildDiscarder`. A pull request rarely gets 20 builds, a branch gets one per merge; an archive is
+    for looking into a check, and a release's files are in the forge's releases.
+  - A branch or pull request that is gone (merged, closed, deleted) loses its job a week after its last build,
+    at the next scan (`orphanedItemStrategy { discardOldItems { daysToKeep(7) } }` in the Job DSL). It kept the 20
+    newest gone heads of each repository for ever instead: 853 pull request jobs, 11.4 GB.
+  - The controller's `workspace/` was the library: every job kept its own checkout of this whole repository at
+    the library's version in `workspace/<job>@libs` (13 to 36 MB, 1,134 of them), which only the job's deletion
+    removes. The library is now cloned into each build's own directory and only `vars/` is kept (`clone: true` in
+    `casc.forgejo.yaml` and `casc.github.yaml`); `includeInChangesets` was already off, so nothing is lost.
+
+  **Upgrading:** set `YGGDRASIL_LIBRARY_VERSION` to this release and run `scripts/platform.sh up` from this
+  release's checkout, as for every release: the controller restarts with the new Job DSL and library retriever,
+  and each job takes the new discarder at its next build. The gone heads' jobs go at the next daily scan. The
+  `workspace/*@libs` directories of the jobs that stay are no longer used, and nothing removes them: once the
+  controller runs this release, `docker exec yggdrasil-jenkins-1 sh -c 'rm -rf /var/jenkins_home/workspace/*@libs'`
+  (as `ygg`) frees them.
+- **Two hosts added in the same millisecond on the web console got the same id.** A new host's id was the time
+  in microseconds, which a browser only moves every millisecond, so the second host shared the first one's id
+  (and its saved token). An id made in the same microsecond as the previous one now takes the next microsecond.
+  Ids keep their `env-<base 36>` form, and the ids of hosts already saved are unchanged.
+- **Closing the console while a host was being saved no longer raises an error or loses its token.** When the
+  environments provider was disposed (the app closing, or a test ending) while a host, its token or the selection
+  was being written, the next step read the disposed provider and failed with `Cannot use the Ref of
+  AsyncNotifierProvider<EnvironmentsController, EnvironmentsState> after it has been disposed`. A save stopped
+  there, after the host list was written but before its token, so the new host came back next launch without its
+  token and not selected; a removal kept the removed host's token. The same error came from naming a host after its
+  first response (between a status load's map and its details), choosing a host, setting a token and adding the
+  demo. Every write that has started now finishes, and only the on-screen update is dropped. Naming a host, or
+  adding the demo, that has not started writing when the provider goes is dropped; the next response names the
+  host again.
+
 ## [0.13.8] - 2026-11-14
 
 ### Fixed
@@ -1409,7 +1589,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...HEAD
+[0.13.9]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...v0.13.9
 [0.13.8]: https://github.com/artur-rios/yggdrasil/compare/v0.13.7...v0.13.8
 [0.13.7]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...v0.13.7
 [0.13.6]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...v0.13.6

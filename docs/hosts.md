@@ -62,7 +62,7 @@ mirrors, is [cutover.md](cutover.md) (carried out for this installation on 2026-
 | Purpose | Git server, CI/CD, AI development | Every environment of every application |
 | Runs | Traefik, Forgejo, the Jenkins controller, monitoring, the CI agent and its checks, Renovate, AI sessions | Traefik, status API, console, monitoring, the applications, the deploy agent |
 | Compose profiles in `platform.env` | `forge,jenkins`, run by `ygg` | `apps,agent`, run by `ygg` |
-| Build agents | `ci` (4 executors) and `release` (1), each started by `ygg agent up --user …` ([agent.env](#6-credentials), [setup.md 9.8](setup.md#98-the-ci-and-release-agents)) | none: its deploy agent is the `agent` profile |
+| Build agents | `ci` (10 executors, at most 4 checks at a time) and `release` (1), each started by `ygg agent up --user …` ([agent.env](#6-credentials), [setup.md 9.8](setup.md#98-the-ci-and-release-agents)) | none: its deploy agent is the `agent` profile |
 | Public names | `git.techcraftsmen.net`, `jenkins.techcraftsmen.net`, and its own dashboards: `traefik-dev.techcraftsmen.net`, `grafana-dev.techcraftsmen.net` | **`techcraftsmen.net`**: the applications and APIs, `yggdrasil.`, `traefik.`, `grafana.`. **`artur-rios.tech`**: the static and docs sites |
 | Cloudflare | DNS only (grey cloud) | Proxied (orange cloud) |
 | Inbound ports | 22 (SSH), 80, 443, 2222 (Forgejo's git over SSH) | 22; 80 and 443 only from Cloudflare's address ranges |
@@ -96,7 +96,13 @@ Other things to know:
   it. If a port is not allowed in `ufw`, nobody reaches it.
 - **Size.** The CPU is the shared resource on the DevOps Server. The `ci` user is capped at 6 of the 8
   CPUs and 20 GB of memory, so AI sessions stay responsive during a build. The caps are on the
-  user's systemd slice, so they cover the user's whole engine, not one container.
+  user's systemd slice, so they cover the user's whole engine, not one container. Within them the `ci`
+  agent runs at most **four checks at a time** (about 1.5 CPUs and 5 GB each: a .NET test with coverage,
+  a Flutter build or a Testcontainers check needs one to two CPUs and several GB at its peak). The four
+  are the `ci-check` lockable resources of
+  [casc.yaml](../platform/jenkins/controller/casc.yaml), not the agent's executors: the agent has ten, so
+  the short steps of a build (reading `yggdrasil.yml`, the branch policy, seconds of `git` and Python)
+  always find one instead of queueing behind the checks. Raise the checks only with the slice.
 
 ## 2. Domains and Cloudflare
 
@@ -599,7 +605,10 @@ lockfiles (node and npm, cargo, dotnet, dart and flutter, and the rest). The def
 demand, several from GitHub releases (node from `containerbase/node-prebuild`). Without `RENOVATE_GITHUB_COM_TOKEN`,
 those lookups meet GitHub's anonymous rate limit: the log shows `Rate limit exceeded for api.github.com` and then
 `No tool releases found`, and the pull request gets "Artifact update problem" with its lockfile left as it was. The
-full image needs no such download. It is several GB, so `renovate`'s engine needs the room.
+full image needs no such download. It is several GB, so `renovate`'s engine needs the room. After each run,
+however it ended, `renovate.sh` removes every image of the engine that is not the pinned one and that no container
+uses: the previous version's image after an update, which nothing else would remove. The pinned image stays, so
+the next run does not download it again.
 
 Its settings are `/etc/yggdrasil-renovate/renovate.env` (`ygg install` copies
 [env/renovate.env.example](../env/renovate.env.example) there: `renovate:renovate`, mode `600`). Fill in as `renovate`
@@ -691,27 +700,56 @@ git -C ../heimdall-api show <commit>:scripts/security_signals.py >platform/heimd
 sha256sum platform/heimdall-signals/security_signals.py
 ```
 
-### The CI engines: the weekly prune
+### The engines: the daily prunes
 
-DevOps Server only. Every build in `ci`'s and `release`'s rootless engines leaves images and build cache behind,
-and nothing else removes them. `ygg install` (step `prune-timer`, right after the engines) copies
-[platform/systemd](../platform/systemd)'s `yggdrasil-prune.service` and `yggdrasil-prune.timer` into
-`~/.config/systemd/user/` of **each** of `ci` and `release`, as that user, and enables the timer, the same way
-as the backup's and Renovate's. The timer fires on Sundays at 03:00 (plus a random delay of up to an hour;
-`Persistent=true`, so a machine that was off then prunes when it is next on). The service runs, after the
-user's own `docker.service` and against its own engine (`DOCKER_HOST=unix://%t/docker.sock`):
+Every build leaves images and build cache behind in the engine it ran in, and Docker never removes them by
+itself: on the DevOps Server the checks in `ci`'s engine, the releases in `release`'s and the Jenkins images in
+`ygg`'s; on an Application Server every deploy, which builds its images in `ygg`'s engine (139 GB of build
+cache there before these timers). `ygg install` (step `prune-timer`, right after the engines) copies a pair of
+[platform/systemd](../platform/systemd) units into `~/.config/systemd/user/` of each of those users, as that
+user, and enables the timer, the same way as the backup's and Renovate's. Each runs after the user's own
+`docker.service` and against its own engine (`DOCKER_HOST=unix://%t/docker.sock`); `Persistent=true`, so a
+machine that was off then prunes when it is next on.
+
+| User | Units | When | What it removes |
+|---|---|---|---|
+| `ci`, `release` (DevOps Server) | `yggdrasil-prune.service`, `.timer` | Every day at 03:00, plus up to an hour | Every image no container uses and all build cache, not used for a week; then build cache, least used first, until it is under 40 GB |
+| `ygg` (both servers) | `yggdrasil-prune-ygg.service`, `.timer` | Every day at 02:00, plus up to half an hour | Dangling images; build cache not used for a week; then build cache, least used first, until it is under 20 GB |
+
+`ci`'s and `release`'s service runs:
 
 ```bash
 docker system prune --all --force --filter until=168h
 docker builder prune --all --force --filter until=168h
+docker builder prune --all --force --max-used-space 40GB
 ```
 
-That is, every image no container uses and all build cache that has not been used for a week; what a build of
-the last seven days could still reuse stays. Volumes are never pruned. `ygg check --role dev` has a row
-`prune timer ci` and `prune timer release`, which is `ok` while the units are the checkout's copies and the
-timer is enabled; `systemctl --user list-timers` and `journalctl --user -u yggdrasil-prune` (as that user) show
-the next and the last run. No other user's engine is pruned: `ygg`'s holds the platform and the deployed
-applications, which are not leftovers.
+`ygg`'s runs:
+
+```bash
+docker image prune --force
+docker builder prune --all --force --filter until=168h
+docker builder prune --all --force --max-used-space 20GB
+```
+
+The size limit is a run of its own because BuildKit never removes a build cache record younger than `until`,
+whatever the limit says: a busy week of checks makes more than 50 GB of cache in `ci`'s engine, all of it younger
+than a week. Without `until`, `--max-used-space` removes the records used least, and least recently, until the
+rest is under the limit (`--reserved-space`, a floor, and `--min-free-space`, a target of free disk, are not
+used). The timers are daily so that the limit holds between two runs.
+
+`ygg`'s prune never touches what runs: no `system prune`, and no container, volume or network prune, since its
+engine holds the platform and every deployed environment, and an on-demand environment that is switched off is a
+set of stopped containers. It removes **dangling** images only, not every unused one: `scripts/deploy.sh` keeps
+the last `keepImages` images of each application in each environment ([catalog.md](catalog.md)) for its
+rollbacks, and only the running one has a container. Volumes are never pruned on any engine. `renovate`'s engine
+holds only Renovate's image: `scripts/renovate.sh` removes the images it no longer runs after each run
+([Renovate](#renovate-the-daily-run)). `dev`'s engine is not pruned.
+
+`ygg check` has a row `prune timer <user>` for each of them (`ci`, `release` and `ygg` on the DevOps Server,
+`ygg` on an Application Server), which is `ok` while the units are the checkout's copies and the timer is
+enabled; `systemctl --user list-timers` and `journalctl --user -u yggdrasil-prune` (or `-u yggdrasil-prune-ygg`,
+as that user) show the next and the last run.
 
 ### Other files and rules
 
@@ -720,6 +758,7 @@ applications, which are not leftovers.
 | `/etc/yggdrasil-role` | The role: `dev` or `apps`. `ygg check` and `ygg install` without `--role` use it. Written before the first step that changes anything, so an install that stops halfway keeps its role. |
 | `/opt/yggdrasil` | Owned by `ygg`, mode `755`: `ygg` deploys from this checkout, and the backup unit runs its `scripts/backup.sh`. `ygg install` refuses to run from a checkout anywhere else. |
 | `/etc/yggdrasil`, and `/etc/yggdrasil-<user>` for every other service user | Owned by `<user>:<user>`, mode `750`. `ygg` gets `platform.env` and `acme.env` copied from [env/](../env); `ci` and `release` get `agent.env`; `renovate` gets `renovate.env`. Files `600`. A file that is already there is never touched. |
+| `/home/ci/agent/toolchains` (DevOps Server) | The `ci` agent's toolchain cache, when its `agent.env` names it (`YGG_TOOLCHAIN_CACHE`): the Flutter SDKs the repositories pin (`flutter/`, about 2.5 GB each) and each repository's package cache (`packages/<repository>/`: pub, Gradle, the NDK, NuGet, npm, apt; a few GB for an Android one), owned by `ci`, mode `700`, made by `ygg agent up --user ci`. A check gets them as overlays and never writes this directory; only a passing check of a push to `develop`, `main` or `master` adds a package snapshot; a release never uses any of it ([setup.md, The toolchain cache](setup.md#the-toolchain-cache)). Not backed up: everything in it is fetched again when it is missing. |
 | `/etc/yggdrasil/cloudflare-ips` (Application Server) | Cloudflare's ranges, owned by `ygg`. Read by Traefik's configuration. |
 | `/etc/yggdrasil/traefik.yml` | Not written by `ygg install`: `platform.sh up` renders Traefik's static configuration there (as `ygg`, mode `600`) once the engine is checked, and Traefik's container mounts it. The other commands (`down`, `ps`, `logs`, `config`) render a throwaway copy and leave this one alone. It stays there so that Traefik starts again after a crash or a reboot; deleting it takes ingress down at the next restart of the container, until the next `platform.sh up`. `platform.sh` refuses to run as root, since a root-owned file here is one the rootless Traefik can't read. |
 | `ufw` rules | Dev: `OpenSSH`, `80,443/tcp`, `2222/tcp`. Apps: `OpenSSH`, and for each Cloudflare range `allow proto tcp from <range> to any port 80,443 comment yggdrasil-cloudflare`. The defaults: `deny incoming`, `allow outgoing`. Then `ufw` is turned on, with SSH allowed first so the session that runs the install is not cut. `ygg check` reports any other rule that lets everyone in. |
@@ -793,7 +832,8 @@ empty ([cli.md, Build agents](cli.md#build-agents)). `scripts/prove-machine.sh d
 `/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that
 the path exists) so a green row means something. `scripts/prove-machine.sh dev` (or `apps`), run once by the admin on
 a new machine, proves the rest on the real thing: from a container of `ci`'s engine, `ygg`'s socket, home and secrets
-are out of reach; Testcontainers reaches a published port; no service runs as root; and, on the Application Server, which
+are out of reach; Testcontainers reaches a published port; a container can be given a directory of `ci`'s as an overlay that keeps its
+writes to itself (the toolchain cache); no service runs as root; and, on the Application Server, which
 client addresses Traefik logs ([cutover.md, 2.6](cutover.md#26-the-rootless-proofs)).
 
 ## 6. Credentials
@@ -980,7 +1020,7 @@ lines.
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
 | `vars` | `vars.tar.gz` | the [variables store](variables.md) of this machine and its key, `vars.db` and `vars.key` of the secrets directory: a consistent copy (`ygg vars backup`), taken while the store is in use |
-| `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running |
+| `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running. The container is named, keeps no log (`--log-driver none`) and is removed when the dump fails or the run stops: a container left running would otherwise write the rest of the archive into an unlimited log |
 | `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user. A stopped one (exited, or created) is started for it and stopped again, unless another container of its project runs by then; a restarting, paused or dead one fails the item |
 
 A volume's name is its Compose project, an underscore and its name in the Compose file. The

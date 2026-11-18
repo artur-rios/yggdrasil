@@ -221,9 +221,6 @@ repositories:
   - id: tabnews # Next.js
     checks: [lint, build]
     rules: basic
-  - id: user-management-api # .NET
-    checks: [lint, build]
-    rules: basic
 
   # Released by their owner's v* tags on main: Jenkins builds the release files (Windows ones through
   # GitHub Actions, release.windows in yggdrasil.yml) and publishes the release.

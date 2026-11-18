@@ -51,6 +51,24 @@ TESTCONTAINERS_HOST_OVERRIDE=$(unset TESTCONTAINERS_HOST_OVERRIDE; set -a; . "$e
 [[ -n "$TESTCONTAINERS_HOST_OVERRIDE" ]] || TESTCONTAINERS_HOST_OVERRIDE=$(host_published_address)
 export TESTCONTAINERS_HOST_OVERRIDE
 
+# The ci agent's toolchain cache (scripts/toolchains.sh): optional, agent.env's only, as above. Under the workdir,
+# which build-agent.yml mounts at the same path: run-check.sh reads and fills it in the agent, and names it to the
+# host's engine as an overlay's lower directory. Plain characters only, since it ends up in the overlay's options.
+# shellcheck source=/dev/null
+YGG_TOOLCHAIN_CACHE=$(unset YGG_TOOLCHAIN_CACHE; set -a; . "$env_file"; echo "${YGG_TOOLCHAIN_CACHE:-}") \
+  || die "cannot read $env_file: it must be shell-style NAME=value lines (template: env/agent.env.example)"
+if [[ -n "$YGG_TOOLCHAIN_CACHE" ]]; then
+  YGG_TOOLCHAIN_CACHE=${YGG_TOOLCHAIN_CACHE%/}
+  [[ "$YGG_TOOLCHAIN_CACHE" =~ ^/[A-Za-z0-9._/-]+$ && "$YGG_TOOLCHAIN_CACHE" != *..* ]] \
+    || die "YGG_TOOLCHAIN_CACHE in $env_file must be an absolute path of letters, digits, '.', '_', '-' and '/', not '$YGG_TOOLCHAIN_CACHE'"
+  [[ "$YGG_TOOLCHAIN_CACHE" == "${YGG_AGENT_WORKDIR%/}"/* ]] \
+    || die "YGG_TOOLCHAIN_CACHE in $env_file must be under YGG_AGENT_WORKDIR ($YGG_AGENT_WORKDIR), which the agent mounts at the same path: '$YGG_TOOLCHAIN_CACHE' is not"
+  # What a branch's check could leave there must never reach a release (docs/setup.md, "The toolchain cache").
+  [[ "$JENKINS_AGENT_NAME" != release ]] \
+    || die "YGG_TOOLCHAIN_CACHE is the ci agent's only: the release agent builds from nothing but its tag. Remove it from $env_file"
+fi
+export YGG_TOOLCHAIN_CACHE
+
 compose() {
   docker compose -p "yggdrasil-agent-$JENKINS_AGENT_NAME" --env-file "$env_file" \
     -f "$root/platform/build-agent.yml" "$@"
@@ -62,6 +80,10 @@ case "$command" in
     # Created by this user, not by Docker as root-in-the-container for a mount that would then fail
     # to be written by the build user.
     install -d -m 700 "$YGG_AGENT_WORKDIR"
+    if [[ -n "$YGG_TOOLCHAIN_CACHE" ]]; then
+      install -d -m 700 "$YGG_TOOLCHAIN_CACHE"
+      echo "agent: checks get their pinned toolchains from $YGG_TOOLCHAIN_CACHE" >&2
+    fi
     reached_at=${TESTCONTAINERS_HOST_OVERRIDE:-"the gateway of its container (no host address found)"}
     echo "agent: a check's Testcontainers reaches published ports at $reached_at" >&2
     compose up --detach --build --remove-orphans --wait

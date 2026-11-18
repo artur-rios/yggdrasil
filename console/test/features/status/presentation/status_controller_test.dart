@@ -25,93 +25,45 @@ HostStatus answerFrom(String host) => HostStatus(
 
 const movedUrl = 'https://yggdrasil.new.example.com';
 
-void main() {
-  loadTests();
+/// A store whose remembered environment is held until [answer] completes.
+class SlowRefreshSettingsStore extends InMemoryRefreshSettingsStore {
+  final Completer<void> answer = Completer<void>();
 
-  // production's first request, to its old URL, is held until the test lets
-  // it answer; requests to the new URL answer at once (or fail).
-  late Completer<HostStatus> oldHost;
-  late FakeStatusSource source;
-  late ProviderContainer container;
+  @override
+  Future<String?> readEnvironmentFor(String hostId) async {
+    await answer.future;
 
-  setUp(() async {
-    oldHost = Completer<HostStatus>();
-    source = FakeStatusSource(
-      (environment, _) => environment.url == production.url
-          ? oldHost.future
-          : Future<HostStatus>.value(answerFrom('new')),
-    );
-    container = ProviderContainer(
-      overrides: <Override>[
-        environmentStoreProvider.overrideWithValue(
-          InMemoryEnvironmentStore(environments: <Environment>[production]),
-        ),
-        tokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
-        statusRepositoryProvider.overrideWithValue(StatusRepository(source)),
-      ],
-    );
-    addTearDown(container.dispose);
-    container.listen(statusControllerProvider, (_, _) {});
-
-    await container.read(environmentsControllerProvider.future);
-    await pumpEventQueue();
-    expect(source.calls.single.$1.url, production.url);
-
-    // The URL is edited while that request is still out.
-    await container
-        .read(environmentsControllerProvider.notifier)
-        .save(production.copyWith(url: movedUrl));
-    await pumpEventQueue();
-  });
-
-  test(
-    'a late answer from the URL an environment had before is dropped',
-    () async {
-      expect(source.calls.last.$1.url, movedUrl);
-      expect(
-        container.read(statusControllerProvider).snapshot?.status.host,
-        'new',
-      );
-
-      oldHost.complete(answerFrom('old'));
-      await pumpEventQueue();
-
-      final state = container.read(statusControllerProvider);
-      expect(state.environment?.url, movedUrl);
-      expect(state.snapshot?.status.host, 'new');
-    },
-  );
-
-  test(
-    'a late answer from the old URL is not kept as the new URL\'s last data',
-    () async {
-      oldHost.complete(answerFrom('old'));
-      await pumpEventQueue();
-
-      source.respond = (_, _) =>
-          throw const StatusException(StatusFailureKind.network);
-      await container.read(statusControllerProvider.notifier).refresh();
-
-      // Stale data on a failure is the new host's, never the old one's.
-      final state = container.read(statusControllerProvider);
-      expect(state.failure?.kind, StatusFailureKind.network);
-      expect(state.isStale, isTrue);
-      expect(state.snapshot?.status.host, 'new');
-    },
-  );
+    return super.readEnvironmentFor(hostId);
+  }
 }
 
-/// A container over [source] with one host, production, already loaded once.
+/// A store whose remembered environment for each host in [held] is held until
+/// that host's completer completes; other hosts answer at once.
+class HeldRefreshSettingsStore extends InMemoryRefreshSettingsStore {
+  final Map<String, Completer<void>> held = <String, Completer<void>>{};
+
+  @override
+  Future<String?> readEnvironmentFor(String hostId) async {
+    await held[hostId]?.future;
+
+    return super.readEnvironmentFor(hostId);
+  }
+}
+
+/// A container over [source] with [environments] (production by default),
+/// loaded once.
 Future<ProviderContainer> loadedContainer(
   FakeStatusSource source, {
+  List<Environment> environments = const <Environment>[production],
+  Map<String, String>? tokens,
   RefreshSettingsStore? refreshSettings,
 }) async {
   final container = ProviderContainer(
     overrides: <Override>[
       environmentStoreProvider.overrideWithValue(
-        InMemoryEnvironmentStore(environments: <Environment>[production]),
+        InMemoryEnvironmentStore(environments: environments),
       ),
-      tokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+      tokenStoreProvider.overrideWithValue(InMemoryTokenStore(tokens)),
       refreshSettingsStoreProvider.overrideWithValue(
         refreshSettings ?? InMemoryRefreshSettingsStore(),
       ),
@@ -119,7 +71,9 @@ Future<ProviderContainer> loadedContainer(
     ],
   );
   addTearDown(container.dispose);
-  container.listen(statusControllerProvider, (_, _) {});
+  container
+    ..listen(statusControllerProvider, (_, _) {})
+    ..listen(selectedHostEnvironmentProvider, (_, _) {});
 
   await container.read(environmentsControllerProvider.future);
   await pumpEventQueue();
@@ -127,9 +81,67 @@ Future<ProviderContainer> loadedContainer(
   return container;
 }
 
-void loadTests() {
+StatusViewState statusOf(ProviderContainer container) =>
+    container.read(statusControllerProvider);
+
+EnvironmentsController environmentsOf(ProviderContainer container) =>
+    container.read(environmentsControllerProvider.notifier);
+
+void main() {
+  group('a late answer from the URL an environment had before', () {
+    // production's first request, to its old URL, is held until the test
+    // lets it answer; requests to the new URL answer at once (or fail).
+    late Completer<HostStatus> oldHost;
+    late FakeStatusSource source;
+    late ProviderContainer container;
+
+    setUp(() async {
+      oldHost = Completer<HostStatus>();
+      source = FakeStatusSource(
+        (environment, _) => environment.url == production.url
+            ? oldHost.future
+            : Future<HostStatus>.value(answerFrom('new')),
+      );
+      container = await loadedContainer(source);
+      expect(source.calls.single.$1.url, production.url);
+
+      // The URL is edited while that request is still out.
+      await environmentsOf(container).save(production.copyWith(url: movedUrl));
+      await pumpEventQueue();
+    });
+
+    test('given the URL edited during a request, when the old answer comes, '
+        'then it is dropped', () async {
+      expect(source.calls.last.$1.url, movedUrl);
+      expect(statusOf(container).snapshot?.status.host, 'new');
+
+      oldHost.complete(answerFrom('old'));
+      await pumpEventQueue();
+
+      final state = statusOf(container);
+      expect(state.environment?.url, movedUrl);
+      expect(state.snapshot?.status.host, 'new');
+    });
+
+    test('given the old answer came late, when the new URL then fails, then '
+        "the stale data is the new URL's, never the old one's", () async {
+      oldHost.complete(answerFrom('old'));
+      await pumpEventQueue();
+
+      source.respond = (_, _) =>
+          throw const StatusException(StatusFailureKind.network);
+      await container.read(statusControllerProvider.notifier).refresh();
+
+      final state = statusOf(container);
+      expect(state.failure?.kind, StatusFailureKind.network);
+      expect(state.isStale, isTrue);
+      expect(state.snapshot?.status.host, 'new');
+    });
+  });
+
   group('a load is the map, then the details', () {
-    test('asks for the map first and the details after it', () async {
+    test('given a host, when loaded, then the map is asked first and the '
+        'details after it', () async {
       final source = FakeStatusSource((_, _) async => answerFrom('map'))
         ..respondDetails = (_, _) async => answerFrom('details');
       final container = await loadedContainer(source);
@@ -137,31 +149,33 @@ void loadTests() {
       expect(source.calls, hasLength(1));
       expect(source.detailsCalls, hasLength(1));
 
-      final state = container.read(statusControllerProvider);
+      final state = statusOf(container);
       expect(state.snapshot?.status.host, 'details');
       expect(state.loading, isFalse);
       expect(state.failure, isNull);
     });
 
-    test('draws the map at once and keeps loading until the details', () async {
+    test('given slow details, when loaded, then the map is drawn at once and '
+        'loading holds until the details', () async {
       final details = Completer<HostStatus?>();
       final source = FakeStatusSource((_, _) async => answerFrom('map'))
         ..respondDetails = (_, _) => details.future;
       final container = await loadedContainer(source);
 
-      var state = container.read(statusControllerProvider);
+      var state = statusOf(container);
       expect(state.snapshot?.status.host, 'map');
       expect(state.loading, isTrue);
 
       details.complete(answerFrom('details'));
       await pumpEventQueue();
 
-      state = container.read(statusControllerProvider);
+      state = statusOf(container);
       expect(state.snapshot?.status.host, 'details');
       expect(state.loading, isFalse);
     });
 
-    test('does not ask for details when the map fails', () async {
+    test('given the map fails, when loaded, then the details are not asked '
+        'for', () async {
       final source = FakeStatusSource(
         (_, _) => throw const StatusException(StatusFailureKind.network),
       );
@@ -169,36 +183,42 @@ void loadTests() {
 
       expect(source.detailsCalls, isEmpty);
 
-      final state = container.read(statusControllerProvider);
+      final state = statusOf(container);
       expect(state.failure?.kind, StatusFailureKind.network);
       expect(state.loading, isFalse);
+      expect(state.snapshot, isNull);
     });
 
-    test('a failed details refresh keeps the map', () async {
-      final source = FakeStatusSource((_, _) async => answerFrom('map'))
-        ..respondDetails = (_, _) =>
-            throw const StatusException(StatusFailureKind.server);
-      final container = await loadedContainer(source);
+    test(
+      'given the details fail, when loaded, then the map is kept, stale',
+      () async {
+        final source = FakeStatusSource((_, _) async => answerFrom('map'))
+          ..respondDetails = (_, _) =>
+              throw const StatusException(StatusFailureKind.server);
+        final container = await loadedContainer(source);
 
-      final state = container.read(statusControllerProvider);
-      expect(state.snapshot?.status.host, 'map');
-      expect(state.failure?.kind, StatusFailureKind.server);
-      expect(state.isStale, isTrue);
-      expect(state.loading, isFalse);
-    });
+        final state = statusOf(container);
+        expect(state.snapshot?.status.host, 'map');
+        expect(state.failure?.kind, StatusFailureKind.server);
+        expect(state.isStale, isTrue);
+        expect(state.loading, isFalse);
+      },
+    );
 
-    test('an API without the details endpoint keeps the map', () async {
+    test('given an API without the details endpoint, when loaded, then the '
+        'map is kept with no failure', () async {
       final source = FakeStatusSource((_, _) async => answerFrom('map'))
         ..respondDetails = (_, _) async => null;
       final container = await loadedContainer(source);
 
-      final state = container.read(statusControllerProvider);
+      final state = statusOf(container);
       expect(state.snapshot?.status.host, 'map');
       expect(state.failure, isNull);
       expect(state.loading, isFalse);
     });
 
-    test('a details answer for the previous host is discarded', () async {
+    test('given the URL edited while the details are out, when the old '
+        'details come, then they are discarded', () async {
       final oldDetails = Completer<HostStatus?>();
       final source = FakeStatusSource((_, _) async => answerFrom('map'))
         ..respondDetails = (environment, _) => environment.url == production.url
@@ -206,82 +226,383 @@ void loadTests() {
             : Future<HostStatus?>.value(answerFrom('new-details'));
       final container = await loadedContainer(source);
 
-      await container
-          .read(environmentsControllerProvider.notifier)
-          .save(production.copyWith(url: movedUrl));
+      await environmentsOf(container).save(production.copyWith(url: movedUrl));
       await pumpEventQueue();
-      expect(
-        container.read(statusControllerProvider).snapshot?.status.host,
-        'new-details',
-      );
+      expect(statusOf(container).snapshot?.status.host, 'new-details');
 
       oldDetails.complete(answerFrom('old-details'));
       await pumpEventQueue();
 
-      final state = container.read(statusControllerProvider);
+      final state = statusOf(container);
       expect(state.environment?.url, movedUrl);
       expect(state.snapshot?.status.host, 'new-details');
       expect(state.loading, isFalse);
     });
 
-    test('renaming a host does not load again', () async {
+    test('given a host renamed, when the state rebuilds, then it does not '
+        'load again', () async {
       final source = FakeStatusSource();
       final container = await loadedContainer(source);
 
-      await container
-          .read(environmentsControllerProvider.notifier)
+      await environmentsOf(container)
           .save(production.copyWith(name: 'renamed'));
       await pumpEventQueue();
 
       expect(source.calls, hasLength(1));
       expect(source.detailsCalls, hasLength(1));
+      expect(statusOf(container).environment?.name, 'renamed');
+    });
+
+    test(
+      'given a saved token, when loaded, then both requests carry it',
+      () async {
+        final source = FakeStatusSource();
+        await loadedContainer(
+          source,
+          tokens: <String, String>{'production': 'secret'},
+        );
+
+        expect(source.calls.single.$2, 'secret');
+        expect(source.detailsCalls.single.$2, 'secret');
+      },
+    );
+
+    test('given a placeholder host, when the map answers, then the host is '
+        'named after the response', () async {
+      final source = FakeStatusSource(
+        (_, _) async => answerFrom('example.com'),
+      );
+      final container = await loadedContainer(
+        source,
+        environments: <Environment>[
+          production.copyWith(nameFromResponse: true),
+        ],
+      );
+
+      final selected = container
+          .read(environmentsControllerProvider)
+          .requireValue
+          .selected!;
+      expect(selected.name, 'example.com');
+      expect(selected.nameFromResponse, isFalse);
+      // Renaming is not a reason to load again.
+      expect(source.calls, hasLength(1));
+    });
+
+    test('given a placeholder host, when the map fails, then it keeps its '
+        'placeholder name', () async {
+      final placeholder = production.copyWith(nameFromResponse: true);
+      final container = await loadedContainer(
+        FakeStatusSource(
+          (_, _) => throw const StatusException(StatusFailureKind.network),
+        ),
+        environments: <Environment>[placeholder],
+      );
+
+      expect(
+        container.read(environmentsControllerProvider).requireValue.selected,
+        placeholder,
+      );
     });
   });
 
-  group('refresh settings', () {
-    test('are off, every minute, until chosen', () async {
-      final container = await loadedContainer(FakeStatusSource());
+  group('refresh', () {
+    test('given a load in flight, when refreshed again, then no second '
+        'request is made', () async {
+      final map = Completer<HostStatus>();
+      final source = FakeStatusSource((_, _) => map.future);
+      final container = await loadedContainer(source);
+      expect(statusOf(container).loading, isTrue);
 
-      expect(container.read(refreshSettingsProvider), const RefreshSettings());
-      expect(const RefreshSettings().enabled, isFalse);
-      expect(const RefreshSettings().interval, const Duration(minutes: 1));
-      expect(autoRefreshIntervals, const <Duration>[
-        Duration(minutes: 1),
-        Duration(minutes: 5),
-        Duration(minutes: 10),
-        Duration(minutes: 15),
-        Duration(minutes: 30),
-      ]);
-    });
+      await container.read(statusControllerProvider.notifier).refresh();
+      expect(source.calls, hasLength(1));
 
-    test('survive a restart', () async {
-      final store = InMemoryRefreshSettingsStore();
-      final first = await loadedContainer(
-        FakeStatusSource(),
-        refreshSettings: store,
-      );
-
-      await first
-          .read(refreshSettingsProvider.notifier)
-          .update(
-            const RefreshSettings(
-              enabled: true,
-              interval: Duration(minutes: 15),
-            ),
-          );
-
-      final second = await loadedContainer(
-        FakeStatusSource(),
-        refreshSettings: store,
-      );
-
-      second.listen(refreshSettingsProvider, (_, _) {});
+      map.complete(demoStatus());
       await pumpEventQueue();
 
-      expect(
-        second.read(refreshSettingsProvider),
-        const RefreshSettings(enabled: true, interval: Duration(minutes: 15)),
-      );
+      expect(source.calls, hasLength(1));
+      expect(source.detailsCalls, hasLength(1));
+      expect(statusOf(container).loading, isFalse);
     });
+
+    test('given a loaded host, when refreshed, then it loads again', () async {
+      final source = FakeStatusSource();
+      final container = await loadedContainer(source);
+
+      await container.read(statusControllerProvider.notifier).refresh();
+
+      expect(source.calls, hasLength(2));
+      expect(source.detailsCalls, hasLength(2));
+    });
+
+    test('given no host, when refreshed, then nothing is requested and the '
+        'state is empty', () async {
+      final source = FakeStatusSource();
+      final container = await loadedContainer(
+        source,
+        environments: const <Environment>[],
+      );
+
+      await container.read(statusControllerProvider.notifier).refresh();
+
+      final state = statusOf(container);
+      expect(source.calls, isEmpty);
+      expect(state.environment, isNull);
+      expect(state.snapshot, isNull);
+      expect(state.loading, isFalse);
+    });
+
+    test('given two hosts, when the other is selected, then it loads, and '
+        'switching back shows what was known at once', () async {
+      final source = FakeStatusSource(
+        (environment, _) async => answerFrom(environment.id),
+      );
+      final container = await loadedContainer(
+        source,
+        environments: const <Environment>[production, homologation],
+      );
+
+      await environmentsOf(container).select('homologation');
+      await pumpEventQueue();
+      expect(source.calls.last.$1, homologation);
+      expect(statusOf(container).snapshot?.status.host, 'homologation');
+
+      await environmentsOf(container).select('production');
+
+      expect(statusOf(container).environment, production);
+      expect(statusOf(container).snapshot?.status.host, 'production');
+
+      // The reload it started ends before the container is disposed.
+      await pumpEventQueue();
+      expect(statusOf(container).loading, isFalse);
+      expect(source.calls.map((call) => call.$1.id), <String>[
+        'production',
+        'homologation',
+        'production',
+      ]);
+    });
+  });
+
+  group('StatusViewState', () {
+    const snapshotless = StatusViewState(environment: production);
+
+    test('given no failure, when inspected, then it is neither stale, '
+        'starting nor needing a token', () {
+      expect(snapshotless.isStale, isFalse);
+      expect(snapshotless.isStarting, isFalse);
+      expect(snapshotless.needsToken, isFalse);
+    });
+
+    test('given a 401, when inspected, then it needs a token', () {
+      const state = StatusViewState(
+        failure: StatusException(StatusFailureKind.unauthorized),
+      );
+
+      expect(state.needsToken, isTrue);
+      expect(state.isStarting, isFalse);
+    });
+
+    test('given the API starting over known data, when inspected, then it is '
+        'starting and not stale', () {
+      final state = StatusViewState(
+        snapshot: StatusSnapshot(
+          status: answerFrom('x'),
+          receivedAt: DateTime.utc(2026),
+        ),
+        failure: const StatusException(StatusFailureKind.starting),
+      );
+
+      expect(state.isStarting, isTrue);
+      expect(state.isStale, isFalse);
+    });
+
+    test(
+      'given a failure and no data, when inspected, then it is not stale',
+      () {
+        const state = StatusViewState(
+          failure: StatusException(StatusFailureKind.network),
+        );
+
+        expect(state.isStale, isFalse);
+      },
+    );
+  });
+
+  group('selectedHostEnvironmentProvider', () {
+    test('given nothing remembered, when read, then it is null', () async {
+      final container = await loadedContainer(FakeStatusSource());
+
+      expect(container.read(selectedHostEnvironmentProvider), isNull);
+    });
+
+    test(
+      'given a remembered environment, when read, then it is that one',
+      () async {
+        final store = InMemoryRefreshSettingsStore();
+        await store.writeEnvironmentFor('production', 'development');
+
+        final container = await loadedContainer(
+          FakeStatusSource(),
+          refreshSettings: store,
+        );
+
+        expect(container.read(selectedHostEnvironmentProvider), 'development');
+      },
+    );
+
+    test('given a choice, when made, then it is remembered for that host and '
+        'does not load', () async {
+      final store = InMemoryRefreshSettingsStore();
+      final source = FakeStatusSource();
+      final container = await loadedContainer(source, refreshSettings: store);
+
+      await container
+          .read(selectedHostEnvironmentProvider.notifier)
+          .select('homologation');
+
+      expect(container.read(selectedHostEnvironmentProvider), 'homologation');
+      expect(await store.readEnvironmentFor('production'), 'homologation');
+      expect(source.calls, hasLength(1));
+    });
+
+    test('given a choice made before the memory is read, when the memory '
+        'answers, then the choice wins', () async {
+      final store = SlowRefreshSettingsStore();
+      await store.writeEnvironmentFor('production', 'development');
+      final container = await loadedContainer(
+        FakeStatusSource(),
+        refreshSettings: store,
+      );
+
+      await container
+          .read(selectedHostEnvironmentProvider.notifier)
+          .select('homologation');
+      store.answer.complete();
+      await pumpEventQueue();
+
+      expect(container.read(selectedHostEnvironmentProvider), 'homologation');
+    });
+
+    test('given another host selected, when read, then it starts from that '
+        "host's own memory", () async {
+      final store = InMemoryRefreshSettingsStore();
+      await store.writeEnvironmentFor('homologation', 'production');
+      final container = await loadedContainer(
+        FakeStatusSource(),
+        environments: const <Environment>[production, homologation],
+        refreshSettings: store,
+      );
+
+      await container
+          .read(selectedHostEnvironmentProvider.notifier)
+          .select('development');
+      await environmentsOf(container).select('homologation');
+      await pumpEventQueue();
+
+      expect(container.read(selectedHostEnvironmentProvider), 'production');
+    });
+
+    test("given a host switch while the previous host's memory is read, when "
+        "that read answers last, then the new host's memory stays", () async {
+      final store = HeldRefreshSettingsStore();
+      final productionRead = Completer<void>();
+      store.held['production'] = productionRead;
+      await store.writeEnvironmentFor('production', 'development');
+      await store.writeEnvironmentFor('homologation', 'production');
+      final container = await loadedContainer(
+        FakeStatusSource(),
+        environments: const <Environment>[production, homologation],
+        refreshSettings: store,
+      );
+
+      await environmentsOf(container).select('homologation');
+      await pumpEventQueue();
+      expect(container.read(selectedHostEnvironmentProvider), 'production');
+
+      productionRead.complete();
+      await pumpEventQueue();
+
+      expect(container.read(selectedHostEnvironmentProvider), 'production');
+    });
+
+    test('given no host, when an environment is chosen, then it is shown but '
+        'not remembered', () async {
+      final store = InMemoryRefreshSettingsStore();
+      final container = await loadedContainer(
+        FakeStatusSource(),
+        environments: const <Environment>[],
+        refreshSettings: store,
+      );
+
+      await container
+          .read(selectedHostEnvironmentProvider.notifier)
+          .select('production');
+
+      expect(container.read(selectedHostEnvironmentProvider), 'production');
+      expect(await store.readEnvironmentFor('production'), isNull);
+    });
+  });
+
+  group('disposal during a load', () {
+    test('given a load not yet started, when the container is disposed, then '
+        'the load is dropped without an error', () async {
+      final source = FakeStatusSource();
+      final container = ProviderContainer(
+        overrides: <Override>[
+          environmentStoreProvider.overrideWithValue(
+            InMemoryEnvironmentStore(
+              environments: const <Environment>[production],
+            ),
+          ),
+          tokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+          statusRepositoryProvider.overrideWithValue(StatusRepository(source)),
+        ],
+      );
+      await container.read(environmentsControllerProvider.future);
+
+      // The build schedules the load; the container goes before it runs.
+      container.read(statusControllerProvider);
+      container.dispose();
+      await pumpEventQueue();
+
+      expect(source.calls, isEmpty);
+    });
+
+    test('given the map out, when the container is disposed and the map '
+        'comes, then it is dropped without an error', () async {
+      final map = Completer<HostStatus>();
+      final source = FakeStatusSource((_, _) => map.future);
+      final container = await loadedContainer(source);
+      expect(statusOf(container).loading, isTrue);
+
+      container.dispose();
+      map.complete(answerFrom('map'));
+      await pumpEventQueue();
+
+      expect(source.detailsCalls, isEmpty);
+    });
+
+    test('given the details out, when the container is disposed and the '
+        'details come, then they are dropped without an error', () async {
+      final details = Completer<HostStatus?>();
+      final source = FakeStatusSource((_, _) async => answerFrom('map'))
+        ..respondDetails = (_, _) => details.future;
+      final container = await loadedContainer(source);
+      expect(statusOf(container).loading, isTrue);
+
+      container.dispose();
+      details.complete(answerFrom('details'));
+      await pumpEventQueue();
+
+      expect(source.detailsCalls, hasLength(1));
+    });
+  });
+
+  test('given no override, when the repository is read, then it says it '
+      'must be overridden', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    expect(() => container.read(statusRepositoryProvider), throwsA(anything));
   });
 }

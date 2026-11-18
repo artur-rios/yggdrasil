@@ -90,6 +90,11 @@ class StatusController extends Notifier<StatusViewState> {
   }
 
   Future<void> refresh() async {
+    // The load scheduled by [build] may run after the provider is gone.
+    if (!ref.mounted) {
+      return;
+    }
+
     final environment = state.environment;
 
     if (environment == null || state.loading) {
@@ -150,7 +155,10 @@ class StatusController extends Notifier<StatusViewState> {
     );
   }
 
+  /// Whether an answer about [environment] is still wanted: the provider was
+  /// not disposed meanwhile and the screen still shows that environment.
   bool _isShowing(Environment environment) =>
+      ref.mounted &&
       state.environment?.id == environment.id &&
       state.environment?.baseUrl == environment.baseUrl;
 }
@@ -171,6 +179,10 @@ class SelectedHostEnvironmentController extends Notifier<String?> {
   /// The user chose before the remembered value was read.
   bool _changed = false;
 
+  /// Counts the builds, so a read started for a host selected before can tell
+  /// it is no longer the latest: its answer is about another host.
+  int _build = 0;
+
   @override
   String? build() {
     final hostId = ref.watch(
@@ -180,20 +192,23 @@ class SelectedHostEnvironmentController extends Notifier<String?> {
     );
 
     _changed = false;
+    final build = ++_build;
 
     if (hostId != null) {
-      unawaited(_load(hostId));
+      unawaited(_load(hostId, build));
     }
 
     return null;
   }
 
-  Future<void> _load(String hostId) async {
+  Future<void> _load(String hostId, int build) async {
     final remembered = await ref
         .read(refreshSettingsStoreProvider)
         .readEnvironmentFor(hostId);
 
-    if (ref.mounted && !_changed) {
+    // A rebuild keeps `ref.mounted` true, so a read for the host selected
+    // before can answer after the current host's: only the latest one counts.
+    if (ref.mounted && build == _build && !_changed) {
       state = remembered;
     }
   }

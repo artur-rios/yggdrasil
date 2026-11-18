@@ -1,0 +1,13 @@
+# Starts yggdrasil-prune-ygg.service every day at 02:00, before the nightly backup (03:30), which reads the
+# same engine. Persistent: a machine that was off then prunes when it is next on. The random delay spreads
+# the runs of the machines over the half hour after 02:00.
+[Unit]
+Description=Prune ygg's engine every day
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

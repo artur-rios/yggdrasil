@@ -5,7 +5,9 @@
 `docker` is a fake on PATH. It logs every call to $FAKE_LOG, answers `info` as a rootless engine, and for
 `run` it keeps what the container would have been given: the --env-file's content, mode and path (the file
 is removed by the time the script is done) in $FAKE_LOG.env, .mode and .path. $FAKE_RUN_STATUS is the run's
-exit status. HOME and the XDG runtime directory are temporary, so the run-scoped env file lands in a
+exit status. The engine's images are the ids in $FAKE_IMAGES (one per line, for `image ls`), the pinned one's id
+is $FAKE_PINNED_ID (`image inspect` fails without it), and $FAKE_USED lists the ids a container uses (`ps
+--filter ancestor=`). HOME and the XDG runtime directory are temporary, so the run-scoped env file lands in a
 directory of ours. The machine step that installs the units is tested in test_machine.py.
 """
 
@@ -28,6 +30,20 @@ FAKES = {
         echo "docker $*" >>"$FAKE_LOG"
         case "$1" in
           info) echo '["name=seccomp,profile=builtin","name=rootless"]' ;;
+          image)
+            case "$2" in
+              inspect) [[ -n "${FAKE_PINNED_ID:-}" ]] || exit 1; echo "$FAKE_PINNED_ID" ;;
+              ls) printf '%s\n' "${FAKE_IMAGES:-}" | sed '/^$/d' ;;
+              rm) [[ "${*: -1}" != "${FAKE_RM_FAILS:-}" ]] || exit 1 ;;
+            esac
+            ;;
+          ps)
+            for argument in "$@"; do
+              if [[ "$argument" == ancestor=* ]] && grep -qxF -- "${argument#ancestor=}" <<<"${FAKE_USED:-}"; then
+                echo 0123456789ab
+              fi
+            done
+            ;;
           run)
             while (($#)); do
               if [[ "$1" == --env-file ]]; then
@@ -245,6 +261,48 @@ class RenovateTests(unittest.TestCase):
         result = self.renovate(FAKE_RUN_STATUS="3")
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertEqual(list(self.runtime.iterdir()), [])
+
+    # ---- The images left behind ----
+
+    PINNED = "sha256:" + "a" * 64
+    OLD = "sha256:" + "b" * 64
+    USED = "sha256:" + "c" * 64
+
+    def removals(self):
+        return [call.split()[-1] for call in self.calls() if call.startswith("docker image rm")]
+
+    def test_given_the_image_of_an_older_version_when_run_then_it_is_removed_and_the_pinned_one_kept(self):
+        result = self.renovate(FAKE_PINNED_ID=self.PINNED, FAKE_IMAGES=f"{self.PINNED}\n{self.OLD}\n{self.OLD}")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Once, by id, after the run: the next run starts from the image it needs, already there.
+        self.assertEqual(self.removals(), [self.OLD])
+        self.assertLess(self.calls().index(self.run_call()),
+                        next(i for i, call in enumerate(self.calls()) if call.startswith("docker image rm")))
+        self.assertIn(f"removed the image {self.OLD}", result.stdout)
+
+    def test_given_an_image_a_container_uses_when_run_then_it_is_left_alone(self):
+        result = self.renovate(FAKE_PINNED_ID=self.PINNED, FAKE_IMAGES=f"{self.PINNED}\n{self.USED}\n{self.OLD}",
+                               FAKE_USED=self.USED)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.removals(), [self.OLD])
+
+    def test_given_no_pinned_image_when_run_then_nothing_is_removed(self):
+        # A pull that failed: the engine's images are then all that is known to work.
+        result = self.renovate(FAKE_RUN_STATUS="125", FAKE_IMAGES=self.OLD)
+        self.assertEqual(result.returncode, 125, result.stdout + result.stderr)
+        self.assertEqual(self.removals(), [])
+
+    def test_given_a_failing_run_when_it_ends_then_the_old_images_go_and_its_status_stays(self):
+        result = self.renovate(FAKE_RUN_STATUS="3", FAKE_PINNED_ID=self.PINNED, FAKE_IMAGES=f"{self.PINNED}\n{self.OLD}")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.removals(), [self.OLD])
+
+    def test_given_a_removal_that_fails_when_run_then_it_is_reported_and_the_run_still_passes(self):
+        result = self.renovate(FAKE_PINNED_ID=self.PINNED, FAKE_IMAGES=f"{self.PINNED}\n{self.OLD}\n{self.USED}",
+                               FAKE_RM_FAILS=self.OLD)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"could not remove the image {self.OLD}", result.stderr)
+        self.assertEqual(self.removals(), [self.OLD, self.USED])
 
     def test_given_no_env_file_when_run_then_it_fails_naming_the_template(self):
         self.env_file.unlink()

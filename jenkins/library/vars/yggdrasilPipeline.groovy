@@ -20,11 +20,13 @@
 //
 //   pull request into develop or main (and master, under the basic rules), with yggdrasil.yml
 //                            -> Branch policy (scripts/branch-policy.sh, then the file's branchPolicy)
-//                               and Checks (each planned check in parallel on the ci agent), each
-//                               reported as a commit status; the build fails once all have reported if
-//                               any failed. Into develop on Forgejo with a GitHub mirror, the entry's
-//                               actionsChecks are then copied from GitHub Actions (see
-//                               copyActionsChecks)
+//                               and Checks (each planned check in parallel on the ci agent, once it has
+//                               one of the ci-check slots: runCheck), each reported as a commit status;
+//                               the build fails once all have reported if any failed. Into develop on
+//                               Forgejo with a GitHub mirror, the entry's actionsChecks are then copied
+//                               from GitHub Actions (see copyActionsChecks). Nothing at all for a job
+//                               that leaves its repository to the deciding entry's (a library's docs
+//                               site: leavesToDecidingEntry)
 //   PR release/x.y.z -> main -> (with yggdrasil.yml: branch policy and checks first, under the same
 //                               per-repository lock) wait for the entry's actionsChecks on GitHub Actions
 //                               (the skip when they don't finish: "GitHub Actions checks didn't finish.
@@ -76,7 +78,9 @@
 // An environment with approval: true waits for someone to click "Deploy" first, without holding an
 // agent. Each environment deploys on its agent (`agent`, default its id), so a stage runs on the
 // host it deploys to; environments sharing a host share its agent. Checks run on the `ci` agent, and a
-// build never holds a deploy agent while they run.
+// build never holds a deploy agent while they run. At most four checks run there at a time (the ci-check
+// lockable resources, casc.yaml), each waiting for its slot outside node(); the ci agent's other executors
+// are for the short steps (Read yggdrasil.yml, Branch policy), so those never wait behind a check.
 //
 // onDemand environments: a deploy a push triggers leaves a switched-off environment switched off
 // (deploy.sh starts it, waits for health, and stops it again). A DEPLOY_TO build is someone asking
@@ -143,6 +147,9 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final int ACTIONS_POLL_SECONDS = 60
 @Field static final int TAG_POLL_SECONDS = 10
 @Field static final int TAG_WAIT_SECONDS = 600
+// The label of the lockable resources a check takes one of before it asks for a ci executor (runCheck):
+// how many checks run at once (platform/jenkins/controller/casc.yaml declares them, four).
+@Field static final String CI_CHECK_SLOTS = 'ci-check'
 // A tag of a release (v1.4.0, 1.4.0, or <package>@<version> for a library that versions each of its packages
 // apart: ArturRios.Data.Sqlite@3.1.0), before it reaches git or the forge. `@` never first: git refuses a ref
 // named `@`, and a tag must start with a letter or digit like every name the pipeline takes.
@@ -264,9 +271,13 @@ def call(Map config = [:]) {
   // commit (it may be waiting up to checksTimeout for GitHub Actions); every other build waits its
   // turn, a release above all.
   boolean replaceable = env.CHANGE_ID && env.CHANGE_TARGET != 'main'
+  // The last 20 builds of a branch, pull request or tag, and the archives (a check's `archive`: test
+  // results, coverage) of the last 10 of them. A pull request rarely gets 20 builds; a branch gets one per
+  // merge, so 20 reaches back a few weeks. An archive is for looking into a check, and a .NET API's test
+  // results are about 100 MB a build: the releases' files live in the forge's releases, not here.
   properties([
     disableConcurrentBuilds(abortPrevious: replaceable),
-    buildDiscarder(logRotator(numToKeepStr: '50')),
+    buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10')),
     parameters([
       choice(name: 'DEPLOY_TO', choices: [''] + byHand,
              description: 'Deploy this branch to an environment with trigger: manual or branch, and leave it running if it is on demand. Empty: only what the branch triggers.'),
@@ -289,7 +300,8 @@ def call(Map config = [:]) {
   }
 }
 
-// What the catalog says about a job: [app, repo (its git repository), forge, mirror, checksTimeout (of
+// What the catalog says about a job: [app, repo (its git repository), forge, mirror, deciding (the id of
+// its repository's deciding entry: decidingEntry), checks and actionsChecks (its entry's), checksTimeout (of
 // its first environment), plan (its environments, resolved), releaseArtifacts, release (deploy: an
 // application with a trigger: release environment; owner-tag; none -- pipeline_config.py entry_for's
 // reading), tags (its version tag pattern), rules (its git repository's model, release or basic:
@@ -308,7 +320,10 @@ Map catalogContext(String app) {
   // A repositories entry (a library, yggdrasil itself) has no environments: it never deploys.
   List plan = application != null ? resolve(catalog, app) : []
   String repo = application != null ? (application.repository ?: app) : app
+  Map entry = application ?: repositoryEntry
   return [app: app, repo: repo, forge: forgeOf(catalog), rules: repositoryModel(catalog, repo),
+          deciding: decidingEntry(catalog, repo), checks: (entry.checks ?: []) as List,
+          actionsChecks: (entry.actionsChecks ?: []) as List,
           mirror: mirrorOf(catalog), checksTimeout: (plan ? plan[0].checksTimeout : 3600) as int, plan: plan,
           releaseArtifacts: application?.releaseArtifacts == true,
           release: application != null ? (plan.any { it.trigger == 'release' } ? 'deploy' : 'none')
@@ -331,6 +346,13 @@ def withForgeEnvironment(Map ctx, Closure body) {
 void pullRequest(Map ctx, List plan, boolean releaseArtifacts) {
   String app = ctx.app
   String target = env.CHANGE_TARGET
+  if (leavesToDecidingEntry(ctx)) {
+    // Before any node(): such a build used to take two ci executors to report the branch policy the
+    // deciding job reports on the same commit anyway.
+    echo "Nothing to do for ${app} on a pull request: it has no checks of its own, and ${printable(ctx.deciding)}, " +
+      "the job that decides for ${printable(ctx.repo)}, reports the branch policy on the same commit."
+    return
+  }
   if (target == 'main' && (env.CHANGE_BRANCH ?: '') ==~ RELEASE_BRANCH) {
     // A multibranch job's disableConcurrentBuilds is branch-local. This application-wide lock covers
     // checks, every promotion, merge, packaging and publication, so two release branches cannot race
@@ -407,8 +429,11 @@ void branchBuild(Map ctx, List plan) {
   // The commit the checks ran on (and found no yggdrasil.yml on): what must be deployed. null when
   // nothing was prepared (other branches, DEPLOY_TO), which deploys the checkout as it always did.
   String checkedSha = null
-  // "Build with Parameters" deploys without checks, as it always did.
-  if (!deployToParameter && (branch in checkedBranches(ctx.rules) || branch.startsWith('release/'))) {
+  // "Build with Parameters" deploys without checks, as it always did. A job that leaves its repository to the
+  // deciding entry (leavesToDecidingEntry) has nothing to check on a push that deploys nothing: no checks of
+  // its own, and it never syncs (only the deciding entry does).
+  boolean checked = branch in checkedBranches(ctx.rules) || branch.startsWith('release/')
+  if (!deployToParameter && checked && (targets || !leavesToDecidingEntry(ctx))) {
     Map state = prepare(ctx, 'push', targets as boolean, false, syncing)
     checkedSha = state.sha
     if (state.config != null) {
@@ -742,8 +767,13 @@ boolean branchPolicy(Map ctx, Map state) {
                     printf 'YGGDRASIL_DIR=%s\\n' "$WORKSPACE/yggdrasil"
                   } >"$env_file"
                   # The whole workspace is mounted (the yggdrasil checkout next to the application's);
-                  # the command runs in the application's root, as every check does.
-                  bash yggdrasil/scripts/run-check.sh branch-policy "$YGG_IMAGE" "$WORKSPACE" --env-file "$env_file" \\
+                  # the command runs in the application's root, as every check does. The ci agent's toolchain
+                  # cache, when it has one (agent.env's YGG_TOOLCHAIN_CACHE), reads the pin from that root.
+                  set --
+                  if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then
+                    set -- --toolchains "$YGG_TOOLCHAIN_CACHE" --checkout "$WORKSPACE/app"
+                  fi
+                  bash yggdrasil/scripts/run-check.sh branch-policy "$YGG_IMAGE" "$WORKSPACE" --env-file "$env_file" "$@" \\
                     -- sh -c 'cd app && exec sh -c "$1"' sh "$YGG_RUN"
                 ''', returnStatus: true)
               }
@@ -815,30 +845,47 @@ List runChecks(Map ctx, Map state) {
 // credentials in an env file; its junit results and archive collected (the archive also stashed as
 // check-<name>, for deploy.inputs), whatever the outcome. The status is posted afterwards, outside
 // the node. Returns whether it passed.
+//
+// A check slot first (one of the CI_CHECK_SLOTS lockable resources, casc.yaml), then the executor: the
+// lock is waited for outside node(), so a check waiting its turn holds no executor, and the ci agent's
+// executors beyond the slots stay free for the short steps (reading yggdrasil.yml, the branch policy),
+// which never wait behind a check. The slots, not the executors, are what keeps the ci user's share of
+// the machine (docs/hosts.md) from running more checks at once than it holds.
 boolean runCheck(Map ctx, Map state, Map check) {
   int code = -1
   String problem = null
   try {
-    node('ci') {
-      try {
-        checkoutCommit(ctx, state.sha)
-        withCheckCredentials(check, state.entry, 'credentials') { String envFile ->
-          withEnv(["YGG_CHECK_NAME=${check.name}", "YGG_CHECK_IMAGE=${check.image}", "YGG_CHECK_RUN=${check.run}",
-                   "YGG_CHECK_DOCKER=${check.docker == true ? '1' : ''}", "YGG_CHECK_ENV_FILE=${envFile}"]) {
-            // run-check.sh takes the command in exec form: sh -c runs the file's `run` line as written.
-            code = sh(script: '''
-              set --
-              if [ -n "$YGG_CHECK_DOCKER" ]; then set -- "$@" --docker; fi
-              if [ -n "$YGG_CHECK_ENV_FILE" ]; then set -- "$@" --env-file "$YGG_CHECK_ENV_FILE"; fi
-              bash yggdrasil/scripts/run-check.sh "$YGG_CHECK_NAME" "$YGG_CHECK_IMAGE" "$WORKSPACE/app" "$@" \\
-                -- sh -c "$YGG_CHECK_RUN"
-            ''', returnStatus: true)
+    lock(label: CI_CHECK_SLOTS, quantity: 1) {
+      node('ci') {
+        try {
+          checkoutCommit(ctx, state.sha)
+          withCheckCredentials(check, state.entry, 'credentials') { String envFile ->
+            withEnv(["YGG_CHECK_NAME=${check.name}", "YGG_CHECK_IMAGE=${check.image}", "YGG_CHECK_RUN=${check.run}",
+                     "YGG_CHECK_DOCKER=${check.docker == true ? '1' : ''}", "YGG_CHECK_ENV_FILE=${envFile}",
+                     "YGG_CHECK_SCOPE=${ctx.repo}", "YGG_CHECK_PROMOTE=${keepsPackages() ? '1' : ''}"]) {
+              // run-check.sh takes the command in exec form: sh -c runs the file's `run` line as written. The
+              // toolchain cache is the ci agent's own (agent.env's YGG_TOOLCHAIN_CACHE; the release agent has
+              // none): only a check and the branch policy are given it, never a release step. A check also gets its
+              // repository's package cache (--scope), and keeps what it downloaded there only on a push to a
+              // protected branch (--promote, keepsPackages).
+              code = sh(script: '''
+                set --
+                if [ -n "$YGG_CHECK_DOCKER" ]; then set -- "$@" --docker; fi
+                if [ -n "$YGG_CHECK_ENV_FILE" ]; then set -- "$@" --env-file "$YGG_CHECK_ENV_FILE"; fi
+                if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then
+                  set -- "$@" --toolchains "$YGG_TOOLCHAIN_CACHE" --scope "$YGG_CHECK_SCOPE"
+                  if [ -n "$YGG_CHECK_PROMOTE" ]; then set -- "$@" --promote; fi
+                fi
+                bash yggdrasil/scripts/run-check.sh "$YGG_CHECK_NAME" "$YGG_CHECK_IMAGE" "$WORKSPACE/app" "$@" \\
+                  -- sh -c "$YGG_CHECK_RUN"
+              ''', returnStatus: true)
+            }
           }
+        } finally {
+          collectResults(check)
+          cleanScratch()
+          cleanWs()
         }
-      } finally {
-        collectResults(check)
-        cleanScratch()
-        cleanWs()
       }
     }
   } catch (FlowInterruptedException interruption) {
@@ -860,6 +907,14 @@ boolean runCheck(Map ctx, Map state, Map check) {
     }
   }
   return passed
+}
+
+// Whether this build's passing checks keep what they downloaded in their repository's package cache
+// (scripts/package_cache.py): a push to develop, main or master, whose code was merged. Never a pull request, a
+// Renovate one included, and never another branch: what a branch's check leaves there runs in every later check
+// of the repository, its pull requests' included.
+boolean keepsPackages() {
+  return !env.CHANGE_ID && ['develop', 'main', 'master'].contains(env.BRANCH_NAME)
 }
 
 // A check's credentials ({ENV: credential id}, from its plan) bound for the body only, written to a
@@ -3204,6 +3259,36 @@ String repositoryModel(Map catalog, String repository) {
     return (entry.rules ?: 'release').toString()
   }
   return applications ? 'basic' : 'release'
+}
+
+// The id of the job that decides for a git repository (catalog.py repository_entries: its deciding entry):
+// the entry that releases (an application with a trigger: release environment, or a repositories entry with
+// a release; the catalog allows one), else the repository's `repositories` entry, else its first deployable
+// application in catalog order. null for a repository the catalog does not have.
+@NonCPS
+String decidingEntry(Map catalog, String repository) {
+  List applications = catalog.systems.collectMany { it.applications ?: [] }
+    .findAll { it.kind != 'platform' && (it.repository ?: it.id) == repository }
+  Map releasing = applications.find { app -> resolve(catalog, app.id as String).any { it.trigger == 'release' } } as Map
+  if (releasing != null) {
+    return releasing.id.toString()
+  }
+  Map entry = findRepositoryEntry(catalog, repository)
+  if (entry != null) {
+    return entry.id.toString()
+  }
+  return applications ? applications[0].id.toString() : null
+}
+
+// Whether a job leaves its repository's pull requests, and its pushes that deploy nothing, to the deciding
+// entry's job: it is another job of the repository (a library's docs site, the application <library>-docs),
+// and its catalog entry has no checks and no actionsChecks of its own. Such a build would only run the branch
+// policy, which the deciding job runs and reports (branch-policy) on the same commit, and read yggdrasil.yml,
+// which the deciding job reads too: two ci executors for nothing new. A push it deploys (its trigger: branch
+// environment) still builds, with the checks deploy.inputs names.
+@NonCPS
+boolean leavesToDecidingEntry(Map ctx) {
+  return ctx.deciding != null && ctx.deciding != ctx.app && !ctx.checks && !ctx.actionsChecks
 }
 
 // The branches a pull request into, or a push to, gets the branch policy and the checks: develop and main,

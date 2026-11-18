@@ -14,6 +14,12 @@ unclassified:
         includeInChangesets: false
         retriever:
           modernSCM:
+            # A fresh clone into each build's own directory, of which only the library (vars/) is kept,
+            # instead of a checkout of the whole repository kept for every job in the controller's
+            # workspace/<job>@libs: one per branch, pull request and tag, 13 to 36 MB each, 14.4 GB of
+            # them on the DevOps Server although the controller builds nothing. No changelog is lost:
+            # includeInChangesets is off.
+            clone: true
             libraryPath: "jenkins/library/"
             scm:
               github:

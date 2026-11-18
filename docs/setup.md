@@ -903,7 +903,7 @@ from step 3:
      repository without a `yggdrasil.yml` has nothing to check, so its builds say what they did not do
      and end green;
    - one agent per host it deploys to, named after the environments' `agent` (`vps` for the
-     default Application Server: **Manage Jenkins → Nodes**), and the two build agents, `ci` (4 executors) and
+     default Application Server: **Manage Jenkins → Nodes**), and the two build agents, `ci` (10 executors) and
      `release` (1), all offline for now. The build agents come up in [9.8](#98-the-ci-and-release-agents);
    - the `actions-release` and `release-resume` jobs ([Finishing a release that
      stopped](#finishing-a-release-that-stopped)), and the `tag-check` job, which checks every day that each
@@ -1058,7 +1058,7 @@ rootless engine of its own service user (`ygg install --role dev` made them, [ho
 
 | Agent | User | Executors | Runs |
 |---|---|---|---|
-| `ci` | `ci` | 4 | Every check, the branch policy and reading `yggdrasil.yml`. Capped at six CPUs and 20 GB |
+| `ci` | `ci` | 10 | Every check, the branch policy and reading `yggdrasil.yml`. At most four checks at a time (the `ci-check` lockable resources), so six executors are always left to the short steps. Capped at six CPUs and 20 GB |
 | `release` | `release` | 1 | The release build, its validation, a library's packing and push of NuGet packages, and reading an owner's tag |
 
 Neither holds a write credential; they check out with the read-only credential. Jenkins creates both nodes
@@ -1082,15 +1082,27 @@ its containers at. Leave it out: `ygg agent up` uses the host's own primary IPv4
 engines' published ports answer from a container, and prints it
 ([cli.md, Build agents](cli.md#build-agents)).
 
+The `ci` agent's `agent.env` may set `YGG_TOOLCHAIN_CACHE=/home/ci/agent/toolchains`, where the checks get the
+Flutter SDK their repository pins instead of each fetching its own, and their repository's package cache
+([The toolchain cache](#the-toolchain-cache)).
+Prove first that `ci`'s engine can give a check an overlay, then set it and `ygg agent up --user ci` again:
+
+```bash
+cd /opt/yggdrasil && scripts/prove-machine.sh dev   # the row "toolchain overlay" must be ok
+```
+
+Never set it for `release`: `agent.sh` refuses it there.
+
 An agent started by an earlier release needs `ygg agent up --user ci` (and `release`; it runs `scripts/agent.sh up`) again: `build-agent.yml`
 now hands the agent `YGG_DOCKER_SOCKET`, the host path of the user's socket, which a check that sets
 `docker: true` needs, and `TESTCONTAINERS_HOST_OVERRIDE`, the host's address, where such a check reaches the
 containers it starts. On the Application Server, `scripts/platform.sh up` recreates the deploy agent with
 `YGG_DOMAIN`, the platform's `DOMAIN`, which `deploy.sh` puts under a site's host.
 
-The `ci` and `release` engines keep every image a check pulled and every build cache it made. A weekly prune of
-each, a systemd user timer that `ygg install` sets up, removes what the last week's builds did not use
-([hosts.md, The CI engines: the weekly prune](hosts.md#the-ci-engines-the-weekly-prune)).
+The `ci` and `release` engines keep every image a check pulled and every build cache it made. A daily prune of
+each, a systemd user timer that `ygg install` sets up, removes what the last week's builds did not use and keeps
+the build cache under 40 GB; `ygg`'s engine gets one too, which removes only dangling images and build cache
+([hosts.md, The engines: the daily prunes](hosts.md#the-engines-the-daily-prunes)).
 
 ### 9.9 Renovate
 
@@ -1588,7 +1600,10 @@ what the environment leaves out, so a Jenkins agent that sets them all needs no 
   says why it kept any other. For each repository with something to delete it removes the `release/*` protection,
   deletes the branches and puts the protection back, so non-owners can push to `release/*` for those moments. If the
   protection cannot be put back the run stops and names the repository: `python3 scripts/rules.py <repository>`
-  restores it.
+  restores it. With a `mirror` it then asks Forgejo to sync each repository that lost a branch: a push mirror syncs
+  on a push and every 8 hours, and a deletion is not a push, so the GitHub copy would otherwise keep the branches
+  until the next scheduled sync. A sync Forgejo refuses is a note in the output, not a failure, since that next sync
+  still drops them.
 - `merge-pr` on Forgejo waits when Forgejo answers "try again later": right after new commit statuses are
   posted Forgejo checks the pull request again in the background and refuses to merge meanwhile, so the
   command retries for about a minute (every 3 seconds, up to 20 times) before it fails. Any other refusal
@@ -1721,7 +1736,10 @@ set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's `platform.env
 A job sees `develop`, `main` (and `master` when its repository is under the `basic` rules: a fork's default
 branch, treated like `main`), pull requests from branches of the repository itself (a fork's never run),
 `release/*`, the `branches` of its branch environments and, for a `release: owner-tag` entry, tags that match its
-`tags`. A build lasts at most 4 hours and the last 50 are kept. A newer push to a pull request that is not into
+`tags`. A build lasts at most 4 hours. Each branch, pull request or tag keeps its last 20 builds, and the archives
+(a check's `archive`) of the last 10; a branch or pull request that is gone (merged, closed, deleted) loses its
+job a week after its last build. The controller keeps no checkout of the library: each build clones it, and
+keeps only `jenkins/library/vars`. A newer push to a pull request that is not into
 `main` replaces the build still running for the older commit; release builds of one repository wait for each
 other instead (one lock per repository, so two releases never overlap).
 
@@ -1760,7 +1778,12 @@ file's other checks are another entry's of the same repository, and that job run
 ([Repository pipeline file](catalog.md#repository-pipeline-file)). Each check runs through
 `scripts/run-check.sh`, in its `image`, as root of the `ci` user's engine (the service user on the host), on
 the checkout, with its `run` line given to `sh -c`; `docker: true` also gives it that engine's socket
-(Testcontainers). Up to four run at once. Its `credentials` are written to a private file and handed to the
+(Testcontainers), with Testcontainers' reaper, Ryuk, on: what a test process starts is removed when the process
+ends, also when the check is killed or times out, and never another check's (each test process labels its own).
+Up to four run at once: a check first takes one of the four `ci-check` lockable resources
+(`platform/jenkins/controller/casc.yaml`, **Manage Jenkins → Lockable Resources**), waiting for it without
+holding an executor, and only then a `ci` executor. The `ci` agent has ten, so reading `yggdrasil.yml` and the
+branch policy never queue behind the checks. Its `credentials` are written to a private file and handed to the
 container as environment variables: only ids the catalog allows the repository, never one of the pipeline's
 own (`forge-*`, `github-*`) or the NuGet key, and **never on a `renovate/*` build**. Its test results
 (`junit`) and `archive` are collected whatever the outcome, unless a symbolic link in the checkout leads out
@@ -1783,6 +1806,92 @@ the repository's job, **Scan Repository Now** (Jenkins learns the new base), the
 job, **Build with Parameters** with `DEPLOY_TO` left empty; or push a new commit to its branch. Only
 `forge.jenkinsUser` merges into an application's `main`, and only a release pull request it built itself, so
 this matters for `develop` and for the `main` of an `owner-tag` repository, which you merge.
+
+### The toolchain cache
+
+Every Flutter repository pins its SDK in `ci/flutter-env.sh` (or `ci/pins.sh`, which it sources) and fetches it there
+when `FLUTTER_SDK_DIR` holds none: a 1.5 GB archive and 2.5 GB unpacked, in every check, about a minute and a half
+of each one's time on the `ci` agent. With a toolchain cache (`YGG_TOOLCHAIN_CACHE` in the `ci` agent's
+`agent.env`, [9.8](#98-the-ci-and-release-agents)), `scripts/run-check.sh` does that once per machine instead:
+
+- It reads the checkout's `FLUTTER_VERSION=` and `FLUTTER_SHA256=` lines as data (each whole line a plain
+  `x.y.z` or 64 lowercase hex digits, quoted or not; never sourced). A file whose two values disagree with the
+  other's, or that sets either from anything else, gets no cache.
+- It looks for `<cache>/flutter/<version>-<sha256>/`. When it is not there it downloads that version's archive
+  from Flutter's release bucket (the URL is fixed; only the version is the checkout's), checks its SHA-256 against
+  the pin, unpacks it next to the cache and renames it into place. One check fetches while the others wait for it
+  (a lock, up to 20 minutes); one that can't get the SDK runs as before and fetches its own.
+- The check gets the SDK as a Docker volume of type **overlay** at `/opt/yggdrasil/flutter`, with
+  `FLUTTER_SDK_DIR` naming it, so its `ci/flutter-env.sh` uses it and fetches nothing. The cached directory is
+  only the overlay's lower, read-only, layer: Flutter writes into its own SDK on every run (its lock file, its
+  stamps), and those writes land in `<cache>/runs/<id>/`, which `run-check.sh` removes when the check ends.
+
+The checks and the branch policy get the SDK (the branch policy's pin is read from the application's root), and the
+checks also get their repository's [package cache](#package-caches); nothing else gets either.
+**A release builds from scratch**, on the release agent, which has no cache: `agent.sh` refuses
+`YGG_TOOLCHAIN_CACHE` for it, and the library never passes one to a release step. What a release ships must come
+from its tag and nothing a branch's check could have touched (the reason the release agent exists,
+[hosts.md](hosts.md#devops-server)).
+
+**What a branch can and cannot do to it.** A check runs whatever its branch says, so the cache is built to need no
+trust in it:
+
+- the SDK is fetched by `run-check.sh` in the agent, never by repository code, from Flutter's own archive only, and
+  kept only when the archive's checksum is the pinned one. The directory is named by both, so a branch that pins
+  another release (a real one, since the checksum must match what Google publishes) gets a directory of its own,
+  and the one other repositories' pins name is never written again;
+- a check never sees the cache's directory, only its overlay, and cannot remount it: what it writes into its SDK
+  is thrown away;
+- a **`docker: true`** check holds the `ci` engine, and through it can mount anything the `ci` user owns, the cache
+  included: the [accepted risk](#accepted-risks) of checks running side by side, which already lets such a check
+  reach the other checks' workspaces. It does not reach a release.
+
+Disk: each pinned Flutter release is about 2.5 GB, and a check's writes while it runs are a few megabytes. A release no
+check has used for 30 days is removed the next time another is fetched; a run directory left by a stopped agent,
+after a day. To look, as the admin: `sudo -u ci du -sh /home/ci/agent/toolchains/flutter/*`. To empty it, remove
+`flutter/` while no check runs; the next check fetches again. To switch the cache off, remove
+`YGG_TOOLCHAIN_CACHE` from `agent.env` and `ygg agent up --user ci`.
+
+#### Package caches
+
+What a check downloads itself is kept too, per repository (`scripts/package_cache.py`): pub's packages, Gradle's
+distributions and dependencies, the Android NDK that Gradle installs, NuGet's and npm's packages, and the `.deb`
+files `apt-get` fetches.
+
+- Every check of a repository gets that repository's current **snapshot** as an overlay at `/opt/yggdrasil/cache`,
+  with `PUB_CACHE`, `GRADLE_USER_HOME`, `NUGET_PACKAGES` and `npm_config_cache` pointing into it, and `APT_CONFIG`
+  naming a file that tells `apt-get` to keep its packages there. An image with an `ANDROID_HOME` (the Flutter image)
+  also gets the snapshot's `android-ndk/` as an overlay at `$ANDROID_HOME/ndk`.
+- What the check writes there is its own and is thrown away, **unless the build is a push to `develop`, `main` or
+  `master` and the check passed**. Then what it added becomes the repository's next snapshot: hard links to the last
+  one plus the new files, so a snapshot costs links, not a copy. A check that only rewrote files (a lock, an index)
+  or wrote logs makes none. Whatever it deleted (overlay whiteouts) and every directory it replaced is applied too,
+  so the snapshot is what the check saw at its end.
+
+**Why per repository, and only from pushes.** An SDK is fetched by yggdrasil and checked against its pin; these are
+written by the tools, inside the check, and pub, Gradle and NuGet never check a cached package again. So a package
+cache is only as trustworthy as the checks that wrote it:
+
+- a repository's checks never see another repository's cache;
+- a **pull request never writes one**, not even its own repository's, a Renovate one included: what can land there is
+  what was merged into a protected branch, the code that repository's later checks run anyway;
+- apt needs none of this (it checks every cached package against the signed index before using it), but it is
+  kept the same way.
+
+A `docker: true` check can change it all the same (the [accepted risk](#accepted-risks)); a release never uses it.
+
+**Until a push of the repository passes, its cache is empty** and its checks download as before. The first check of
+each kind on `develop` fills it.
+
+**Not covered.** The Android platforms that `sdkmanager` installs into the image's own SDK (orpheus' `android-37`): an
+overlay there would hide the image's own platforms. Also `docker build` steps (chimera's `container` check, the docs
+sites' images), whose layers the engine's build cache already keeps.
+
+**Disk and lifetime.** A snapshot that was replaced is kept for a day (a check may still read it), then removed.
+Every 30 days a repository's cache starts over from nothing, so packages nothing uses any more go. A repository
+whose checks have not run for 30 days loses its cache. To look, as the admin:
+`sudo -u ci du -sh /home/ci/agent/toolchains/packages/*`. To empty one, remove its directory while none of its checks
+runs.
 
 ### GitHub Actions and the skip
 
@@ -2001,7 +2110,10 @@ whose files fail pushes nothing.
   shared `ci` engine a check can then read the env files and workspaces of checks running at the same moment. So
   a credential you allow a repository's checks (`credentials` in the catalog) is reachable by anyone who can push
   a branch to a repository while one of its checks runs. Allow none you would not give them. Jenkins' write tokens
-  are never reachable this way: the `ci` agent never holds them, and a `renovate/*` build gets no credential.
+  are never reachable this way: the `ci` agent never holds them, and a `renovate/*` build gets no credential. The
+  same engine holds the [toolchain cache](#the-toolchain-cache): such a check could change a cached SDK or a
+  repository's package snapshot that later checks use (never a release, which builds from scratch on the release
+  agent).
 - **No per-job authorization.** Jenkins lets every logged-in user do anything (`loggedInUsersCanDoAnything`), and
   the owner is its only user. Anyone you add can approve a deploy, run `release-resume` or read a credential.
 - **Webhooks are not verified** by Jenkins ([9.4](#94-jenkins-and-the-webhook)): a forged one only starts a scan.
@@ -2120,7 +2232,7 @@ A system is only a grouping: add it with its applications to `catalog.yaml`, the
 
 - **Grafana** at `https://grafana.<DOMAIN>`, with Prometheus and Loki provisioned. Good starting dashboards to import: *ASP.NET Core* (19924), *Traefik* (17346), *Jenkins* (9964).
 - **Metrics**: every catalog application with `metrics` is scraped, once per environment of the host, labelled `system`, `app`, `kind` and `environment`, through the status API's service discovery. Platform components are scraped once, without `environment`. Serve metrics on a port that is neither published nor routed.
-- **Logs**: Alloy ships every container's stdout to Loki, labelled `environment` (from the container's `yggdrasil.environment` label; platform containers have none), `stack` (the Compose project, `<application>-<environment>`), `service`, `container` and `level` (read from JSON logs' `Level`/`level`). For example: `{environment="production", stack="shop-api-production"} | json | Level="Error"`.
+- **Logs**: Alloy ships the stdout of every container Compose started (the platform's and the applications') to Loki, kept 31 days, labelled `environment` (from the container's `yggdrasil.environment` label; platform containers have none), `stack` (the Compose project, `<application>-<environment>`), `service`, `container` and `level` (read from JSON logs' `Level`/`level`). For example: `{environment="production", stack="shop-api-production"} | json | Level="Error"`. A container started with a plain `docker run` (the backup's and `volumes.sh`'s `tar` of a volume, which writes the archive to its stdout) is not shipped.
 
 ## Troubleshooting
 
@@ -2144,6 +2256,7 @@ A service's log, as `ygg`: `docker logs yggdrasil-<service>-1 2>&1 | tail -50`, 
 | A job's scan finds no branches | Jenkins' read credential cannot see the repository: on GitHub the App isn't installed on it, on Forgejo `jenkins-ci` has no access to it ([9.7](#97-the-forgejo-accounts-and-tokens)). A branch only appears if it is `develop`, `main`, `release/*`, a pull request, or matches an environment's `branches` |
 | Every build fails loading the library (`yggdrasil` not found at a version) | `YGGDRASIL_LIBRARY_VERSION` is not a tag of your fork that Jenkins' read credential can read (`git tag --list 'v*'`); fix it in `platform.env` and `platform.sh up` ([How a build runs](#how-a-build-runs)) |
 | A check starts but its container has an empty workspace, or a build waits for a `ci` executor forever | The `ci` agent is offline, or its `YGG_AGENT_WORKDIR` differs from `CI_AGENT_WORKDIR` in the controller's `platform.env` ([9.8](#98-the-ci-and-release-agents)) |
+| A check fails with `Could not run: ... ci-check ...`, or waits with `[Lock] ... Waiting` while the `ci` agent is idle | The controller runs without this release's Configuration as Code, so the `ci-check` resources are missing, or a build that ended badly still holds one. **Manage Jenkins → Lockable Resources** lists them; `scripts/platform.sh up` with this release's checkout declares them again, and a held one is freed there with **Unlock** |
 | `Not released: the pull request is merged and tagged …` | The release failed after its merge. Run the `release-resume` job with the repository and the tag it names ([Finishing a release that stopped](#finishing-a-release-that-stopped)) |
 | `Not released: the pull request is merged as <sha>, but not tagged …` | The merge went through and the tag did not. Run `release-resume` with the repository, the tag and `COMMIT=<sha>`, as the message says: it tags the merge commit, then releases ([Finishing a release that stopped](#finishing-a-release-that-stopped)) |
 | The build waits at **Deploy without GitHub Actions checks** | The GitHub Actions checks did not finish; click the button to go on without them (Forgejo only publication, `release-resume` later) or **Abort** ([GitHub Actions and the skip](#github-actions-and-the-skip)) |

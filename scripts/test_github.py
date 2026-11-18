@@ -599,7 +599,7 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(self.look("test").returncode, 3)
         self.assertFalse((self.state / "runs.count").exists())
 
-    def test_given_the_workflow_was_started_again_and_a_check_is_missing_then_exit_3(self):
+    def test_given_the_workflow_was_started_again_when_a_check_is_missing_then_exit_3(self):
         # The dead run is not the workflow's latest any more, so it says nothing about the check.
         self.runs_on_commit(workflow_run(77), workflow_run(78, conclusion="success"))
         self.respond("jobs", (0, {"total_count": 0, "jobs": []}))

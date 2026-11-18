@@ -185,7 +185,7 @@ class SetGetTests(StoreTestCase):
 
 
 class CliBasicsTests(StoreTestCase):
-    def test_given_set_then_get_and_list_mask_secrets_unless_revealed(self):
+    def test_given_set_values_when_get_and_list_read_them_then_secrets_are_masked_unless_revealed(self):
         self.assertEqual(self.cli("set", "platform", "DOMAIN=example.com", "GRAFANA_ADMIN_PASSWORD=abcdefghijkl").returncode, 0)
         self.assertEqual(self.cli("get", "platform", "DOMAIN").stdout, "example.com\n")
         self.assertEqual(self.cli("get", "platform", "GRAFANA_ADMIN_PASSWORD").stdout, "••••••kl\n")
@@ -211,7 +211,7 @@ class CliBasicsTests(StoreTestCase):
         self.assertIn("vars:", result.stderr)
         self.assertIn("vars.key", result.stderr)
 
-    def test_given_list_keys_then_only_names(self):
+    def test_given_list_keys_when_run_then_only_names_are_printed(self):
         self.cli("set", "platform", "A=1", "B=2")
         self.assertEqual(self.cli("list", "platform", "--keys").stdout, "A\nB\n")
 
@@ -286,14 +286,14 @@ class RenderTests(StoreTestCase):
         self.assertEqual(self.cli("render-platform").stdout, "DOMAIN='example.com'\n")
         self.assertEqual(self.cli("render-platform", "--acme").stdout, "CF_DNS_API_TOKEN='abc'\n")
 
-    def test_given_list_resolved_then_each_key_with_its_origin_and_secrets_masked(self):
+    def test_given_list_resolved_when_run_then_each_key_is_printed_with_its_origin_and_secrets_masked(self):
         self.cli("set", "@development", "DB_HOST=host.docker.internal")
         self.cli("set", "heimdall-api@development", "DB_PASSWORD=abcdefghijkl")
         listed = self.cli("list", "heimdall-api@development", "--resolved").stdout
         self.assertIn("DB_HOST=host.docker.internal  (env)", listed)
         self.assertIn("DB_PASSWORD=••••••kl  (app@env)", listed)
 
-    def test_given_export_then_revealed_env_file_text(self):
+    def test_given_export_when_run_then_it_prints_revealed_env_file_text(self):
         self.cli("set", "heimdall-api@development", "DB_PASSWORD=abcdefghijkl")
         self.assertEqual(self.cli("export", "heimdall-api@development").stdout, "DB_PASSWORD='abcdefghijkl'\n")
 
@@ -351,7 +351,7 @@ class HistoryTests(StoreTestCase):
             s.rollback(first, force=True)
             self.assertIsNone(s.get("platform", "DOMAIN"))
 
-    def test_given_history_on_the_cli_then_secret_values_are_masked_unless_revealed(self):
+    def test_given_a_secret_change_when_history_runs_on_the_cli_then_secret_values_are_masked_unless_revealed(self):
         self.cli("set", "platform", "GRAFANA_ADMIN_PASSWORD=abcdefghijkl")
         self.assertIn("••••••kl", self.cli("history").stdout)
         self.assertNotIn("abcdefghijkl", self.cli("history").stdout)
@@ -534,7 +534,7 @@ class ImportTests(StoreTestCase):
             self.assertEqual(s.resolve("heimdall-api", "development")["DB_NAME"][0], "heimdall_development")
             self.assertEqual(s.resolve("fortuna-api", "homologation")["DB_HOST"][0], "host.docker.internal")
 
-    def test_given_import_all_run_twice_then_the_second_run_imports_nothing_and_renames_nothing(self):
+    def test_given_import_all_already_run_when_run_again_then_the_second_run_imports_nothing_and_renames_nothing(self):
         self.tree()
         with self.store() as s:
             v.import_all(s, self.dir, v.load_catalog(), "no")
@@ -714,7 +714,7 @@ class CheckScopeTests(StoreTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("error: heimdall-api@homologation X -> fortuna-api:NOPE", result.stdout)
 
-    def test_given_a_deploy_check_of_an_unconfigured_pair_then_it_stays_strict(self):
+    def test_given_an_unconfigured_pair_when_checked_for_a_deploy_then_it_stays_strict(self):
         result = self.cli("check", "fortuna-api", "local")
         self.assertEqual(result.returncode, 1)
         self.assertIn("heimdall-api:HEIMDALL_AUTH_TOKEN_SECRET", result.stdout)
@@ -808,7 +808,7 @@ class BackupUmaskTests(StoreTestCase):
 class HelpTests(unittest.TestCase):
     """The CLI documents itself: `vars.py --help` and `vars.py <command> --help`."""
 
-    def test_given_the_parser_then_every_command_argument_and_option_has_help(self):
+    def test_given_the_parser_when_its_help_is_read_then_every_command_argument_and_option_has_help(self):
         import argparse
         top = v.parser()
         commands = next(a for a in top._actions if isinstance(a, argparse._SubParsersAction))
@@ -822,7 +822,7 @@ class HelpTests(unittest.TestCase):
                     continue
                 self.assertTrue(action.help, f"{name} {action.option_strings or action.dest}: no help")
 
-    def test_given_top_level_help_then_scopes_examples_exit_codes_and_environment_are_explained(self):
+    def test_given_top_level_help_when_formatted_then_scopes_examples_exit_codes_and_environment_are_explained(self):
         text = v.parser().format_help()
         for part in ("@<environment>", "<application>@<environment>", "platform:acme", "${ref:",
                      "Examples:", "Exit status:", "YGG_SECRETS_DIR", "EDITOR", "docs/variables.md"):

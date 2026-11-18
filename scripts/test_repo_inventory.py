@@ -394,7 +394,7 @@ class KindTests(Fixture):
         self.assertIn("code only", note)
         self.assertIn("1 workflow found", note)
 
-    def test_given_pages_in_a_repository_the_spec_does_not_call_a_site_then_a_note_says_so(self):
+    def test_given_pages_in_a_repository_the_spec_does_not_call_a_site_when_inventoried_then_a_note_says_so(self):
         make_clone(self.root, "some-experiment", {"docs.yml": PAGES})
         self.assertIn("Pages", " ".join(inv.inventory(self.root)[0].notes))
 
@@ -446,7 +446,7 @@ class KindTests(Fixture):
         self.assertEqual(12, len([n for n in inv.KINDS["library"]]))
         self.assertEqual(5, len(inv.KINDS["application"]))
         self.assertEqual(12, len(inv.KINDS["ci"]))
-        self.assertEqual(4, len(inv.KINDS["archived"]))
+        self.assertEqual(5, len(inv.KINDS["archived"]))
         self.assertEqual(9, len(inv.KINDS["fork"]))
         # 19 Pages sites and 6 Vercel projects (the spec's 5, and file-tree-generator).
         self.assertEqual(25, len(inv.KINDS["site"]))

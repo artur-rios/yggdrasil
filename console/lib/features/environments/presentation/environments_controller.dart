@@ -124,26 +124,29 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
   Future<String?> tokenFor(String environmentId) => _tokens.read(environmentId);
 
   Future<void> select(String id) async {
+    final store = _store;
     final current = await future;
 
     if (current.byId(id) == null) {
       return;
     }
 
-    state = AsyncData<EnvironmentsState>(
+    _publish(
       EnvironmentsState(
         environments: current.environments,
         selectedId: id,
         withToken: current.withToken,
       ),
     );
-    await _store.writeSelectedId(id);
+    await store.writeSelectedId(id);
   }
 
   /// Adds [environment], or replaces the one with its id. A non-null [token]
   /// replaces the saved one; an empty token removes it. A new environment
   /// becomes the selected one.
   Future<void> save(Environment environment, {String? token}) async {
+    final store = _store;
+    final tokens = _tokens;
     final current = await future;
     final exists = current.byId(environment.id) != null;
     final environments = <Environment>[
@@ -152,13 +155,13 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
       if (!exists) environment,
     ];
 
-    await _store.writeEnvironments(environments);
+    await store.writeEnvironments(environments);
 
     final withToken = token == null
         ? current.withToken
-        : await _writeToken(environment.id, token, current.withToken);
+        : await _writeToken(tokens, environment.id, token, current.withToken);
 
-    state = AsyncData<EnvironmentsState>(
+    _publish(
       EnvironmentsState(
         environments: environments,
         selectedId: exists ? current.selectedId : environment.id,
@@ -167,24 +170,26 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
     );
 
     if (!exists) {
-      await _store.writeSelectedId(environment.id);
+      await store.writeSelectedId(environment.id);
     }
   }
 
   Future<void> remove(String id) async {
+    final store = _store;
+    final tokens = _tokens;
     final current = await future;
     final environments = current.environments
         .where((environment) => environment.id != id)
         .toList();
 
-    await _store.writeEnvironments(environments);
-    await _tokens.delete(id);
+    await store.writeEnvironments(environments);
+    await tokens.delete(id);
 
     final selectedId = current.selectedId == id
         ? (environments.isEmpty ? null : environments.first.id)
         : current.selectedId;
 
-    state = AsyncData<EnvironmentsState>(
+    _publish(
       EnvironmentsState(
         environments: environments,
         selectedId: selectedId,
@@ -193,16 +198,17 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
     );
 
     if (selectedId != null) {
-      await _store.writeSelectedId(selectedId);
+      await store.writeSelectedId(selectedId);
     }
   }
 
   /// Saves [token] for the environment; an empty one removes it.
   Future<void> setToken(String id, String token) async {
+    final tokens = _tokens;
     final current = await future;
-    final withToken = await _writeToken(id, token, current.withToken);
+    final withToken = await _writeToken(tokens, id, token, current.withToken);
 
-    state = AsyncData<EnvironmentsState>(
+    _publish(
       EnvironmentsState(
         environments: current.environments,
         selectedId: current.selectedId,
@@ -218,7 +224,9 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
     final current = await future;
     final environment = current.byId(id);
 
-    if (environment == null ||
+    // Disposed meanwhile (the app closing): a later response names it.
+    if (!ref.mounted ||
+        environment == null ||
         !environment.nameFromResponse ||
         name.trim().isEmpty) {
       return;
@@ -233,6 +241,11 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
   Future<void> addDemo() async {
     final current = await future;
 
+    // Disposed meanwhile (the app closing): there is nothing to add it to.
+    if (!ref.mounted) {
+      return;
+    }
+
     if (current.byId(Environment.demoId) == null) {
       await save(Environment.demo());
     } else {
@@ -240,7 +253,20 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
     }
   }
 
-  Future<Set<String>> _writeToken(
+  /// Shows [next], unless the provider was disposed (the app closing, a
+  /// test ending) during the caller's awaits. What the caller wrote to the
+  /// stores stands either way, so the change is still there next launch.
+  ///
+  /// The stores are read before the first await for the same reason: after
+  /// the disposal, the provider's `ref` can no longer read them.
+  void _publish(EnvironmentsState next) {
+    if (ref.mounted) {
+      state = AsyncData<EnvironmentsState>(next);
+    }
+  }
+
+  static Future<Set<String>> _writeToken(
+    TokenStore tokens,
     String id,
     String token,
     Set<String> withToken,
@@ -248,17 +274,29 @@ class EnvironmentsController extends AsyncNotifier<EnvironmentsState> {
     final trimmed = token.trim();
 
     if (trimmed.isEmpty) {
-      await _tokens.delete(id);
+      await tokens.delete(id);
 
       return withToken.difference(<String>{id});
     }
 
-    await _tokens.write(id, trimmed);
+    await tokens.write(id, trimmed);
 
     return <String>{...withToken, id};
   }
 }
 
-/// A new, unique environment id.
-String newEnvironmentId() =>
-    'env-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
+/// The time in the last id [newEnvironmentId] made, in microseconds.
+int _lastIdMicros = 0;
+
+/// A new, unique environment id: `env-` and the time in microseconds, in base
+/// 36.
+///
+/// On the web the clock only moves every millisecond, so an id made in the
+/// same millisecond as the last one takes the next microsecond instead.
+/// [now] is the clock, for tests.
+String newEnvironmentId([DateTime Function() now = DateTime.now]) {
+  final micros = now().microsecondsSinceEpoch;
+  _lastIdMicros = micros > _lastIdMicros ? micros : _lastIdMicros + 1;
+
+  return 'env-${_lastIdMicros.toRadixString(36)}';
+}

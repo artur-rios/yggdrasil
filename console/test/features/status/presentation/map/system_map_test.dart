@@ -3,8 +3,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:yggdrasil_console/features/status/domain/status.dart';
 import 'package:yggdrasil_console/features/status/domain/status_logic.dart';
 import 'package:yggdrasil_console/features/status/presentation/layout.dart';
-import 'package:yggdrasil_console/features/status/presentation/map/system_icons.dart';
 import 'package:yggdrasil_console/features/status/presentation/map/system_map.dart';
+import 'package:yggdrasil_console/features/status/presentation/widgets/status_visuals.dart';
 
 const String production = 'production';
 const String development = 'development';
@@ -160,7 +160,8 @@ Future<List<String>> pumpMap(
 
 void main() {
   testWidgets(
-    'draws only systems deployed in the environment, in their fixed cells',
+    'given systems deployed in some environments, when another environment '
+    'is drawn, then only its systems show, each in its fixed cell',
     (tester) async {
       final host = hostOf(<SystemStatus>[
         sys('heimdall', 'Heimdall', <SystemEnvironment>[
@@ -190,71 +191,79 @@ void main() {
     },
   );
 
-  testWidgets('a system with no container there leaves its cell empty', (
-    tester,
-  ) async {
-    await pumpMap(
-      tester,
-      hostOf(<SystemStatus>[
+  testWidgets(
+    'given a system with no container in the environment, when drawn, then '
+    'its cell is empty',
+    (tester) async {
+      await pumpMap(
+        tester,
+        hostOf(<SystemStatus>[
+          sys('heimdall', 'Heimdall', <SystemEnvironment>[
+            deployed(production, 'heimdall-api', status: Status.notDeployed),
+          ]),
+          sys('hermes', 'Hermes', <SystemEnvironment>[
+            deployed(production, 'hermes-api'),
+          ]),
+        ]),
+      );
+
+      expect(tile('heimdall'), findsNothing);
+      expect(tile('hermes'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'given a row with nothing deployed in the environment, when drawn, then '
+    'it collapses',
+    (tester) async {
+      final host = hostOf(<SystemStatus>[
+        for (final id in <String>['a', 'b', 'c', 'd'])
+          sys(id, id, <SystemEnvironment>[deployed(production, '$id-api')]),
+        sys('e', 'e', <SystemEnvironment>[
+          deployed(development, 'e-api'),
+          deployed(production, 'e-api'),
+        ]),
+      ]);
+
+      await pumpMap(tester, host, size: const Size(320, 900));
+      final inFull = tester.getCenter(tile('e')).dy;
+      await pumpMap(
+        tester,
+        host,
+        environment: development,
+        size: const Size(320, 900),
+      );
+
+      expect(tester.getCenter(tile('e')).dy, lessThan(inFull));
+    },
+  );
+
+  testWidgets(
+    'given an integration listed in one environment, when each is drawn, '
+    'then its line shows only there',
+    (tester) async {
+      final host = hostOf(<SystemStatus>[
         sys('heimdall', 'Heimdall', <SystemEnvironment>[
-          deployed(production, 'heimdall-api', status: Status.notDeployed),
+          deployed(development, 'heimdall-api'),
+          deployed(
+            production,
+            'heimdall-api',
+            integrations: <IntegrationStatus>[link('heimdall-api', 'hermes')],
+          ),
         ]),
         sys('hermes', 'Hermes', <SystemEnvironment>[
+          deployed(development, 'hermes-api'),
           deployed(production, 'hermes-api'),
         ]),
-      ]),
-    );
+      ]);
 
-    expect(tile('heimdall'), findsNothing);
-    expect(tile('hermes'), findsOneWidget);
-  });
+      await pumpMap(tester, host);
+      expect(line('heimdall', 'hermes'), findsOneWidget);
 
-  testWidgets('a row empty in the environment collapses', (tester) async {
-    final host = hostOf(<SystemStatus>[
-      for (final id in <String>['a', 'b', 'c', 'd'])
-        sys(id, id, <SystemEnvironment>[deployed(production, '$id-api')]),
-      sys('e', 'e', <SystemEnvironment>[
-        deployed(development, 'e-api'),
-        deployed(production, 'e-api'),
-      ]),
-    ]);
-
-    await pumpMap(tester, host, size: const Size(320, 900));
-    final inFull = tester.getCenter(tile('e')).dy;
-    await pumpMap(
-      tester,
-      host,
-      environment: development,
-      size: const Size(320, 900),
-    );
-
-    expect(tester.getCenter(tile('e')).dy, lessThan(inFull));
-  });
-
-  testWidgets('an integration is drawn only where it is listed', (
-    tester,
-  ) async {
-    final host = hostOf(<SystemStatus>[
-      sys('heimdall', 'Heimdall', <SystemEnvironment>[
-        deployed(development, 'heimdall-api'),
-        deployed(
-          production,
-          'heimdall-api',
-          integrations: <IntegrationStatus>[link('heimdall-api', 'hermes')],
-        ),
-      ]),
-      sys('hermes', 'Hermes', <SystemEnvironment>[
-        deployed(development, 'hermes-api'),
-        deployed(production, 'hermes-api'),
-      ]),
-    ]);
-
-    await pumpMap(tester, host);
-    expect(line('heimdall', 'hermes'), findsOneWidget);
-
-    await pumpMap(tester, host, environment: development);
-    expect(anyLine, findsNothing);
-  });
+      await pumpMap(tester, host, environment: development);
+      expect(anyLine, findsNothing);
+    },
+  );
 
   for (final (health, word, glyph) in <(IntegrationHealth, String, IconData)>[
     (IntegrationHealth.up, 'OK', Icons.check),
@@ -264,8 +273,9 @@ void main() {
     (IntegrationHealth.notConfigured, 'Not configured', Icons.remove),
   ]) {
     testWidgets(
-      'each line pill reads OK, Failing, Unknown, Stopped or Not configured: '
-      '$word',
+      'given a ${health.wire} integration, when drawn, then its pill reads $word '
+      'with '
+      'its own glyph',
       (tester) async {
         await pumpMap(tester, heimdallToHermes(status: health));
 
@@ -282,8 +292,8 @@ void main() {
     );
   }
 
-  test('stopped and not configured lines are grey and dashed, each its own '
-      'way', () {
+  test('given stopped and not configured integrations, when their look is '
+      'chosen, then both are grey and dashed, each its own way', () {
     IntegrationVisual visual(IntegrationHealth health) =>
         IntegrationVisual.of(health, Brightness.light);
 
@@ -299,40 +309,42 @@ void main() {
     expect(visual(IntegrationHealth.unknown).dash, isNull);
   });
 
-  testWidgets('a stopped system is not counted or drawn as a problem', (
-    tester,
-  ) async {
-    final host = hostOf(<SystemStatus>[
-      sys('heimdall', 'Heimdall', <SystemEnvironment>[
-        deployed(
-          development,
-          'heimdall-api',
-          status: Status.stopped,
-          onDemand: true,
-          integrations: <IntegrationStatus>[
-            link('heimdall-api', 'hermes', status: IntegrationHealth.stopped),
-          ],
-        ),
-      ]),
-      sys('hermes', 'Hermes', <SystemEnvironment>[
-        deployed(development, 'hermes-api', status: Status.stopped),
-      ]),
-    ]);
+  testWidgets(
+    'given a stopped system with a stopped integration, when drawn, then '
+    'neither is shown or counted as a problem',
+    (tester) async {
+      final host = hostOf(<SystemStatus>[
+        sys('heimdall', 'Heimdall', <SystemEnvironment>[
+          deployed(
+            development,
+            'heimdall-api',
+            status: Status.stopped,
+            onDemand: true,
+            integrations: <IntegrationStatus>[
+              link('heimdall-api', 'hermes', status: IntegrationHealth.stopped),
+            ],
+          ),
+        ]),
+        sys('hermes', 'Hermes', <SystemEnvironment>[
+          deployed(development, 'hermes-api', status: Status.stopped),
+        ]),
+      ]);
 
-    await pumpMap(tester, host, environment: development);
+      await pumpMap(tester, host, environment: development);
 
-    expect(find.byIcon(Icons.pause_circle_outline), findsNWidgets(2));
-    expect(find.byIcon(Icons.cancel), findsNothing);
-    expect(find.byIcon(Icons.warning_rounded), findsNothing);
-    expect(find.text('Failing'), findsNothing);
-    expect(find.text('Stopped'), findsOneWidget);
-    expect(environmentSummaryLine(host, development), isEmpty);
-  });
+      expect(find.byIcon(Icons.pause_circle_outline), findsNWidgets(2));
+      expect(find.byIcon(Icons.cancel), findsNothing);
+      expect(find.byIcon(Icons.warning_rounded), findsNothing);
+      expect(find.text('Failing'), findsNothing);
+      expect(find.text('Stopped'), findsOneWidget);
+      expect(environmentSummaryLine(host, development), isEmpty);
+    },
+  );
 
   for (final status in <Status>[Status.up, Status.stopped]) {
     testWidgets(
-      'an on-demand system shows the on demand label, running or stopped: '
-      '${status.wire}',
+      'given an on-demand system that is ${status.wire}, when drawn, then it '
+      'shows the on demand label',
       (tester) async {
         await pumpMap(
           tester,
@@ -354,72 +366,84 @@ void main() {
     );
   }
 
-  testWidgets('an always-on system shows no on demand label', (tester) async {
-    await pumpMap(tester, heimdallToHermes());
+  testWidgets(
+    'given an always-on system, when drawn, then it shows no on demand label',
+    (tester) async {
+      await pumpMap(tester, heimdallToHermes());
 
-    expect(find.text('on demand'), findsNothing);
-    expect(find.byIcon(Icons.power_settings_new), findsNothing);
-  });
+      expect(find.text('on demand'), findsNothing);
+      expect(find.byIcon(Icons.power_settings_new), findsNothing);
+    },
+  );
 
-  testWidgets('an external is captioned external and has no status', (
-    tester,
-  ) async {
-    await pumpMap(tester, hermesToMailgun());
+  testWidgets(
+    'given an external target, when drawn, then it is captioned external and '
+    'has no status',
+    (tester) async {
+      await pumpMap(tester, hermesToMailgun());
 
-    expect(find.text('Mailgun'), findsOneWidget);
-    expect(find.text('external'), findsOneWidget);
-    expect(find.byIcon(Icons.cloud), findsOneWidget);
-    // Only Hermes has a badge.
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
-    expect(line('hermes', 'Mailgun'), findsOneWidget);
-  });
+      expect(find.text('Mailgun'), findsOneWidget);
+      expect(find.text('external'), findsOneWidget);
+      expect(find.byIcon(Icons.cloud), findsOneWidget);
+      // Only Hermes has a badge.
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      expect(line('hermes', 'Mailgun'), findsOneWidget);
+    },
+  );
 
-  testWidgets('an unknown or missing icon name shows the neutral icon', (
-    tester,
-  ) async {
-    await pumpMap(
-      tester,
-      hostOf(<SystemStatus>[
-        sys('a', 'A', <SystemEnvironment>[
-          deployed(production, 'a-api'),
-        ], icon: 'no_such_icon'),
-        sys('b', 'B', <SystemEnvironment>[deployed(production, 'b-api')]),
-        sys('c', 'C', <SystemEnvironment>[
-          deployed(production, 'c-api'),
-        ], icon: 'shield'),
-      ]),
+  testWidgets(
+    'given an unknown or missing icon name, when drawn, then the neutral icon '
+    'shows',
+    (tester) async {
+      await pumpMap(
+        tester,
+        hostOf(<SystemStatus>[
+          sys('a', 'A', <SystemEnvironment>[
+            deployed(production, 'a-api'),
+          ], icon: 'no_such_icon'),
+          sys('b', 'B', <SystemEnvironment>[deployed(production, 'b-api')]),
+          sys('c', 'C', <SystemEnvironment>[
+            deployed(production, 'c-api'),
+          ], icon: 'shield'),
+        ]),
+      );
+
+      expect(find.byIcon(Icons.hub), findsNWidgets(2));
+      expect(find.byIcon(Icons.shield), findsOneWidget);
+    },
+  );
+
+  test('given each health, when its look is chosen, then each has its own '
+      'word and glyph, tinted like the nearest status', () {
+    final visuals = <IntegrationVisual>[
+      for (final health in IntegrationHealth.values)
+        IntegrationVisual.of(health, Brightness.light),
+    ];
+
+    expect(visuals.map((v) => v.label).toSet(), hasLength(visuals.length));
+    expect(visuals.map((v) => v.icon).toSet(), hasLength(visuals.length));
+    expect(
+      IntegrationVisual.of(IntegrationHealth.down, Brightness.light).foreground,
+      StatusVisual.of(Status.down, Brightness.light).foreground,
     );
-
-    expect(find.byIcon(Icons.hub), findsNWidgets(2));
-    expect(find.byIcon(Icons.shield), findsOneWidget);
   });
 
-  test('every catalog icon name has its own icon', () {
-    final icons = <IconData>{
-      for (final name in <String>[
-        'shield',
-        'mail',
-        'savings',
-        'construction',
-        'local_library',
-        'music_note',
-        'extension',
-        'person',
-        'business',
-        'park',
-        'cloud',
-      ])
-        systemIcon(name),
-    };
+  test('given a dark theme, when a look is chosen, then it uses the dark '
+      'tints and keeps its word, glyph and dash', () {
+    for (final health in IntegrationHealth.values) {
+      final light = IntegrationVisual.of(health, Brightness.light);
+      final dark = IntegrationVisual.of(health, Brightness.dark);
 
-    expect(icons, hasLength(11));
-    expect(icons, isNot(contains(Icons.hub)));
-    expect(systemIcon(null), Icons.hub);
+      expect(dark.foreground, isNot(light.foreground), reason: health.wire);
+      expect(dark.label, light.label);
+      expect(dark.icon, light.icon);
+      expect(dark.dash, light.dash);
+    }
   });
 
   testWidgets(
-    'a response with no icon, integrations or details draws icons and no '
-    'lines',
+    'given a response with no icon, integrations or details, when drawn, then '
+    'it shows neutral icons and no lines',
     (tester) async {
       final host = HostStatus.fromJson(<String, dynamic>{
         'host': 'example.com',
@@ -460,99 +484,113 @@ void main() {
     },
   );
 
-  testWidgets('every system and line has a semantics label', (tester) async {
-    final handle = tester.ensureSemantics();
+  testWidgets(
+    'given systems, lines and an external, when drawn, then each has a '
+    'semantics label',
+    (tester) async {
+      final handle = tester.ensureSemantics();
 
-    await pumpMap(
-      tester,
-      hostOf(<SystemStatus>[
-        sys('heimdall', 'Heimdall', <SystemEnvironment>[
-          deployed(
-            production,
-            'heimdall-api',
-            status: Status.degraded,
-            onDemand: true,
-            integrations: <IntegrationStatus>[
-              link(
-                'heimdall-api',
-                'hermes',
-                status: IntegrationHealth.down,
-                reason: 'connection refused',
-              ),
-            ],
-          ),
+      await pumpMap(
+        tester,
+        hostOf(<SystemStatus>[
+          sys('heimdall', 'Heimdall', <SystemEnvironment>[
+            deployed(
+              production,
+              'heimdall-api',
+              status: Status.degraded,
+              onDemand: true,
+              integrations: <IntegrationStatus>[
+                link(
+                  'heimdall-api',
+                  'hermes',
+                  status: IntegrationHealth.down,
+                  reason: 'connection refused',
+                ),
+              ],
+            ),
+          ]),
+          sys('hermes', 'Hermes', <SystemEnvironment>[
+            deployed(
+              production,
+              'hermes-api',
+              integrations: <IntegrationStatus>[
+                linkOut(
+                  'hermes-api',
+                  'Mailgun',
+                  status: IntegrationHealth.notConfigured,
+                ),
+              ],
+            ),
+          ]),
         ]),
-        sys('hermes', 'Hermes', <SystemEnvironment>[
-          deployed(
-            production,
-            'hermes-api',
-            integrations: <IntegrationStatus>[
-              linkOut(
-                'hermes-api',
-                'Mailgun',
-                status: IntegrationHealth.notConfigured,
-              ),
-            ],
-          ),
-        ]),
-      ]),
-    );
+      );
 
-    for (final label in <String>[
-      'Heimdall, degraded, on demand',
-      'Hermes, up',
-      'Heimdall to Hermes: failing, connection refused',
-      'Hermes to Mailgun: not configured',
-      'Mailgun, external',
-    ]) {
-      expect(find.bySemanticsLabel(label), findsOneWidget, reason: label);
-    }
+      for (final label in <String>[
+        'Heimdall, degraded, on demand',
+        'Hermes, up',
+        'Heimdall to Hermes: failing, connection refused',
+        'Hermes to Mailgun: not configured',
+        'Mailgun, external',
+      ]) {
+        expect(find.bySemanticsLabel(label), findsOneWidget, reason: label);
+      }
 
-    expect(
-      tester.getSemantics(
-        find.bySemanticsLabel('Heimdall, degraded, on demand'),
-      ),
-      matchesSemantics(
-        label: 'Heimdall, degraded, on demand',
-        isButton: true,
-        hasTapAction: true,
-      ),
-    );
+      expect(
+        tester.getSemantics(
+          find.bySemanticsLabel('Heimdall, degraded, on demand'),
+        ),
+        matchesSemantics(
+          label: 'Heimdall, degraded, on demand',
+          isButton: true,
+          hasTapAction: true,
+        ),
+      );
 
-    handle.dispose();
-  });
+      handle.dispose();
+    },
+  );
 
-  testWidgets('a tap on a system opens it', (tester) async {
-    final opened = await pumpMap(tester, heimdallToHermes());
+  testWidgets(
+    'given a system, when tapped on its icon or name, then it opens',
+    (tester) async {
+      final opened = await pumpMap(tester, heimdallToHermes());
 
-    await tester.tap(tile('hermes'));
-    await tester.tap(find.text('Heimdall'));
+      await tester.tap(tile('hermes'));
+      await tester.tap(find.text('Heimdall'));
 
-    expect(opened, <String>['hermes', 'heimdall']);
-  });
+      expect(opened, <String>['hermes', 'heimdall']);
+    },
+  );
 
-  testWidgets('a tap near a line opens the caller', (tester) async {
-    final opened = await pumpMap(tester, heimdallToHermes());
-    final middle = tester.getCenter(line('heimdall', 'hermes'));
+  testWidgets(
+    'given a line, when tapped on or near it, then the caller opens',
+    (tester) async {
+      final opened = await pumpMap(tester, heimdallToHermes());
+      final middle = tester.getCenter(line('heimdall', 'hermes'));
 
-    await tester.tapAt(middle);
-    await tester.tapAt(middle + const Offset(0, 11));
+      await tester.tapAt(middle);
+      await tester.tapAt(middle + const Offset(0, 11));
 
-    expect(opened, <String>['heimdall', 'heimdall']);
-  });
+      expect(opened, <String>['heimdall', 'heimdall']);
+    },
+  );
 
-  testWidgets('a tap further than 12 px from a line does nothing', (
+  testWidgets(
+    'given a line, when tapped further than 12 px from it, then nothing '
+    'opens',
+    (tester) async {
+      final opened = await pumpMap(tester, heimdallToHermes());
+      final middle = tester.getCenter(line('heimdall', 'hermes'));
+
+      await tester.tapAt(middle + const Offset(0, 14));
+
+      expect(opened, isEmpty);
+    },
+  );
+
+  testWidgets('given an external, when tapped, then nothing opens', (
     tester,
   ) async {
-    final opened = await pumpMap(tester, heimdallToHermes());
-    final middle = tester.getCenter(line('heimdall', 'hermes'));
-
-    await tester.tapAt(middle + const Offset(0, 14));
-
-    expect(opened, isEmpty);
-  });
-
-  testWidgets('a tap on an external does nothing', (tester) async {
     final opened = await pumpMap(tester, hermesToMailgun());
     final circle = find.byKey(const ValueKey<String>('map-external-Mailgun'));
 
@@ -573,8 +611,8 @@ void main() {
   for (final width in <double>[320, 390, 700]) {
     for (final health in IntegrationHealth.values) {
       testWidgets(
-        'at $width px a pill rides above a level line it would cover: '
-        '${health.wire}',
+        'given a ${health.wire} pill that would cover a level line at $width px, '
+        'when drawn, then it rides above the line',
         (tester) async {
           await pumpMap(
             tester,
@@ -593,71 +631,81 @@ void main() {
     }
   }
 
-  testWidgets('with room for it, a pill sits on the line', (tester) async {
-    await pumpMap(tester, heimdallToHermes());
+  testWidgets(
+    'given room for it, when a pill is drawn, then it sits on the line',
+    (tester) async {
+      await pumpMap(tester, heimdallToHermes());
 
-    expect(
-      tester.getCenter(heimdallToHermesPill()).dy,
-      tester.getCenter(tile('heimdall')).dy,
-    );
-  });
-
-  testWidgets('a line whose pill rides above it still takes the tap', (
-    tester,
-  ) async {
-    final opened = await pumpMap(
-      tester,
-      heimdallToHermes(status: IntegrationHealth.down),
-      size: const Size(390, 900),
-    );
-
-    await tester.tapAt(
-      (tester.getCenter(tile('heimdall')) + tester.getCenter(tile('hermes'))) /
-          2,
-    );
-
-    expect(opened, <String>['heimdall']);
-  });
-
-  testWidgets('a tap on the caption of an external does nothing, even with a '
-      'line behind it', (tester) async {
-    // 3 columns: a b Mailgun / . . c, so c's line runs up behind the caption.
-    final opened = await pumpMap(
-      tester,
-      hostOf(<SystemStatus>[
-        sys('a', 'A', <SystemEnvironment>[
-          deployed(
-            production,
-            'a-api',
-            integrations: <IntegrationStatus>[link('a-api', 'b')],
-          ),
-        ]),
-        sys('b', 'B', <SystemEnvironment>[
-          deployed(
-            production,
-            'b-api',
-            integrations: <IntegrationStatus>[linkOut('b-api', 'Mailgun')],
-          ),
-        ]),
-        sys('c', 'C', <SystemEnvironment>[
-          deployed(
-            production,
-            'c-api',
-            integrations: <IntegrationStatus>[linkOut('c-api', 'Mailgun')],
-          ),
-        ]),
-      ]),
-      size: const Size(320, 900),
-    );
-
-    await tester.tap(find.text('external'));
-    await tester.tap(find.text('Mailgun'));
-
-    expect(opened, isEmpty);
-  });
+      expect(
+        tester.getCenter(heimdallToHermesPill()).dy,
+        tester.getCenter(tile('heimdall')).dy,
+      );
+    },
+  );
 
   testWidgets(
-    'two integrations between the same systems keep their own pills',
+    'given a pill riding above its line, when the line is tapped, then the '
+    'caller opens',
+    (tester) async {
+      final opened = await pumpMap(
+        tester,
+        heimdallToHermes(status: IntegrationHealth.down),
+        size: const Size(390, 900),
+      );
+
+      await tester.tapAt(
+        (tester.getCenter(tile('heimdall')) +
+                tester.getCenter(tile('hermes'))) /
+            2,
+      );
+
+      expect(opened, <String>['heimdall']);
+    },
+  );
+
+  testWidgets(
+    'given a line behind the caption of an external, when the caption is '
+    'tapped, then nothing opens',
+    (tester) async {
+      // 3 columns: a b Mailgun / . . c, so c's line runs up behind the caption.
+      final opened = await pumpMap(
+        tester,
+        hostOf(<SystemStatus>[
+          sys('a', 'A', <SystemEnvironment>[
+            deployed(
+              production,
+              'a-api',
+              integrations: <IntegrationStatus>[link('a-api', 'b')],
+            ),
+          ]),
+          sys('b', 'B', <SystemEnvironment>[
+            deployed(
+              production,
+              'b-api',
+              integrations: <IntegrationStatus>[linkOut('b-api', 'Mailgun')],
+            ),
+          ]),
+          sys('c', 'C', <SystemEnvironment>[
+            deployed(
+              production,
+              'c-api',
+              integrations: <IntegrationStatus>[linkOut('c-api', 'Mailgun')],
+            ),
+          ]),
+        ]),
+        size: const Size(320, 900),
+      );
+
+      await tester.tap(find.text('external'));
+      await tester.tap(find.text('Mailgun'));
+
+      expect(opened, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'given two integrations between the same systems, when drawn, then each '
+    'keeps its own pill',
     (tester) async {
       await pumpMap(
         tester,
@@ -707,44 +755,51 @@ void main() {
   );
 
   for (final width in <double>[320, 360, 800, 1400]) {
-    testWidgets('$width px: every column fits, with no overflow', (
-      tester,
-    ) async {
-      const ids = <String>['a', 'b', 'c', 'd', 'e', 'f', 'g'];
-      final host = hostOf(<SystemStatus>[
-        for (final id in ids)
-          sys(id, 'A system with a long name $id', <SystemEnvironment>[
-            deployed(
-              production,
-              '$id-api',
-              onDemand: true,
-              integrations: <IntegrationStatus>[
-                if (id == 'a')
-                  link('a-api', 'b', status: IntegrationHealth.notConfigured),
-              ],
-            ),
-          ]),
-      ]);
+    testWidgets(
+      'given $width px of width, when seven systems are drawn, then every '
+      'column fits with no overflow',
+      (tester) async {
+        const ids = <String>['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+        final host = hostOf(<SystemStatus>[
+          for (final id in ids)
+            sys(id, 'A system with a long name $id', <SystemEnvironment>[
+              deployed(
+                production,
+                '$id-api',
+                onDemand: true,
+                integrations: <IntegrationStatus>[
+                  if (id == 'a')
+                    link('a-api', 'b', status: IntegrationHealth.notConfigured),
+                ],
+              ),
+            ]),
+        ]);
 
-      await pumpMap(tester, host, size: Size(width, 1200));
+        await pumpMap(tester, host, size: Size(width, 1200));
 
-      expect(tester.takeException(), isNull);
+        expect(tester.takeException(), isNull);
 
-      final centres = <double>{
-        for (final id in ids) tester.getCenter(tile(id)).dx,
-      };
-      expect(centres, hasLength(mapColumnsFor(width)));
-      expect(centres.every((x) => x > 0 && x < width), isTrue);
-    });
+        final centres = <double>{
+          for (final id in ids) tester.getCenter(tile(id)).dx,
+        };
+        expect(centres, hasLength(mapColumnsFor(width)));
+        expect(centres.every((x) => x > 0 && x < width), isTrue);
+      },
+    );
   }
 
-  testWidgets('an environment with nothing deployed says so', (tester) async {
-    await pumpMap(tester, heimdallToHermes(), environment: development);
+  testWidgets(
+    'given an environment with nothing deployed, when drawn, then it says so',
+    (tester) async {
+      await pumpMap(tester, heimdallToHermes(), environment: development);
 
-    expect(find.text('Nothing is deployed in Development.'), findsOneWidget);
-  });
+      expect(find.text('Nothing is deployed in Development.'), findsOneWidget);
+    },
+  );
 
-  testWidgets('a host with nothing there says so', (tester) async {
+  testWidgets('given a host with no systems, when drawn, then it says so', (
+    tester,
+  ) async {
     await pumpMap(tester, hostOf(const <SystemStatus>[]));
 
     expect(find.text('This host has no systems.'), findsOneWidget);

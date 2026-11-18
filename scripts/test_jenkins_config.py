@@ -93,6 +93,12 @@ class JenkinsJobTests(unittest.TestCase):
         self.assertNotIn("workflowBranchProjectFactory", script)
         self.assertNotIn("scriptPath", script)
 
+    def test_given_the_job_dsl_when_read_then_a_gone_branch_or_pull_request_is_removed_a_week_after_its_last_build(self):
+        # By age, not by count: keeping the 20 newest gone heads kept 20 closed pull requests per job for ever.
+        script = job_dsl()
+        self.assertRegex(script, r"orphanedItemStrategy \{\s*discardOldItems \{ daysToKeep\(7\) \}\s*\}")
+        self.assertNotIn("numToKeep(", script)
+
     def test_given_the_job_dsl_when_read_then_forks_are_not_discovered(self):
         script = job_dsl()
         self.assertNotRegex(script, r"(?i)fork\w*(discovery|trust)")
@@ -368,6 +374,14 @@ class JenkinsLibraryTests(unittest.TestCase):
         self.assertEqual(source["credentialsId"], "github-app")
         self.assertIn("gitHubTagDiscovery", [next(iter(t)) for t in source["traits"]])
 
+    def test_given_each_forge_when_read_then_the_library_is_cloned_per_build_not_kept_in_the_controllers_workspace(self):
+        # Without clone, every job keeps a checkout of the whole repository in the controller's
+        # workspace/<job>@libs, and nothing removes it while the job exists.
+        for name in ("casc.forgejo.yaml", "casc.github.yaml"):
+            library, = libraries(name)
+            self.assertIs(library["retriever"]["modernSCM"]["clone"], True, name)
+            self.assertIs(library["includeInChangesets"], False, name)
+
     def test_given_the_common_configuration_when_read_then_it_defines_no_library(self):
         # The libraries are per forge; two definitions of one name would collide.
         self.assertEqual(libraries("casc.yaml"), [])
@@ -454,7 +468,7 @@ class JenkinsServiceTests(unittest.TestCase):
 class AgentsScriptTests(unittest.TestCase):
     def test_given_the_agents_script_when_read_then_ci_and_release_agents_are_created(self):
         script = read(CONTROLLER / "init.groovy.d" / "agents.groovy")
-        self.assertRegex(script, r"ci:\s*\[\s*executors:\s*4,\s*label:\s*'ci'")
+        self.assertRegex(script, r"ci:\s*\[\s*executors:\s*10,\s*label:\s*'ci'")
         self.assertRegex(script, r"release:\s*\[\s*executors:\s*1,\s*label:\s*'release'")
 
     def test_given_the_agents_script_when_read_then_an_environment_agent_named_ci_or_release_is_an_error(self):
@@ -478,6 +492,52 @@ class AgentsScriptTests(unittest.TestCase):
         # A node created before the setting is moved; the environment agents keep today's root.
         self.assertIn("create(name, options.executors, options.label, options.remoteFS, true)", script)
         self.assertIn("String remoteFS = '/home/jenkins/agent'", script)
+
+    def test_given_a_build_agent_with_other_executors_or_label_when_the_controller_starts_then_it_is_replaced(self):
+        # A ci node made by an older script keeps its 4 executors otherwise: the check slots would then leave
+        # nothing to the short steps. The remote root, the executors and the label all count.
+        script = read(CONTROLLER / "init.groovy.d" / "agents.groovy")
+        self.assertRegex(script, r"def inStep = existing != null && existing\.remoteFS == remoteFS && "
+                                 r"existing\.numExecutors == executors &&\s*existing\.labelString == label")
+        self.assertIn("if (existing != null && (!keepInStep || inStep)) return", script)
+
+
+@unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")
+class CiCheckSlotsTests(unittest.TestCase):
+    """The ci-check lockable resources: how many checks the ci agent runs at once, whatever its executors."""
+
+    def slots(self):
+        resources = casc()["unclassified"]["lockableResourcesManager"]["declaredResources"]
+        return [resource for resource in resources if "ci-check" in str(resource.get("labels", "")).split()]
+
+    def ci_executors(self):
+        script = read(CONTROLLER / "init.groovy.d" / "agents.groovy")
+        return int(re.search(r"ci:\s*\[\s*executors:\s*(\d+)", script).group(1))
+
+    def test_given_the_common_configuration_when_read_then_four_check_slots_are_declared(self):
+        # Four checks at a time, as the ci agent's four executors allowed before: the ci user's slice has six
+        # CPUs and 20 GB (docs/hosts.md), and a .NET test with coverage or a Flutter build takes one to two
+        # CPUs and several GB.
+        slots = self.slots()
+        self.assertEqual(len(slots), 4)
+        names = [slot["name"] for slot in slots]
+        self.assertEqual(len(set(names)), len(names), "slot names are unique")
+        self.assertIn("lockable-resources", read(CONTROLLER / "plugins.txt").split())
+
+    def test_given_the_check_slots_when_read_then_the_ci_agent_has_executors_left_for_the_short_steps(self):
+        # Every slot in use still leaves executors for Read yggdrasil.yml and Branch policy: they never wait
+        # behind a check.
+        self.assertGreaterEqual(self.ci_executors() - len(self.slots()), 4)
+
+    def test_given_the_check_slots_when_read_then_their_label_is_the_one_the_library_locks(self):
+        library = read(ROOT / "jenkins" / "library" / "vars" / "yggdrasilPipeline.groovy")
+        self.assertIn("@Field static final String CI_CHECK_SLOTS = 'ci-check'", library)
+        self.assertIn("lock(label: CI_CHECK_SLOTS, quantity: 1)", library)
+
+    def test_given_the_check_slots_when_read_then_only_the_common_configuration_declares_them(self):
+        # Configuration as Code merges the files; a second lockableResourcesManager would be a scalar defined twice.
+        for path in CONTROLLER.glob("casc.*.yaml"):
+            self.assertNotIn("lockableResourcesManager", read(path), path.name)
 
 
 @unittest.skipIf(yaml is None, "needs PyYAML (pip install pyyaml)")

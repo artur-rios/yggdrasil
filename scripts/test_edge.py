@@ -78,14 +78,14 @@ def middlewares():
 
 
 class EdgeTests(unittest.TestCase):
-    def test_ui_headers_match_shared_headers_without_referrer_policy(self):
+    def test_given_the_ui_and_shared_header_middlewares_when_compared_then_the_ui_headers_match_the_shared_ones_without_referrer_policy(self):
         shared = middlewares()["secure-headers"]["headers"]
         ui = middlewares()["secure-headers-ui"]["headers"]
         self.assertNotIn("referrerPolicy", ui)
         self.assertEqual(ui, {k: v for k, v in shared.items() if k != "referrerPolicy"})
         self.assertEqual(shared["referrerPolicy"], "strict-origin-when-cross-origin")
 
-    def test_ui_routers_use_ui_headers(self):
+    def test_given_a_ui_stack_when_its_routers_are_read_then_they_use_the_ui_headers(self):
         for stack in UI_STACKS:
             with self.subTest(stack=stack):
                 chains = [label for label in labels(stack) if ".middlewares=" in label]
@@ -93,11 +93,11 @@ class EdgeTests(unittest.TestCase):
                 for label in chains:
                     self.assertTrue(label.endswith(".middlewares=secure-headers-ui@file"), label)
 
-    def test_given_the_personal_page_then_the_whole_env_file_reaches_it(self):
+    def test_given_the_personal_page_when_its_stack_is_read_then_the_whole_env_file_reaches_it(self):
         web = yaml.load((STACKS / "personal-page.yml").read_text(), Loader=ComposeLoader)["services"]["web"]
         self.assertEqual(web["env_file"], "${APP_ENV_FILE:?APP_ENV_FILE is set by scripts/deploy.sh}")
 
-    def test_given_the_contact_route_then_it_is_limited_per_source(self):
+    def test_given_the_contact_route_when_its_labels_are_read_then_it_is_limited_per_source(self):
         limit = "traefik.http.middlewares.personal-page-${YGG_ENVIRONMENT}-contact-limit.ratelimit"
         found = dict(label.split("=", 1) for label in labels("personal-page.proxy.yml"))
         self.assertEqual(found[f"{limit}.average"], "1")
@@ -106,7 +106,7 @@ class EdgeTests(unittest.TestCase):
         self.assertEqual(found[f"{limit}.sourcecriterion.ipstrategy.depth"], "1")
         self.assertEqual(found[f"{limit}.sourcecriterion.ipstrategy.ipv6subnet"], "56")
 
-    def test_given_the_contact_route_then_every_unsafe_method_goes_through_the_limit(self):
+    def test_given_the_contact_route_when_its_labels_are_read_then_every_unsafe_method_goes_through_the_limit(self):
         contact = "personal-page-${YGG_ENVIRONMENT}-contact"
         self.assertEqual(rule("personal-page.proxy.yml", contact),
                          "Host(`${YGG_PUBLIC_HOST:?YGG_PUBLIC_HOST is set by scripts/deploy.sh}`)"
@@ -120,22 +120,22 @@ class EdgeTests(unittest.TestCase):
     def internal_api(self):
         return yaml.load((STACKS / INTERNAL_STACK).read_text(), Loader=ComposeLoader)["services"]["api"]
 
-    def test_given_the_internal_api_then_it_has_no_route(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_has_no_route(self):
         self.assertNotIn("labels", self.internal_api())
 
-    def test_given_the_internal_api_then_it_publishes_no_port(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_publishes_no_port(self):
         self.assertEqual(self.internal_api()["ports"], [])
 
-    def test_given_the_internal_api_then_it_joins_the_edge_and_telemetry_networks(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_joins_the_edge_and_telemetry_networks(self):
         self.assertLessEqual({"edge", "telemetry"}, set(self.internal_api()["networks"]))
 
-    def test_given_the_internal_api_then_it_runs_one_container(self):
+    def test_given_the_internal_api_when_its_overlay_is_read_then_it_runs_one_container(self):
         api = self.internal_api()
         self.assertNotIn("deploy", api)
         self.assertNotIn("scale", api)
         self.assertEqual([path.name for path in STACKS.glob("hermes-api.*.yml")], [INTERNAL_STACK])
 
-    def test_other_routers_keep_shared_headers(self):
+    def test_given_the_other_routers_when_their_middlewares_are_read_then_they_keep_the_shared_headers(self):
         stacks = sorted(path.name for path in STACKS.glob("*.proxy.yml")
                         if path.name not in UI_STACKS and path.name != INTERNAL_STACK)
         self.assertIn("heimdall-api.proxy.yml", stacks)
@@ -256,7 +256,7 @@ class EdgeTests(unittest.TestCase):
         for path in ("/heimdall-apix/", "/heimdall-apix", "/heimdall-api-docs/", "/", "/heimdall-docs/docs/api/"):
             self.assertFalse(routed(path), path)
 
-    def test_heimdall_auth_router(self):
+    def test_given_the_heimdall_api_stack_when_its_labels_are_read_then_the_auth_router_goes_through_its_rate_limit_without_a_priority_or_request_host(self):
         stack = labels("heimdall-api.proxy.yml")
         for label in (
                 f"{AUTH}.rule={AUTH_RULE}",
@@ -275,7 +275,7 @@ class EdgeTests(unittest.TestCase):
                 self.assertNotIn("requesthost", label.lower())
                 self.assertFalse(label.startswith(f"{AUTH}.priority"), label)
 
-    def test_given_a_rate_limit_in_a_stack_then_it_counts_the_visitor_cloudflare_reports(self):
+    def test_given_a_rate_limit_in_a_stack_when_its_labels_are_read_then_it_counts_the_visitor_cloudflare_reports(self):
         # Without depth a limit counts the connection's address: behind Cloudflare, an edge address
         # that unrelated visitors share.
         limited = set()
@@ -291,7 +291,7 @@ class EdgeTests(unittest.TestCase):
                         self.assertIn(f"{match[1]}.sourcecriterion.ipstrategy.depth=1", stack)
         self.assertLessEqual({"heimdall-api.proxy.yml", "personal-page.proxy.yml"}, limited)
 
-    def test_auth_rule_is_case_insensitive_and_covers_both_hosts(self):
+    def test_given_the_heimdall_auth_rule_when_read_then_it_is_case_insensitive_covers_both_hosts_and_is_longer_than_same_origin_and_ui(self):
         auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")
         for part in ("PathRegexp(`(?i)^/api/auth/`)", f"Host(`{PUBLIC_HOST}`)", f"Host(`{UI_HOST}`)"):
             self.assertIn(part, auth)
@@ -301,7 +301,7 @@ class EdgeTests(unittest.TestCase):
         self.assertGreater(len(substituted(auth)), len(substituted(same_origin)))
         self.assertGreater(len(substituted(same_origin)), len(substituted(ui)))
 
-    def test_auth_rule_outranks_same_origin_and_ui_for_any_hosts(self):
+    def test_given_any_hosts_when_the_routers_are_ranked_then_the_auth_rule_outranks_same_origin_and_ui(self):
         # With every host empty, the fixed text alone keeps the order; and each rule holds every
         # host placeholder of the one below it, so real host names add at least as much above.
         auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")
@@ -314,7 +314,7 @@ class EdgeTests(unittest.TestCase):
         self.assertLessEqual(placeholders(same_origin), placeholders(auth))
         self.assertLessEqual(placeholders(ui), placeholders(same_origin))
 
-    def test_get_routes_bypass_auth_limit(self):
+    def test_given_a_get_route_when_the_auth_rule_is_read_then_it_bypasses_the_auth_limit(self):
         auth = rule("heimdall-api.proxy.yml", "heimdall-api-${YGG_ENVIRONMENT}-auth")
         self.assertTrue(auth.endswith(SAFE_METHODS_EXCLUDED), auth)
         self.assertNotIn("Method(`POST`)", auth)
@@ -360,14 +360,14 @@ class EdgeTests(unittest.TestCase):
                     self.assertEqual([line for line in example if line.startswith("DB_SUPERUSER_PASSWORD=")],
                                      ["DB_SUPERUSER_PASSWORD="])
 
-    def test_fortuna_examples_use_internal_heimdall(self):
+    def test_given_the_fortuna_api_examples_when_read_then_they_use_the_internal_heimdall(self):
         for env in ("development", "homologation", "production"):
             with self.subTest(env=env):
                 example = (EXAMPLES / env / "fortuna-api.env.example").read_text().splitlines()
                 urls = [line for line in example if line.startswith("FORTUNA_HEIMDALL_BASE_URL=")]
                 self.assertEqual(urls, [f"FORTUNA_HEIMDALL_BASE_URL=http://heimdall-api.{env}:8080/"])
 
-    def test_fortuna_examples_have_the_keys_3_0_requires(self):
+    def test_given_the_fortuna_api_examples_when_read_then_they_have_the_keys_3_0_requires(self):
         jwks = {env: f"http://heimdall-api.{env}:8080/.well-known/jwks.json"
                 for env in ("development", "homologation", "production")}
         jwks["local"] = "http://host.docker.internal:8080/.well-known/jwks.json"

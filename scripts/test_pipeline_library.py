@@ -324,6 +324,11 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("config.stack ?:", self.lib.code)
         self.assertIn("env.JOB_NAME", self.lib.code)
 
+    def test_given_the_library_when_read_then_a_job_keeps_20_builds_and_the_archives_of_10(self):
+        # The properties step sets the job's discarder on every build: what Jenkins' disk holds per head.
+        self.assertIn("buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))", self.lib.code)
+        self.assertEqual(self.lib.code.count("logRotator("), 1)
+
     def test_given_every_catalog_id_when_the_library_checks_its_job_name_then_it_accepts_it(self):
         # catalogContext checks the job's name, an application's or a repositories entry's id, before it
         # reads the catalog. catalog.py lets a repositories entry's id be any repository name, dots included
@@ -349,7 +354,7 @@ class PipelineLibraryTests(unittest.TestCase):
         # them pending. catalog.py validates the names with the same rule, so a name the library would refuse
         # is a catalog error instead.
         context = field_literal(self.lib, "STATUS_CONTEXT")[1]
-        self.assertEqual(f"^{context}\Z", catalog_module.STATUS_CONTEXT.pattern)
+        self.assertEqual(rf"^{context}\Z",catalog_module.STATUS_CONTEXT.pattern)
         pattern = re.compile(context)
         catalog = catalog_module.load()
         entries = ([application for system in catalog["systems"] for application in system.get("applications") or []]
@@ -961,6 +966,172 @@ class PipelineLibraryTests(unittest.TestCase):
         body = lib.code[slice(*lib.functions["neededChecks"])]
         self.assertRegex(body, r"if \(syncing\) \{\s*names\.addAll\(\(\(config\.sync \?: \[:\]\)\.inputs \?: \[\]\) as List\)")
         self.assertIn("planChecks(ctx, state, mode, deploying, releasing, syncing)", lib.code[slice(*lib.functions["prepare"])])
+
+
+class ToolchainCacheLibraryTests(unittest.TestCase):
+    """Which steps get the ci agent's toolchain cache (scripts/toolchains.sh): a check and the branch policy, which
+    run on the ci agent, and never a release step, which must build from nothing but its tag."""
+
+    def setUp(self):
+        self.lib = library()
+
+    def run_check_calls(self):
+        """{function name: [the line of each run-check.sh call in it]}."""
+        calls = {}
+        for match in re.finditer(r"run-check\.sh [a-z$\"{}_-]+", self.lib.code):
+            calls.setdefault(self.lib.function_at(match.start()), []).append(match.group(0))
+        return calls
+
+    def test_given_a_check_when_read_then_run_check_gets_the_agents_toolchain_cache_when_it_has_one(self):
+        body = self.lib.code[slice(*self.lib.functions["runCheck"])]
+        self.assertIn('if [ -n "${YGG_TOOLCHAIN_CACHE:-}" ]; then\n'
+                      '                  set -- "$@" --toolchains "$YGG_TOOLCHAIN_CACHE" --scope "$YGG_CHECK_SCOPE"\n'
+                      '                  if [ -n "$YGG_CHECK_PROMOTE" ]; then set -- "$@" --promote; fi\n'
+                      '                fi', body)
+        call = body.index('bash yggdrasil/scripts/run-check.sh "$YGG_CHECK_NAME"')
+        self.assertLess(body.index("--toolchains"), call)
+        self.assertIn('"$WORKSPACE/app" "$@"', body[call:])
+
+    def test_given_a_check_when_read_then_its_package_cache_is_its_repository_s(self):
+        # The scope is the job's repository, never anything the repository's file says.
+        body = self.lib.code[slice(*self.lib.functions["runCheck"])]
+        self.assertIn('"YGG_CHECK_SCOPE=${ctx.repo}", "YGG_CHECK_PROMOTE=${keepsPackages() ? \'1\' : \'\'}"', body)
+
+    def test_given_a_build_when_read_then_only_a_push_to_a_protected_branch_keeps_packages(self):
+        # A pull request (a Renovate one included) never writes its repository's package cache.
+        body = self.lib.code[slice(*self.lib.functions["keepsPackages"])]
+        self.assertIn("return !env.CHANGE_ID && ['develop', 'main', 'master'].contains(env.BRANCH_NAME)", body)
+        # Called inside a GString, which the lexer masks: found by its text.
+        callers = {self.lib.function_at(m.start())
+                   for m in re.finditer(r"(?<!boolean )\bkeepsPackages\(\)", self.lib.code)}
+        self.assertEqual(callers, {"runCheck"})
+
+    def test_given_the_branch_policy_when_read_then_run_check_reads_the_pin_from_the_applications_root(self):
+        body = self.lib.code[slice(*self.lib.functions["branchPolicy"])]
+        self.assertIn('set -- --toolchains "$YGG_TOOLCHAIN_CACHE" --checkout "$WORKSPACE/app"', body)
+        call = body.index("bash yggdrasil/scripts/run-check.sh branch-policy")
+        self.assertIn('--env-file "$env_file" "$@"', body[call:call + 200])
+
+    def test_given_the_release_steps_when_read_then_none_gets_the_toolchain_cache(self):
+        # A check runs any branch's code, and a docker: true one holds the ci engine: what such a check could leave
+        # in the cache must never reach what a release ships.
+        others = set(self.run_check_calls()) - {"runCheck", "branchPolicy"}
+        self.assertTrue(others, "the release steps run run-check.sh too")
+        for function in others:
+            body = self.lib.code[slice(*self.lib.functions[function])]
+            for word in ("--toolchains", "YGG_TOOLCHAIN_CACHE", "--scope", "--promote", "keepsPackages"):
+                self.assertNotIn(word, body, f"{function} gets the toolchain cache")
+        for match in re.finditer(r"YGG_TOOLCHAIN_CACHE|--toolchains", self.lib.code):
+            self.assertIn(self.lib.function_at(match.start()), {"runCheck", "branchPolicy"},
+                          f"line {self.lib.line(match.start())}")
+
+
+class CiCapacityLibraryTests(unittest.TestCase):
+    """How a build waits for the ci agent: checks take one of the ci-check slots before they ask for an
+    executor, so the ci agent's other executors stay free for the short steps; and a job that has nothing of
+    its own to check on a pull request (a library's docs site) asks for no executor at all."""
+
+    def setUp(self):
+        self.lib = library()
+
+    def test_given_a_check_when_read_then_it_takes_a_ci_check_slot_before_its_executor(self):
+        # The slot is waited for outside node(): a check waiting its turn holds no ci executor, and the
+        # executors beyond the slots are left to Read yggdrasil.yml and Branch policy.
+        lib = self.lib
+        self.assertEqual(field_literal(lib, "CI_CHECK_SLOTS"), ("'", "ci-check"))
+        start, end = lib.functions["runCheck"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"try \{\s*lock\(label: CI_CHECK_SLOTS, quantity: 1\) \{\s*node\('ci'\) \{")
+        locks = [(a, b) for a, b in lib.call_blocks("lock") if start <= a <= end]
+        self.assertEqual(len(locks), 1, "runCheck takes one slot")
+        ci = [(a, b) for label, a, b in lib.node_blocks() if label == "'ci'" and start <= a <= end]
+        self.assertEqual(len(ci), 1, "runCheck has one node('ci') block")
+        self.assertTrue(lib.inside(ci[0][0], locks) and lib.inside(ci[0][1], locks), "the node is inside the lock")
+        # Inside the try, so a slot that cannot be had (casc.yaml without the ci-check resources) is a failed
+        # check with its reason, not a build that stops before the other checks have reported.
+        self.assertLess(body.index("try {"), body.index("lock(label: CI_CHECK_SLOTS"))
+        self.assertLess(body.index("lock(label: CI_CHECK_SLOTS"), body.index("catch (Exception failure)"))
+
+    def test_given_the_ci_check_slots_when_read_then_no_node_block_waits_for_one(self):
+        # A lock taken inside node() would hold the executor while it waits: what the slots are there to avoid.
+        lib = self.lib
+        slots = [m.start() for m in re.finditer(r"\block\(label: CI_CHECK_SLOTS", lib.code)]
+        self.assertEqual(len(slots), 1, "one place takes a check slot")
+        blocks = [(a, b) for _, a, b in lib.agent_blocks()]
+        for offset in slots:
+            self.assertFalse(lib.inside(offset, blocks), f"line {lib.line(offset)}: a check slot taken inside a node")
+        # Every check runs through runCheck, the one place a slot is taken.
+        self.assertIn("runCheck", lib.calls["runChecks"])
+
+    def test_given_the_short_steps_when_read_then_they_take_no_check_slot(self):
+        # Reading yggdrasil.yml and the branch policy are seconds of git and Python: they use the ci executors
+        # the slots leave free, never a slot.
+        lib = self.lib
+        for function in ("prepare", "branchPolicy"):
+            self.assertIn("node('ci')", lib.code[slice(*lib.functions[function])])
+            reached = lib.code_reached(*lib.functions[function])
+            self.assertNotIn("CI_CHECK_SLOTS", reached, f"{function} waits for a check slot")
+
+    def test_given_a_job_left_to_the_deciding_entry_when_a_pull_request_builds_then_nothing_runs(self):
+        # A library's docs site has no checks: its pull request build ran Read yggdrasil.yml and Branch policy,
+        # two ci executors, to report the branch-policy status the library's own build reports on the same
+        # commit. It returns first now, before any node, lock or status.
+        lib = self.lib
+        body = lib.code[slice(*lib.functions["pullRequest"])]
+        guard = body.index("if (leavesToDecidingEntry(ctx)) {")
+        self.assertIn("prepare(", body)
+        self.assertIn("lock(", body)
+        first = min(body.index(word) for word in ("prepare(", "lock(", "node(", "reportStatus(", "verify(")
+                    if word in body)
+        self.assertLess(guard, first)
+        self.assertIn("return", body[guard:first])
+        body = lib.code[slice(*lib.functions["leavesToDecidingEntry"])]
+        self.assertIn("ctx.deciding != null && ctx.deciding != ctx.app && !ctx.checks && !ctx.actionsChecks", body)
+
+    def test_given_a_job_left_to_the_deciding_entry_when_a_push_deploys_nothing_then_nothing_runs(self):
+        # A push to develop of a docs site's repository: nothing to deploy (it deploys on main), no checks, no
+        # sync (only the deciding entry syncs). A push it deploys still reads the file and runs deploy.inputs.
+        body = self.lib.code[slice(*self.lib.functions["branchBuild"])]
+        guard = body.index("if (!deployToParameter && checked && (targets || !leavesToDecidingEntry(ctx))) {")
+        self.assertLess(guard, body.index("Map state = prepare(ctx, 'push'"))
+        self.assertIn("boolean checked = branch in checkedBranches(ctx.rules) || branch.startsWith('release/')", body)
+
+    def test_given_the_job_context_when_read_then_it_knows_the_deciding_entry_and_its_own_checks(self):
+        body = self.lib.code[slice(*self.lib.functions["catalogContext"])]
+        self.assertIn("Map entry = application ?: repositoryEntry", body)
+        self.assertIn("deciding: decidingEntry(catalog, repo), checks: (entry.checks ?: []) as List", body)
+        self.assertIn("actionsChecks: (entry.actionsChecks ?: []) as List", body)
+
+    def test_given_the_deciding_entry_when_read_then_it_decides_as_the_catalog_does(self):
+        # catalog.py repository_entries: the entry that releases, else the repositories entry, else the first
+        # application. The catalog allows one entry that releases, so a releasing application first and then
+        # the repositories entry (releasing or not) is the same order.
+        body = self.lib.code[slice(*self.lib.functions["decidingEntry"])]
+        self.assertIn("it.kind != 'platform' && (it.repository ?: it.id) == repository", body)
+        releasing = body.index("it.trigger == 'release'")
+        entry = body.index("findRepositoryEntry(catalog, repository)")
+        self.assertLess(releasing, entry)
+        self.assertLess(entry, body.index("applications ? applications[0].id.toString() : null"))
+
+    def test_given_the_catalog_when_the_jobs_left_to_the_deciding_entry_are_listed_then_they_are_the_docs_sites(self):
+        # The same rule over this installation's catalog, with catalog.py's deciding entry: every library's
+        # docs site is left out on its pull requests, and no deciding entry, nor any job with checks, ever is.
+        catalog = catalog_module.load()
+        left, deciding = set(), set()
+        for entries in catalog_module.repository_entries(catalog).values():
+            deciding.add(entries[0]["id"])
+            for entry in entries[1:]:
+                if not entry["entry"].get("checks") and not entry["entry"].get("actionsChecks"):
+                    left.add(entry["id"])
+        self.assertFalse(left & deciding)
+        libraries = [entry["id"] for entry in catalog["repositories"]
+                     if entry["id"].startswith("dotnet-") and entry.get("release") == "owner-tag"]
+        self.assertTrue(libraries)
+        for library_id in libraries:
+            self.assertIn(f"{library_id}-docs", left)
+        for _, app in catalog_module.applications(catalog, deployable=True):
+            if app["id"] in left:
+                self.assertFalse(app.get("checks"), app["id"])
 
 
 class ReleaseLibraryTests(unittest.TestCase):

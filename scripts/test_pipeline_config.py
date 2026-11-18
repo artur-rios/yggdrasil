@@ -96,13 +96,32 @@ sync:
 """
 
 
+# Every scratch directory of the module lives under one, removed when the module's tests end.
+SCRATCH = tempfile.TemporaryDirectory(prefix="ygg-pipeline-")
+
+
+def tearDownModule():
+    SCRATCH.cleanup()
+
+
+def scratch(prefix):
+    return pathlib.Path(tempfile.mkdtemp(prefix=prefix, dir=SCRATCH.name))
+
+
+def empty_file():
+    """An empty file's path: what /dev/null gives, on every system."""
+    path = scratch("ygg-empty-") / "empty"
+    path.write_text("", encoding="utf-8")
+    return str(path)
+
+
 def catalog():
     return copy.deepcopy(CATALOG)
 
 
 def repo(text=None):
     """A scratch repository directory, with yggdrasil.yml when `text` is given."""
-    directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-pipeline-"))
+    directory = scratch("ygg-pipeline-")
     if text is not None:
         (directory / "yggdrasil.yml").write_text(text, encoding="utf-8")
     return directory
@@ -514,7 +533,7 @@ class SyncTests(unittest.TestCase):
         return pc.describe(catalog() if value is None else value, job, repo(text))
 
     def plan(self, job, text, *flags):
-        directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-plan-"))
+        directory = scratch("ygg-plan-")
         (directory / "statuses").write_text("", encoding="utf-8")
         return run_cli("plan", job, str(repo(text)), "--statuses", str(directory / "statuses"), "--changed", "-",
                        "--branch", "main", *flags)
@@ -939,7 +958,7 @@ class OwnChecksTests(unittest.TestCase):
     check of the file, which other entries of the same repository may name."""
 
     def plan(self, job, text=SHARED_FILE, statuses="", deploying=False, value=None):
-        directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-plan-"))
+        directory = scratch("ygg-plan-")
         (directory / "statuses").write_text(statuses, encoding="utf-8", newline="")
         argv = ["plan", job, str(repo(text)), "--statuses", str(directory / "statuses"), "--changed", "-",
                 "--branch", "main"] + (["--deploying"] if deploying else [])
@@ -1178,7 +1197,7 @@ class ReleasePlanTests(unittest.TestCase):
     or production would go out on a commit a sibling's check failed on and the merge would then be refused."""
 
     def plan(self, job, *flags, text=RELEASING_FILE):
-        directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-plan-"))
+        directory = scratch("ygg-plan-")
         (directory / "statuses").write_text("", encoding="utf-8")
         return run_shared("plan", job, str(repo(text)), "--statuses", str(directory / "statuses"), "--changed", "-",
                           "--branch", "release/1.0.0", *flags, value=releasing_catalog())
@@ -1266,7 +1285,7 @@ class PlanCliTests(unittest.TestCase):
               "    credentials: {NUGET_KEY: nuget-key}\n  lint: {image: x, run: y}\n")
 
     def files(self, statuses, changed):
-        directory = pathlib.Path(tempfile.mkdtemp(prefix="ygg-plan-"))
+        directory = scratch("ygg-plan-")
         (directory / "statuses").write_text(statuses, encoding="utf-8", newline="")
         if changed is not None:
             (directory / "changed").write_text(changed, encoding="utf-8", newline="")
@@ -1341,19 +1360,19 @@ class PlanCliTests(unittest.TestCase):
         self.assertEqual(self.plan(branch="renovate/x")[1][0]["credentials"], {})
 
     def test_given_a_repository_without_a_file_when_planning_then_the_plan_is_empty(self):
-        status, out, _ = run_cli("plan", "shop-specs", str(repo()), "--statuses", "/dev/null", "--changed", "-",
+        status, out, _ = run_cli("plan", "shop-specs", str(repo()), "--statuses", empty_file(), "--changed", "-",
                                  "--branch", "feature/x")
         self.assertEqual((status, json.loads(out)), (0, []))
 
     def test_given_an_invalid_file_when_planning_then_it_exits_with_one_and_names_the_errors(self):
         status, out, err = run_cli("plan", "dotnet-util", str(repo("checks:\n  unit: {image: x}\n")),
-                                   "--statuses", "/dev/null", "--changed", "-", "--branch", "b")
+                                   "--statuses", empty_file(), "--changed", "-", "--branch", "b")
         self.assertEqual((status, out), (1, ""))
         self.assertIn("checks.unit.run", err)
 
     def test_given_a_file_that_breaks_the_catalog_rules_when_planning_then_it_exits_with_one(self):
         status, out, err = run_cli("plan", "dotnet-util", str(repo("checks:\n  other: {image: x, run: y}\n")),
-                                   "--statuses", "/dev/null", "--changed", "-", "--branch", "b")
+                                   "--statuses", empty_file(), "--changed", "-", "--branch", "b")
         self.assertEqual((status, out), (1, ""))
         self.assertIn("unit", err)
 

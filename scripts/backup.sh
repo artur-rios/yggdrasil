@@ -210,9 +210,32 @@ dump_vars() {
 }
 
 # dump_volume <name> <file>: a throwaway container of the pinned TAR_IMAGE with the volume mounted
-# read-only: the data is only read, and whatever uses the volume doesn't have to stop.
+# read-only: the data is only read, and whatever uses the volume doesn't have to stop. The archive goes
+# to the docker client's stdout. When the client goes first (writing the file failed, say on a full disk,
+# or the run was stopped), the container would keep running, and the engine would write the rest of the
+# archive into the container's log, whose size nothing limits: one such night filled the DevOps Server's
+# disk with a 40 GB log. So the container has a name, no log (--log-driver none), and is removed when the
+# client fails or the run stops (remove_volume_container, also on EXIT).
+volume_container=""
 dump_volume() {
-  docker run --rm --volume "$1:/volume:ro" "$TAR_IMAGE" tar -C /volume -czf - . >"$2.partial" || return 1
+  local status=0
+  volume_container="yggdrasil-backup-$$-$RANDOM"
+  docker run --rm --name "$volume_container" --log-driver none --volume "$1:/volume:ro" "$TAR_IMAGE" \
+    tar -C /volume -czf - . >"$2.partial" || status=1
+  if [[ $status -ne 0 ]]; then
+    remove_volume_container
+  fi
+  volume_container=""
+  return "$status"
+}
+
+# remove_volume_container: removes dump_volume's container, if one is still there. Quiet: after a
+# successful run --rm has removed it already, and after a failed start there is none.
+remove_volume_container() {
+  local container=$volume_container
+  volume_container=""
+  [[ -n "$container" ]] || return 0
+  docker rm --force "$container" >/dev/null 2>&1 || true
 }
 
 # dump_postgres <container> <user> <file>. The database of an on-demand environment is stopped most
@@ -348,8 +371,9 @@ exec 9<"$backups"
 flock -n 9 || die "another backup is running"
 
 use_rootless_engine 9>&-
-# A run stopped half-way (systemd, a signal) does not leave behind a database it started.
-trap 'stop_started 9>&- || true' EXIT
+# A run stopped half-way (systemd, a signal) does not leave behind a database it started, or a volume's
+# tar container.
+trap 'remove_volume_container 9>&-; stop_started 9>&- || true' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 

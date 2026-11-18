@@ -1,11 +1,12 @@
-# Starts yggdrasil-prune.service every Sunday. Persistent: a machine that was off at 03:00 prunes when it is
-# next on. The random delay spreads the two users' runs (ci and release, each with its own timer) and the
-# nightly backup's catch-up over the hour after 03:00, so they do not all meet at the same second.
+# Starts yggdrasil-prune.service every day: once a week let a week of build cache pile up before the size
+# limit was applied. Persistent: a machine that was off at 03:00 prunes when it is next on. The random delay
+# spreads the two users' runs (ci and release, each with its own timer) and the nightly backup's catch-up
+# over the hour after 03:00, so they do not all meet at the same second.
 [Unit]
-Description=Prune this user's CI engine every week
+Description=Prune this user's CI engine every day
 
 [Timer]
-OnCalendar=Sun 03:00
+OnCalendar=*-*-* 03:00:00
 Persistent=true
 RandomizedDelaySec=1h
 
