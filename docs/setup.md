@@ -2228,7 +2228,7 @@ A system is only a grouping: add it with its applications to `catalog.yaml`, the
 
 - **Grafana** at `https://grafana.<DOMAIN>`, with Prometheus and Loki provisioned. Good starting dashboards to import: *ASP.NET Core* (19924), *Traefik* (17346), *Jenkins* (9964).
 - **Metrics**: every catalog application with `metrics` is scraped, once per environment of the host, labelled `system`, `app`, `kind` and `environment`, through the status API's service discovery. Platform components are scraped once, without `environment`. Serve metrics on a port that is neither published nor routed.
-- **Logs**: Alloy ships every container's stdout to Loki, labelled `environment` (from the container's `yggdrasil.environment` label; platform containers have none), `stack` (the Compose project, `<application>-<environment>`), `service`, `container` and `level` (read from JSON logs' `Level`/`level`). For example: `{environment="production", stack="shop-api-production"} | json | Level="Error"`.
+- **Logs**: Alloy ships the stdout of every container Compose started (the platform's and the applications') to Loki, kept 31 days, labelled `environment` (from the container's `yggdrasil.environment` label; platform containers have none), `stack` (the Compose project, `<application>-<environment>`), `service`, `container` and `level` (read from JSON logs' `Level`/`level`). For example: `{environment="production", stack="shop-api-production"} | json | Level="Error"`. A container started with a plain `docker run` (the backup's and `volumes.sh`'s `tar` of a volume, which writes the archive to its stdout) is not shipped.
 
 ## Troubleshooting
 

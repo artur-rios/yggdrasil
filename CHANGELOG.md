@@ -117,6 +117,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   app closing, or a test ending) while a host's map or details were still being fetched, the answer read the
   disposed provider's state and failed with `Cannot use the Ref of NotifierProvider<StatusController, ...> after it
   has been disposed`. A load that is still pending, or whose answer comes after the disposal, is now dropped.
+- **Loki keeps the logs of Compose's containers only.** Alloy shipped the output of every container of its
+  engine, and `scripts/backup.sh` tars each volume to a throwaway container's stdout: every night the Jenkins
+  volume's archive, 2.5 to 6 GB of gzip as it grew, went into the DevOps Server's Loki as the log of a container
+  with a made-up name (`elastic_gagarin`), nearly all of its 28 GB (the Application Server's, with small volumes,
+  had 0.2 GB). Since the backup's container keeps no log any more (above), that night's archive no longer
+  reaches Loki; now no container that Compose did not start does either, whatever it prints: `volumes.sh`'s tar,
+  `platform.sh`'s plugin listing, a `docker run` by hand. `platform/alloy/config.alloy` keeps only the targets
+  with a `com.docker.compose.project` label, which every container of `platform.sh` and `deploy.sh` has, in a
+  `discovery.relabel` before `loki.source.docker` (whose own relabel rules only rename labels and never stop a
+  tail). The retention stays 31 days: what is left is about 50 MB a day on the DevOps Server. **Upgrading:** on
+  each server, as `ygg`, `cd /opt/yggdrasil && git pull` and `docker restart yggdrasil-alloy-1`: Alloy reads its
+  configuration, a mounted file, when it starts, and `platform.sh up` does not recreate it for a changed file.
+  The archives already in Loki leave with the retention, over the next 31 days.
 - **Two hosts added in the same millisecond on the web console got the same id.** A new host's id was the time
   in microseconds, which a browser only moves every millisecond, so the second host shared the first one's id
   (and its saved token). An id made in the same microsecond as the previous one now takes the next microsecond.

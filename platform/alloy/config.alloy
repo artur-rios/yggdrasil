@@ -1,4 +1,5 @@
-// Every container on this Docker engine -> Loki.
+// Every container Compose started on this Docker engine -> Loki: the platform's (scripts/platform.sh) and
+// the applications' (scripts/deploy.sh). Not a one-off `docker run`: see discovery.relabel "compose".
 //
 // Labels are kept few on purpose (Loki indexes labels, not content): the environment, the Compose
 // project (stack) and service, the container, and the log level. Everything else stays in the JSON
@@ -13,6 +14,21 @@
 // these two components make, never the socket itself.
 discovery.docker "containers" {
   host = "tcp://alloy-docker-proxy:2375"
+}
+
+// Only containers with a Compose project. A container `docker run` starts has none, and its output can be
+// anything: scripts/backup.sh and scripts/volumes.sh tar a volume to the container's stdout, which the engine
+// logs like any other output. Shipped, the nightly backup of the Jenkins volume was 2.5 to 6 GB of gzip a
+// night in the DevOps Server's Loki (30 GB of its 31 days), under a made-up name such as elastic_gagarin.
+// Dropped here, before loki.source.docker: its relabel_rules only rename labels, they never stop a tail.
+discovery.relabel "compose" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = ".+"
+    action        = "keep"
+  }
 }
 
 discovery.relabel "containers" {
@@ -43,7 +59,7 @@ discovery.relabel "containers" {
 
 loki.source.docker "containers" {
   host          = "tcp://alloy-docker-proxy:2375"
-  targets       = discovery.docker.containers.targets
+  targets       = discovery.relabel.compose.output
   relabel_rules = discovery.relabel.containers.rules
   forward_to    = [loki.process.containers.receiver]
 }
