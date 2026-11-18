@@ -71,7 +71,12 @@ read_conf() {
     fi
     read -r -a words <<<"$line"
     case ${words[0]} in
-      forgejo | vars) ((${#words[@]} == 1)) || die "$conf line $number: ${words[0]} takes no arguments: $line" ;;
+      vars) ((${#words[@]} == 1)) || die "$conf line $number: vars takes no arguments: $line" ;;
+      forgejo)
+        if ((${#words[@]} > 2)) || { ((${#words[@]} == 2)) && [[ "${words[1]}" != no-attachments ]]; }; then
+          die "$conf line $number: expected 'forgejo' or 'forgejo no-attachments': $line"
+        fi
+        ;;
       volume)
         if ((${#words[@]} != 2)) || ! name_ok "${words[1]}"; then
           die "$conf line $number: expected 'volume <name>': $line"
@@ -174,9 +179,14 @@ fi
 # file that looks like a backup. They return non-zero instead of dying, and are called as the condition
 # of an `if` (which turns -e off), so every step says `|| return 1`.
 
-# dump_forgejo <file>: Forgejo's own dump is made inside the container, copied out and removed from it.
+# dump_forgejo <file> [no-attachments]: Forgejo's own dump is made inside the container, copied out and
+# removed from it. no-attachments leaves out data/attachments (--skip-attachment-data): the files of the
+# releases, nearly all of a dump where releases carry installers (11 of 12 GB on the DevOps Server), and
+# also what was uploaded to issues and comments, which Forgejo keeps in the same place.
 dump_forgejo() {
   local out=$1 container status=0
+  local -a skip=()
+  [[ "${2:-}" != no-attachments ]] || skip=(--skip-attachment-data)
   container=$(docker ps --quiet \
     --filter "label=com.docker.compose.project=$FORGEJO_PROJECT" \
     --filter "label=com.docker.compose.service=$FORGEJO_SERVICE") || return 1
@@ -186,7 +196,8 @@ dump_forgejo() {
   fi
   # A dump left by an earlier run would make forgejo refuse to write.
   docker exec "$container" rm -f "$FORGEJO_DUMP" || return 1
-  docker exec "$container" forgejo dump --config "$FORGEJO_CONFIG" --type zip --file "$FORGEJO_DUMP" || status=1
+  docker exec "$container" forgejo dump --config "$FORGEJO_CONFIG" --type zip --file "$FORGEJO_DUMP" \
+    ${skip[@]+"${skip[@]}"} || status=1
   [[ $status -ne 0 ]] || docker cp "$container:$FORGEJO_DUMP" "$out.partial" || status=1
   docker exec "$container" rm -f "$FORGEJO_DUMP" || true
   return "$status"
@@ -309,7 +320,7 @@ run_item() {
   read -r -a words <<<"$1"
   local status=0
   case ${words[0]} in
-    forgejo) dump_forgejo "$out" || status=1 ;;
+    forgejo) dump_forgejo "$out" "${words[1]:-}" || status=1 ;;
     vars) dump_vars "$out" || status=1 ;;
     volume) dump_volume "${words[1]}" "$out" || status=1 ;;
     postgres) dump_postgres "${words[1]}" "${words[2]}" "$out" || status=1 ;;

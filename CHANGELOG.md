@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **A Forgejo backup can leave out the releases' files.** `forgejo no-attachments` in `backup.conf` dumps Forgejo
+  with `--skip-attachment-data`. On the DevOps Server the releases' installers (alexandria-ui's, orpheus', the
+  console's) were 11 of the nightly dump's 12 GB: every night, kept `BACKUP_KEEP` days on both servers. The GitHub
+  mirror has a copy of each release's files. Forgejo keeps what is uploaded to issues and comments in the same
+  place, so those are then in no backup; plain `forgejo` still dumps everything. A restore from such a dump lists
+  every release file but answers `500` for each, until it is uploaded again from GitHub's copy
+  ([hosts.md, Restoring](docs/hosts.md#restoring)). **Upgrading:** nothing changes until `backup.conf` says
+  `forgejo no-attachments`.
+
 ## [0.13.10] - 2026-11-18
 
 ### Fixed
