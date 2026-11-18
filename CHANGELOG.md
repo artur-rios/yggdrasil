@@ -85,6 +85,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A failed volume backup no longer fills the disk.** `backup.sh` streams a volume's `tar` out of a throwaway
+  container. When writing the archive failed, the `docker` client stopped but the container kept running, and
+  the engine wrote the rest of the archive into the container's log, which nothing limits: on 2026-11-18 a
+  failed Jenkins backup left a 40 GB log on the DevOps Server and filled its disk. The container is now named,
+  keeps no log, and is removed when the dump fails or the run is stopped.
 - **Switching hosts keeps the new host's remembered environment.** The overview remembers which environment
   (development, production...) was chosen on each saved host, and reads it when a host is selected. A read
   started for the host selected before could answer after the new host's, and then showed the old host's

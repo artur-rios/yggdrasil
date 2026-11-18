@@ -988,7 +988,7 @@ lines.
 |---|---|---|
 | `forgejo` | `forgejo.zip` | `forgejo dump` inside the container of the `forgejo` service of the `yggdrasil` Compose project (found by its labels), copied out and deleted from the container |
 | `vars` | `vars.tar.gz` | the [variables store](variables.md) of this machine and its key, `vars.db` and `vars.key` of the secrets directory: a consistent copy (`ygg vars backup`), taken while the store is in use |
-| `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running |
+| `volume <name>` | `volume-<name>.tar.gz` | a throwaway `busybox` container with the volume mounted read-only runs `tar`. Whatever uses the volume keeps running. The container is named, keeps no log (`--log-driver none`) and is removed when the dump fails or the run stops: a container left running would otherwise write the rest of the archive into an unlimited log |
 | `postgres <container> <user>` | `postgres-<container>.sql.gz` | `pg_dumpall` in that container as that database user. A stopped one (exited, or created) is started for it and stopped again, unless another container of its project runs by then; a restarting, paused or dead one fails the item |
 
 A volume's name is its Compose project, an underscore and its name in the Compose file. The
