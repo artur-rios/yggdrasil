@@ -480,6 +480,30 @@ class BackupTests(unittest.TestCase):
         self.assertIn("FAILED: vars", result.stderr)
         self.assertEqual(self.today_files(), [])
 
+    def test_given_forgejo_no_attachments_when_run_then_the_dump_skips_the_attachment_data(self):
+        self.conf("forgejo no-attachments\n")
+        result = self.backup("run")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.today_files(), ["forgejo.zip"])
+        self.assertIn("docker exec forgejo-id forgejo dump --config /var/lib/gitea/custom/conf/app.ini "
+                      "--type zip --file /tmp/forgejo-dump.zip --skip-attachment-data", self.calls())
+
+    def test_given_plain_forgejo_when_run_then_the_dump_keeps_the_attachments(self):
+        self.conf("forgejo\n")
+        result = self.backup("run")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        dump = next(call for call in self.calls() if " forgejo dump " in call)
+        self.assertNotIn("--skip", dump)
+
+    def test_given_forgejo_with_another_argument_when_run_then_it_is_refused(self):
+        for items in ("forgejo attachments\n", "forgejo no-attachments extra\n"):
+            with self.subTest(items):
+                self.conf(items)
+                result = self.backup("run")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("expected 'forgejo' or 'forgejo no-attachments'", result.stderr)
+                self.assertFalse(self.backups.exists())
+
     def test_given_vars_with_an_argument_when_run_then_it_is_refused(self):
         self.conf("vars /etc/yggdrasil\n")
         result = self.backup("run")
