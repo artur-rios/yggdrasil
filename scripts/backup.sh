@@ -220,7 +220,8 @@ volume_container=""
 dump_volume() {
   local status=0
   volume_container="yggdrasil-backup-$$-$RANDOM"
-  docker run --rm --name "$volume_container" --log-driver none --volume "$1:/volume:ro" "$TAR_IMAGE"     tar -C /volume -czf - . >"$2.partial" || status=1
+  docker run --rm --name "$volume_container" --log-driver none --volume "$1:/volume:ro" "$TAR_IMAGE" \
+    tar -C /volume -czf - . >"$2.partial" || status=1
   if [[ $status -ne 0 ]]; then
     remove_volume_container
   fi

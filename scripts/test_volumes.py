@@ -11,16 +11,19 @@ their checksums are too. `id` is a fake that answers $FAKE_UID, to run as "root"
     FAKE_ENGINE=rootful      `docker info` answers as a rootful engine (rootless otherwise)
     FAKE_IN_USE="a b"        running containers mount those volumes
     FAKE_FAIL=<text>         a docker call whose arguments contain <text> fails
+    FAKE_RUN_SLEEP=<seconds> `docker run` waits that long first, so a run can be stopped during it
 """
 
 import os
 import pathlib
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
@@ -115,9 +118,11 @@ FAKES = {
                   shift 2
                   ;;
                 --rm | -i) shift ;;
+                --name | --log-driver) shift 2 ;;
                 *) image=$1; shift ;;
               esac
             done
+            [[ -z "${FAKE_RUN_SLEEP:-}" ]] || sleep "$FAKE_RUN_SLEEP"
             exec "${args[@]}"
             ;;
         esac
@@ -203,6 +208,37 @@ class VolumesTests(unittest.TestCase):
     def import_new(self, **env):
         return self.volumes("import", str(self.out), FAKE_STATE=str(self.new), **env)
 
+    def tar_container(self, volume):
+        """The name of the container that last tarred or untarred <volume>, from its `docker run`."""
+        run = next(c for c in reversed(self.calls()) if c.startswith("docker run") and f"--volume {volume}:" in c)
+        match = re.search(r"--name (yggdrasil-volumes-\S+)", run)
+        self.assertIsNotNone(match, run)
+        return match.group(1)
+
+    def stopped_during_a_tar(self, *arguments, **env):
+        """Runs volumes.sh and, once its first tar container starts, stops it as a closed terminal or a
+        kill would: SIGTERM to the whole process group, the docker client included. Returns the exit
+        code and stderr."""
+        merged = {**self.env, "FAKE_RUN_SLEEP": "30", **env}
+        process = subprocess.Popen(["bash", str(SCRIPT), *arguments], env=merged, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(self.kill_group, process)
+        for _ in range(200):
+            if any(c.startswith("docker run") and "--name" in c for c in self.calls()):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("no tar container ever started")
+        os.killpg(process.pid, signal.SIGTERM)
+        _, stderr = process.communicate(timeout=30)
+        return process.returncode, stderr
+
+    @staticmethod
+    def kill_group(process):
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+
     # ---- export ------------------------------------------------------------------------------------
 
     def test_given_stopped_volumes_when_exported_then_each_has_a_tar_and_a_manifest_line(self):
@@ -229,6 +265,11 @@ class VolumesTests(unittest.TestCase):
         self.assertIn(f"{APP_DATA}:/volume:ro", run)
         self.assertIn(f"{TAR_IMAGE} tar", run)
         self.assertIn("--numeric-owner", run)
+        # The archive goes to the client only: the container is named and keeps no log, and after a
+        # whole tar --rm has removed it, so nothing else does.
+        self.assertIn("--name yggdrasil-volumes-", run)
+        self.assertIn("--log-driver none", run)
+        self.assertEqual([c for c in calls if c.startswith("docker rm")], [])
         # What the tar holds is the volume's files.
         listing = subprocess.run(["tar", "-tf", str(self.out / f"{APP_DATA}.tar")], capture_output=True, text=True)
         self.assertIn("a.txt", listing.stdout)
@@ -281,6 +322,17 @@ class VolumesTests(unittest.TestCase):
         self.assertIn(APP_DB, result.stderr)
         # The first volume was whole and stays; the failing one left nothing; the manifest comes last.
         self.assertEqual(sorted(path.name for path in self.out.iterdir()), [f"{APP_DATA}.tar"])
+        # The failing tar's container is removed: left running, it would log the rest of the archive.
+        self.assertIn(f"docker rm --force {self.tar_container(APP_DB)}", self.calls())
+
+    def test_given_an_export_stopped_during_a_tar_when_it_exits_then_the_container_and_partial_go(self):
+        self.old_vps()
+        returncode, _ = self.stopped_during_a_tar("export", str(self.out))
+        self.assertEqual(returncode, 143)
+        first = next(c for c in self.calls() if c.startswith("docker run"))
+        volume = re.search(r"--volume (\S+):/volume", first).group(1)
+        self.assertIn(f"docker rm --force {self.tar_container(volume)}", self.calls())
+        self.assertEqual(list(self.out.iterdir()), [])
 
     def test_given_a_directory_with_a_manifest_when_exported_then_it_is_refused(self):
         self.old_vps()
@@ -397,6 +449,24 @@ class VolumesTests(unittest.TestCase):
         self.assertEqual(self.new_volumes(), ["kept"])
         self.assertIn(f"docker volume rm {APP_DATA}", self.calls())
         self.assertIn(f"docker volume rm {APP_DB}", self.calls())
+        # The failing untar's container goes first: a volume still in use cannot be removed.
+        calls = self.calls()
+        removed = calls.index(f"docker rm --force {self.tar_container(APP_DB)}")
+        self.assertLess(removed, calls.index(f"docker volume rm {APP_DB}"))
+
+    def test_given_an_import_stopped_during_an_untar_when_it_exits_then_container_and_volumes_go(self):
+        self.old_vps()
+        self.exported()
+        self.log.write_text("")
+        returncode, stderr = self.stopped_during_a_tar("import", str(self.out), FAKE_STATE=str(self.new))
+        self.assertEqual(returncode, 130)
+        self.assertIn("interrupted", stderr)
+        calls = self.calls()
+        first = next(c for c in calls if c.startswith("docker run"))
+        volume = re.search(r"--volume (\S+):/volume", first).group(1)
+        removed = calls.index(f"docker rm --force {self.tar_container(volume)}")
+        self.assertLess(removed, calls.index(f"docker volume rm {volume}"))
+        self.assertEqual(self.new_volumes(), [])
 
     def test_given_a_malformed_manifest_when_imported_then_it_is_refused_before_anything(self):
         self.out.mkdir()
