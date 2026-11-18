@@ -1121,10 +1121,26 @@ machine_check_isolation() {
     machine_check_cannot_read "$user → ygg engine" "$user" "$(machine_engine_socket ygg)"
   done
   machine_check_cannot_read "ci → release engine" ci "$(machine_engine_socket release)"
+  local ygg_secret
+  ygg_secret=$(machine_ygg_secret)
   for user in ci release dev renovate; do
-    machine_check_cannot_read "$user → ygg secrets" "$user" "$(secrets_dir_of ygg)/platform.env"
+    machine_check_cannot_read "$user → ygg secrets" "$user" "$ygg_secret"
   done
   machine_check_cannot_read "ci → release secrets" ci "$(secrets_dir_of release)/agent.env"
+}
+
+# machine_ygg_secret: the file of ygg's secrets directory that the isolation rows try to read. On a host
+# with the variables store (docs/variables.md) that is vars.key, which decrypts every value, and its
+# platform.env was imported and renamed: asking about it would only ever say "not checked". Without the
+# store, platform.env, which holds the platform's values in the clear.
+machine_ygg_secret() {
+  local dir
+  dir=$(secrets_dir_of ygg)
+  if machine_root_read test -e "$dir/vars.key" 2>/dev/null; then
+    echo "$dir/vars.key"
+  else
+    echo "$dir/platform.env"
+  fi
 }
 
 # machine_check_cannot_read <row name> <user> <path>: ok only when the user's failing to read the path

@@ -1795,6 +1795,34 @@ class MachineRoleTests(unittest.TestCase):
         self.assertFalse(line.startswith("  ok "), line)
         self.assertIn("not checked", line)
 
+    def store_host(self):
+        """A dev machine whose platform values moved into the variables store: vars.db and vars.key, and
+        platform.env renamed by the import."""
+        self.install("dev")
+        secrets = self.etc("yggdrasil")
+        (secrets / "platform.env").rename(secrets / "platform.env.imported")
+        (secrets / "vars.db").write_text("store\n")
+        (secrets / "vars.key").write_text("key\n")
+        return secrets / "vars.key"
+
+    def test_given_a_variables_store_when_checked_then_the_secrets_rows_try_its_key(self):
+        key = self.store_host()
+        stdout, rows = self.rows("dev")
+        for user in ("ci", "release", "dev", "renovate"):
+            line = self.row(rows, f"{user} → ygg secrets")
+            self.assertTrue(line.startswith("  ok "), line)
+            self.assertIn(f"{user} can't read {key}", line)
+        self.assertNotIn("platform.env", "\n".join(r for r in rows if "ygg secrets" in r))
+
+    def test_given_ci_able_to_read_the_store_key_when_checked_then_isolation_is_reported_broken(self):
+        key = self.store_host()
+        (self.state / "readable-ci").write_text(f"{key}\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "ci → ygg secrets")
+        self.assertFalse(line.startswith("  ok "), line)
+        self.assertIn(str(key), line)
+        self.assertTrue(self.row(rows, "release → ygg secrets").startswith("  ok "), stdout)
+
     def test_given_a_proven_isolation_when_checked_then_the_row_asked_for_the_path_as_root_and_ci(self):
         self.install("dev")
         self.rows("dev")
