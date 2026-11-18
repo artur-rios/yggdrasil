@@ -1,0 +1,13 @@
+# Starts yggdrasil-prune-dev.service every day at 04:00, when no AI session is likely to be building, and after
+# the CI engines' prunes (03:00, plus up to an hour). Persistent: a machine that was off then prunes when it is
+# next on. The random delay keeps it off the exact minute.
+[Unit]
+Description=Prune dev's engine every day
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

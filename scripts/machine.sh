@@ -27,7 +27,7 @@ MACHINE_ROLES=(dev apps workstation)
 # The Ubuntu releases install knows, by VERSION_ID: the LTS releases. Docker's apt repository is picked
 # by the release's codename (host.sh), so a release is added here once that repository has it.
 MACHINE_UBUNTU_VERSIONS=(24.04 26.04)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users ci-limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer signals-timer role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer signals-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
@@ -218,14 +218,20 @@ machine_upgrades_content() {
   printf '%s\n' 'APT::Periodic::Update-Package-Lists "1";' 'APT::Periodic::Unattended-Upgrade "1";'
 }
 
-# The ci user's share of the machine, so a build can't starve Forgejo or the release agent: six cores
-# and 20G. The limits go on the user's slice, which is named by uid.
-machine_ci_limits_path() {
+# The share of the machine of the users whose work can run away, so it can't starve Forgejo, Jenkins or the
+# release agent: ci (the checks, four executors) six cores and 20G, dev (the AI sessions and the containers
+# they run, a test suite's databases among them) six cores and 8G. The limits go on the user's slice, which is
+# named by uid, so they cover its logins, its rootless engine and every container in it.
+MACHINE_LIMITED_USERS=(ci dev)
+# machine_limits_path <user>: empty while the user doesn't exist.
+machine_limits_path() {
   local uid
-  uid=$(passwd_field ci 3)
+  uid=$(passwd_field "$1" 3)
   [[ -z "$uid" ]] || echo "${YGG_SYSROOT:-}/etc/systemd/system/user-$uid.slice.d/limits.conf"
 }
-machine_ci_limits_content() { printf '%s\n' "[Slice]" "CPUQuota=600%" "MemoryMax=20G"; }
+# machine_limits_memory <user>: the user's MemoryMax.
+machine_limits_memory() { if [[ "$1" == ci ]]; then echo 20G; else echo 8G; fi; }
+machine_limits_content() { printf '%s\n' "[Slice]" "CPUQuota=600%" "MemoryMax=$(machine_limits_memory "$1")"; }
 
 # The unprivileged-ports sysctl (machine_sysctl_content) lets every user bind 80 and 443, not only ygg:
 # a check in ci's engine could publish -p 80:80 -p 443:443 and win the ports while ygg's Traefik
@@ -457,22 +463,31 @@ machine_wait_for_user_manager() {
 # The user units of the daily prunes (platform/systemd), for the users whose rootless engines keep the images
 # and build cache of every build: ci and release on the dev machine (yggdrasil-prune, everything unused), and
 # ygg on both machines (yggdrasil-prune-ygg, only dangling images and build cache: its engine runs the platform
-# and the deployed environments). Each user gets its own copy in its own systemd directory and its own timer,
-# and prunes its own engine. renovate's engine holds only Renovate's image: scripts/renovate.sh removes the
-# ones it no longer runs after each run. dev's engine is the owner's to look after.
+# and the deployed environments), and dev on the dev machine (yggdrasil-prune-dev, the same leftovers: the AI
+# sessions' containers, a database stopped between two sessions among them, and the images their tests pull
+# stay). Each user gets its own copy in its own systemd directory and its own timer, and prunes its own
+# engine. renovate's engine holds only Renovate's image: scripts/renovate.sh removes the ones it no longer
+# runs after each run.
 machine_prune_users() {
   case $1 in
-    dev) printf '%s\n' ci release ygg ;;
+    dev) printf '%s\n' ci release ygg dev ;;
     apps) printf '%s\n' ygg ;;
   esac
 }
 # machine_prune_unit <user>: the name of the user's pair, without .service or .timer.
 machine_prune_unit() {
-  if [[ "$1" == ygg ]]; then echo yggdrasil-prune-ygg; else echo yggdrasil-prune; fi
+  case $1 in
+    ygg | dev) echo "yggdrasil-prune-$1" ;;
+    *) echo yggdrasil-prune ;;
+  esac
 }
 # machine_prune_when <user>: when the user's timer fires, as the check and the install say it.
 machine_prune_when() {
-  if [[ "$1" == ygg ]]; then echo "daily at 02:00"; else echo "daily at 03:00"; fi
+  case $1 in
+    ygg) echo "daily at 02:00" ;;
+    dev) echo "daily at 04:00" ;;
+    *) echo "daily at 03:00" ;;
+  esac
 }
 machine_prune_unit_dir() { echo "$(passwd_field "$1" 6)/.config/systemd/user"; }
 
@@ -859,16 +874,18 @@ machine_check_users() {
   done
 }
 
-machine_check_ci_limits() {
+machine_check_limits() {
   [[ "$machine_current_role" == dev ]] || return 0
-  local path
-  path=$(machine_ci_limits_path)
-  if [[ -z "$path" ]]; then
-    row missing "ci limits" "no ci user yet: install caps it at six CPUs and 20G once it exists"
-    machine_need ci-limits
-  else
-    machine_check_file "ci limits" "$path" "$(machine_ci_limits_content)" ci-limits
-  fi
+  local user path
+  for user in "${MACHINE_LIMITED_USERS[@]}"; do
+    path=$(machine_limits_path "$user")
+    if [[ -z "$path" ]]; then
+      row missing "$user limits" "no $user user yet: install caps it at six CPUs and $(machine_limits_memory "$user") once it exists"
+      machine_need limits
+    else
+      machine_check_file "$user limits" "$path" "$(machine_limits_content "$user")" limits
+    fi
+  done
 }
 
 machine_check_low_ports() {
@@ -1478,7 +1495,7 @@ machine_step_text() {
     system-settings) echo "Unprivileged ports from 80, an AppArmor profile for rootlesskit and cgroup delegation to users' units." ;;
     unattended-upgrades) echo "Install security updates by themselves (${YGG_SYSROOT:-}/etc/apt/apt.conf.d/20auto-upgrades)." ;;
     users) echo "Create the service users of the $machine_current_role role ($(role_users "$machine_current_role" | paste -sd' ' -)) without sudo or docker access, and close their home directories (750)." ;;
-    ci-limits) echo "Cap the ci user at six CPUs and 20G of memory." ;;
+    limits) echo "Cap the ci user at six CPUs and 20G of memory, and the dev user (the AI sessions and their containers) at six CPUs and 8G." ;;
     low-ports) echo "Keep ${MACHINE_LOW_PORT_USERS[*]} (and their containers) off every port below 1024, so none of them can take 80 or 443 from ygg's Traefik." ;;
     ssh) echo "Harden ssh (00-yggdrasil.conf, ahead of the cloud image's own files): keys only, no root login, and only $(machine_admin) and the role's ssh users may log in. Your key is offered to the ones without one." ;;
     checkout) echo "Give the checkout, $root, to the ygg user." ;;
@@ -1493,7 +1510,7 @@ machine_step_text() {
     engines) echo "Give each service user ($(role_users "$machine_current_role" | paste -sd' ' -)) its own rootless Docker engine: linger on, slirp4netns network and port driver, started now and at boot, and DOCKER_HOST in its .profile." ;;
     prune-timer)
       if [[ "$machine_current_role" == dev ]]; then
-        echo "Install the daily Docker prunes: for ci and release the units yggdrasil-prune.service and .timer (03:00: what has not been used for a week, then build cache over 40 GB), for ygg yggdrasil-prune-ygg.service and .timer (02:00: dangling images and build cache only), into each one's ~/.config/systemd/user (as that user), and enable the timers. Each prunes its own engine."
+        echo "Install the daily Docker prunes: for ci and release the units yggdrasil-prune.service and .timer (03:00: what has not been used for a week, then build cache over 40 GB), for ygg yggdrasil-prune-ygg.service and .timer (02:00: dangling images and build cache only), for dev yggdrasil-prune-dev.service and .timer (04:00: the same, so its containers and their images stay), into each one's ~/.config/systemd/user (as that user), and enable the timers. Each prunes its own engine."
       else
         echo "Install the daily Docker prune for ygg: the units yggdrasil-prune-ygg.service and .timer into $(machine_prune_unit_dir ygg) (as ygg), and enable the timer (02:00). It removes dangling images, build cache no build used for a week, then build cache over 20 GB; never a container, a volume or a tagged image."
       fi
@@ -1606,15 +1623,18 @@ step_users() {
   done
 }
 
-step_ci_limits() {
-  local path
-  path=$(machine_ci_limits_path)
-  if [[ -z "$path" ]]; then
-    warn "there is no ci user yet: its limits are left for the next install."
-    return 0
-  fi
-  write_system_file "$path" 0644 "$(machine_ci_limits_content)"
-  as_root systemctl daemon-reload
+step_limits() {
+  local user path wrote=""
+  for user in "${MACHINE_LIMITED_USERS[@]}"; do
+    path=$(machine_limits_path "$user")
+    if [[ -z "$path" ]]; then
+      warn "there is no $user user yet: its limits are left for the next install."
+      continue
+    fi
+    write_system_file "$path" 0644 "$(machine_limits_content "$user")"
+    wrote=1
+  done
+  [[ -z "$wrote" ]] || as_root systemctl daemon-reload
 }
 
 step_low_ports() {
