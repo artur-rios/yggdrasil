@@ -271,9 +271,13 @@ def call(Map config = [:]) {
   // commit (it may be waiting up to checksTimeout for GitHub Actions); every other build waits its
   // turn, a release above all.
   boolean replaceable = env.CHANGE_ID && env.CHANGE_TARGET != 'main'
+  // The last 20 builds of a branch, pull request or tag, and the archives (a check's `archive`: test
+  // results, coverage) of the last 10 of them. A pull request rarely gets 20 builds; a branch gets one per
+  // merge, so 20 reaches back a few weeks. An archive is for looking into a check, and a .NET API's test
+  // results are about 100 MB a build: the releases' files live in the forge's releases, not here.
   properties([
     disableConcurrentBuilds(abortPrevious: replaceable),
-    buildDiscarder(logRotator(numToKeepStr: '50')),
+    buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10')),
     parameters([
       choice(name: 'DEPLOY_TO', choices: [''] + byHand,
              description: 'Deploy this branch to an environment with trigger: manual or branch, and leave it running if it is on demand. Empty: only what the branch triggers.'),

@@ -324,6 +324,11 @@ class PipelineLibraryTests(unittest.TestCase):
         self.assertIn("config.stack ?:", self.lib.code)
         self.assertIn("env.JOB_NAME", self.lib.code)
 
+    def test_given_the_library_when_read_then_a_job_keeps_20_builds_and_the_archives_of_10(self):
+        # The properties step sets the job's discarder on every build: what Jenkins' disk holds per head.
+        self.assertIn("buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))", self.lib.code)
+        self.assertEqual(self.lib.code.count("logRotator("), 1)
+
     def test_given_every_catalog_id_when_the_library_checks_its_job_name_then_it_accepts_it(self):
         # catalogContext checks the job's name, an application's or a repositories entry's id, before it
         # reads the catalog. catalog.py lets a repositories entry's id be any repository name, dots included

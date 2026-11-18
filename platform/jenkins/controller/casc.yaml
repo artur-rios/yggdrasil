@@ -271,8 +271,13 @@ jobs:
               useSandbox(true)
             }
           }
+          // A branch or pull request that is gone (merged, closed, deleted) keeps its job, its builds
+          // and their archives for a week after its last build, to read what it did, and is then
+          // removed at the next scan (the daily one at the latest). Keeping the 20 newest instead kept
+          // up to 20 closed pull requests per repository for ever: 853 pull request jobs on the
+          // DevOps Server.
           orphanedItemStrategy {
-            discardOldItems { numToKeep(20) }
+            discardOldItems { daysToKeep(7) }
           }
           triggers {
             // Webhooks do the real work; a daily rescan is the safety net for a missed delivery.

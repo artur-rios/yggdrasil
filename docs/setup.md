@@ -1736,7 +1736,10 @@ set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's `platform.env
 A job sees `develop`, `main` (and `master` when its repository is under the `basic` rules: a fork's default
 branch, treated like `main`), pull requests from branches of the repository itself (a fork's never run),
 `release/*`, the `branches` of its branch environments and, for a `release: owner-tag` entry, tags that match its
-`tags`. A build lasts at most 4 hours and the last 50 are kept. A newer push to a pull request that is not into
+`tags`. A build lasts at most 4 hours. Each branch, pull request or tag keeps its last 20 builds, and the archives
+(a check's `archive`) of the last 10; a branch or pull request that is gone (merged, closed, deleted) loses its
+job a week after its last build. The controller keeps no checkout of the library: each build clones it, and
+keeps only `jenkins/library/vars`. A newer push to a pull request that is not into
 `main` replaces the build still running for the older commit; release builds of one repository wait for each
 other instead (one lock per repository, so two releases never overlap).
 

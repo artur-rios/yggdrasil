@@ -93,6 +93,12 @@ class JenkinsJobTests(unittest.TestCase):
         self.assertNotIn("workflowBranchProjectFactory", script)
         self.assertNotIn("scriptPath", script)
 
+    def test_given_the_job_dsl_when_read_then_a_gone_branch_or_pull_request_is_removed_a_week_after_its_last_build(self):
+        # By age, not by count: keeping the 20 newest gone heads kept 20 closed pull requests per job for ever.
+        script = job_dsl()
+        self.assertRegex(script, r"orphanedItemStrategy \{\s*discardOldItems \{ daysToKeep\(7\) \}\s*\}")
+        self.assertNotIn("numToKeep(", script)
+
     def test_given_the_job_dsl_when_read_then_forks_are_not_discovered(self):
         script = job_dsl()
         self.assertNotRegex(script, r"(?i)fork\w*(discovery|trust)")
@@ -367,6 +373,14 @@ class JenkinsLibraryTests(unittest.TestCase):
         source = libraries("casc.github.yaml")[0]["retriever"]["modernSCM"]["scm"]["github"]
         self.assertEqual(source["credentialsId"], "github-app")
         self.assertIn("gitHubTagDiscovery", [next(iter(t)) for t in source["traits"]])
+
+    def test_given_each_forge_when_read_then_the_library_is_cloned_per_build_not_kept_in_the_controllers_workspace(self):
+        # Without clone, every job keeps a checkout of the whole repository in the controller's
+        # workspace/<job>@libs, and nothing removes it while the job exists.
+        for name in ("casc.forgejo.yaml", "casc.github.yaml"):
+            library, = libraries(name)
+            self.assertIs(library["retriever"]["modernSCM"]["clone"], True, name)
+            self.assertIs(library["includeInChangesets"], False, name)
 
     def test_given_the_common_configuration_when_read_then_it_defines_no_library(self):
         # The libraries are per forge; two definitions of one name would collide.
