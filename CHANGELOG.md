@@ -90,6 +90,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the engine wrote the rest of the archive into the container's log, which nothing limits: on 2026-11-18 a
   failed Jenkins backup left a 40 GB log on the DevOps Server and filled its disk. The container is now named,
   keeps no log, and is removed when the dump fails or the run is stopped.
+- **A failed or stopped `volumes.sh` leaves no tar container behind.** `export` streams each volume's `tar` out
+  of a throwaway container the way `backup.sh` did, so a failed write (a full disk) or a stopped run left the
+  container running and writing the rest of the archive into its unlimited log. An `import` stopped half-way
+  left its untar's container holding the volume, so the rollback could not remove it. Both containers are now
+  named, keep no log, and are removed when the tar fails or the run is stopped, the untar's before the
+  rollback removes the volumes.
 - **Every engine that builds or pulls is pruned, every day.** Nothing pruned `ygg`'s engine, where an Application
   Server's deploys build their images: its build cache reached 139 GB. `renovate`'s kept every Renovate image it
   ever ran (9.1 GB unused), and `ci`'s weekly prune kept a week of build cache, which a busy week makes 50 GB or

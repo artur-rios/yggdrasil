@@ -90,6 +90,34 @@ select_engine() {
 partial=""
 cleanup_partial() { [[ -z "$partial" ]] || rm -f -- "$partial"; }
 
+# run_tar <docker run options and command>: a throwaway container of the pinned TAR_IMAGE, the archive on
+# its stdout (export) or stdin (import). When the docker client goes first (writing the file failed, say
+# on a full disk, or the run was stopped), the container would keep running: an export's would write the
+# rest of the archive into the container's log, whose size nothing limits (backup.sh filled a disk that
+# way), and an import's would keep the volume in use, so the rollback could not remove it. So the
+# container has a name, no log (--log-driver none), and is removed when the client fails or the run stops
+# (remove_tar_container, also on EXIT and in interrupted).
+tar_container=""
+run_tar() {
+  local status=0
+  tar_container="yggdrasil-volumes-$$-$RANDOM"
+  docker run --rm --name "$tar_container" --log-driver none "$@" || status=1
+  if [[ $status -ne 0 ]]; then
+    remove_tar_container
+  fi
+  tar_container=""
+  return "$status"
+}
+
+# remove_tar_container: removes run_tar's container, if one is still there. Quiet: after a successful run
+# --rm has removed it already, and after a failed start there is none.
+remove_tar_container() {
+  local container=$tar_container
+  tar_container=""
+  [[ -n "$container" ]] || return 0
+  docker rm --force "$container" >/dev/null 2>&1 || true
+}
+
 # volume_labels <volume>: "<project>|<compose volume>", either empty when the label is not there.
 volume_labels() {
   docker volume inspect \
@@ -148,7 +176,10 @@ do_export() {
     || die "$dir/manifest.tsv exists: an export is there already; use an empty directory"
 
   mkdir -p "$dir"
-  trap cleanup_partial EXIT
+  # A run stopped half-way (a signal, a closed terminal) leaves neither a partial tar nor its container.
+  trap 'remove_tar_container; cleanup_partial' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
   local tar_file sum size
   for name in "${names[@]}"; do
     echo "volumes: exporting $name"
@@ -157,7 +188,7 @@ do_export() {
     # looks like an export. The volume is mounted read-only: the data is only read. Numeric owners: the
     # ids are what the tar records, whatever names this image's /etc/passwd happens to have.
     partial="$tar_file.partial"
-    docker run --rm --volume "$name:/volume:ro" "$TAR_IMAGE" \
+    run_tar --volume "$name:/volume:ro" "$TAR_IMAGE" \
       tar --numeric-owner -C /volume -cf - . >"$partial" \
       || die "tar of $name failed"
     mv -- "$partial" "$tar_file"
@@ -282,13 +313,15 @@ create_and_fill() {
     # host tar (as ygg, or as root) the files would be ygg's, or a host uid the engine does not map to
     # 999, and postgres would refuse to start. -p keeps the modes; --numeric-owner takes the ids from the
     # tar, not the names, which this image's /etc/passwd does not have.
-    docker run --rm -i --volume "$name:/volume" "$TAR_IMAGE" \
+    run_tar -i --volume "$name:/volume" "$TAR_IMAGE" \
       tar --numeric-owner -C /volume -xpf - <"$dir/$name.tar" || return 1
   done
 }
 
 interrupted() {
   echo "volumes: interrupted" >&2
+  # The untar's container first: a volume a container still uses cannot be removed.
+  remove_tar_container
   rollback
   exit 130
 }
