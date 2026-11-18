@@ -575,8 +575,9 @@ Next to each part is what you would type to do it by hand. Every command is run 
      `ci`, `release` and `renovate`, which only run services.
    - `chmod 750`: closes each home to the other users. The users have no password, no `sudo` and are in no
      privileged group. If the admin user has the same name as one of them, it is left alone.
-6. **The `ci` limits** (DevOps Server): `/etc/systemd/system/user-<uid>.slice.d/limits.conf` with six CPUs and
-   20 GB (`CPUQuota=600%`, `MemoryMax=20G`), where `<uid>` is `id -u ci`, then `sudo systemctl daemon-reload`.
+6. **The limits** (DevOps Server): `/etc/systemd/system/user-<uid>.slice.d/limits.conf` with six CPUs and
+   20 GB (`CPUQuota=600%`, `MemoryMax=20G`), where `<uid>` is `id -u ci`, and the same with 8 GB
+   (`MemoryMax=8G`) for `id -u dev`, then `sudo systemctl daemon-reload`.
    **The low ports** (DevOps Server): for each of `ci`, `release`, `renovate` and `dev`,
    `/etc/systemd/system/user-<uid>.slice.d/50-yggdrasil-ports.conf` with `[Slice]`, `SocketBindDeny=tcp:1-1023` and
    `SocketBindDeny=udp:1-1023`, then `sudo systemctl daemon-reload`: only `ygg` may bind 80 and 443

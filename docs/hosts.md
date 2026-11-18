@@ -349,8 +349,8 @@ over that engine's `edge` network, and the deploy agent drives the engine they r
 | `dev` | SSH key | No | AI development sessions and the containers they run | its own Forgejo account's token |
 
 `ygg install --role dev` creates all five and gives each its own engine, its own `/etc/yggdrasil-<user>`
-directory and its own linger. What `dev` runs, and what is in its directory, comes with a later plan;
-`renovate`'s daily run is [below](#renovate-the-daily-run).
+directory and its own linger. What the owner sets up as `dev` is [below](#ai-development-as-dev);
+`renovate`'s daily run is [further down](#renovate-the-daily-run).
 
 **Why a separate `release` user.** Release files ship through the apps' built-in updaters and to
 nuget.org. If they were built in the `ci` engine, a check from a pull request by `claude` or Renovate
@@ -380,6 +380,57 @@ there, never on the controller and never on the Application Server.
 
 `ygg install` copies the admin's `~/.ssh/authorized_keys` to `ygg` (and `dev`) when that user has none,
 after asking. A user that already has keys is never touched.
+
+### AI development as `dev`
+
+The DevOps Server is where AI development sessions run (Claude Code, say), as `dev`. `ygg install` gives
+`dev` what keeps a session in its place:
+
+- an SSH login, no `sudo`, and no port below 1024;
+- its own rootless engine (`DOCKER_HOST` in its `.profile`), for Testcontainers and whatever else the session
+  starts. `ygg check` proves it cannot read `ygg`'s engine or secrets;
+- a cap of six CPUs and 8 GB on everything it runs, its logins and its containers together
+  ([limits.conf](#etcsystemdsystemuser-uidslicedlimitsconf-devops-server)). A test suite that runs away
+  is killed inside `dev`'s share, not Forgejo or Jenkins next to it;
+- a daily prune of its engine that keeps its containers and their images
+  ([the daily prunes](#the-engines-the-daily-prunes)).
+
+The rest is the owner's, once, and stays in `dev`'s home (mode `750`), so the system keeps only what
+`ygg install` put there:
+
+1. **Its Forgejo token.** As `ygg`, with `forgejo_user` from [setup.md 9.7](setup.md#97-the-forgejo-accounts-and-tokens):
+
+   ```bash
+   forgejo_user generate-access-token --username claude --token-name dev --scopes write:repository,write:issue,read:user,read:organization --raw
+   ```
+
+   The `claude` account is the one [rules.py](setup.md#12-apply-the-branch-rules) lets push `feature/` and
+   `fix/` branches, open pull requests and merge into `develop`, and nothing more. Then as `dev`, so that git
+   and `tea` use it over HTTPS (the file is `600` and only `dev` reads it):
+
+   ```bash
+   git config --global credential.helper store
+   printf 'protocol=https\nhost=git.<DOMAIN>\nusername=claude\npassword=%s\n\n' '<the token>' | git credential approve
+   git config --global user.name claude
+   git config --global user.email claude@<DOMAIN>
+   tea login add --name forgejo --url https://git.<DOMAIN> --token '<the token>'
+   ```
+
+2. **The agent and the toolchains, in `dev`'s home.** Claude Code's installer puts it in `~/.local/bin`, and
+   `claude` asks for a sign-in the first time: on a server it prints a URL to open on another device, and
+   the code it shows goes back into the terminal. The SDKs the repositories need go in the home too, never
+   from apt: .NET with `dotnet-install.sh` into `~/.dotnet`, Node through a version manager, Flutter or
+   Hugo unpacked into `~`.
+
+   ```bash
+   curl -fsSL https://claude.ai/install.sh | bash
+   curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
+   ```
+
+3. **A session that outlives the connection.** Run the agent inside `tmux new -As work` (tmux comes with
+   Ubuntu); `ssh dev@<host>` and the same command later pick it up again.
+
+`dev`'s home is in no backup: what matters is pushed to Forgejo, which is.
 
 ## 4. System settings
 
@@ -443,15 +494,28 @@ Security updates install themselves. Nobody logs in to these servers to run them
 
 ### `/etc/systemd/system/user-<uid>.slice.d/limits.conf` (DevOps Server)
 
+For `ci`:
+
 ```text
 [Slice]
 CPUQuota=600%
 MemoryMax=20G
 ```
 
-`<uid>` is the `ci` user's. The limit is on the user's slice, so it covers the whole `ci` engine:
-six CPUs (600% is six full ones) and 20 GB of memory. A build cannot starve Forgejo, the release agent
-or an AI session.
+For `dev`:
+
+```text
+[Slice]
+CPUQuota=600%
+MemoryMax=8G
+```
+
+`<uid>` is that user's. The limit is on the user's slice, so it covers everything the user runs: its
+logins, its rootless engine and every container in it. Six CPUs (600% is six full ones) each; 20 GB of
+memory for `ci`'s four executors, 8 GB for `dev`'s AI sessions and what they start. A build cannot starve
+Forgejo, the release agent or an AI session, and an AI session's test run cannot starve a build: past its
+`MemoryMax`, the kernel kills a process of that user, never one of `ygg`'s. The two together can outgrow
+the machine's memory only when both are at their peak at once, and the platform needs about 5 GB.
 
 ### `/etc/systemd/system/user-<uid>.slice.d/50-yggdrasil-ports.conf` (DevOps Server)
 
@@ -703,8 +767,8 @@ sha256sum platform/heimdall-signals/security_signals.py
 ### The engines: the daily prunes
 
 Every build leaves images and build cache behind in the engine it ran in, and Docker never removes them by
-itself: on the DevOps Server the checks in `ci`'s engine, the releases in `release`'s and the Jenkins images in
-`ygg`'s; on an Application Server every deploy, which builds its images in `ygg`'s engine (139 GB of build
+itself: on the DevOps Server the checks in `ci`'s engine, the releases in `release`'s, the Jenkins images in
+`ygg`'s and the AI sessions' builds in `dev`'s; on an Application Server every deploy, which builds its images in `ygg`'s engine (139 GB of build
 cache there before these timers). `ygg install` (step `prune-timer`, right after the engines) copies a pair of
 [platform/systemd](../platform/systemd) units into `~/.config/systemd/user/` of each of those users, as that
 user, and enables the timer, the same way as the backup's and Renovate's. Each runs after the user's own
@@ -715,6 +779,7 @@ machine that was off then prunes when it is next on.
 |---|---|---|---|
 | `ci`, `release` (DevOps Server) | `yggdrasil-prune.service`, `.timer` | Every day at 03:00, plus up to an hour | Every image no container uses and all build cache, not used for a week; then build cache, least used first, until it is under 40 GB |
 | `ygg` (both servers) | `yggdrasil-prune-ygg.service`, `.timer` | Every day at 02:00, plus up to half an hour | Dangling images; build cache not used for a week; then build cache, least used first, until it is under 20 GB |
+| `dev` (DevOps Server) | `yggdrasil-prune-dev.service`, `.timer` | Every day at 04:00, plus up to half an hour | The same as `ygg`'s |
 
 `ci`'s and `release`'s service runs:
 
@@ -724,7 +789,7 @@ docker builder prune --all --force --filter until=168h
 docker builder prune --all --force --max-used-space 40GB
 ```
 
-`ygg`'s runs:
+`ygg`'s and `dev`'s run:
 
 ```bash
 docker image prune --force
@@ -744,12 +809,17 @@ set of stopped containers. It removes **dangling** images only, not every unused
 the last `keepImages` images of each application in each environment ([catalog.md](catalog.md)) for its
 rollbacks, and only the running one has a container. Volumes are never pruned on any engine. `renovate`'s engine
 holds only Renovate's image: `scripts/renovate.sh` removes the images it no longer runs after each run
-([Renovate](#renovate-the-daily-run)). `dev`'s engine is not pruned.
+([Renovate](#renovate-the-daily-run)).
 
-`ygg check` has a row `prune timer <user>` for each of them (`ci`, `release` and `ygg` on the DevOps Server,
-`ygg` on an Application Server), which is `ok` while the units are the checkout's copies and the timer is
+`dev`'s prune is `ygg`'s, for a reason of its own: what an AI session leaves in its engine is the owner's to
+come back to. A database stopped between two sessions is a stopped container, and the images a test suite pulls
+have no container between two runs; a `system prune --all` would take both. So only the dangling images and the
+build cache go.
+
+`ygg check` has a row `prune timer <user>` for each of them (`ci`, `release`, `ygg` and `dev` on the DevOps
+Server, `ygg` on an Application Server), which is `ok` while the units are the checkout's copies and the timer is
 enabled; `systemctl --user list-timers` and `journalctl --user -u yggdrasil-prune` (or `-u yggdrasil-prune-ygg`,
-as that user) show the next and the last run.
+`-u yggdrasil-prune-dev`, as that user) show the next and the last run.
 
 ### Other files and rules
 
