@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.10] - 2026-11-18
+
+### Fixed
+
+- **`ygg check` proves the secrets isolation on a host with the variables store.** The four `→ ygg secrets` rows
+  tried to read `/etc/yggdrasil/platform.env` as `ci`, `release`, `dev` and `renovate`. A host whose platform values
+  moved into the [variables store](docs/variables.md) has no `platform.env` (the import renames it), so on the
+  DevOps Server every row said `not checked`. They now try `vars.key`, the store's key, which decrypts every value,
+  when it is there, and `platform.env` otherwise. Nothing to do when upgrading: `ygg check` reads the checkout.
+
 ## [0.13.9] - 2026-11-18
 
 ### Added
@@ -1589,7 +1599,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.10...HEAD
+[0.13.10]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...v0.13.10
 [0.13.9]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...v0.13.9
 [0.13.8]: https://github.com/artur-rios/yggdrasil/compare/v0.13.7...v0.13.8
 [0.13.7]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...v0.13.7

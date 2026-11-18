@@ -828,7 +828,8 @@ sets another, and `scripts/run-check.sh` hands it to a `docker: true` check, fal
 empty ([cli.md, Build agents](cli.md#build-agents)). `scripts/prove-machine.sh dev` proves it with the same value.
 
 **Isolation, checked.** `ygg check --role dev` proves that `ci`, `release`, `dev` and `renovate` cannot read
-`ygg`'s engine socket or `/etc/yggdrasil/platform.env`, and that `ci` cannot read `release`'s engine socket or
+`ygg`'s engine socket or `ygg`'s secrets (`/etc/yggdrasil/vars.key` on a host with the
+[variables store](variables.md), `/etc/yggdrasil/platform.env` without one), and that `ci` cannot read `release`'s engine socket or
 `/etc/yggdrasil-release/agent.env`. It first proves that its test can fail (that commands run as that user, that
 the path exists) so a green row means something. `scripts/prove-machine.sh dev` (or `apps`), run once by the admin on
 a new machine, proves the rest on the real thing: from a container of `ci`'s engine, `ygg`'s socket, home and secrets
