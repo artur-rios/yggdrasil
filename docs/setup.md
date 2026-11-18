@@ -1099,9 +1099,10 @@ now hands the agent `YGG_DOCKER_SOCKET`, the host path of the user's socket, whi
 containers it starts. On the Application Server, `scripts/platform.sh up` recreates the deploy agent with
 `YGG_DOMAIN`, the platform's `DOMAIN`, which `deploy.sh` puts under a site's host.
 
-The `ci` and `release` engines keep every image a check pulled and every build cache it made. A weekly prune of
-each, a systemd user timer that `ygg install` sets up, removes what the last week's builds did not use
-([hosts.md, The CI engines: the weekly prune](hosts.md#the-ci-engines-the-weekly-prune)).
+The `ci` and `release` engines keep every image a check pulled and every build cache it made. A daily prune of
+each, a systemd user timer that `ygg install` sets up, removes what the last week's builds did not use and keeps
+the build cache under 40 GB; `ygg`'s engine gets one too, which removes only dangling images and build cache
+([hosts.md, The engines: the daily prunes](hosts.md#the-engines-the-daily-prunes)).
 
 ### 9.9 Renovate
 
