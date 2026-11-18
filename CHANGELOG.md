@@ -105,6 +105,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   app closing, or a test ending) while a host's map or details were still being fetched, the answer read the
   disposed provider's state and failed with `Cannot use the Ref of NotifierProvider<StatusController, ...> after it
   has been disposed`. A load that is still pending, or whose answer comes after the disposal, is now dropped.
+- **Jenkins keeps less of what it built.** Its volume on the DevOps Server was 35.6 GB: `jobs/` 24.8 GB, nearly
+  all of it the checks' archives (a .NET API's test results are about 100 MB a build), and `workspace/` 14.4 GB
+  on the controller, which builds nothing. Three changes:
+  - A job keeps its last **20** builds (was 50) and the archives of the last **10** (was every kept build): the
+    library's `buildDiscarder`. A pull request rarely gets 20 builds, a branch gets one per merge; an archive is
+    for looking into a check, and a release's files are in the forge's releases.
+  - A branch or pull request that is gone (merged, closed, deleted) loses its job a week after its last build,
+    at the next scan (`orphanedItemStrategy { discardOldItems { daysToKeep(7) } }` in the Job DSL). It kept the 20
+    newest gone heads of each repository for ever instead: 853 pull request jobs, 11.4 GB.
+  - The controller's `workspace/` was the library: every job kept its own checkout of this whole repository at
+    the library's version in `workspace/<job>@libs` (13 to 36 MB, 1,134 of them), which only the job's deletion
+    removes. The library is now cloned into each build's own directory and only `vars/` is kept (`clone: true` in
+    `casc.forgejo.yaml` and `casc.github.yaml`); `includeInChangesets` was already off, so nothing is lost.
+
+  **Upgrading:** set `YGGDRASIL_LIBRARY_VERSION` to this release and run `scripts/platform.sh up` from this
+  release's checkout, as for every release: the controller restarts with the new Job DSL and library retriever,
+  and each job takes the new discarder at its next build. The gone heads' jobs go at the next daily scan. The
+  `workspace/*@libs` directories of the jobs that stay are no longer used, and nothing removes them: once the
+  controller runs this release, `docker exec yggdrasil-jenkins-1 sh -c 'rm -rf /var/jenkins_home/workspace/*@libs'`
+  (as `ygg`) frees them.
 - **Two hosts added in the same millisecond on the web console got the same id.** A new host's id was the time
   in microseconds, which a browser only moves every millisecond, so the second host shared the first one's id
   (and its saved token). An id made in the same microsecond as the previous one now takes the next microsecond.
