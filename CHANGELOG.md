@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.12] - 2026-11-18
+
 ### Added
 
 - **The `dev` user is set up for AI development.** `ygg install --role dev` now caps `dev` at six CPUs and 8 GB
@@ -1625,7 +1627,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.11...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...HEAD
+[0.13.12]: https://github.com/artur-rios/yggdrasil/compare/v0.13.11...v0.13.12
 [0.13.11]: https://github.com/artur-rios/yggdrasil/compare/v0.13.10...v0.13.11
 [0.13.10]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...v0.13.10
 [0.13.9]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...v0.13.9
