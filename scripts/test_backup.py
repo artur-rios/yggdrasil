@@ -67,7 +67,10 @@ FAKES = {
             esac
             ;;
           cp) echo "zip of ${2%%:*}" >"$3" ;;
-          run) echo "tar of the volume" ;;
+          run)
+            [[ -z "${FAKE_RUN_SLEEP:-}" ]] || sleep "$FAKE_RUN_SLEEP"
+            echo "tar of the volume"
+            ;;
         esac
         exit 0
     """,
@@ -159,12 +162,49 @@ class BackupTests(unittest.TestCase):
         run = next(call for call in calls if call.startswith("docker run"))
         self.assertIn("--rm", run)
         self.assertIn("yggdrasil_jenkins_home:/volume:ro", run)
+        # Named, so a failed run can remove it, and with no log, so the archive can never end up in one.
+        self.assertIn("--name yggdrasil-backup-", run)
+        self.assertIn("--log-driver none", run)
+        # --rm removed it: nothing else is asked to.
+        self.assertFalse([call for call in calls if call.startswith("docker rm")])
         # Pinned by version and digest, like the platform's images.
         self.assertIn(f"{BUSYBOX} tar", run)
         self.assertEqual((day / "volume-yggdrasil_jenkins_home.tar.gz").read_text(), "tar of the volume\n")
         self.assertIn("docker exec app-db-1 pg_dumpall -U postgres", calls)
         with gzip.open(day / "postgres-app-db-1.sql.gz", "rt") as dump:
             self.assertEqual(dump.read(), "-- postgres dump from app-db-1\n")
+
+    def volume_container(self):
+        run = next(call for call in self.calls() if call.startswith("docker run"))
+        return run.split("--name ", 1)[1].split()[0]
+
+    def test_given_a_failing_volume_dump_when_run_then_its_container_is_removed(self):
+        self.conf()
+        result = self.backup("run", FAKE_FAIL="tar -C /volume")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED: volume yggdrasil_jenkins_home", result.stdout + result.stderr)
+        # The client failing leaves the container running: it is removed by the name it was given.
+        self.assertIn(f"docker rm --force {self.volume_container()}", self.calls())
+        self.assertNotIn("volume-yggdrasil_jenkins_home.tar.gz", self.today_files())
+
+    def test_given_a_run_stopped_during_a_volume_dump_when_it_exits_then_the_container_is_removed(self):
+        self.conf("volume yggdrasil_jenkins_home\n")
+        process = subprocess.Popen(
+            ["bash", str(SCRIPT), "run"], env={**self.env, "FAKE_RUN_SLEEP": "30"},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        self.addCleanup(self.kill_group, process)
+        for _ in range(200):
+            if self.log.exists() and any(call.startswith("docker run") for call in self.calls()):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the volume dump never started")
+        # As systemd stops the service: SIGTERM to the whole group, the docker client included.
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=30)
+        self.assertEqual(process.returncode, 143)
+        self.assertIn(f"docker rm --force {self.volume_container()}", self.calls())
 
     def test_given_a_stopped_database_when_run_then_it_is_started_dumped_and_stopped_again(self):
         self.conf("postgres app-db-1 postgres\n")
