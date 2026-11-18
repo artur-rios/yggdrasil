@@ -30,6 +30,12 @@
 # for this run in the user's runtime directory (mode 600) and removed when the run ends: the tokens are never an
 # argument of any command (arguments are readable by every user of the machine) or an -e value.
 #
+# After the run, however it ended, every image of the engine that is not RENOVATE_IMAGE and that no container
+# uses is removed: the image of the version before an update (several GB each) would otherwise stay for ever,
+# since nothing else prunes this engine. RENOVATE_IMAGE itself stays, unused as it is between two runs, so the
+# daily run does not download it again. Nothing is removed when RENOVATE_IMAGE is not there (a pull that
+# failed), and a removal that fails is reported without changing the exit status.
+#
 # Exit 0 when the container ended well, its status when it did not, 1 for a setting that is wrong (explained
 # on stderr, the token never in it), 2 for a command that is not `run`.
 set -euo pipefail
@@ -143,4 +149,21 @@ trap 'exit 143' TERM
 
 status=0
 docker run --rm --name yggdrasil-renovate --env-file "$run_env" "$RENOVATE_IMAGE" || status=$?
+
+# The images this run did not use (see the header). By id, so an image with several names goes at once; one a
+# container still uses (any container, running or not) is left alone, as `docker image prune --all` would.
+remove_old_images() {
+  local keep id
+  keep=$(docker image inspect --format '{{.Id}}' "$RENOVATE_IMAGE" 2>/dev/null) && [[ -n "$keep" ]] || return 0
+  while read -r id; do
+    [[ -n "$id" && "$id" != "$keep" ]] || continue
+    [[ -z "$(docker ps --all --quiet --filter "ancestor=$id")" ]] || continue
+    if docker image rm --force "$id" >/dev/null; then
+      echo "renovate: removed the image $id, which this run did not use"
+    else
+      echo "renovate: could not remove the image $id" >&2
+    fi
+  done < <(docker image ls --quiet --no-trunc | sort -u)
+}
+remove_old_images || echo "renovate: could not list the images to remove" >&2
 exit "$status"

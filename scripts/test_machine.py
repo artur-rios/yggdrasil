@@ -2100,6 +2100,7 @@ class MachineRoleTests(unittest.TestCase):
     # ---- The prune timers ------------------------------------------------------------------------
 
     PRUNE_UNITS = ("yggdrasil-prune.service", "yggdrasil-prune.timer")
+    YGG_PRUNE_UNITS = ("yggdrasil-prune-ygg.service", "yggdrasil-prune-ygg.timer")
 
     def prune_row(self, rows, user):
         return self.row(rows, f"prune timer {user}")
@@ -2107,45 +2108,55 @@ class MachineRoleTests(unittest.TestCase):
     def prune_changes(self):
         return [c for c in self.calls() if "yggdrasil-prune" in c and c.startswith("sudo -u")]
 
-    def test_given_role_dev_when_installed_then_ci_and_release_get_a_weekly_prune_timer(self):
+    def assert_prune_timer(self, user, units, when, calls, rows, stdout):
+        for name in units:
+            self.assertEqual((self.unit_dir(user) / name).read_text(), self.repo_unit(name))
+        # Written by the user itself (the homes are closed to the admin), into its own manager.
+        written = self.as_user(user, "tee", str(self.unit_dir(user) / units[1]))
+        self.assertIn(written, calls)
+        reload_call = calls.index(self.as_user(user, "systemctl --user daemon-reload"), calls.index(written))
+        enable = self.as_user(user, f"systemctl --user enable --now {units[1]}")
+        self.assertIn(enable, calls)
+        self.assertLess(reload_call, calls.index(enable))
+        # After the engine it prunes.
+        self.assertLess(calls.index(self.as_user(user, "systemctl --user enable --now docker")),
+                        calls.index(enable))
+        line = self.prune_row(rows, user)
+        self.assertIsNotNone(line, stdout)
+        self.assertTrue(line.startswith("  ok "), line)
+        self.assertIn(when, line)
+
+    def test_given_role_dev_when_installed_then_ci_release_and_ygg_get_a_daily_prune_timer(self):
         self.install("dev")
         calls = self.calls()
         stdout, rows = self.rows("dev")
         for user in ("ci", "release"):
             with self.subTest(user=user):
-                for name in self.PRUNE_UNITS:
-                    self.assertEqual((self.unit_dir(user) / name).read_text(), self.repo_unit(name))
-                # Written by the user itself (the homes are closed to the admin), into its own manager.
-                written = self.as_user(user, "tee", str(self.unit_dir(user) / "yggdrasil-prune.timer"))
-                self.assertIn(written, calls)
-                reload_call = calls.index(self.as_user(user, "systemctl --user daemon-reload"), calls.index(written))
-                enable = self.as_user(user, "systemctl --user enable --now yggdrasil-prune.timer")
-                self.assertIn(enable, calls)
-                self.assertLess(reload_call, calls.index(enable))
-                # After the engine it prunes.
-                self.assertLess(calls.index(self.as_user(user, "systemctl --user enable --now docker")),
-                                calls.index(enable))
-                line = self.prune_row(rows, user)
-                self.assertIsNotNone(line, stdout)
-                self.assertTrue(line.startswith("  ok "), line)
-                self.assertIn("Sundays at 03:00", line)
-        # Only those two users: the others have engines too, and no one asked for theirs to be pruned.
-        for user in ("ygg", "renovate", "dev"):
-            for name in self.PRUNE_UNITS:
+                self.assert_prune_timer(user, self.PRUNE_UNITS, "daily at 03:00", calls, rows, stdout)
+                for name in self.YGG_PRUNE_UNITS:
+                    self.assertFalse((self.unit_dir(user) / name).exists(), (user, name))
+        # ygg's engine builds the Jenkins images: its own pair, which never prunes what runs.
+        self.assert_prune_timer("ygg", self.YGG_PRUNE_UNITS, "daily at 02:00", calls, rows, stdout)
+        for name in self.PRUNE_UNITS:
+            self.assertFalse((self.unit_dir("ygg") / name).exists(), name)
+        # Not renovate (renovate.sh removes the images it no longer runs) and not dev (the owner's).
+        for user in ("renovate", "dev"):
+            for name in self.PRUNE_UNITS + self.YGG_PRUNE_UNITS:
                 self.assertFalse((self.unit_dir(user) / name).exists(), (user, name))
             self.assertIsNone(self.prune_row(rows, user), stdout)
         # The step comes right after the engines, before the backup and renovate timers.
-        self.assertLess(calls.index(self.as_user("release", "systemctl --user enable --now yggdrasil-prune.timer")),
+        self.assertLess(calls.index(self.as_user("ygg", "systemctl --user enable --now yggdrasil-prune-ygg.timer")),
                         calls.index(self.as_user("ygg", "systemctl --user enable --now yggdrasil-backup.timer")))
 
-    def test_given_role_apps_when_installed_then_no_prune_timer_is_made(self):
+    def test_given_role_apps_when_installed_then_ygg_gets_the_prune_that_keeps_what_runs(self):
         self.install("apps")
-        # ci and release do not exist on the apps machine; ygg's engine is the deploys', not CI's.
+        calls = self.calls()
+        stdout, rows = self.rows("apps")
+        self.assert_prune_timer("ygg", self.YGG_PRUNE_UNITS, "daily at 02:00", calls, rows, stdout)
+        # Never the CI engines' prune, which removes every unused image: ci and release do not exist here.
         for name in self.PRUNE_UNITS:
             self.assertFalse((self.unit_dir("ygg") / name).exists(), name)
-        self.assertEqual([c for c in self.calls() if "prune" in c], [])
-        stdout, rows = self.rows("apps")
-        self.assertEqual([line for line in rows if "prune" in line], [], stdout)
+        self.assertEqual([line for line in rows if "prune timer" in line], [self.prune_row(rows, "ygg")], stdout)
 
     def test_given_the_prune_timers_installed_when_installed_again_then_nothing_is_written_or_enabled(self):
         self.install("dev")
@@ -2183,7 +2194,7 @@ class MachineRoleTests(unittest.TestCase):
         (self.state / "sudo-denied").write_text("")
         calls_before = len(self.calls())
         stdout, rows = self.rows("dev")
-        for user in ("ci", "release"):
+        for user in ("ci", "release", "ygg"):
             line = self.prune_row(rows, user)
             self.assertTrue(line.startswith("  !! "), stdout)
             self.assertIn("not checked", line)
@@ -2518,31 +2529,57 @@ class InstalledAppsTests(InstalledRoleTests):
 
 
 class PruneUnitTests(unittest.TestCase):
-    """The two units of the prune timers, read as text: what they run and when."""
+    """The units of the prune timers, read as text: what they run and when."""
 
     UNITS = HOST.parent.parent / "platform" / "systemd"
 
-    def test_given_the_timer_when_read_then_it_fires_on_sundays_at_three_with_catch_up_and_a_delay(self):
+    def test_given_the_timer_when_read_then_it_fires_daily_at_three_with_catch_up_and_a_delay(self):
+        # Daily: the size limit below has to hold between two runs, and a week of checks is over 50 GB.
         text = (self.UNITS / "yggdrasil-prune.timer").read_text()
-        self.assertRegex(text, r"(?m)^OnCalendar=Sun 03:00$")
+        self.assertRegex(text, r"(?m)^OnCalendar=\*-\*-\* 03:00:00$")
         self.assertRegex(text, r"(?m)^Persistent=true$")
         self.assertRegex(text, r"(?m)^RandomizedDelaySec=1h$")
         self.assertRegex(text, r"(?m)^WantedBy=timers\.target$")
 
-    def test_given_the_service_when_read_then_it_prunes_the_users_own_engine_of_what_is_a_week_old(self):
+    def test_given_the_service_when_read_then_it_prunes_the_users_own_engine_by_age_and_its_cache_by_size(self):
         text = (self.UNITS / "yggdrasil-prune.service").read_text()
         self.assertRegex(text, r"(?m)^After=docker\.service$")
         self.assertRegex(text, r"(?m)^Type=oneshot$")
         # A user unit doesn't read .profile: it names the user's own engine itself, never the system's.
         self.assertRegex(text, r"(?m)^Environment=DOCKER_HOST=unix://%t/docker\.sock$")
         self.assertNotIn("/var/run/docker.sock", text)
+        # The size limit is a run of its own: BuildKit never removes a record younger than `until`.
         self.assertEqual(
             re.findall(r"(?m)^ExecStart=(.*)$", text),
             ["/usr/bin/docker system prune --all --force --filter until=168h",
-             "/usr/bin/docker builder prune --all --force --filter until=168h"])
+             "/usr/bin/docker builder prune --all --force --filter until=168h",
+             "/usr/bin/docker builder prune --all --force --max-used-space 40GB"])
         # No volume is pruned (a build's cache volumes are state), and nothing here runs as another user.
         self.assertNotRegex(text, r"(?m)--volumes|volume prune|^User=")
 
+    def test_given_ygg_s_timer_when_read_then_it_fires_daily_at_two_before_the_backup(self):
+        text = (self.UNITS / "yggdrasil-prune-ygg.timer").read_text()
+        self.assertRegex(text, r"(?m)^OnCalendar=\*-\*-\* 02:00:00$")
+        self.assertRegex(text, r"(?m)^Persistent=true$")
+        self.assertRegex(text, r"(?m)^RandomizedDelaySec=30m$")
+        self.assertRegex(text, r"(?m)^WantedBy=timers\.target$")
+
+    def test_given_ygg_s_service_when_read_then_it_never_prunes_a_container_a_volume_or_a_tagged_image(self):
+        text = (self.UNITS / "yggdrasil-prune-ygg.service").read_text()
+        self.assertRegex(text, r"(?m)^After=docker\.service$")
+        self.assertRegex(text, r"(?m)^Type=oneshot$")
+        self.assertRegex(text, r"(?m)^Environment=DOCKER_HOST=unix://%t/docker\.sock$")
+        self.assertNotIn("/var/run/docker.sock", text)
+        # Dangling images only (no --all: deploy.sh's rollback images have no container), and build cache.
+        self.assertEqual(
+            re.findall(r"(?m)^ExecStart=(.*)$", text),
+            ["/usr/bin/docker image prune --force",
+             "/usr/bin/docker builder prune --all --force --filter until=168h",
+             "/usr/bin/docker builder prune --all --force --max-used-space 20GB"])
+        # The engine runs the platform and every environment, an on-demand one as stopped containers.
+        commands = "\n".join(re.findall(r"(?m)^ExecStart=(.*)$", text))
+        self.assertNotRegex(commands, r"system prune|container prune|volume prune|network prune|--volumes|image prune (--all|-a)")
+        self.assertNotRegex(text, r"(?m)^User=")
 
 if __name__ == "__main__":
     unittest.main()

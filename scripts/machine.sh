@@ -454,11 +454,26 @@ machine_wait_for_user_manager() {
 
 # ---- The prune timers ---------------------------------------------------------------------------
 
-# The user units of the weekly prune (platform/systemd), dev machine only: the same pair for ci and release,
-# the users whose rootless engines keep the images and build cache of every build. Each user gets its own
-# copy in its own systemd directory and its own timer, and prunes its own engine.
-MACHINE_PRUNE_UNITS=(yggdrasil-prune.service yggdrasil-prune.timer)
-MACHINE_PRUNE_USERS=(ci release)
+# The user units of the daily prunes (platform/systemd), for the users whose rootless engines keep the images
+# and build cache of every build: ci and release on the dev machine (yggdrasil-prune, everything unused), and
+# ygg on both machines (yggdrasil-prune-ygg, only dangling images and build cache: its engine runs the platform
+# and the deployed environments). Each user gets its own copy in its own systemd directory and its own timer,
+# and prunes its own engine. renovate's engine holds only Renovate's image: scripts/renovate.sh removes the
+# ones it no longer runs after each run. dev's engine is the owner's to look after.
+machine_prune_users() {
+  case $1 in
+    dev) printf '%s\n' ci release ygg ;;
+    apps) printf '%s\n' ygg ;;
+  esac
+}
+# machine_prune_unit <user>: the name of the user's pair, without .service or .timer.
+machine_prune_unit() {
+  if [[ "$1" == ygg ]]; then echo yggdrasil-prune-ygg; else echo yggdrasil-prune; fi
+}
+# machine_prune_when <user>: when the user's timer fires, as the check and the install say it.
+machine_prune_when() {
+  if [[ "$1" == ygg ]]; then echo "daily at 02:00"; else echo "daily at 03:00"; fi
+}
 machine_prune_unit_dir() { echo "$(passwd_field "$1" 6)/.config/systemd/user"; }
 
 # ---- The backup timer ---------------------------------------------------------------------------
@@ -1133,16 +1148,18 @@ machine_check_cannot_read() {
   fi
 }
 
-# machine_check_prune_timer: dev only. For ci and for release: its two prune units are the checkout's
-# copies, and its timer is enabled; asked of the user itself (its home is closed to the admin), through sudo
-# without a password.
+# machine_check_prune_timer: for each user whose engine is pruned (machine_prune_users): its two prune units
+# are the checkout's copies, and its timer is enabled; asked of the user itself (its home is closed to the
+# admin), through sudo without a password.
 machine_check_prune_timer() {
-  [[ "$machine_current_role" == dev ]] || return 0
-  title "CI engine prunes"
-  local user dir unit held stale unit_state
-  for user in "${MACHINE_PRUNE_USERS[@]}"; do
+  title "Engine prunes"
+  local user dir unit held stale unit_state base when users
+  mapfile -t users < <(machine_prune_users "$machine_current_role")
+  for user in "${users[@]}"; do
+    base=$(machine_prune_unit "$user")
+    when=$(machine_prune_when "$user")
     if ! user_exists "$user"; then
-      row missing "prune timer $user" "no $user user yet: install creates it, then the weekly prune of its engine"
+      row missing "prune timer $user" "no $user user yet: install creates it, then the daily prune of its engine"
       machine_need prune-timer
       continue
     fi
@@ -1152,7 +1169,7 @@ machine_check_prune_timer() {
     fi
     dir=$(machine_prune_unit_dir "$user")
     stale=()
-    for unit in "${MACHINE_PRUNE_UNITS[@]}"; do
+    for unit in "$base.service" "$base.timer"; do
       if ! held=$(read_as_user "$user" cat "$dir/$unit" 2>/dev/null) || [[ "$held" != "$(<"$root/platform/systemd/$unit")" ]]; then
         stale+=("$unit")
       fi
@@ -1160,11 +1177,11 @@ machine_check_prune_timer() {
     if ((${#stale[@]})); then
       row missing "prune timer $user" "$dir: ${stale[*]} not there or not the checkout's copy: install writes them"
       machine_need prune-timer
-    elif ! unit_state=$(read_as_user "$user" systemctl --user is-enabled yggdrasil-prune.timer 2>/dev/null); then
-      row missing "prune timer $user" "yggdrasil-prune.timer is ${unit_state:-not enabled}: install enables it (Sundays at 03:00)"
+    elif ! unit_state=$(read_as_user "$user" systemctl --user is-enabled "$base.timer" 2>/dev/null); then
+      row missing "prune timer $user" "$base.timer is ${unit_state:-not enabled}: install enables it ($when)"
       machine_need prune-timer
     else
-      row ok "prune timer $user" "yggdrasil-prune.timer enabled for $user, Sundays at 03:00 ($dir)"
+      row ok "prune timer $user" "$base.timer enabled for $user, $when ($dir)"
     fi
   done
 }
@@ -1458,7 +1475,13 @@ machine_step_text() {
       fi
       ;;
     engines) echo "Give each service user ($(role_users "$machine_current_role" | paste -sd' ' -)) its own rootless Docker engine: linger on, slirp4netns network and port driver, started now and at boot, and DOCKER_HOST in its .profile." ;;
-    prune-timer) echo "Install the weekly Docker prune for ${MACHINE_PRUNE_USERS[*]} (dev machine): the units yggdrasil-prune.service and .timer into each one's ~/.config/systemd/user (as that user), and enable the timer (Sundays at 03:00). Each prunes its own engine of what has not been used for a week." ;;
+    prune-timer)
+      if [[ "$machine_current_role" == dev ]]; then
+        echo "Install the daily Docker prunes: for ci and release the units yggdrasil-prune.service and .timer (03:00: what has not been used for a week, then build cache over 40 GB), for ygg yggdrasil-prune-ygg.service and .timer (02:00: dangling images and build cache only), into each one's ~/.config/systemd/user (as that user), and enable the timers. Each prunes its own engine."
+      else
+        echo "Install the daily Docker prune for ygg: the units yggdrasil-prune-ygg.service and .timer into $(machine_prune_unit_dir ygg) (as ygg), and enable the timer (02:00). It removes dangling images, build cache no build used for a week, then build cache over 20 GB; never a container, a volume or a tagged image."
+      fi
+      ;;
     backup-timer) echo "Install the nightly backup for ygg: the units yggdrasil-backup.service and .timer into $(machine_backup_unit_dir) (as ygg), and enable the timer (03:30). What is backed up, and where to, is in $(secrets_dir_of ygg)/backup.conf (env/backup.conf.example)." ;;
     signals-timer) echo "Install Heimdall's security signal job for ygg (apps machine): the units yggdrasil-security-signals@.service and .timer into $(machine_signals_unit_dir) (as ygg), and enable the timer of ${MACHINE_SIGNALS_ENVIRONMENTS[*]} (every fifteen minutes). Its Hermes key, alert address and heartbeat URL go in $(secrets_dir_of ygg)/security-signals-<environment>.env (env/security-signals.env.example)." ;;
     renovate-timer) echo "Install the daily Renovate run for renovate (dev machine): the units yggdrasil-renovate.service and .timer into $(machine_renovate_unit_dir) (as renovate), and enable the timer (05:00). Its Forgejo token goes in $(secrets_dir_of renovate)/renovate.env (env/renovate.env.example)." ;;
@@ -1779,25 +1802,27 @@ step_engines() {
   done
 }
 
-# The prune units are copied by ci and by release themselves, each into its own home, and each timer is
+# The prune units are copied by each user itself (machine_prune_users), into its own home, and each timer is
 # enabled now and at boot after its user's engine (the prune happens in it). Nothing to configure: unlike the
 # backup, it needs no file from the owner.
 step_prune_timer() {
-  local user dir unit
-  for user in "${MACHINE_PRUNE_USERS[@]}"; do
+  local user dir unit base users
+  mapfile -t users < <(machine_prune_users "$machine_current_role")
+  for user in "${users[@]}"; do
     if ! user_exists "$user"; then
       warn "there is no $user user yet: its prune timer is left for the next install."
       continue
     fi
+    base=$(machine_prune_unit "$user")
     dir=$(machine_prune_unit_dir "$user")
     machine_wait_for_user_manager "$user"
     run_as_user "$user" mkdir -p "$dir"
-    for unit in "${MACHINE_PRUNE_UNITS[@]}"; do
+    for unit in "$base.service" "$base.timer"; do
       [[ -f "$root/platform/systemd/$unit" ]] || die "$root/platform/systemd/$unit is missing from the checkout"
       run_as_user "$user" tee "$dir/$unit" <"$root/platform/systemd/$unit" >/dev/null
     done
     run_as_user "$user" systemctl --user daemon-reload
-    run_as_user "$user" systemctl --user enable --now yggdrasil-prune.timer
+    run_as_user "$user" systemctl --user enable --now "$base.timer"
   done
 }
 

@@ -605,7 +605,10 @@ lockfiles (node and npm, cargo, dotnet, dart and flutter, and the rest). The def
 demand, several from GitHub releases (node from `containerbase/node-prebuild`). Without `RENOVATE_GITHUB_COM_TOKEN`,
 those lookups meet GitHub's anonymous rate limit: the log shows `Rate limit exceeded for api.github.com` and then
 `No tool releases found`, and the pull request gets "Artifact update problem" with its lockfile left as it was. The
-full image needs no such download. It is several GB, so `renovate`'s engine needs the room.
+full image needs no such download. It is several GB, so `renovate`'s engine needs the room. After each run,
+however it ended, `renovate.sh` removes every image of the engine that is not the pinned one and that no container
+uses: the previous version's image after an update, which nothing else would remove. The pinned image stays, so
+the next run does not download it again.
 
 Its settings are `/etc/yggdrasil-renovate/renovate.env` (`ygg install` copies
 [env/renovate.env.example](../env/renovate.env.example) there: `renovate:renovate`, mode `600`). Fill in as `renovate`
@@ -697,27 +700,56 @@ git -C ../heimdall-api show <commit>:scripts/security_signals.py >platform/heimd
 sha256sum platform/heimdall-signals/security_signals.py
 ```
 
-### The CI engines: the weekly prune
+### The engines: the daily prunes
 
-DevOps Server only. Every build in `ci`'s and `release`'s rootless engines leaves images and build cache behind,
-and nothing else removes them. `ygg install` (step `prune-timer`, right after the engines) copies
-[platform/systemd](../platform/systemd)'s `yggdrasil-prune.service` and `yggdrasil-prune.timer` into
-`~/.config/systemd/user/` of **each** of `ci` and `release`, as that user, and enables the timer, the same way
-as the backup's and Renovate's. The timer fires on Sundays at 03:00 (plus a random delay of up to an hour;
-`Persistent=true`, so a machine that was off then prunes when it is next on). The service runs, after the
-user's own `docker.service` and against its own engine (`DOCKER_HOST=unix://%t/docker.sock`):
+Every build leaves images and build cache behind in the engine it ran in, and Docker never removes them by
+itself: on the DevOps Server the checks in `ci`'s engine, the releases in `release`'s and the Jenkins images in
+`ygg`'s; on an Application Server every deploy, which builds its images in `ygg`'s engine (139 GB of build
+cache there before these timers). `ygg install` (step `prune-timer`, right after the engines) copies a pair of
+[platform/systemd](../platform/systemd) units into `~/.config/systemd/user/` of each of those users, as that
+user, and enables the timer, the same way as the backup's and Renovate's. Each runs after the user's own
+`docker.service` and against its own engine (`DOCKER_HOST=unix://%t/docker.sock`); `Persistent=true`, so a
+machine that was off then prunes when it is next on.
+
+| User | Units | When | What it removes |
+|---|---|---|---|
+| `ci`, `release` (DevOps Server) | `yggdrasil-prune.service`, `.timer` | Every day at 03:00, plus up to an hour | Every image no container uses and all build cache, not used for a week; then build cache, least used first, until it is under 40 GB |
+| `ygg` (both servers) | `yggdrasil-prune-ygg.service`, `.timer` | Every day at 02:00, plus up to half an hour | Dangling images; build cache not used for a week; then build cache, least used first, until it is under 20 GB |
+
+`ci`'s and `release`'s service runs:
 
 ```bash
 docker system prune --all --force --filter until=168h
 docker builder prune --all --force --filter until=168h
+docker builder prune --all --force --max-used-space 40GB
 ```
 
-That is, every image no container uses and all build cache that has not been used for a week; what a build of
-the last seven days could still reuse stays. Volumes are never pruned. `ygg check --role dev` has a row
-`prune timer ci` and `prune timer release`, which is `ok` while the units are the checkout's copies and the
-timer is enabled; `systemctl --user list-timers` and `journalctl --user -u yggdrasil-prune` (as that user) show
-the next and the last run. No other user's engine is pruned: `ygg`'s holds the platform and the deployed
-applications, which are not leftovers.
+`ygg`'s runs:
+
+```bash
+docker image prune --force
+docker builder prune --all --force --filter until=168h
+docker builder prune --all --force --max-used-space 20GB
+```
+
+The size limit is a run of its own because BuildKit never removes a build cache record younger than `until`,
+whatever the limit says: a busy week of checks makes more than 50 GB of cache in `ci`'s engine, all of it younger
+than a week. Without `until`, `--max-used-space` removes the records used least, and least recently, until the
+rest is under the limit (`--reserved-space`, a floor, and `--min-free-space`, a target of free disk, are not
+used). The timers are daily so that the limit holds between two runs.
+
+`ygg`'s prune never touches what runs: no `system prune`, and no container, volume or network prune, since its
+engine holds the platform and every deployed environment, and an on-demand environment that is switched off is a
+set of stopped containers. It removes **dangling** images only, not every unused one: `scripts/deploy.sh` keeps
+the last `keepImages` images of each application in each environment ([catalog.md](catalog.md)) for its
+rollbacks, and only the running one has a container. Volumes are never pruned on any engine. `renovate`'s engine
+holds only Renovate's image: `scripts/renovate.sh` removes the images it no longer runs after each run
+([Renovate](#renovate-the-daily-run)). `dev`'s engine is not pruned.
+
+`ygg check` has a row `prune timer <user>` for each of them (`ci`, `release` and `ygg` on the DevOps Server,
+`ygg` on an Application Server), which is `ok` while the units are the checkout's copies and the timer is
+enabled; `systemctl --user list-timers` and `journalctl --user -u yggdrasil-prune` (or `-u yggdrasil-prune-ygg`,
+as that user) show the next and the last run.
 
 ### Other files and rules
 

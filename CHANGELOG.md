@@ -90,6 +90,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the engine wrote the rest of the archive into the container's log, which nothing limits: on 2026-11-18 a
   failed Jenkins backup left a 40 GB log on the DevOps Server and filled its disk. The container is now named,
   keeps no log, and is removed when the dump fails or the run is stopped.
+- **Every engine that builds or pulls is pruned, every day.** Nothing pruned `ygg`'s engine, where an Application
+  Server's deploys build their images: its build cache reached 139 GB. `renovate`'s kept every Renovate image it
+  ever ran (9.1 GB unused), and `ci`'s weekly prune kept a week of build cache, which a busy week makes 50 GB or
+  more of. `ygg install` (step `prune-timer`) now also gives `ygg`, on both servers, a daily prune of its own
+  (`yggdrasil-prune-ygg.service` and `.timer`, at 02:00): dangling images, build cache no build used for a week,
+  then build cache over 20 GB, least used first. Never `system prune`, a container, a volume or a tagged image:
+  the engine runs the platform and every environment, an on-demand one as stopped containers, and `deploy.sh`'s
+  rollback images (`keepImages`) have no container. `ci`'s and `release`'s prune now runs every day instead of on
+  Sundays, and keeps their build cache under 40 GB too, by a run of its own (`docker builder prune
+  --max-used-space`): BuildKit never removes a record younger than `--filter until`, whatever the limit.
+  `scripts/renovate.sh` removes, after each run, every image of `renovate`'s engine that is not the pinned one and
+  that no container uses. `ygg check` has a `prune timer ygg` row on both roles. **Upgrading:** `git pull` the
+  checkout on both servers, then run `ygg install` (as the admin) on each: it writes the units and enables the
+  timers. Renovate's cleanup needs only the pull.
 - **Switching hosts keeps the new host's remembered environment.** The overview remembers which environment
   (development, production...) was chosen on each saved host, and reads it when a host is selected. A read
   started for the host selected before could answer after the new host's, and then showed the old host's
