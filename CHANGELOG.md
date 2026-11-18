@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.9] - 2026-11-18
+
 ### Added
 
 - **Checks no longer download Flutter.** Every check of the eight Flutter repositories (chimera, orpheus, maestro,
@@ -1587,7 +1589,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...HEAD
+[0.13.9]: https://github.com/artur-rios/yggdrasil/compare/v0.13.8...v0.13.9
 [0.13.8]: https://github.com/artur-rios/yggdrasil/compare/v0.13.7...v0.13.8
 [0.13.7]: https://github.com/artur-rios/yggdrasil/compare/v0.13.6...v0.13.7
 [0.13.6]: https://github.com/artur-rios/yggdrasil/compare/v0.13.5...v0.13.6
