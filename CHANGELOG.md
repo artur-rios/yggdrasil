@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.13] - 2026-11-18
+
 ### Added
 
 - **`ygg install --role dev` sets up the rest of the `dev` user for AI development**, the parts that were done by
@@ -1652,7 +1654,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.13...HEAD
+[0.13.13]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...v0.13.13
 [0.13.12]: https://github.com/artur-rios/yggdrasil/compare/v0.13.11...v0.13.12
 [0.13.11]: https://github.com/artur-rios/yggdrasil/compare/v0.13.10...v0.13.11
 [0.13.10]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...v0.13.10
