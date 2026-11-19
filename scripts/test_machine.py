@@ -960,6 +960,25 @@ class MachineRoleTests(unittest.TestCase):
         self.assertIn("not as root", result.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_given_check_run_with_sudo_when_checked_then_the_admin_is_the_one_who_ran_sudo(self):
+        # `sudo ygg check` (which check itself tells you to run) is root with SUDO_USER: the admin's ssh file
+        # is the one install wrote, AllowUsers <admin> ygg dev, not root's.
+        self.install("dev")
+        stdout, rows = self.rows("dev", FAKE_UID="0", FAKE_ADMIN="root", SUDO_USER="admin")
+        line = self.row(rows, "ssh")
+        self.assertIsNotNone(line, stdout)
+        self.assertTrue(line.startswith("  ok "), line)
+        self.assertTrue(self.row(rows, "user dev").startswith("  ok "), stdout)
+
+    def test_given_check_run_as_root_without_sudo_when_checked_then_root_is_not_taken_for_the_admin_s_file(self):
+        # Root itself (a root login, or `sudo` with no SUDO_USER) has no admin to stand for: the file names
+        # someone else, so the row is not ok.
+        self.install("dev")
+        stdout, rows = self.rows("dev", FAKE_UID="0", FAKE_ADMIN="root", SUDO_USER="")
+        self.assertFalse(self.row(rows, "ssh").startswith("  ok "), stdout)
+        stdout, rows = self.rows("dev", FAKE_UID="0", FAKE_ADMIN="root", SUDO_USER="root")
+        self.assertFalse(self.row(rows, "ssh").startswith("  ok "), stdout)
+
     def test_given_assume_yes_unset_when_installing_then_nothing_is_changed_without_an_answer(self):
         env = {k: v for k, v in self.env.items() if k != "YGG_ASSUME_YES"}
         result = subprocess.run(

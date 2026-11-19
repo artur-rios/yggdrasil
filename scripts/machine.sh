@@ -263,8 +263,16 @@ machine_low_ports_path() {
 machine_low_ports_content() { printf '%s\n' "[Slice]" "SocketBindDeny=tcp:1-1023" "SocketBindDeny=udp:1-1023"; }
 
 # The admin is whoever runs install (it refuses root). Only the admin and the role's ssh users may log
-# in, and only with a key.
-machine_admin() { id -un; }
+# in, and only with a key. `sudo ygg check` (which check asks for when it can't read a row) runs as root:
+# the admin is then the user who ran sudo (SUDO_USER), so the rows compare with what that admin's install
+# wrote. Root itself, with no SUDO_USER or with root's, stays root.
+machine_admin() {
+  if [[ "$(id -u)" == 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    echo "$SUDO_USER"
+  else
+    id -un
+  fi
+}
 machine_admin_keys() {
   local home
   home=$(passwd_field "$(machine_admin)" 6)
