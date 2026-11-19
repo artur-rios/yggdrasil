@@ -393,7 +393,13 @@ The DevOps Server is where AI development sessions run (Claude Code, say), as `d
   ([limits.conf](#etcsystemdsystemuser-uidslicedlimitsconf-devops-server)). A test suite that runs away
   is killed inside `dev`'s share, not Forgejo or Jenkins next to it;
 - a daily prune of its engine that keeps its containers and their images
-  ([the daily prunes](#the-engines-the-daily-prunes)).
+  ([the daily prunes](#the-engines-the-daily-prunes));
+- the apt packages the repositories' toolchains build with, on the DevOps Server only: `build-essential`
+  (Rust links with `cc`), `unzip` (Flutter's SDK), `zip`, `pkg-config` and `jq`. The SDKs themselves are
+  never from apt; `ygg check`'s `packages` row counts these too;
+- its two commands, [platform/dev](../platform/dev)'s `ci-check` and `dev-toolchains`, copied by `dev` into its
+  `~/.local/bin` (step `dev-tools`). `ygg check` has a row for each (`ci-check`, `dev-toolchains`: there and the
+  checkout's copy), and a `dev sdks` row that warns until `dev` has run `dev-toolchains`.
 
 The rest is the owner's, once, and stays in `dev`'s home (mode `750`), so the system keeps only what
 `ygg install` put there:
@@ -416,19 +422,61 @@ The rest is the owner's, once, and stays in `dev`'s home (mode `750`), so the sy
    tea login add --name forgejo --url https://git.<DOMAIN> --token '<the token>'
    ```
 
-2. **The agent and the toolchains, in `dev`'s home.** Claude Code's installer puts it in `~/.local/bin`, and
-   `claude` asks for a sign-in the first time: on a server it prints a URL to open on another device, and
-   the code it shows goes back into the terminal. The SDKs the repositories need go in the home too, never
-   from apt: .NET with `dotnet-install.sh` into `~/.dotnet`, Node through a version manager, Flutter or
-   Hugo unpacked into `~`.
+2. **The toolchains, in `dev`'s home.** As `dev`, `dev-toolchains` installs what the repositories build with,
+   each download checked against its published checksum before it is unpacked or run: Flutter 3.50.0 (the
+   repositories' `FLUTTER_SHA256`) into `~/sdk/flutter`, rustup's stable Rust with clippy and rustfmt into
+   `~/.cargo`, Go 1.26.10 into `~/sdk/go`, Hugo extended 0.165.0 into `~/sdk/hugo`, the newest Node LTS into
+   `~/sdk/node`, and uv (with ShellCheck as a uv tool) into `~/.local/bin`. It adds their `PATH` to
+   `~/.profile` once, between `# >>> dev sdk >>>` and `# <<< dev sdk <<<`. It is safe to run again: what is
+   there at its version is left alone, and after a pin changes (a new `dev-toolchains` from `ygg install`) it
+   fetches the new one. It needs about 2 GB, most of it Flutter. .NET is not in it: `dotnet-install.sh` puts
+   it in `~/.dotnet`, with its own block in `~/.profile`.
+
+   ```bash
+   dev-toolchains
+   curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
+   cat >>~/.profile <<'EOF'
+
+   # >>> dev toolchains >>>
+   export DOTNET_ROOT="$HOME/.dotnet"
+   export DOTNET_CLI_TELEMETRY_OPTOUT=1
+   export PATH="$HOME/.local/bin:$DOTNET_ROOT:$DOTNET_ROOT/tools:$PATH"
+   # <<< dev toolchains <<<
+   EOF
+   ```
+
+3. **The agent.** Claude Code's installer puts it in `~/.local/bin`, and `claude` asks for a sign-in the first
+   time: on a server it prints a URL to open on another device, and the code it shows goes back into the
+   terminal. The sign-in is kept in `~/.claude`; the owner's own settings for it (`CLAUDE.md`,
+   `settings.json`, `skills/`, `plugins/`) are copied there from the workstation.
 
    ```bash
    curl -fsSL https://claude.ai/install.sh | bash
-   curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
    ```
 
-3. **A session that outlives the connection.** Run the agent inside `tmux new -As work` (tmux comes with
+4. **The repositories, in `~/repositories`.** Each one is cloned over HTTPS with the `claude` token, into
+   `~/repositories/<name>`; `ci-check` takes yggdrasil's `run-check.sh` from `~/repositories/yggdrasil`
+   (from `/opt/yggdrasil`, the machine's checkout, while there is no clone):
+
+   ```bash
+   mkdir -p ~/repositories
+   git clone https://git.<DOMAIN>/artur-rios/<name>.git ~/repositories/<name>
+   ```
+
+5. **A session that outlives the connection.** Run the agent inside `tmux new -As work` (tmux comes with
    Ubuntu); `ssh dev@<host>` and the same command later pick it up again.
+
+Most checks build and test natively with those toolchains. The ones that need what the DevOps Server does
+not have (GTK and Xvfb, Playwright's browsers, Android, the system libraries a check installs with apt) run
+in their own image with `ci-check`, as Jenkins runs them: through `scripts/run-check.sh`, in `dev`'s engine,
+against the working tree as it is (uncommitted changes too). A `docker: true` check gets `dev`'s socket and
+the host's address for Testcontainers, as a CI agent does ([scripts/agent.sh](../scripts/agent.sh)). It has
+no toolchain cache, so a Flutter check fetches its SDK inside the container:
+
+```bash
+ci-check --list                  # the checks of the repository the current directory is in
+ci-check <check> [<repo-dir>]    # runs one; exits with its status
+```
 
 `dev`'s home is in no backup: what matters is pushed to Forgejo, which is.
 

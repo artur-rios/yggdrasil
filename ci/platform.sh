@@ -56,7 +56,7 @@ python3 -m venv "$work/venv"
 export PATH="$work/venv/bin:$PATH"
 
 echo "== Check shell scripts"
-shellcheck scripts/*.sh scripts/ygg ci/*.sh
+shellcheck scripts/*.sh scripts/ygg ci/*.sh platform/dev/*
 
 pip install --quiet pyyaml cryptography
 

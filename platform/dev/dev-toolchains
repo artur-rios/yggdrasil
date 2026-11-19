@@ -32,8 +32,10 @@ fetch() { curl -fsSL --proto '=https' --tlsv1.2 -o "$1" "$2"; }
 fetch_text() { curl -fsSL --proto '=https' --tlsv1.2 "$1"; }
 # verify <sha256> <file>: stops unless the file has that checksum.
 verify() {
-  [[ "$1" =~ ^[0-9a-f]{64}$ ]] && echo "$1  $2" | sha256sum -c --quiet >/dev/null 2>&1 \
-    || { echo "dev-toolchains: $2 does not match its published checksum: nothing of it is installed" >&2; exit 1; }
+  if ! [[ "$1" =~ ^[0-9a-f]{64}$ ]] || ! echo "$1  $2" | sha256sum -c --quiet >/dev/null 2>&1; then
+    echo "dev-toolchains: $2 does not match its published checksum: nothing of it is installed" >&2
+    exit 1
+  fi
 }
 # checksum_in <file> <list>: the checksum a list of "<sha256>  <file>" lines gives the file.
 checksum_in() { awk -v file="$1" '$2 == file || $2 == "*" file { print $1; exit }' "$2"; }
@@ -130,4 +132,4 @@ export GOTOOLCHAIN=local
 # <<< dev sdk <<<
 EOF
 fi
-say done
+say "done"
