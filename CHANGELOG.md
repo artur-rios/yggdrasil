@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.14] - 2026-11-19
+
+### Fixed
+
+- **`sudo ygg check` no longer reports the SSH settings as changed.** `check` takes the admin to be whoever runs
+  it, and under `sudo` that was `root`. So it expected `AllowUsers root ygg dev` where `install` had written
+  `AllowUsers <admin> ygg dev`, and showed `ssh … differs: install rewrites it` on a server that was fine, though
+  `check` itself suggests `sudo` for the rows it can't read. Run as root with `SUDO_USER` set, the admin is now the
+  user who ran `sudo`. A root login keeps `root`, and `install` still refuses to run as root. Nothing to do when
+  upgrading: `ygg check` reads the checkout.
+
 ## [0.13.13] - 2026-11-18
 
 ### Added
@@ -1654,7 +1665,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.13...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.14...HEAD
+[0.13.14]: https://github.com/artur-rios/yggdrasil/compare/v0.13.13...v0.13.14
 [0.13.13]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...v0.13.13
 [0.13.12]: https://github.com/artur-rios/yggdrasil/compare/v0.13.11...v0.13.12
 [0.13.11]: https://github.com/artur-rios/yggdrasil/compare/v0.13.10...v0.13.11
