@@ -414,6 +414,13 @@ EVERY_PACKAGE = [
     "python3-cryptography", "uidmap", "dbus-user-session", "slirp4netns", *DOCKER_PACKAGES, "ufw",
     "rsync", "unattended-upgrades",
 ]
+# The dev machine's own, for the AI sessions as dev: Rust links with cc, Flutter's SDK unzips.
+DEV_PACKAGES = ["build-essential", "unzip", "zip", "pkg-config", "jq"]
+# What dev-toolchains leaves in dev's home, under the names the dev sdks row gives them.
+DEV_SDKS = {
+    "flutter": "sdk/flutter/bin/flutter", "rust": ".cargo/bin/cargo", "go": "sdk/go/bin/go",
+    "hugo": "sdk/hugo/hugo", "node": "sdk/node/bin/node", "uv": ".local/bin/uv",
+}
 DOCKER_UNITS = ["docker.service", "docker.socket", "containerd.service"]
 
 SYSCTL = "net.ipv4.ip_unprivileged_port_start=80\n"
@@ -490,7 +497,7 @@ class MachineRoleTests(unittest.TestCase):
             fake.write_text("#!/usr/bin/env bash\n" + textwrap.dedent(body).lstrip())
             fake.chmod(0o755)
         (self.sysroot / "etc" / "os-release").write_text(UBUNTU)
-        (self.state / "installed").write_text("\n".join(EVERY_PACKAGE) + "\n")
+        (self.state / "installed").write_text("\n".join(EVERY_PACKAGE + DEV_PACKAGES) + "\n")
         (self.state / "active").write_text("")
         (self.state / "enabled").write_text("")
         (self.state / "masked").write_text("")
@@ -786,7 +793,7 @@ class MachineRoleTests(unittest.TestCase):
         self.install("dev")
         calls = self.calls()
         install = next(call for call in calls if call.startswith("apt-get -q install -y") and "uidmap" in call)
-        for package in EVERY_PACKAGE:
+        for package in EVERY_PACKAGE + DEV_PACKAGES:
             if package not in ("git", "curl", "openssl", "python3", "ca-certificates"):
                 self.assertIn(package, install.split())
         source = self.etc("apt/sources.list.d/docker.list").read_text()
@@ -795,6 +802,28 @@ class MachineRoleTests(unittest.TestCase):
         result = self.host("check", "dev")
         line = next(line for line in result.stdout.splitlines() if "packages" in line)
         self.assertIn("ok", line.split("packages")[0], result.stdout)
+
+    def test_given_a_dev_machine_without_its_build_packages_when_checked_then_they_are_missing(self):
+        self.set_packages(EVERY_PACKAGE)
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "packages")
+        self.assertTrue(line.startswith("  -- "), stdout)
+        self.assertEqual(line.split("packages", 1)[1].split(), DEV_PACKAGES)
+
+    def test_given_an_apps_machine_without_the_dev_build_packages_when_checked_then_its_packages_are_ok(self):
+        self.set_packages(EVERY_PACKAGE)
+        stdout, rows = self.rows("apps")
+        line = self.row(rows, "packages")
+        self.assertTrue(line.startswith("  ok "), stdout)
+        self.assertIn(f"{len(EVERY_PACKAGE)} installed", line)
+
+    def test_given_an_apps_machine_when_installed_then_the_dev_build_packages_are_not(self):
+        self.set_packages(["git", "curl", "openssl", "python3", "ca-certificates"])
+        self.install("apps")
+        installs = [call.split() for call in self.calls() if call.startswith("apt-get -q install")]
+        self.assertTrue(installs)
+        for package in DEV_PACKAGES:
+            self.assertFalse([call for call in installs if package in call], package)
 
     def test_given_distribution_docker_packages_when_installed_then_they_are_removed_first(self):
         self.set_packages([*EVERY_PACKAGE, "docker.io"])
@@ -1127,6 +1156,7 @@ class MachineRoleTests(unittest.TestCase):
                 self.backups_working()
                 if role == "dev":
                     self.renovate_working()
+                    self.dev_sdks_working()
                 else:
                     self.signals_working()
                 stdout, rows = self.rows(role)
@@ -1551,6 +1581,7 @@ class MachineRoleTests(unittest.TestCase):
             self.etc("ssh/sshd_config.d/00-yggdrasil.conf").read_text().splitlines()[-1], "AllowUsers dev ygg")
         self.backups_working()
         self.renovate_working()
+        self.dev_sdks_working()
         stdout, rows = self.rows("dev", FAKE_ADMIN="dev")
         self.assertIn("admin", self.row(rows, "user dev"))
         self.assertEqual([line for line in rows if not line.startswith("  ok ")], [], stdout)
@@ -2387,6 +2418,123 @@ class MachineRoleTests(unittest.TestCase):
         self.assertIn("journalctl --user -u yggdrasil-renovate", line)
 
 
+    # ---- AI development (dev) --------------------------------------------------------------------
+
+    DEV_TOOLS = ("ci-check", "dev-toolchains")
+
+    def dev_tool(self, name):
+        return self.home_of("dev") / ".local" / "bin" / name
+
+    def repo_dev_tool(self, name):
+        return (HOST.parent.parent / "platform" / "dev" / name).read_text()
+
+    def dev_tool_changes(self):
+        return [c for c in self.calls() if c.startswith("sudo -u dev") and "/.local/bin" in c]
+
+    def dev_sdks_working(self):
+        """What dev adds after install, by running dev-toolchains: the SDKs in its home, their PATH block."""
+        home = self.home_of("dev")
+        for path in DEV_SDKS.values():
+            tool = home / path
+            tool.parent.mkdir(parents=True, exist_ok=True)
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o755)
+        with (home / ".profile").open("a") as profile:
+            profile.write("\n# >>> dev sdk >>>\nexport PATH=\"$HOME/sdk/go/bin:$PATH\"\n# <<< dev sdk <<<\n")
+
+    def sdks_named(self, line):
+        """The SDKs a dev sdks row says are missing: "missing from <home>: <a, b, ...>: run ..."."""
+        listed = line.split(": ")[1] if "missing from" in line else ""
+        return set(listed.replace(",", " ").split()) & set(DEV_SDKS)
+
+    def test_given_role_dev_when_installed_then_its_tools_are_ok_and_its_sdks_wait_for_dev(self):
+        self.install("dev")
+        stdout, rows = self.rows("dev")
+        self.assertIn("== AI development ==", stdout)
+        for name in self.DEV_TOOLS:
+            line = self.row(rows, name)
+            self.assertIsNotNone(line, stdout)
+            self.assertTrue(line.startswith("  ok "), line)
+            self.assertIn(str(self.dev_tool(name)), line)
+        # The SDKs are dev's to fetch: a warning that says how, which queues nothing for install.
+        line = self.row(rows, "dev sdks")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertEqual(self.sdks_named(line), set(DEV_SDKS), line)
+        self.assertIn("run dev-toolchains as dev", line)
+        self.dev_sdks_working()
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.row(rows, "dev sdks").startswith("  ok "), stdout)
+
+    def test_given_one_sdk_missing_when_checked_then_the_dev_sdks_row_names_only_it(self):
+        self.install("dev")
+        self.dev_sdks_working()
+        (self.home_of("dev") / DEV_SDKS["hugo"]).unlink()
+        line = self.row(self.rows("dev")[1], "dev sdks")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertEqual(self.sdks_named(line), {"hugo"}, line)
+
+    def test_given_no_path_block_when_checked_then_the_dev_sdks_row_asks_for_dev_toolchains(self):
+        self.install("dev")
+        self.dev_sdks_working()
+        profile = self.home_of("dev") / ".profile"
+        profile.write_text(profile.read_text().replace("# >>> dev sdk >>>", "# a comment"))
+        line = self.row(self.rows("dev")[1], "dev sdks")
+        self.assertTrue(line.startswith("  !! "), line)
+        self.assertEqual(self.sdks_named(line), set(), line)
+        self.assertIn("PATH", line)
+
+    def test_given_a_changed_dev_tool_when_checked_then_it_is_not_ok_and_install_writes_the_checkouts_copy(self):
+        self.install("dev")
+        tool = self.dev_tool("ci-check")
+        tool.write_text("#!/bin/sh\nexit 0\n")
+        stdout, rows = self.rows("dev")
+        self.assertTrue(self.row(rows, "ci-check").startswith("  -- "), stdout)
+        self.assertTrue(self.row(rows, "dev-toolchains").startswith("  ok "), stdout)
+        self.install("dev")
+        self.assertEqual(tool.read_text(), self.repo_dev_tool("ci-check"))
+        self.assertTrue(self.row(self.rows("dev")[1], "ci-check").startswith("  ok "))
+
+    def test_given_a_dev_tool_that_is_not_executable_when_checked_then_install_makes_it_so(self):
+        self.install("dev")
+        tool = self.dev_tool("dev-toolchains")
+        tool.chmod(0o644)
+        line = self.row(self.rows("dev")[1], "dev-toolchains")
+        self.assertTrue(line.startswith("  -- "), line)
+        self.assertIn("not executable", line)
+        self.install("dev")
+        self.assertEqual(tool.stat().st_mode & 0o777, 0o755)
+
+    def test_given_the_dev_tools_installed_when_installed_again_then_nothing_is_written(self):
+        self.install("dev")
+        before = self.dev_tool_changes()
+        self.assertTrue(before)
+        self.install("dev")
+        self.assertEqual(self.dev_tool_changes(), before)
+
+    def test_given_no_dev_user_yet_when_checked_then_its_tools_are_missing_and_nothing_runs_as_dev(self):
+        stdout, rows = self.rows("dev")
+        for name in self.DEV_TOOLS:
+            self.assertTrue(self.row(rows, name).startswith("  -- "), stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith(("sudo -u dev", "sudo -n -u dev"))], [])
+
+    def test_given_sudo_asking_for_a_password_when_checked_then_the_dev_tools_are_not_checked(self):
+        self.install("dev")
+        (self.state / "sudo-denied").write_text("")
+        calls_before = len(self.calls())
+        stdout, rows = self.rows("dev")
+        for name in (*self.DEV_TOOLS, "dev sdks"):
+            line = self.row(rows, name)
+            self.assertTrue(line.startswith("  !! "), stdout)
+            self.assertIn("not checked", line)
+        self.assertEqual([c for c in self.calls()[calls_before:] if c.startswith("sudo -u")], [])
+
+    def test_given_role_apps_when_checked_then_there_are_no_dev_tool_rows(self):
+        stdout, rows = self.rows("apps")
+        for name in (*self.DEV_TOOLS, "dev sdks"):
+            self.assertIsNone(self.row(rows, name), stdout)
+        self.assertNotIn("AI development", stdout)
+
+
 def without_inherited_tests(cls):
     """A subclass of a TestCase that keeps its base's helpers and runs only the tests it defines itself:
     the inherited ones already run in the base."""
@@ -2517,6 +2665,21 @@ class InstalledDevTests(InstalledRoleTests):
 
     def test_given_a_fresh_engine_when_installed_then_it_is_not_restarted(self):
         self.assertFalse([c for c in self.calls() if "systemctl --user restart" in c], self.calls())
+
+    def test_given_role_dev_when_installed_then_dev_has_ci_check_and_dev_toolchains_from_the_checkout(self):
+        calls = self.calls()
+        for name in self.DEV_TOOLS:
+            path = self.dev_tool(name)
+            self.assertEqual(path.read_text(), self.repo_dev_tool(name))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+            # Written by dev itself: its home is closed to the admin, and the copy is dev's own.
+            written = self.as_user("dev", "tee", str(path))
+            self.assertIn(written, calls)
+            self.assertLess(calls.index(written), calls.index(self.as_user("dev", "chmod 755", str(path))))
+        # Only copied: the toolchains (about 2 GB) are dev's to fetch, never install's.
+        self.assertFalse((self.home_of("dev") / "sdk").exists())
+        self.assertFalse([c for c in calls if c.startswith("sudo -u dev") and c.endswith("/dev-toolchains")
+                          and " tee " not in c and " chmod " not in c], calls)
 
     def test_given_role_dev_when_installed_then_there_is_no_signals_timer(self):
         for name in self.SIGNAL_UNITS:
