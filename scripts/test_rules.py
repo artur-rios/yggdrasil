@@ -86,6 +86,46 @@ class DesiredRulesTests(unittest.TestCase):
         self.assertEqual(r.develop_mergers, ("artur-rios", "alice", "bob"))
         self.assertNotIn("alice", r.main_mergers)
 
+    def releasers_catalog(self):
+        value = copy.deepcopy(CATALOG)
+        value["forge"]["releasers"] = ["carol"]
+        return value
+
+    def test_given_releasers_when_modelled_then_they_push_release_branches_in_every_release_repository(self):
+        rules_of = by_repo(self.releasers_catalog())
+        for repo in ("shop-api", "toolkit", "notes"):
+            with self.subTest(repo=repo):
+                self.assertEqual(rules_of[repo].release_pushers, ("artur-rios", "carol"))
+
+    def test_given_releasers_when_modelled_then_they_merge_main_and_create_tags_of_owner_tag_repositories(self):
+        # The owner releases these by tag: a releaser may do the same, merging main and creating the tags.
+        r = by_repo(self.releasers_catalog())["toolkit"]
+        self.assertEqual((r.main_mergers, r.tag_creators), (("artur-rios", "carol"), ("artur-rios", "carol")))
+        self.assertNotIn("carol", r.develop_mergers)
+
+    def test_given_releasers_when_modelled_then_an_applications_main_and_tags_stay_jenkins_alone(self):
+        # Jenkins merges an application's main and tags it only after the release environments deployed:
+        # a releaser merging there would skip them, and their approvals.
+        r = by_repo(self.releasers_catalog())["shop-api"]
+        self.assertEqual((r.main_mergers, r.tag_creators), (("jenkins-bot",), ("jenkins-bot",)))
+
+    def test_given_releasers_when_modelled_then_a_repository_that_does_not_release_keeps_main_and_tags_the_owners(self):
+        r = by_repo(self.releasers_catalog())["notes"]
+        self.assertEqual((r.main_mergers, r.tag_creators), (("artur-rios",), ("artur-rios",)))
+
+    def test_given_releasers_when_built_then_forgejo_lists_them_where_the_model_does(self):
+        r = by_repo(self.releasers_catalog())["toolkit"]
+        built = {p["rule_name"]: p for p in rules.forgejo_branch_protections(r)}
+        self.assertEqual(built["release/*"]["push_whitelist_usernames"], ["artur-rios", "carol"])
+        self.assertEqual(built["main"]["merge_whitelist_usernames"], ["artur-rios", "carol"])
+        self.assertEqual(built["develop"]["merge_whitelist_usernames"], ["artur-rios", "alice", "bob"])
+        self.assertEqual(rules.forgejo_tag_protection(r)["whitelist_usernames"], ["artur-rios", "carol"])
+
+    def test_given_no_releasers_when_modelled_then_the_owner_alone_pushes_release_branches(self):
+        for repo, r in by_repo().items():
+            with self.subTest(repo=repo):
+                self.assertEqual(r.release_pushers, ("artur-rios",))
+
     def test_given_no_developers_when_modelled_then_the_owner_alone_merges_develop(self):
         value = copy.deepcopy(CATALOG)
         del value["forge"]

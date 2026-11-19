@@ -266,9 +266,9 @@ def _forge_errors(catalog):
     if "forge" in catalog:
         block = catalog["forge"]
         if not isinstance(block, dict):
-            errors.append("forge: a mapping with type, and url, jenkinsUser, developers, publishAgent")
+            errors.append("forge: a mapping with type, and url, jenkinsUser, developers, releasers, publishAgent")
         else:
-            unknown = set(block) - {"type", "url", "jenkinsUser", "developers", "publishAgent"}
+            unknown = set(block) - {"type", "url", "jenkinsUser", "developers", "releasers", "publishAgent"}
             if unknown:
                 errors.append(f"forge: unknown key(s) {_keys(unknown)}")
             if block.get("type") not in FORGES:
@@ -291,10 +291,13 @@ def _forge_errors(catalog):
                 errors.append("forge.jenkinsUser: a user name (letters, digits, '.', '_' and '-'; "
                               + ("optionally ending in [bot] for a GitHub App; " if forge_type == "github" else "")
                               + "default jenkins)")
-            developers = block.get("developers")
-            if "developers" in block and not (isinstance(developers, list) and all(
-                    isinstance(d, str) and USER_NAME.match(d) for d in developers)):
-                errors.append("forge.developers: a list of user names (letters, digits, '.', '_' and '-')")
+            # developers merge develop; releasers push release/* and, in the repositories the owner releases by
+            # tag, merge main and create the tags (scripts/rules.py). Forge users either way, never a bot.
+            for key in ("developers", "releasers"):
+                users = block.get(key)
+                if key in block and not (isinstance(users, list) and all(
+                        isinstance(u, str) and USER_NAME.match(u) for u in users)):
+                    errors.append(f"forge.{key}: a list of user names (letters, digits, '.', '_' and '-')")
             if "publishAgent" in block and not (isinstance(block["publishAgent"], str)
                                                 and AGENT_NAME.match(block["publishAgent"])):
                 errors.append("forge.publishAgent: a Jenkins agent name (lowercase letters, digits and dashes; "
@@ -625,6 +628,7 @@ def forge(catalog):
         url, api = "https://github.com", "https://api.github.com"
     return {"type": forge_type, "url": url, "api": api,
             "jenkinsUser": block.get("jenkinsUser", "jenkins"), "developers": list(block.get("developers") or []),
+            "releasers": list(block.get("releasers") or []),
             "publishAgent": block.get("publishAgent") or _release_agent(catalog)}
 
 

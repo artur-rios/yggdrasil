@@ -31,6 +31,10 @@ forge:
   type: forgejo
   url: https://git.techcraftsmen.net
   developers: [claude]
+  # May push release/* branches everywhere, and merge main and create the tags of the repositories released
+  # by tag (release: owner-tag). An application's main and tags stay Jenkins', after its release environments
+  # deployed: each application's production asks for a Deploy click (approval: true).
+  releasers: [claude]
 mirror:
   github: artur-rios
   releases: true
@@ -401,6 +405,11 @@ systems:
         # check: the OpenAPI document, path-filtered (yggdrasil.yml `paths`: skipped, which passes).
         checks: [test, docker, check]
         credentials: [reportgenerator-license]
+        environments:
+          local: {}
+          development: {}
+          homologation: {}
+          production: { approval: true }
       - id: heimdall-ui
         name: Heimdall web
         kind: web
@@ -413,6 +422,11 @@ systems:
           - heimdall-ui-android-keystore-password
           - heimdall-ui-android-key-alias
           - heimdall-ui-android-key-password
+        environments:
+          local: {}
+          development: {}
+          homologation: {}
+          production: { approval: true }
       - id: heimdall-docs
         name: Heimdall docs
         kind: web
@@ -439,6 +453,11 @@ systems:
         detailedHealth: http://hermes-api:9464/internal/health
         integrations: [{ external: Mailgun, check: Mailgun }]
         checks: [test, docker]
+        environments:
+          local: {}
+          development: {}
+          homologation: {}
+          production: { approval: true }
 
   - id: fortuna
     name: Fortuna
@@ -458,6 +477,11 @@ systems:
         # required (no actionsChecks).
         checks: [test, docker, check, audit, native-msrv, native-build]
         credentials: [reportgenerator-license]
+        environments:
+          local: {}
+          development: {}
+          homologation: {}
+          production: { approval: true }
       - id: fortuna-ui
         name: Fortuna web
         kind: web
@@ -465,6 +489,11 @@ systems:
         host: fortuna
         checks:
           [analyze-and-test, api-client-drift, header-drift, bindings-drift]
+        environments:
+          local: {}
+          development: {}
+          homologation: {}
+          production: { approval: true }
       - id: fortuna-docs
         name: Fortuna docs
         kind: web
@@ -751,7 +780,7 @@ systems:
         environments:
           development: {}
           homologation: {}
-          production: {}
+          production: { approval: true }
       - id: personal-blog
         name: Personal blog
         kind: web
@@ -811,7 +840,7 @@ systems:
         checks: [lint, build] # build: the Dockerfile's image, as a deploy builds it
         environments:
           homologation: {}
-          production: {}
+          production: { approval: true }
       # An API: reads GitHub with a read-only token, its application secret (env_file in its stack). A
       # fork, whose default branch is master.
       - id: github-readme-stats
