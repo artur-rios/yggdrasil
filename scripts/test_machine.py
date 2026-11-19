@@ -385,6 +385,17 @@ FAKES = {
         fi
         exec /usr/bin/test "$@"
     """,
+    # `git describe` answers with the tag in $FAKE_STATE/checkout-tag (the checkout's HEAD is on it) and
+    # fails, as git does, when there is none; every other call is the real git.
+    "git": r"""
+        if [[ " $* " == *" describe "* ]]; then
+          echo "git $* [as ${FAKE_AS_USER:-nobody}]" >>"$FAKE_STATE/calls"
+          if [[ -s "$FAKE_STATE/checkout-tag" ]]; then cat "$FAKE_STATE/checkout-tag"; exit 0; fi
+          echo "fatal: no tag exactly matches" >&2
+          exit 128
+        fi
+        exec /usr/bin/git "$@"
+    """,
     # An engine that is installed but whose daemon the admin can't reach: what a workstation
     # without docker-group membership looks like. Run as a service user (sudo -u), `info --format`
     # answers with $FAKE_STATE/security-<user> (a rootless engine's options unless it says otherwise;
@@ -1129,6 +1140,80 @@ class MachineRoleTests(unittest.TestCase):
         self.assertEqual(self.owners()[CHECKOUT], "ygg:ygg")
         stdout, rows = self.rows("dev")
         self.assertIn("ygg:ygg", self.row(rows, "checkout owner"))
+
+    # ---- The library pin -------------------------------------------------------------------------
+
+    def library_pinned(self, pin="v1.2.3", tag="v1.2.3", profiles="apps,jenkins"):
+        """ygg's platform.env runs Jenkins with the library at `pin`; the checkout is on `tag` (none: no tag)."""
+        env = self.etc("yggdrasil/platform.env")
+        text = re.sub(r"^COMPOSE_PROFILES=.*$", f"COMPOSE_PROFILES={profiles}", env.read_text(), flags=re.M)
+        env.write_text(re.sub(r"^YGGDRASIL_LIBRARY_VERSION=.*$", f"YGGDRASIL_LIBRARY_VERSION={pin}", text, flags=re.M))
+        if tag:
+            (self.state / "checkout-tag").write_text(tag + "\n")
+        else:
+            (self.state / "checkout-tag").unlink(missing_ok=True)
+
+    def test_given_the_pin_on_the_checkouts_release_when_checked_then_the_library_pin_is_ok(self):
+        self.install("dev")
+        self.library_pinned()
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "library pin")
+        self.assertTrue(line.startswith("  ok "), stdout)
+        self.assertIn("v1.2.3", line)
+        # The checkout's tag is asked of ygg, its owner, without a password.
+        self.assertIn(f"git -C {CHECKOUT} describe --tags --exact-match HEAD [as ygg]", self.calls())
+        self.assertIn("sudo -n -u ygg env", "\n".join(self.calls()))
+
+    def test_given_a_pin_behind_the_checkout_when_checked_then_it_says_how_to_move_it(self):
+        self.install("dev")
+        self.library_pinned(pin="v1.2.3", tag="v1.3.0")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "library pin")
+        self.assertTrue(line.startswith("  !! "), stdout)
+        self.assertIn("v1.2.3", line)
+        self.assertIn("YGGDRASIL_LIBRARY_VERSION=v1.3.0", line)
+        self.assertIn(str(self.etc("yggdrasil/platform.env")), line)
+        self.assertIn("platform.sh up", line)
+
+    def test_given_a_checkout_on_no_tag_when_checked_then_the_pin_is_not_compared(self):
+        self.install("dev")
+        self.library_pinned(tag=None)
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "library pin")
+        self.assertTrue(line.startswith("  !! "), stdout)
+        self.assertIn("not on a release tag", line)
+
+    def test_given_jenkins_without_a_pin_when_checked_then_it_is_missing(self):
+        self.install("dev")
+        self.library_pinned(pin="")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "library pin")
+        self.assertTrue(line.startswith("  -- "), stdout)
+        self.assertIn("YGGDRASIL_LIBRARY_VERSION is not set", line)
+
+    def test_given_a_machine_without_jenkins_when_checked_then_it_has_no_library_pin_row(self):
+        self.install("apps")
+        self.library_pinned(pin="v1.2.3", tag="v1.3.0", profiles="apps")
+        stdout, rows = self.rows("apps")
+        self.assertIsNone(self.row(rows, "library pin"), stdout)
+
+    def test_given_the_pin_in_the_variables_store_when_checked_then_it_is_read_from_there(self):
+        import sys
+        sys.path.insert(0, str(HOST.parent))
+        import vars as v
+        self.install("dev")
+        secrets = self.etc("yggdrasil")
+        for name in ("platform.env", "acme.env"):
+            (secrets / name).unlink()
+        v.init(secrets, confirm=lambda prompt: "saved")
+        with v.Store.open(secrets) as store:
+            store.set("platform", "COMPOSE_PROFILES", "apps,jenkins", None, "set")
+            store.set("platform", "YGGDRASIL_LIBRARY_VERSION", "v1.2.3", None, "set")
+        (self.state / "checkout-tag").write_text("v1.3.0\n")
+        stdout, rows = self.rows("dev")
+        line = self.row(rows, "library pin")
+        self.assertTrue(line.startswith("  !! "), stdout)
+        self.assertIn("ygg vars set platform YGGDRASIL_LIBRARY_VERSION=v1.3.0", line)
 
     def test_given_a_secrets_file_already_there_when_installed_then_it_is_kept(self):
         mine = self.etc("yggdrasil/platform.env")

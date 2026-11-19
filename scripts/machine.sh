@@ -981,6 +981,65 @@ machine_check_checkout() {
     row warn "checkout owner" "$owner ($root): install gives it to ygg"
     machine_need checkout
   fi
+  machine_check_library_pin
+}
+
+# machine_platform_value <NAME>: ygg's platform setting, from its variables store or its platform.env,
+# read as ygg (its secrets directory is closed to the admin); empty when unset. Fails when the store is
+# there and can't be read, with what vars.py said, so that "unset" is never confused with "can't read".
+machine_platform_value() {
+  local dir out
+  dir=$(secrets_dir_of ygg)
+  if read_as_user ygg test -f "$dir/vars.db" 2>/dev/null; then
+    if out=$(read_as_user ygg "YGG_SECRETS_DIR=$dir" python3 "$root/scripts/vars.py" get platform "$1" --reveal 2>&1); then
+      printf '%s' "$out"
+    elif [[ "$out" == *"has no $1"* ]]; then
+      return 0
+    else
+      printf '%s' "$out"
+      return 1
+    fi
+  else
+    out=$(read_as_user ygg cat "$dir/platform.env" 2>/dev/null | sed -n "s/^$1=//p" | tail -n1)
+    out=${out%\"} out=${out#\"} out=${out%\'} out=${out#\'}
+    printf '%s' "$out"
+  fi
+}
+
+# machine_check_library_pin: on the host that runs Jenkins, the library tag its builds load
+# (YGGDRASIL_LIBRARY_VERSION) is the release the checkout is on. Every build clones catalog.yaml from main
+# but scripts/ at that tag: a release that changes the catalog's format fails every build until the pin
+# moves to it. A warning for the owner: install doesn't move it.
+machine_check_library_pin() {
+  local dir profiles pin tag fix
+  user_exists ygg || return 0
+  if ! machine_can_read_as_users; then
+    row warn "library pin" "the secrets of ygg are closed to you and sudo would ask for a password: not checked (run check with sudo)"
+    return 0
+  fi
+  dir=$(secrets_dir_of ygg)
+  if ! profiles=$(machine_platform_value COMPOSE_PROFILES) || ! pin=$(machine_platform_value YGGDRASIL_LIBRARY_VERSION); then
+    row warn "library pin" "ygg's variables store can't be read: not checked (scripts/ygg.sh vars check, as ygg)"
+    return 0
+  fi
+  [[ ",$profiles," == *,jenkins,* ]] || return 0
+  if read_as_user ygg test -f "$dir/vars.db" 2>/dev/null; then
+    fix="ygg vars set platform YGGDRASIL_LIBRARY_VERSION="
+  else
+    fix="in $dir/platform.env, YGGDRASIL_LIBRARY_VERSION="
+  fi
+  if [[ -z "$pin" ]]; then
+    row missing "library pin" "YGGDRASIL_LIBRARY_VERSION is not set: platform.sh up refuses to start Jenkins without it"
+    return 0
+  fi
+  tag=$(read_as_user ygg git -C "$root" describe --tags --exact-match HEAD 2>/dev/null) || tag=""
+  if [[ -z "$tag" ]]; then
+    row warn "library pin" "$pin; the checkout ($root) is not on a release tag, so there is nothing to compare it with"
+  elif [[ "$tag" == "$pin" ]]; then
+    row ok "library pin" "$pin, the checkout's release"
+  else
+    row warn "library pin" "$pin, but the checkout is on $tag: builds read main's catalog.yaml with $pin's scripts. As ygg: $fix$tag, then scripts/platform.sh up"
+  fi
 }
 
 machine_check_secrets() {

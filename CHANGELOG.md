@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.16] - 2026-11-19
+
+### Added
+
+- **`ygg check` warns when Jenkins' library pin is not the checkout's release.** On the host that runs Jenkins
+  (`jenkins` in `COMPOSE_PROFILES`), a `library pin` row compares `YGGDRASIL_LIBRARY_VERSION` (read as `ygg`,
+  from the variables store or `platform.env`) with the release tag `/opt/yggdrasil` is on, and says the command
+  that moves it. Builds read `main`'s `catalog.yaml` with the pinned tag's `scripts/`: after 0.13.15 added
+  `forge.releasers`, every build failed with `forge: unknown key(s) ['releasers']` while the pin was still
+  v0.13.9. CONTRIBUTING's release steps now end with moving the pin, and docs/setup.md and the README say when.
+
+### Changed
+
+- CONTRIBUTING.md: `v*` tags may be created by the owner and the catalog's `forge.releasers`, not the owner
+  alone (since 0.13.15).
+
 ## [0.13.15] - 2026-11-19
 
 ### Added
@@ -1692,7 +1708,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.15...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.16...HEAD
+[0.13.16]: https://github.com/artur-rios/yggdrasil/compare/v0.13.15...v0.13.16
 [0.13.15]: https://github.com/artur-rios/yggdrasil/compare/v0.13.14...v0.13.15
 [0.13.14]: https://github.com/artur-rios/yggdrasil/compare/v0.13.13...v0.13.14
 [0.13.13]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...v0.13.13
