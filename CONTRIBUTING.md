@@ -288,13 +288,24 @@ it.
    git push origin v<version>
    ```
 
-   Only the owner can create `v*` tags. Jenkins builds the tag on the release agent
+   Only the owner and the catalog's `forge.releasers` can create `v*` tags. Jenkins builds the tag on the release agent
    ([Owner tags and NuGet](docs/setup.md#owner-tags-and-nuget)): it checks that the tagged commit is on `main`, builds
    the Android APK (`release.build`, `ci/release-build.sh`), has the mirror's GitHub Actions build the Windows
    installer (`release.windows`, `.github/workflows/release-windows.yml`, dispatched on the tag), and publishes the
    release with both files and the version's CHANGELOG section as its notes, on Forgejo and then on the GitHub mirror.
    A tag that was not built (a lightweight tag on an old commit, say) is finished with the `release-resume` job
    ([docs/setup.md](docs/setup.md#finishing-a-release-that-stopped)).
+
+5. On the controller host, as `ygg`, move the pipeline to the release and pull it:
+
+   ```bash
+   ygg vars set platform YGGDRASIL_LIBRARY_VERSION=v<version>
+   cd /opt/yggdrasil && git pull --ff-only && scripts/platform.sh up
+   ```
+
+   Builds read `main`'s `catalog.yaml` with the pinned tag's `scripts/`: a release that changes the catalog's format
+   fails every build until the pin is on it ([How a build runs](docs/setup.md#how-a-build-runs)). `ygg check`'s
+   `library pin` row says whether it is.
 
 `main` is not merged back into `develop`: the release merge commits stay on `main`, and the branch policy rejects any
 branch into `develop` that contains one.
