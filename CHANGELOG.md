@@ -7,6 +7,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`forge.releasers`: users who may cut releases.** On Forgejo, `scripts/rules.py` lets them:
+  - push `release/*` branches in every repository of the release model;
+  - in a `release: owner-tag` repository, also merge `main` and create its tags, as the owner does, which releases
+    it.
+
+  An application's `main` and `v*` tags stay `forge.jenkinsUser`'s alone, merged and tagged after its release
+  environments deployed. This catalog makes `claude` a releaser.
+
+  On Forgejo, whoever may create a tag may also move and delete it (the accepted gap of
+  [setup.md, step 12](docs/setup.md#12-apply-the-branch-rules)), so that now holds for `claude` and the owner-tag
+  repositories' tags. The `tag-check` job and the GitHub copies' `mirror tags` still catch and repair it.
+
+  No effect on GitHub. **Upgrading:** nothing changes on the git server until `python3 scripts/rules.py` runs with
+  the owner's token (setup.md, step 12).
+
+### Changed
+
+- **Every application's production waits for the owner.** A releaser's release branch deploys to homologation and
+  can open the release pull request, so heimdall-api, heimdall-ui, hermes-api, fortuna-api, fortuna-ui,
+  personal-page and tech-craftsmen-company-page join chimera with `production: { approval: true }`: Jenkins waits
+  for a **Deploy** click before production. The merge, the tag and the release files follow that deploy. A test
+  pins that every application's release environments ask. Their environments are otherwise unchanged.
+
 ## [0.13.14] - 2026-11-19
 
 ### Fixed

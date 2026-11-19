@@ -367,8 +367,11 @@ there, never on the controller and never on the Application Server.
   verifies that no other service user (`ci`, `release`, `dev`, `renovate`) can read `ygg`'s Docker socket or its
   secrets, and that `ci` cannot read `release`'s socket or `agent.env`. None of them can bind a port below 1024.
 - **`dev`** pushes to Forgejo as its own account (`claude`). It can push `feature/` and `fix/`
-  branches, open pull requests and merge into `develop`. It cannot push `release/*`, merge into
-  `main` or create `v*` tags.
+  branches, open pull requests and merge into `develop`. As a `forge.releasers` user it can also push
+  `release/*` branches everywhere, and in the repositories released by tag (`release: owner-tag`) merge
+  `main` and create the tags: it can release those. In an application it cannot merge `main` or create
+  `v*` tags (Jenkins does, after the release environments deployed), and each application's production
+  waits for the owner's **Deploy** click.
 
 ### How the owner logs in
 
@@ -979,7 +982,7 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 | GitHub fine-grained token (read-only, public repositories, no permissions; optional), `RENOVATE_GITHUB_COM_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Read the release notes and changelogs of GitHub-hosted dependencies without the anonymous rate limit | now: [Renovate](#renovate-the-daily-run) |
 | Hermes `heimdall-signals` client key, `HEIMDALL_SIGNAL_HERMES_API_KEY` | `ygg` (apps), `/etc/yggdrasil/security-signals-production.env` | Send mail from `heimdall-signals@` to the one alert address, 5 a minute and 200 a day | later: [Heimdall's security signals](#heimdalls-security-signals) |
 | Heartbeat ping URL, `HEIMDALL_SIGNAL_HEARTBEAT_URL` | `ygg` (apps), the same file | Report to the monitor that the job ran, or failed. Whoever has it can make a failing job look healthy | later: [Heimdall's security signals](#heimdalls-security-signals) |
-| Forgejo `claude` account | `dev` user | Push `feature/` and `fix/`, open pull requests, merge into `develop` | later |
+| Forgejo `claude` account | `dev` user | Push `feature/`, `fix/` and `release/*` branches, open pull requests, merge into `develop`; in `release: owner-tag` repositories also merge `main` and create the tags | now: [AI development as `dev`](#ai-development-as-dev) |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
 | Forgejo owner token (`write:repository`; for the move, `read:user` too, which `migrate.py collaborators` needs to look the bots up), `FORGE_TOKEN` | The operator's shell, for a run of `python3 scripts/rules.py` or `scripts/migrate.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks; import the repositories, make their push mirrors, give the bots their access | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules), [cutover.md](cutover.md#24-the-owners-token) |
 | GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev): with each push mirror, in that repository's git configuration on disk, inside Forgejo's data volume. So the nightly Forgejo dump ([Backups](#7-backups-and-restore)) carries it, and a copy of it sits in the Application Server's `~/received/from-dev` | Push to the GitHub copies. It cannot move or delete a version tag there: nobody bypasses the copies' `mirror tags` ruleset, so such a push fails and Forgejo shows the mirror's sync failing ([setup.md](setup.md#version-tags-tag-check-and-repairs)) | at the move: `scripts/migrate.py mirrors` hands it to Forgejo ([cutover.md](cutover.md#41-the-two-github-tokens)). A new token reaches no existing mirror: rotating it means making the mirrors again ([cutover.md, 7.3](cutover.md#73-the-windows-tokens)) |
