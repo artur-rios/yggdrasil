@@ -27,13 +27,23 @@ MACHINE_ROLES=(dev apps workstation)
 # The Ubuntu releases install knows, by VERSION_ID: the LTS releases. Docker's apt repository is picked
 # by the release's codename (host.sh), so a release is added here once that repository has it.
 MACHINE_UBUNTU_VERSIONS=(24.04 26.04)
-MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer signals-timer role-file)
+MACHINE_STEPS=(packages rootful-docker-off system-settings unattended-upgrades users limits low-ports ssh checkout secrets firewall engines prune-timer backup-timer renovate-timer dev-tools signals-timer role-file)
 
 # The packages of a dev or apps machine: today's tools, rootless Docker's needs, Docker's own (from
 # its apt repository), and what the later steps use.
 MACHINE_TOOL_PACKAGES=(git curl openssl python3 apache2-utils ca-certificates python3-yaml python3-cryptography)
 MACHINE_DOCKER_PACKAGES=(docker-ce docker-ce-cli containerd.io docker-ce-rootless-extras docker-buildx-plugin docker-compose-plugin)
 MACHINE_PACKAGES=("${MACHINE_TOOL_PACKAGES[@]}" uidmap dbus-user-session slirp4netns "${MACHINE_DOCKER_PACKAGES[@]}" ufw rsync unattended-upgrades)
+# The dev machine's own, for the AI sessions as dev (the SDKs themselves are in its home: dev-toolchains):
+# a C toolchain (Rust links with cc, and native packages build), unzip (Flutter's SDK unpacks with it),
+# zip, pkg-config and jq.
+MACHINE_DEV_PACKAGES=(build-essential unzip zip pkg-config jq)
+
+# machine_packages <role>: the packages of a dev or apps machine, one per line.
+machine_packages() {
+  printf '%s\n' "${MACHINE_PACKAGES[@]}"
+  [[ "$1" != dev ]] || printf '%s\n' "${MACHINE_DEV_PACKAGES[@]}"
+}
 
 # The system's own engine: the rootless ones of the service users replace it.
 ROOTFUL_DOCKER_UNITS=(docker.service docker.socket containerd.service)
@@ -505,6 +515,21 @@ machine_backup_unit_dir() { echo "$(passwd_field ygg 6)/.config/systemd/user"; }
 MACHINE_RENOVATE_UNITS=(yggdrasil-renovate.service yggdrasil-renovate.timer)
 machine_renovate_unit_dir() { echo "$(passwd_field renovate 6)/.config/systemd/user"; }
 
+# ---- AI development ------------------------------------------------------------------------------
+
+# The dev user's own commands (platform/dev), dev machine only. ci-check runs one check of a repository's
+# yggdrasil.yml in dev's engine, the way Jenkins does; dev-toolchains fetches the SDKs the repositories build
+# with into dev's home. dev copies both itself into its ~/.local/bin, from the checkout, as the units are
+# copied: the copy is dev's own, and what the check compares with. Running dev-toolchains is dev's (it fetches
+# about 2 GB): the check only says whether it has been run.
+MACHINE_DEV_TOOLS=(ci-check dev-toolchains)
+machine_dev_tool_dir() { echo "$(passwd_field dev 6)/.local/bin"; }
+# What dev-toolchains leaves in dev's home, as <the name the check gives it>:<its path in the home>, and the
+# first line of the PATH block it adds to dev's .profile.
+MACHINE_DEV_SDKS=(flutter:sdk/flutter/bin/flutter rust:.cargo/bin/cargo go:sdk/go/bin/go hugo:sdk/hugo/hugo
+  node:sdk/node/bin/node uv:.local/bin/uv)
+MACHINE_DEV_SDK_MARK='# >>> dev sdk >>>'
+
 # ---- The security signals timer ------------------------------------------------------------------
 
 # The user units of Heimdall's security signal job (scripts/security-signals.sh), apps machine only, into ygg's own
@@ -725,8 +750,9 @@ machine_report() {
 }
 
 machine_check_packages() {
-  local package conflicting=() name
-  for package in "${MACHINE_PACKAGES[@]}"; do
+  local package conflicting=() name packages
+  mapfile -t packages < <(machine_packages "$machine_current_role")
+  for package in "${packages[@]}"; do
     installed "$package" || machine_missing+=("$package")
   done
   # The distribution's docker.io and friends clash with Docker's packages (CONFLICTING is host.sh's).
@@ -739,7 +765,7 @@ machine_check_packages() {
     row missing "packages" "${machine_missing[*]}"
     machine_need packages
   else
-    row ok "packages" "${#MACHINE_PACKAGES[@]} installed"
+    row ok "packages" "${#packages[@]} installed"
   fi
 }
 
@@ -1334,6 +1360,51 @@ machine_check_renovate_health() {
   fi
 }
 
+# machine_check_dev_tools: dev only. dev's ci-check and dev-toolchains are the checkout's copies and can be
+# run, asked of dev itself (its home is closed to the admin), through sudo without a password. Then whether
+# dev has run dev-toolchains: a warning for dev, which install does not repair.
+machine_check_dev_tools() {
+  [[ "$machine_current_role" == dev ]] || return 0
+  title "AI development"
+  local tool dir held home entry missing=()
+  if ! user_exists dev; then
+    for tool in "${MACHINE_DEV_TOOLS[@]}"; do
+      row missing "$tool" "no dev user yet: install creates it, then copies $tool into its ~/.local/bin"
+    done
+    machine_need dev-tools
+    return 0
+  fi
+  if ! machine_can_read_as_users; then
+    for tool in "${MACHINE_DEV_TOOLS[@]}"; do
+      row warn "$tool" "the home of dev is closed to you and sudo would ask for a password: not checked (run check with sudo)"
+    done
+    row warn "dev sdks" "asking dev needs sudo without a password: not checked"
+    return 0
+  fi
+  dir=$(machine_dev_tool_dir)
+  for tool in "${MACHINE_DEV_TOOLS[@]}"; do
+    if ! held=$(read_as_user dev cat "$dir/$tool" 2>/dev/null) || [[ "$held" != "$(<"$root/platform/dev/$tool")" ]]; then
+      row missing "$tool" "$dir/$tool is not there or not the checkout's copy: install writes it"
+      machine_need dev-tools
+    elif ! read_as_user dev test -x "$dir/$tool" 2>/dev/null; then
+      row missing "$tool" "$dir/$tool is not executable: install makes it so"
+      machine_need dev-tools
+    else
+      row ok "$tool" "$dir/$tool, the checkout's copy"
+    fi
+  done
+  home=$(passwd_field dev 6)
+  for entry in "${MACHINE_DEV_SDKS[@]}"; do
+    read_as_user dev test -x "$home/${entry#*:}" 2>/dev/null || missing+=("${entry%%:*}")
+  done
+  read_as_user dev grep -qxF -- "$MACHINE_DEV_SDK_MARK" "$home/.profile" 2>/dev/null || missing+=("the PATH block in .profile")
+  if ((${#missing[@]})); then
+    row warn "dev sdks" "missing from $home: $(printf '%s, ' "${missing[@]}" | sed 's/, $//'): run dev-toolchains as dev (docs/hosts.md)"
+  else
+    row ok "dev sdks" "Flutter, Rust, Go, Hugo, Node and uv in $home, on its PATH"
+  fi
+}
+
 # machine_check_signals_timer: apps only. ygg's two units are the checkout's copies and each environment's timer is
 # enabled; asked of ygg itself (its home is closed to the admin), through sudo without a password.
 machine_check_signals_timer() {
@@ -1517,6 +1588,7 @@ machine_step_text() {
       ;;
     backup-timer) echo "Install the nightly backup for ygg: the units yggdrasil-backup.service and .timer into $(machine_backup_unit_dir) (as ygg), and enable the timer (03:30). What is backed up, and where to, is in $(secrets_dir_of ygg)/backup.conf (env/backup.conf.example)." ;;
     signals-timer) echo "Install Heimdall's security signal job for ygg (apps machine): the units yggdrasil-security-signals@.service and .timer into $(machine_signals_unit_dir) (as ygg), and enable the timer of ${MACHINE_SIGNALS_ENVIRONMENTS[*]} (every fifteen minutes). Its Hermes key, alert address and heartbeat URL go in $(secrets_dir_of ygg)/security-signals-<environment>.env (env/security-signals.env.example)." ;;
+    dev-tools) echo "Copy dev's commands, ${MACHINE_DEV_TOOLS[*]} (platform/dev), into $(machine_dev_tool_dir) (as dev). Running dev-toolchains is then dev's, once: it fetches Flutter, Rust, Go, Hugo, Node and uv (about 2 GB) into its home." ;;
     renovate-timer) echo "Install the daily Renovate run for renovate (dev machine): the units yggdrasil-renovate.service and .timer into $(machine_renovate_unit_dir) (as renovate), and enable the timer (05:00). Its Forgejo token goes in $(secrets_dir_of renovate)/renovate.env (env/renovate.env.example)." ;;
     role-file) echo "Write the role, $machine_current_role, to ${YGG_SYSROOT:-}/etc/yggdrasil-role." ;;
   esac
@@ -1552,9 +1624,10 @@ step_packages() {
     return 0
   }
   # Removing the clashing packages can take Docker's with them, so what is missing is counted now.
-  local package needs_docker=""
+  local package needs_docker="" packages
   machine_missing=()
-  for package in "${MACHINE_PACKAGES[@]}"; do
+  mapfile -t packages < <(machine_packages "$machine_current_role")
+  for package in "${packages[@]}"; do
     installed "$package" && continue
     machine_missing+=("$package")
     [[ " ${MACHINE_DOCKER_PACKAGES[*]} " == *" $package "* ]] && needs_docker=1
@@ -1902,6 +1975,23 @@ step_renovate_timer() {
   done
   run_as_user renovate systemctl --user daemon-reload
   run_as_user renovate systemctl --user enable --now yggdrasil-renovate.timer
+}
+
+# dev's commands are copied by dev itself, into its own home, from the checkout: the files are its own and the
+# copy is what the check compares with. Only copied: dev-toolchains downloads gigabytes, and is dev's to run.
+step_dev_tools() {
+  if ! user_exists dev; then
+    warn "there is no dev user yet: its commands are left for the next install."
+    return 0
+  fi
+  local dir tool
+  dir=$(machine_dev_tool_dir)
+  run_as_user dev mkdir -p "$dir"
+  for tool in "${MACHINE_DEV_TOOLS[@]}"; do
+    [[ -f "$root/platform/dev/$tool" ]] || die "$root/platform/dev/$tool is missing from the checkout"
+    run_as_user dev tee "$dir/$tool" <"$root/platform/dev/$tool" >/dev/null
+    run_as_user dev chmod 755 "$dir/$tool"
+  done
 }
 
 # The units are copied by ygg itself, into its own home, from the checkout. The settings template is copied here and

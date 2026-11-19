@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# dev-toolchains: installs the toolchains the repositories build with into dev's home, never from apt:
+# Flutter (the repositories' pin), Rust (rustup, stable, with clippy and rustfmt), Go, Hugo extended, Node
+# (the newest LTS) and uv, then a PATH block in ~/.profile. Every download is checked against its published
+# checksum before it is unpacked or run. Safe to run again: what is already there, at its version, is left
+# alone; a pin that changed is fetched again.
+#
+# Installed into dev's ~/.local/bin by `ygg install` (platform/dev; docs/hosts.md, "AI development as dev"),
+# and run by dev, once and after a pin changes. `ygg check` (the dev sdks row) says whether it has been.
+# The apt packages it relies on (unzip, a C toolchain for Rust's linker) are the dev machine's own.
+set -euo pipefail
+
+# The repositories' ci/flutter-env.sh pins (FLUTTER_VERSION, FLUTTER_SHA256).
+FLUTTER_VERSION=3.50.0
+FLUTTER_SHA256=6ea2d806fd57269ae783e6788e2a81fc26eaad782f1e0d0ff38623bb765ff9f5
+# The docs' Dockerfiles: golang and hugomods/hugo:debian-node-lts-<HUGO_VERSION>.
+GO_VERSION=1.26.10
+HUGO_VERSION=0.165.0
+
+sdk=$HOME/sdk
+bin=$HOME/.local/bin
+[[ "$(uname -m)" == x86_64 ]] || { echo "dev-toolchains: x86_64 only, this is $(uname -m)" >&2; exit 1; }
+mkdir -p "$sdk" "$bin"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+
+say() { printf '== %s\n' "$*"; }
+# fetch <file> <url>: the URL into the file, over HTTPS only.
+fetch() { curl -fsSL --proto '=https' --tlsv1.2 -o "$1" "$2"; }
+# fetch_text <url>: the URL on stdout.
+fetch_text() { curl -fsSL --proto '=https' --tlsv1.2 "$1"; }
+# verify <sha256> <file>: stops unless the file has that checksum.
+verify() {
+  if ! [[ "$1" =~ ^[0-9a-f]{64}$ ]] || ! echo "$1  $2" | sha256sum -c --quiet >/dev/null 2>&1; then
+    echo "dev-toolchains: $2 does not match its published checksum: nothing of it is installed" >&2
+    exit 1
+  fi
+}
+# checksum_in <file> <list>: the checksum a list of "<sha256>  <file>" lines gives the file.
+checksum_in() { awk -v file="$1" '$2 == file || $2 == "*" file { print $1; exit }' "$2"; }
+
+# Flutter: the version its unpacked SDK names (bin/cache/flutter.version.json), else nothing.
+flutter_version() {
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["frameworkVersion"])' \
+    "$sdk/flutter/bin/cache/flutter.version.json" 2>/dev/null || true
+}
+if [[ ! -x "$sdk/flutter/bin/flutter" || "$(flutter_version)" != "$FLUTTER_VERSION" ]]; then
+  say "flutter $FLUTTER_VERSION"
+  fetch flutter.tar.xz \
+    "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
+  verify "$FLUTTER_SHA256" flutter.tar.xz
+  rm -rf "$sdk/flutter"
+  tar -xJf flutter.tar.xz -C "$sdk"
+  rm -f flutter.tar.xz
+fi
+
+# Rust: rustup-init itself, checked against its .sha256, with clippy and rustfmt (alexandria-api's
+# ci/lint-and-test.sh runs both). It links with cc, from build-essential.
+if [[ ! -x "$HOME/.cargo/bin/cargo" ]]; then
+  say "rust (rustup, stable)"
+  base=https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu
+  fetch rustup-init "$base/rustup-init"
+  fetch rustup-init.sha256 "$base/rustup-init.sha256"
+  verify "$(awk '{ print $1; exit }' rustup-init.sha256)" rustup-init
+  chmod 755 rustup-init
+  ./rustup-init -y --no-modify-path --profile minimal -c clippy,rustfmt >/dev/null
+fi
+
+# Go: Hugo modules need it (the docs' go.mod). Its checksum is in go.dev's release list.
+if [[ "$("$sdk/go/bin/go" version 2>/dev/null)" != *"go$GO_VERSION "* ]]; then
+  say "go $GO_VERSION"
+  file=go$GO_VERSION.linux-amd64.tar.gz
+  fetch "$file" "https://go.dev/dl/$file"
+  want=$(fetch_text 'https://go.dev/dl/?mode=json&include=all' | python3 -c '
+import json, sys
+print(next((f["sha256"] for r in json.load(sys.stdin) for f in r["files"] if f["filename"] == sys.argv[1]), ""))
+' "$file")
+  verify "$want" "$file"
+  rm -rf "$sdk/go"
+  tar -xzf "$file" -C "$sdk"
+fi
+
+# Hugo extended: the docs build with it (Docsy's SCSS).
+if [[ "$("$sdk/hugo/hugo" version 2>/dev/null)" != *"v$HUGO_VERSION-"*extended* ]]; then
+  say "hugo extended $HUGO_VERSION"
+  file=hugo_extended_${HUGO_VERSION}_linux-amd64.tar.gz
+  base=https://github.com/gohugoio/hugo/releases/download/v$HUGO_VERSION
+  fetch "$file" "$base/$file"
+  fetch checksums.txt "$base/hugo_${HUGO_VERSION}_checksums.txt"
+  verify "$(checksum_in "$file" checksums.txt)" "$file"
+  mkdir -p "$sdk/hugo"
+  tar -xzf "$file" -C "$sdk/hugo" hugo
+fi
+
+# Node: the newest LTS release, unpacked into ~/sdk/node (the docs run npm for PostCSS).
+lts=$(fetch_text https://nodejs.org/dist/index.json \
+  | python3 -c 'import json, sys; print(next(r["version"] for r in json.load(sys.stdin) if r["lts"]))')
+if [[ "$("$sdk/node/bin/node" --version 2>/dev/null)" != "$lts" ]]; then
+  say "node $lts"
+  file=node-$lts-linux-x64.tar.xz
+  fetch "$file" "https://nodejs.org/dist/$lts/$file"
+  fetch SHASUMS256.txt "https://nodejs.org/dist/$lts/SHASUMS256.txt"
+  verify "$(checksum_in "$file" SHASUMS256.txt)" "$file"
+  rm -rf "$sdk/node"
+  mkdir -p "$sdk/node"
+  tar -xJf "$file" -C "$sdk/node" --strip-components=1
+fi
+
+# uv: Python tools without pip or a system venv (yggdrasil's tests need PyYAML, cryptography and ShellCheck;
+# ci-check needs PyYAML). Its latest release, checked against the .sha256 published next to it.
+if [[ ! -x "$bin/uv" ]]; then
+  say "uv"
+  file=uv-x86_64-unknown-linux-gnu.tar.gz
+  base=https://github.com/astral-sh/uv/releases/latest/download
+  fetch "$file" "$base/$file"
+  fetch "$file.sha256" "$base/$file.sha256"
+  verify "$(awk '{ print $1; exit }' "$file.sha256")" "$file"
+  tar -xzf "$file" -C "$bin" --strip-components=1 uv-x86_64-unknown-linux-gnu/uv uv-x86_64-unknown-linux-gnu/uvx
+fi
+"$bin/uv" tool install --quiet shellcheck-py >/dev/null 2>&1 || true
+
+# PATH for login shells (tmux starts them), once.
+if ! grep -qxF '# >>> dev sdk >>>' "$HOME/.profile" 2>/dev/null; then
+  cat >>"$HOME/.profile" <<'EOF'
+
+# >>> dev sdk >>>
+export PATH="$HOME/sdk/flutter/bin:$HOME/.pub-cache/bin:$HOME/.cargo/bin:$HOME/sdk/go/bin:$HOME/go/bin:$HOME/sdk/hugo:$HOME/sdk/node/bin:$PATH"
+export FLUTTER_SUPPRESS_ANALYTICS=true
+export DART_SUPPRESS_ANALYTICS=true
+export GOTOOLCHAIN=local
+# <<< dev sdk <<<
+EOF
+fi
+say "done"

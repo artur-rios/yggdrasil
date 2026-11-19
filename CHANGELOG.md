@@ -7,6 +7,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.13] - 2026-11-18
+
+### Added
+
+- **`ygg install --role dev` sets up the rest of the `dev` user for AI development**, the parts that were done by
+  hand on the DevOps Server, so a rebuilt server gets them. The dev machine now installs `build-essential` (Rust
+  links with `cc`), `unzip` (Flutter's SDK), `zip`, `pkg-config` and `jq`; the apps machine does not, and
+  `ygg check`'s `packages` row counts them on the dev machine. A new step, `dev-tools`, has `dev` copy its two
+  commands from [platform/dev](platform/dev) into its `~/.local/bin`. `ci-check <check> [repo-dir]` (and
+  `ci-check --list`) runs a check of a repository's `yggdrasil.yml` in its image, through `scripts/run-check.sh`
+  in `dev`'s engine, as Jenkins does; a `docker: true` check gets `dev`'s socket and the host's address for
+  Testcontainers. `dev-toolchains`, run once by `dev`, installs Flutter 3.50.0 (the repositories' pin), rustup's
+  stable Rust with clippy and rustfmt, Go 1.26.10, Hugo extended 0.165.0, the newest Node LTS and uv into its
+  home, each download checked against its published checksum, with their `PATH` in `~/.profile`. `ygg check`
+  has a `ci-check` and a `dev-toolchains` row, and a `dev sdks` row that warns until `dev-toolchains` has run.
+  [hosts.md, AI development as `dev`](docs/hosts.md#ai-development-as-dev) has the whole setup. **Upgrading:**
+  `git pull` the checkout on the DevOps Server, then `ygg install` as the admin: it asks before the `packages`
+  and `dev-tools` steps. The copies replace the hand-made `ci-check` and `dev-toolchains` in `dev`'s
+  `~/.local/bin`; the SDKs already there are kept.
+
+### Fixed
+
+- **`scripts/test_ygg.py` passes on the DevOps Server.** The test that hides the `cryptography` package ran a bare
+  `ygg check`, which on a host with `/etc/yggdrasil-role` checks that role instead of a workstation: the dev
+  machine's check has no `cryptography` row, so the test failed there and nowhere else. It now asks for
+  `ygg check --role workstation`.
+
 ## [0.13.12] - 2026-11-18
 
 ### Added
@@ -1627,7 +1654,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.13...HEAD
+[0.13.13]: https://github.com/artur-rios/yggdrasil/compare/v0.13.12...v0.13.13
 [0.13.12]: https://github.com/artur-rios/yggdrasil/compare/v0.13.11...v0.13.12
 [0.13.11]: https://github.com/artur-rios/yggdrasil/compare/v0.13.10...v0.13.11
 [0.13.10]: https://github.com/artur-rios/yggdrasil/compare/v0.13.9...v0.13.10

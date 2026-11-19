@@ -268,7 +268,9 @@ class VariablesStoreTests(EnvironmentTestCase):
         hidden = self.temp / "hidden"
         (hidden / "cryptography").mkdir(parents=True)
         (hidden / "cryptography" / "__init__.py").write_text("raise ImportError('hidden by the test')\n")
-        result = self.ygg("check", PYTHONPATH=str(hidden))
+        # The workstation's check, which has the row, whatever role the host running the tests has: a bare
+        # `ygg check` on the DevOps Server reads its /etc/yggdrasil-role and checks a dev machine instead.
+        result = self.ygg("check", "--role", "workstation", PYTHONPATH=str(hidden))
         self.assertIn("package python3-cryptography", result.stdout)
 
     def test_given_vars_without_a_command_when_run_then_it_prints_the_full_help(self):
