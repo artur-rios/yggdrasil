@@ -1731,8 +1731,13 @@ today. Each build also clones your fork for what the library calls, split in two
   allow-lists; the clone's copy is what `deploy.sh` reads on the deploy agents.)
 
 A change to `scripts/` therefore reaches the pipeline only with a new tag. To upgrade the pipeline: release yggdrasil in your fork ([CONTRIBUTING.md](../CONTRIBUTING.md#releasing)),
-set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's `platform.env`, and run
-`scripts/platform.sh up` (Compose recreates the controller).
+set `YGGDRASIL_LIBRARY_VERSION` to the new tag in the controller's platform settings (`ygg vars set platform
+YGGDRASIL_LIBRARY_VERSION=v<x.y.z>` with the variables store, else its `platform.env`), and run
+`scripts/platform.sh up` (Compose recreates the controller). Do it with every release, as soon as it is on
+`main`: a release that changes the catalog's format (a new key, say) fails every build from then on, since
+the builds read `main`'s `catalog.yaml` with the old tag's `scripts/catalog.py`, which refuses what it doesn't
+know. On the controller host, `ygg check` has a `library pin` row that warns while the pin is not the release
+the checkout is on, and says the command.
 
 A job sees `develop`, `main` (and `master` when its repository is under the `basic` rules: a fork's default
 branch, treated like `main`), pull requests from branches of the repository itself (a fork's never run),
