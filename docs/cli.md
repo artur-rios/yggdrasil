@@ -238,7 +238,8 @@ are the Linux DevOps Server and the Linux Application Server, the Ubuntu 24.04 o
 | **Backups** | `ygg`'s backup units are the checkout's copies and the timer is enabled; `backup.conf` is there; the last run succeeded (or a warning: never run, failed); the newest day in `~/backups` is at most 36 hours old |
 
 Rows that ask another user's engine or read a closed directory need `sudo`. `check` runs `sudo -v` first, which asks
-for your password once; if that fails it says so and goes on, and those rows say "not checked".
+for your password once; if that fails it says so and goes on, and those rows say "not checked". `sudo ygg check`
+works as well: the admin is then the user who ran `sudo` (`SUDO_USER`), not `root`.
 
 `install` works on Ubuntu 24.04 or 26.04 LTS only, as the **admin user** with `sudo` (it refuses `root`), and asks before each
 part: packages, turning the machine's Docker off, system settings, unattended upgrades, service users, the `ci` and `dev`
