@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# ci-check: runs one check of a repository's yggdrasil.yml the way Jenkins does: in the check's own image,
+# through yggdrasil's scripts/run-check.sh, in dev's rootless engine. For the checks the DevOps Server can't
+# run natively as dev (GTK and Xvfb, Playwright's browsers, Android, the system libraries a check apt-installs).
+#
+#   ci-check --list [repo-dir]      the repository's checks: name, (docker), what it runs
+#   ci-check <check> [repo-dir]     runs that check; exits with its exit code
+#
+# repo-dir defaults to the repository the current directory is in. The check runs as the container's root,
+# which under rootless Docker is dev, against the working tree as it is (uncommitted changes included).
+# Unlike Jenkins it has no toolchain cache (no --toolchains): a Flutter check fetches its pinned SDK inside the
+# container.
+#
+# run-check.sh is taken from $YGG_CHECKOUT: dev's own clone of yggdrasil (~/repositories/yggdrasil) when there is
+# one, else the machine's checkout, /opt/yggdrasil. Installed into dev's ~/.local/bin by `ygg install`
+# (platform/dev; docs/hosts.md, "AI development as dev"). It needs uv (dev-toolchains) for PyYAML.
+set -euo pipefail
+
+if [[ -z "${YGG_CHECKOUT:-}" ]]; then
+  YGG_CHECKOUT=$HOME/repositories/yggdrasil
+  [[ -f "$YGG_CHECKOUT/scripts/run-check.sh" ]] || YGG_CHECKOUT=/opt/yggdrasil
+fi
+usage() { echo "usage: ci-check <check> [repo-dir] | ci-check --list [repo-dir]" >&2; exit 2; }
+
+list=false
+check=""
+if [[ "${1:-}" == --list ]]; then
+  list=true
+  shift
+else
+  [[ $# -ge 1 && "$1" != -* ]] || usage
+  check=$1
+  shift
+fi
+repo=$(cd "${1:-.}" && git rev-parse --show-toplevel)
+file=$repo/yggdrasil.yml
+[[ -f "$file" ]] || { echo "ci-check: $repo has no yggdrasil.yml" >&2; exit 2; }
+[[ -f "$YGG_CHECKOUT/scripts/run-check.sh" ]] || { echo "ci-check: no yggdrasil checkout at $YGG_CHECKOUT" >&2; exit 2; }
+
+fields=$(uv run --quiet --no-project --with pyyaml python3 - "$file" "$check" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    checks = (yaml.safe_load(handle) or {}).get("checks") or {}
+name = sys.argv[2]
+if not name:
+    for key, value in checks.items():
+        print(f"{key:28} {'(docker) ' if value.get('docker') else ''}{value.get('run', '')}")
+    sys.exit(0)
+if name not in checks:
+    sys.exit(f"ci-check: no check {name!r} in {sys.argv[1]}; there are: {', '.join(checks)}")
+value = checks[name]
+if not value.get("image") or not value.get("run"):
+    sys.exit(f"ci-check: check {name!r} has no image and run: it is not one a container runs")
+print(value["image"])
+print("1" if value.get("docker") else "")
+print(value["run"])
+PY
+)
+
+if $list; then
+  printf '%s\n' "$fields"
+  exit 0
+fi
+
+image=$(sed -n 1p <<<"$fields")
+with_docker=$(sed -n 2p <<<"$fields")
+run=$(sed -n '3,$p' <<<"$fields")
+
+args=()
+if [[ -n "$with_docker" ]]; then
+  # What platform/build-agent.yml and scripts/agent.sh give a CI agent: the engine's socket by its host path,
+  # and the host's own address, where the published ports of the containers a check starts are reached.
+  export YGG_DOCKER_SOCKET=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock
+  if [[ -z "${TESTCONTAINERS_HOST_OVERRIDE:-}" ]]; then
+    TESTCONTAINERS_HOST_OVERRIDE=$(ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }')
+    export TESTCONTAINERS_HOST_OVERRIDE
+  fi
+  args+=(--docker)
+fi
+
+echo "ci-check: $check in $image ($repo)" >&2
+exec bash "$YGG_CHECKOUT/scripts/run-check.sh" "$check" "$image" "$repo" "${args[@]}" -- sh -c "$run"
