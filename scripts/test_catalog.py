@@ -390,7 +390,7 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(c.forge(catalog())["api"], "https://api.github.com")
         self.assertEqual(c.forge(catalog()), {"type": "github", "url": "https://github.com",
                                              "api": "https://api.github.com", "jenkinsUser": "jenkins",
-                                             "developers": [], "publishAgent": "vps"})
+                                             "developers": [], "releasers": [], "publishAgent": "vps"})
 
     def test_given_the_repository_catalog_when_read_then_it_is_forgejo_mirrored_to_the_owner(self):
         # This installation after its cutover (docs/cutover.md 5.9): Forgejo, each repository pushed to the
@@ -415,7 +415,7 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(c.validate(v), [])
         self.assertEqual(c.forge(v), {"type": "github", "url": "https://github.com",
                                       "api": "https://api.github.com", "jenkinsUser": "ci", "developers": ["ann"],
-                                      "publishAgent": "vps"})
+                                      "releasers": [], "publishAgent": "vps"})
 
     def test_given_forgejo_without_a_url_when_validated_then_it_is_an_error(self):
         self.assertTrue(any("forge.url: required" in e for e in self.errors(forge={"type": "forgejo"})))
@@ -510,6 +510,32 @@ class ForgeTests(unittest.TestCase):
 
     def test_given_no_mirror_when_read_then_it_is_none(self):
         self.assertIsNone(c.mirror(catalog(forge=self.FORGEJO)))
+
+    def test_given_releasers_when_read_then_they_are_listed(self):
+        v = catalog(forge=dict(self.FORGEJO, releasers=["claude"]))
+        self.assertEqual(c.validate(v), [])
+        self.assertEqual(c.forge(v)["releasers"], ["claude"])
+        self.assertEqual(c.forge(catalog(forge=self.FORGEJO))["releasers"], [])
+
+    def test_given_bad_releasers_when_validated_then_they_are_an_error(self):
+        for bad in ("claude", ["ok", "no way"], ["my-app[bot]"]):
+            with self.subTest(releasers=bad):
+                errors = self.errors(forge=dict(self.FORGEJO, releasers=bad))
+                self.assertTrue(any("forge.releasers" in e for e in errors), errors)
+
+    def test_given_the_repository_catalog_when_read_then_every_release_to_production_waits_for_the_owner(self):
+        # forge.releasers may push release/* branches, so a release pull request is not the owner's alone:
+        # every application that releases waits for a Deploy click before its release environments.
+        catalog = c.load()
+        waiting = {}
+        for entries in c.repository_entries(catalog).values():
+            for e in entries:
+                if e["kind"] == "application":
+                    for env in c.resolve(catalog, e["id"]):
+                        if env["trigger"] == "release":
+                            waiting[(e["id"], env["id"])] = env["approval"]
+        self.assertTrue(waiting)
+        self.assertEqual([key for key, approval in waiting.items() if not approval], [])
 
     def test_given_developers_when_read_then_they_are_listed(self):
         v = catalog(forge=dict(self.FORGEJO, developers=["claude"]))

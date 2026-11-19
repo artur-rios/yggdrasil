@@ -25,9 +25,11 @@ Per repository the model is:
                  owner and forge.developers
   main           the same, with branch-policy, checks and deploy/<environment> for each release
                  environment instead of actionsChecks; merged only by the Jenkins user for an
-                 application, by the owner for a repository that tags its own releases
-  release/*      only the owner pushes
-  version tags   created by the Jenkins user (applications) or the owner (owner-tag repositories); on
+                 application, by the owner (and forge.releasers, for release: owner-tag) for a
+                 repository that tags its own releases
+  release/*      only the owner and forge.releasers push
+  version tags   created by the Jenkins user (applications) or the owner and forge.releasers (owner-tag
+                 repositories); on
                  GitHub, and on a Forgejo mirror's GitHub copies, moved or deleted by nobody
   yggdrasil.yml  protected on develop (Forgejo): only the owner merges a change to it (what Jenkins
                  runs: images, commands, the credentials a check binds); the Jenkinsfile too, which
@@ -107,10 +109,11 @@ class RepoRules:
     main_checks: tuple           # required on main: branch-policy, checks, deploy/<env>...
     actions_checks: frozenset    # the subset GitHub binds to GitHub Actions
     develop_mergers: tuple       # owner + forge.developers
-    main_mergers: tuple          # (forge.jenkinsUser,) for applications, (owner,) otherwise
-    release_pushers: tuple       # (owner,)
+    main_mergers: tuple          # (forge.jenkinsUser,) for applications, owner + forge.releasers for release:
+                                 # owner-tag repositories, (owner,) otherwise
+    release_pushers: tuple       # owner + forge.releasers
     tag_pattern: str             # "v*" or the repository's `tags`
-    tag_creators: tuple          # (forge.jenkinsUser,) for applications, (owner,) for owner-tag repositories
+    tag_creators: tuple          # as main_mergers: (forge.jenkinsUser,), owner + forge.releasers, or (owner,)
     owner_tags: bool             # the owner creates the version tags (a `repositories` entry), not Jenkins
     protected_files: tuple       # ("Jenkinsfile", "yggdrasil.yml"): on develop only, see forgejo_branch_protections
     # With model "basic" the checks, mergers and protected_files are empty, and the release rules
@@ -127,7 +130,12 @@ def _unique(*groups):
 
 
 def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag_pattern, tag_creator, developers,
-           owner_tags):
+           owner_tags, releasers=(), releases_by_tag=False):
+    # releasers push release/* everywhere. Where the owner releases by tag (release: owner-tag) they may also
+    # do what the owner does: merge main and create the tags. An application's main and tags stay Jenkins'
+    # alone, merged and tagged only after its release environments deployed (and their approvals).
+    main_mergers = _unique([main_merger], releasers) if releases_by_tag else (main_merger,)
+    tag_creators = _unique([tag_creator], releasers) if releases_by_tag else (tag_creator,)
     if model == "basic":
         return RepoRules(repo=repo, model=model, develop_checks=(), main_checks=(), actions_checks=frozenset(),
                          develop_mergers=(), main_mergers=(), release_pushers=(owner,), tag_pattern=tag_pattern,
@@ -141,10 +149,10 @@ def _rules(repo, model, owner, checks, actions_checks, deploys, main_merger, tag
         main_checks=_unique([BRANCH_POLICY], checks, [f"deploy/{environment}" for environment in deploys]),
         actions_checks=frozenset(actions_checks),
         develop_mergers=_unique([owner], developers),
-        main_mergers=(main_merger,),
-        release_pushers=(owner,),
+        main_mergers=main_mergers,
+        release_pushers=_unique([owner], releasers),
         tag_pattern=tag_pattern,
-        tag_creators=(tag_creator,),
+        tag_creators=tag_creators,
         owner_tags=owner_tags,
         # yggdrasil.yml is what Jenkins runs for the repository; the Jenkinsfile is no longer read (every job
         # runs jenkins/Jenkinsfile.default) and stays listed, harmlessly, for repositories that carry one.
@@ -167,7 +175,7 @@ def desired_rules(catalog):
     first, so each job's statuses are required."""
     owner = catalog["owner"]
     forge = catalog_module.forge(catalog)
-    jenkins, developers = forge["jenkinsUser"], forge["developers"]
+    jenkins, developers, releasers = forge["jenkinsUser"], forge["developers"], forge["releasers"]
 
     modelled = []
     # catalog.repository_entries: the grouping and the deciding entry (first), shared with
@@ -180,17 +188,20 @@ def desired_rules(catalog):
             # on main) would otherwise have a main nobody may change: basic, like a repository with no
             # branch policy. The deciding application releases whenever any entry of the repository does.
             model = catalog_module.repository_model(catalog, repo)
-            merger, tags, owner_tags = jenkins, "v*", False
+            merger, tags, owner_tags, by_tag = jenkins, "v*", False, False
         else:
-            # The owner releases these by hand: they merge main and create the tags themselves.
+            # The owner releases these by hand: they merge main and create the tags themselves (and so may
+            # forge.releasers, for a release: owner-tag entry).
             entry = deciding["entry"]
             model, merger, owner_tags = catalog_module.repository_model(catalog, repo), owner, True
-            tags = entry["tags"] if entry["release"] == "owner-tag" else "v*"
+            by_tag = entry["release"] == "owner-tag"
+            tags = entry["tags"] if by_tag else "v*"
         deploys = [env["id"] for e in entries if e["kind"] == "application"
                    for env in catalog_module.resolve(catalog, e["id"]) if env["trigger"] == "release"]
         modelled.append(_rules(repo, model, owner, catalog_module.entries_union(entries, "checks"),
                                catalog_module.entries_union(entries, "actionsChecks"), _unique(deploys),
-                               merger, tags, merger, developers, owner_tags=owner_tags))
+                               merger, tags, merger, developers, owner_tags=owner_tags, releasers=releasers,
+                               releases_by_tag=by_tag))
     return modelled
 
 
@@ -530,7 +541,7 @@ def forgejo_branch_protections(r):
     # protected file there would stop whenever a release changes yggdrasil.yml.
     return [guarded("develop", r.develop_mergers, r.develop_checks, r.protected_files),
             guarded("main", r.main_mergers, r.main_checks, ()),
-            # Release branches are pushed to directly, by the owner alone.
+            # Release branches are pushed to directly, by the owner and forge.releasers.
             {"rule_name": "release/*", "enable_push": True, "enable_push_whitelist": True,
              "push_whitelist_usernames": list(r.release_pushers), "enable_merge_whitelist": False,
              "apply_to_admins": False}]

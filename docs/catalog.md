@@ -63,6 +63,7 @@ forge:
   url: https://git.example.com   # the server's address
   jenkinsUser: jenkins           # default jenkins
   developers: [claude]           # default []
+  releasers: [claude]            # default []
   publishAgent: vps              # default: the agent of the last release environment
 mirror:                          # optional
   github: acme                   # the GitHub user or organisation to mirror to
@@ -75,8 +76,8 @@ forge:
   type: github
 ```
 
-`jenkinsUser` and `developers` are read on Forgejo only: GitHub's rulesets do not restrict who merges,
-so with `type: github` they have no effect.
+`jenkinsUser`, `developers` and `releasers` are read on Forgejo only: GitHub's rulesets do not restrict
+who merges, so with `type: github` they have no effect.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -84,6 +85,7 @@ so with `type: github` they have no effect.
 | `forge.url` | required for `forgejo` | An `https://` address with a host and no path (`https://git.example.com`, a port is fine). A trailing `/` is dropped; the API is `<url>/api/v1`. Not allowed for `github`: GitHub Enterprise Server is not supported, `github` is always `https://github.com` (API `https://api.github.com`). |
 | `forge.jenkinsUser` | `jenkins` | The git server user Jenkins acts as. On Forgejo it is the only one that merges `main` and creates the `v*` version tags of applications (no effect on GitHub). A user name: letters, digits, `.`, `_` and `-`; on GitHub it may end in `[bot]` (a GitHub App's bot login, `my-app[bot]`). It is also whose check results the pipeline reuses (see [Which checks run](#which-checks-run)): on GitHub the statuses of a GitHub App are created by its bot login (`my-app[bot]`), so a GitHub installation reuses results only when `jenkinsUser` is set to that login; otherwise every check runs again. |
 | `forge.developers` | `[]` | On Forgejo, users, besides the owner, who may merge pull requests into `develop` (no effect on GitHub). A list of user names. |
+| `forge.releasers` | `[]` | On Forgejo, users, besides the owner, who may push `release/*` branches in every repository of the release model, and, in a `release: owner-tag` repository, also merge `main` and create its tags, as the owner does: they can release it. An application's `main` and `v*` tags stay `forge.jenkinsUser`'s alone, merged and tagged after its release environments deployed. A releaser's `release/x.y.z` deploys to the environments that deploy `release/*` and can open the release pull request, so give each application's release environments `approval: true` (a test pins it for this catalog). No effect on GitHub. A list of user names. |
 | `forge.publishAgent` | the `agent` of the last `trigger: release` environment, over the applications in catalog order (what merges and releases today); none when no environment releases | The Jenkins agent that merges, tags, creates releases and uploads their files: the only one holding the git server's write token (and, for GitHub Actions and a release's GitHub copy, the GitHub App's). An agent name: lowercase letters, digits and dashes, and one Jenkins makes for an environment (an environment's `agent`, or the id of one that deploys by branch or release); never `ci` or `release`, the pipeline's own agents. |
 | `mirror.github` | required with a `mirror` | The GitHub user or organisation the repositories are mirrored to. |
 | `mirror.releases` | `true` | Whether releases are mirrored as well. `true` or `false`. |
@@ -740,7 +742,7 @@ Ubuntu: `sudo apt install python3-yaml`). Run it from the repository's root:
 | `python3 scripts/catalog.py get <app> <environment> <option>` | One resolved option. Lists are space-separated, booleans `true`/`false`: `get heimdall-api development onDemand` prints `true` |
 | `python3 scripts/catalog.py environment <environment> [<option>]` | JSON: the environment's own options, defaults applied but no application's override; with an option, only its value, printed as `get` does |
 | `python3 scripts/catalog.py owner` / `repository` | The GitHub owner; this repository's name (default `yggdrasil`) |
-| `python3 scripts/catalog.py forge [type\|url\|api\|jenkins-user\|publish-agent]` | The git server: JSON of `type`, `url`, `api`, `jenkinsUser`, `developers` and `publishAgent` (`null` when nothing releases) with defaults applied (GitHub when there is no `forge` block), or one value; `publish-agent` exits `1` when there is none |
+| `python3 scripts/catalog.py forge [type\|url\|api\|jenkins-user\|publish-agent]` | The git server: JSON of `type`, `url`, `api`, `jenkinsUser`, `developers`, `releasers` and `publishAgent` (`null` when nothing releases) with defaults applied (GitHub when there is no `forge` block), or one value; `publish-agent` exits `1` when there is none |
 | `python3 scripts/catalog.py mirror [github\|releases]` | The mirror: JSON, or one value (booleans `true`/`false`). Exits `1` with `catalog.yaml has no mirror` when there is none |
 | `python3 scripts/catalog.py repositories` | The ids of the [`repositories`](#repositories) that are not applications, one per line (nothing when there are none) |
 | `python3 scripts/catalog.py repository-names` | Every git repository under the owner, once each and one per line: the deployable applications' (their `repository`, else their `id`) and then the `repositories` entries. What `scripts/renovate.sh` visits |
