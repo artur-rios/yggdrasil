@@ -15,8 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   longer hold the agent back; its Claude Code configuration does: `CLAUDE.md` keeps the branch, merge and
   release rules, and `settings.json` denies deleting branches and tags, `tea repo delete` and
   `tea api -X DELETE`. **Upgrading:** as `dev`, swap the `claude` token for the owner's in
-  `~/.git-credentials` and `tea`'s login (step 1), then revoke `claude`'s `dev` token. The catalog still lists
-  `claude` in `forge.developers` and `forge.releasers`, harmless while nothing uses it.
+  `~/.git-credentials` and `tea`'s login (step 1), then revoke `claude`'s `dev` token.
+- **The catalog has no `forge.developers` or `forge.releasers`.** `claude` left both: with `dev` on the owner's
+  token nothing uses that account. `develop`, `main`, `release/*` and the tags of the repositories released by
+  tag are again the owner's alone (and Jenkins', where it merges). **Upgrading:** run
+  `python3 scripts/rules.py` with the owner's token (setup.md, step 12) to take `claude` out of the branch
+  rules. Its write access to the repositories stays until it is removed in Forgejo.
 
 ## [0.13.17] - 2026-11-20
 
