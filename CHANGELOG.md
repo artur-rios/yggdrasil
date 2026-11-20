@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **`dev`'s commits are the owner's.** [hosts.md](docs/hosts.md#ai-development-as-dev) sets `dev`'s git author to
+  the owner's name and email instead of `claude`, which only pushes the commits and opens the pull requests.
+  Claude Code's `settings.json` there gets `"attribution": { "commit": "" }`, so its commits carry no
+  Co-Authored-By line. **Upgrading:** as `dev`, `git config --global user.name` and `user.email` with the
+  owner's, and that setting in `~/.claude/settings.json`.
+
 ## [0.13.16] - 2026-11-19
 
 ### Added
