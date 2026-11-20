@@ -353,9 +353,10 @@ directory and its own linger. What the owner sets up as `dev` is [below](#ai-dev
 `renovate`'s daily run is [further down](#renovate-the-daily-run).
 
 **Why a separate `release` user.** Release files ship through the apps' built-in updaters and to
-nuget.org. If they were built in the `ci` engine, a check from a pull request by `claude` or Renovate
+nuget.org. If they were built in the `ci` engine, a check from a pull request by `dev`'s agent or Renovate
 could reach the build's containers while it runs and change what comes out. The release agent runs
-only builds the owner started, so the code it builds was merged by the owner. Signing happens
+only builds the owner started, so the code it builds was merged by the owner (or, with the owner's token,
+by `dev`'s agent when the owner asked it to). Signing happens
 there, never on the controller and never on the Application Server.
 
 ### What each user may do
@@ -366,12 +367,16 @@ there, never on the controller and never on the Application Server.
   containers of the `ci` engine, and nothing else. It cannot push, merge, tag or deploy. `ygg check`
   verifies that no other service user (`ci`, `release`, `dev`, `renovate`) can read `ygg`'s Docker socket or its
   secrets, and that `ci` cannot read `release`'s socket or `agent.env`. None of them can bind a port below 1024.
-- **`dev`** pushes to Forgejo as its own account (`claude`). It can push `feature/` and `fix/`
-  branches, open pull requests and merge into `develop`. As a `forge.releasers` user it can also push
-  `release/*` branches everywhere, and in the repositories released by tag (`release: owner-tag`) merge
-  `main` and create the tags: it can release those. In an application it cannot merge `main` or create
-  `v*` tags (Jenkins does, after the release environments deployed), and each application's production
-  waits for the owner's **Deploy** click.
+- **`dev`** pushes to Forgejo with a token of the owner's account, so the agent's commits, pull requests,
+  merges and tags are the owner's: Forgejo authors a merge as the account that merges, and has no other way
+  to make it the owner's. Forgejo's branch rules hold it no more than they hold the owner. What keeps it to
+  `feature/` and `fix/` branches, pull requests, and the merges and releases the owner asks for is its Claude
+  Code configuration ([step 3](#ai-development-as-dev)): the rules in `CLAUDE.md` and the deny list in
+  `settings.json`. In an application it never merges `main` or creates `v*` tags (Jenkins does, after the
+  release environments deployed), and each application's production waits for the owner's **Deploy**
+  click. The token leaves out `write:admin`, so the site's administration is out of its reach. The trade:
+  everything the agent does carries the owner's name, and the limits a separate account had on the forge
+  are now the agent's own to keep.
 
 ### How the owner logs in
 
@@ -379,7 +384,7 @@ there, never on the controller and never on the Application Server.
 |---|---|---|
 | Daily work: platform, deploys, variables, backups | `ygg`: `ssh ygg@<host>` | `cd /opt/yggdrasil`, then `ygg …` or `scripts/platform.sh …`. The login shell points `docker` at `ygg`'s engine. |
 | System work: updates, packages, users, firewall, `ygg install`, `ygg check`, `ygg agent` | the admin: `ssh artur@<host>` | `sudo` for what needs root. `ygg agent` and the engine rows of `ygg check` run commands as another user through `sudo`. |
-| AI development (DevOps Server) | `dev`: `ssh dev@<host>` | its own engine and Forgejo account |
+| AI development (DevOps Server) | `dev`: `ssh dev@<host>` | its own engine, and the owner's Forgejo token |
 
 `ygg install` copies the admin's `~/.ssh/authorized_keys` to `ygg` (and `dev`) when that user has none,
 after asking. A user that already has keys is never touched.
@@ -410,23 +415,26 @@ The rest is the owner's, once, and stays in `dev`'s home (mode `750`), so the sy
 1. **Its Forgejo token.** As `ygg`, with `forgejo_user` from [setup.md 9.7](setup.md#97-the-forgejo-accounts-and-tokens):
 
    ```bash
-   forgejo_user generate-access-token --username claude --token-name dev --scopes write:repository,write:issue,read:user,read:organization --raw
+   forgejo_user generate-access-token --username '<the owner>' --token-name dev --scopes write:repository,write:issue,read:user,read:organization --raw
    ```
 
-   The `claude` account is the one [rules.py](setup.md#12-apply-the-branch-rules) lets push `feature/` and
-   `fix/` branches, open pull requests and merge into `develop`, and nothing more. Then as `dev`, so that git
-   and `tea` use it over HTTPS (the file is `600` and only `dev` reads it):
+   (or in Forgejo, **Settings → Applications**, with the same scopes). It is a token of the owner's account,
+   for the reasons [above](#what-each-user-may-do). Then as `dev`, so that git and `tea` use it over HTTPS
+   (the file is `600` and only `dev` reads it; `read -s` keeps the token off the screen and out of the
+   shell's history):
 
    ```bash
+   read -rsp 'Forgejo token: ' T && echo
    git config --global credential.helper store
-   printf 'protocol=https\nhost=git.<DOMAIN>\nusername=claude\npassword=%s\n\n' '<the token>' | git credential approve
+   printf 'protocol=https\nhost=git.<DOMAIN>\nusername=<the owner>\npassword=%s\n\n' "$T" | git credential approve
    git config --global user.name '<the owner name>'
    git config --global user.email '<the owner email>'
-   tea login add --name forgejo --url https://git.<DOMAIN> --token '<the token>'
+   tea login add --name forgejo --url https://git.<DOMAIN> --token "$T"
+   tea login default forgejo
+   unset T
    ```
 
-   The commits are the owner's: `claude` only pushes them and opens the pull requests, so the author is the
-   owner's name and the email of their Forgejo account, which links the commits to it.
+   The author is the owner's name and the email of their Forgejo account, which links the commits to it.
 
 2. **The toolchains, in `dev`'s home.** As `dev`, `dev-toolchains` installs what the repositories build with,
    each download checked against its published checksum before it is unpacked or run: Flutter 3.50.0 (the
@@ -456,13 +464,18 @@ The rest is the owner's, once, and stays in `dev`'s home (mode `750`), so the sy
    terminal. The sign-in is kept in `~/.claude`; the owner's own settings for it (`CLAUDE.md`,
    `settings.json`, `skills/`, `plugins/`) are copied there from the workstation. So that its commits carry
    no Co-Authored-By line, `settings.json` has `"attribution": { "commit": "" }`, and `CLAUDE.md` doesn't
-   ask for one.
+   ask for one. Since the agent works with the owner's token, these two files are what keep it in its lane.
+   `CLAUDE.md` says it acts as the owner's account, keeps the branch, merge and release rules where Forgejo
+   would let it through, and never touches a repository's settings, branch rules, webhooks or tokens.
+   `settings.json` denies, besides force pushes and pushes to `develop` and `main`, deleting a branch or tag
+   (`git push --delete`, `git push origin :<ref>`, `git tag -d`, `git tag -f`), `tea repo delete` and
+   `tea api -X DELETE`.
 
    ```bash
    curl -fsSL https://claude.ai/install.sh | bash
    ```
 
-4. **The repositories, in `~/repositories`.** Each one is cloned over HTTPS with the `claude` token, into
+4. **The repositories, in `~/repositories`.** Each one is cloned over HTTPS with the owner's `dev` token, into
    `~/repositories/<name>`; `ci-check` takes yggdrasil's `run-check.sh` from `~/repositories/yggdrasil`
    (from `/opt/yggdrasil`, the machine's checkout, while there is no clone):
 
@@ -987,7 +1000,7 @@ job may bind each one, and `scripts/test_catalog.py` checks that this table has 
 | GitHub fine-grained token (read-only, public repositories, no permissions; optional), `RENOVATE_GITHUB_COM_TOKEN` | `renovate` user (dev), `/etc/yggdrasil-renovate/renovate.env` | Read the release notes and changelogs of GitHub-hosted dependencies without the anonymous rate limit | now: [Renovate](#renovate-the-daily-run) |
 | Hermes `heimdall-signals` client key, `HEIMDALL_SIGNAL_HERMES_API_KEY` | `ygg` (apps), `/etc/yggdrasil/security-signals-production.env` | Send mail from `heimdall-signals@` to the one alert address, 5 a minute and 200 a day | later: [Heimdall's security signals](#heimdalls-security-signals) |
 | Heartbeat ping URL, `HEIMDALL_SIGNAL_HEARTBEAT_URL` | `ygg` (apps), the same file | Report to the monitor that the job ran, or failed. Whoever has it can make a failing job look healthy | later: [Heimdall's security signals](#heimdalls-security-signals) |
-| Forgejo `claude` account | `dev` user | Push `feature/`, `fix/` and `release/*` branches, open pull requests, merge into `develop`; in `release: owner-tag` repositories also merge `main` and create the tags | now: [AI development as `dev`](#ai-development-as-dev) |
+| Forgejo owner token `dev` (`write:repository`, `write:issue`, `read:user`, `read:organization`; no `write:admin`) | `dev` user: `~/.git-credentials` and `tea`'s login | Everything the owner can do in a repository, short of the site's administration. The agent's `CLAUDE.md` and `settings.json` keep it to `feature/` and `fix/` branches, pull requests, and the merges and releases the owner asks for | now: [AI development as `dev`](#ai-development-as-dev) |
 | Forgejo owner account (`artur-rios`, site admin) | The owner | Everything, including the admin override | now: [first account](#the-first-forgejo-account) |
 | Forgejo owner token (`write:repository`; for the move, `read:user` too, which `migrate.py collaborators` needs to look the bots up), `FORGE_TOKEN` | The operator's shell, for a run of `python3 scripts/rules.py` or `scripts/migrate.py` (typed in, not kept in a file) | Set the repositories' settings, branch and tag protections and webhooks; import the repositories, make their push mirrors, give the bots their access | now: [setup.md, step 12](setup.md#12-apply-the-branch-rules), [cutover.md](cutover.md#24-the-owners-token) |
 | GitHub mirror token (fine-grained: Contents and Workflows write on the mirrored repositories) | Forgejo (`ygg`, dev): with each push mirror, in that repository's git configuration on disk, inside Forgejo's data volume. So the nightly Forgejo dump ([Backups](#7-backups-and-restore)) carries it, and a copy of it sits in the Application Server's `~/received/from-dev` | Push to the GitHub copies. It cannot move or delete a version tag there: nobody bypasses the copies' `mirror tags` ruleset, so such a push fails and Forgejo shows the mirror's sync failing ([setup.md](setup.md#version-tags-tag-check-and-repairs)) | at the move: `scripts/migrate.py mirrors` hands it to Forgejo ([cutover.md](cutover.md#41-the-two-github-tokens)). A new token reaches no existing mirror: rotating it means making the mirrors again ([cutover.md, 7.3](cutover.md#73-the-windows-tokens)) |

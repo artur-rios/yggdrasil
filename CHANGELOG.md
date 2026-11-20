@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **`dev` works with the owner's Forgejo token.** Forgejo authors a merge as the account that merges, so for
+  the agent's merges and releases to be the owner's, [hosts.md](docs/hosts.md#ai-development-as-dev) now gives
+  `dev` a token of the owner's account (no `write:admin`) instead of `claude`'s. Forgejo's branch rules no
+  longer hold the agent back; its Claude Code configuration does: `CLAUDE.md` keeps the branch, merge and
+  release rules, and `settings.json` denies deleting branches and tags, `tea repo delete` and
+  `tea api -X DELETE`. **Upgrading:** as `dev`, swap the `claude` token for the owner's in
+  `~/.git-credentials` and `tea`'s login (step 1), then revoke `claude`'s `dev` token. The catalog still lists
+  `claude` in `forge.developers` and `forge.releasers`, harmless while nothing uses it.
+
 ## [0.13.17] - 2026-11-20
 
 ### Changed
