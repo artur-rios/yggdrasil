@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.18] - 2026-11-20
+
+### Changed
+
+- **`dev` works with the owner's Forgejo token.** Forgejo authors a merge as the account that merges, so for
+  the agent's merges and releases to be the owner's, [hosts.md](docs/hosts.md#ai-development-as-dev) now gives
+  `dev` a token of the owner's account (no `write:admin`) instead of `claude`'s. Forgejo's branch rules no
+  longer hold the agent back; its Claude Code configuration does: `CLAUDE.md` keeps the branch, merge and
+  release rules, and `settings.json` denies deleting branches and tags, `tea repo delete` and
+  `tea api -X DELETE`. **Upgrading:** as `dev`, swap the `claude` token for the owner's in
+  `~/.git-credentials` and `tea`'s login (step 1), then revoke `claude`'s `dev` token.
+- **The catalog has no `forge.developers` or `forge.releasers`.** `claude` left both: with `dev` on the owner's
+  token nothing uses that account. `develop`, `main`, `release/*` and the tags of the repositories released by
+  tag are again the owner's alone (and Jenkins', where it merges). **Upgrading:** run
+  `python3 scripts/rules.py` with the owner's token (setup.md, step 12) to take `claude` out of the branch
+  rules. Its write access to the repositories stays until it is removed in Forgejo.
+
 ## [0.13.17] - 2026-11-20
 
 ### Changed
@@ -1718,7 +1735,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.18...HEAD
+[0.13.18]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...v0.13.18
 [0.13.17]: https://github.com/artur-rios/yggdrasil/compare/v0.13.16...v0.13.17
 [0.13.16]: https://github.com/artur-rios/yggdrasil/compare/v0.13.15...v0.13.16
 [0.13.15]: https://github.com/artur-rios/yggdrasil/compare/v0.13.14...v0.13.15

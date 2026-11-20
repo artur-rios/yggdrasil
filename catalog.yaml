@@ -30,11 +30,8 @@ repository: yggdrasil
 forge:
   type: forgejo
   url: https://git.techcraftsmen.net
-  developers: [claude]
-  # May push release/* branches everywhere, and merge main and create the tags of the repositories released
-  # by tag (release: owner-tag). An application's main and tags stay Jenkins', after its release environments
-  # deployed: each application's production asks for a Deploy click (approval: true).
-  releasers: [claude]
+  # No developers or releasers: the AI development user, dev, works with the owner's token, so what it merges
+  # and releases is the owner's (docs/hosts.md, AI development as dev).
 mirror:
   github: artur-rios
   releases: true
