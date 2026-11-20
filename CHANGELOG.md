@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.17] - 2026-11-20
+
+### Changed
+
+- **`dev`'s commits are the owner's.** [hosts.md](docs/hosts.md#ai-development-as-dev) sets `dev`'s git author to
+  the owner's name and email instead of `claude`, which only pushes the commits and opens the pull requests.
+  Claude Code's `settings.json` there gets `"attribution": { "commit": "" }`, so its commits carry no
+  Co-Authored-By line. **Upgrading:** as `dev`, `git config --global user.name` and `user.email` with the
+  owner's, and that setting in `~/.claude/settings.json`.
+
 ## [0.13.16] - 2026-11-19
 
 ### Added
@@ -1708,7 +1718,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.16...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...HEAD
+[0.13.17]: https://github.com/artur-rios/yggdrasil/compare/v0.13.16...v0.13.17
 [0.13.16]: https://github.com/artur-rios/yggdrasil/compare/v0.13.15...v0.13.16
 [0.13.15]: https://github.com/artur-rios/yggdrasil/compare/v0.13.14...v0.13.15
 [0.13.14]: https://github.com/artur-rios/yggdrasil/compare/v0.13.13...v0.13.14

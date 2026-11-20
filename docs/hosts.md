@@ -420,10 +420,13 @@ The rest is the owner's, once, and stays in `dev`'s home (mode `750`), so the sy
    ```bash
    git config --global credential.helper store
    printf 'protocol=https\nhost=git.<DOMAIN>\nusername=claude\npassword=%s\n\n' '<the token>' | git credential approve
-   git config --global user.name claude
-   git config --global user.email claude@<DOMAIN>
+   git config --global user.name '<the owner name>'
+   git config --global user.email '<the owner email>'
    tea login add --name forgejo --url https://git.<DOMAIN> --token '<the token>'
    ```
+
+   The commits are the owner's: `claude` only pushes them and opens the pull requests, so the author is the
+   owner's name and the email of their Forgejo account, which links the commits to it.
 
 2. **The toolchains, in `dev`'s home.** As `dev`, `dev-toolchains` installs what the repositories build with,
    each download checked against its published checksum before it is unpacked or run: Flutter 3.50.0 (the
@@ -451,7 +454,9 @@ The rest is the owner's, once, and stays in `dev`'s home (mode `750`), so the sy
 3. **The agent.** Claude Code's installer puts it in `~/.local/bin`, and `claude` asks for a sign-in the first
    time: on a server it prints a URL to open on another device, and the code it shows goes back into the
    terminal. The sign-in is kept in `~/.claude`; the owner's own settings for it (`CLAUDE.md`,
-   `settings.json`, `skills/`, `plugins/`) are copied there from the workstation.
+   `settings.json`, `skills/`, `plugins/`) are copied there from the workstation. So that its commits carry
+   no Co-Authored-By line, `settings.json` has `"attribution": { "commit": "" }`, and `CLAUDE.md` doesn't
+   ask for one.
 
    ```bash
    curl -fsSL https://claude.ai/install.sh | bash
