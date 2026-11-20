@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.18] - 2026-11-20
+
 ### Changed
 
 - **`dev` works with the owner's Forgejo token.** Forgejo authors a merge as the account that merges, so for
@@ -1733,7 +1735,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.18...HEAD
+[0.13.18]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...v0.13.18
 [0.13.17]: https://github.com/artur-rios/yggdrasil/compare/v0.13.16...v0.13.17
 [0.13.16]: https://github.com/artur-rios/yggdrasil/compare/v0.13.15...v0.13.16
 [0.13.15]: https://github.com/artur-rios/yggdrasil/compare/v0.13.14...v0.13.15
