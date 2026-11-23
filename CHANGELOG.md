@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.19] - 2026-11-23
+
+### Fixed
+
+- **Renovate updates the Flutter applications' lockfiles again.** It runs `renovate/renovate:44.257.9-full`
+  (was 44.181.0), whose Flutter is 3.50.1 and Dart 3.14.1. The old image's Flutter 3.47.7 came with Dart 3.13.5,
+  older than the Dart 3.14 that maestro and alexandria-ui's `screen_retriever` require since both moved to Flutter
+  3.50, so every pub update failed to resolve: an "Artifact update problem" comment, a pull request that changed
+  `pubspec.yaml` without `pubspec.lock`, and a red drift check. The full image uses its own toolchains, whatever
+  a repository asks for, so it has to move up when the repositories' toolchains outgrow it
+  ([scripts/renovate.sh](scripts/renovate.sh)). **Upgrading:** pull the new image once as `renovate` before the
+  next run ([docs/hosts.md](docs/hosts.md#renovate-the-daily-run)).
+
 ## [0.13.18] - 2026-11-20
 
 ### Changed
@@ -1735,7 +1748,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.18...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.19...HEAD
+[0.13.19]: https://github.com/artur-rios/yggdrasil/compare/v0.13.18...v0.13.19
 [0.13.18]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...v0.13.18
 [0.13.17]: https://github.com/artur-rios/yggdrasil/compare/v0.13.16...v0.13.17
 [0.13.16]: https://github.com/artur-rios/yggdrasil/compare/v0.13.15...v0.13.16
