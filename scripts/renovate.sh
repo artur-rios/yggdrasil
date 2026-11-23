@@ -58,7 +58,14 @@ source "$root/scripts/docker-engine.sh"
 # the slim image's few hundred MB. Update both parts together: the
 # digest of renovate/renovate:<version>-full on Docker Hub
 # (`docker buildx imagetools inspect renovate/renovate:<version>-full`), after reading the release notes.
-RENOVATE_IMAGE=renovate/renovate:44.181.0-full@sha256:581faffea07b4c6112b0d3be88721f4b03ed0e21a230a8a45037cf6276bb0311
+#
+# The full image runs its own toolchains (RENOVATE_BINARY_SOURCE=global): it ignores the SDK a repository asks for
+# and updates every lockfile with the versions it was built with. A repository that needs a newer one than the image
+# has fails the same way, with the reason in Renovate's comment on the pull request (pub: "The current Dart SDK
+# version is 3.13.5. Because maestro requires SDK version ^3.14.0, version solving failed."). Move the image up to
+# a release whose base image (renovatebot/base-image's Dockerfile, its `install-tool` lines) has the toolchain the
+# repositories need: 44.257.9 has Flutter 3.50.1 and Dart 3.14.1, for the Flutter 3.50 the Flutter applications are on.
+RENOVATE_IMAGE=renovate/renovate:44.257.9-full@sha256:2a5f5bb9d5cd9c3dd737d76e22ebd7ea3cf7146dd862e0a0d65ee5aa05c490cb
 
 # The global options (see the header): the branches Renovate pushes and opens pull requests from, where they
 # go, and what it does with a repository that has no config of its own.
