@@ -683,6 +683,28 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.request("1.0.0").strip().endswith("/repos/someone/app/git/ref/heads/release/1.0.0"))
 
+    MERGE = "c" * 40
+
+    def test_given_a_branch_the_mirror_has_not_moved_yet_when_waiting_for_a_commit_then_it_waits_for_it(self):
+        # The mirror has main at the commit before the merge, then at the merge: only the second look is it.
+        self.respond("main", (0, {"ref": "refs/heads/main", "object": {"sha": "b" * 40, "type": "commit"}}),
+                     (0, {"ref": "refs/heads/main", "object": {"sha": self.MERGE, "type": "commit"}}))
+        result = self.github("wait-ref", "app", "refs/heads/main", "60", self.MERGE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.request("main", 2).strip().endswith("/repos/someone/app/git/ref/heads/main"))
+
+    def test_given_a_branch_never_at_the_commit_when_waiting_for_it_then_it_times_out_with_2(self):
+        self.respond("main", last=(0, {"ref": "refs/heads/main", "object": {"sha": "b" * 40, "type": "commit"}}))
+        result = self.github("wait-ref", "app", "refs/heads/main", "0", self.MERGE)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(f"refs/heads/main is not at {self.MERGE} on GitHub", result.stderr)
+        self.assertIn("bbbbbbb", result.stderr)
+
+    def test_given_a_commit_that_is_not_one_when_waiting_for_it_then_it_is_refused(self):
+        result = self.github("wait-ref", "app", "refs/heads/main", "0", "main")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not a commit", result.stderr)
+
     # -- dispatch / run-status -------------------------------------------------------------------------
 
     def dispatch(self, *arguments, ref="v1.2.0"):

@@ -12,7 +12,8 @@
 # GitHub Actions only runs the Windows/macOS jobs of a repository, on its push-mirror; the pipeline reads
 # and starts those runs with these, one look at a time (it never holds an executor waiting):
 #     scripts/github.sh actions-status <repo> <sha> [<name>...]          -> <name> TAB <state> TAB <url> per check
-#     scripts/github.sh wait-ref       <repo> <ref> <timeout-seconds>    -> until the mirror has the tag or branch
+#     scripts/github.sh wait-ref       <repo> <ref> <timeout-seconds> [<sha>]  -> until the mirror has the tag or
+#                                      branch (with <sha>: the branch at that commit)
 #     scripts/github.sh dispatch       <repo> <workflow-file> <ref> [key=value...]   -> the new run's id
 #     scripts/github.sh run-status     <repo> <run-id>                   -> pending | success | failure
 #     scripts/github.sh download-artifacts <repo> <run-id> <dir>         -> <dir>/<artifact name>/...
@@ -364,22 +365,36 @@ actions_status() {
   fi
 }
 
-# Waits until the mirror has pushed <ref> -- refs/tags/x, refs/heads/x, or a bare name, which is a tag.
+# Waits until the mirror has pushed <ref> -- refs/tags/x, refs/heads/x, or a bare name, which is a tag. With
+# <sha>, until <ref> is at that commit: a branch the mirror has, but not moved yet, is waited for too (an
+# annotated tag's ref names the tag object, not its commit, so <sha> is for branches).
 wait_ref() {
-  (($# == 3)) || die "usage: wait-ref <repo> <ref> <timeout-seconds>"
-  local repo=$1 ref=$2 timeout=$3 path
+  (($# == 3 || $# == 4)) || die "usage: wait-ref <repo> <ref> <timeout-seconds> [<sha>]"
+  local repo=$1 ref=$2 timeout=$3 sha=${4:-} path seen=""
   [[ "$timeout" =~ ^[0-9]+$ ]] || die "the timeout must be a number of seconds, not '$timeout'"
+  [[ -z "$sha" || "$sha" =~ ^[0-9a-f]{40}$ ]] || die "'$sha' is not a commit (40 hexadecimal digits)"
   case "$ref" in
     refs/*) path=${ref#refs/} ;;
     *) path=tags/$ref ;;
   esac
   local deadline=$((SECONDS + timeout))
   while :; do
-    # Any answer but "it is there" -- not found, an outage -- is a reason to look again, until the time is up.
+    # Any answer but "it is there" -- not found, an outage, another commit -- is a reason to look again,
+    # until the time is up.
+    seen=""
     if raw_api GET "repos/$owner/$repo/git/ref/$path" && [[ "$http_code" == 200 ]]; then
-      return 0
+      [[ -n "$sha" ]] || return 0
+      seen=$(jq -r '.object.sha // empty' <<<"$http_body" 2>/dev/null) || seen=""
+      [[ "$seen" != "$sha" ]] || return 0
     fi
-    ((SECONDS < deadline)) || { echo "github: $ref is not on GitHub after ${timeout}s (last answer: HTTP $http_code)" >&2; return 2; }
+    if ((SECONDS >= deadline)); then
+      if [[ -n "$sha" ]]; then
+        echo "github: $ref is not at $sha on GitHub after ${timeout}s (last answer: HTTP $http_code${seen:+, at ${seen:0:7}})" >&2
+      else
+        echo "github: $ref is not on GitHub after ${timeout}s (last answer: HTTP $http_code)" >&2
+      fi
+      return 2
+    fi
     sleep "$fast_poll_seconds"
   done
 }
