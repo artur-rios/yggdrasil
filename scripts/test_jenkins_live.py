@@ -1672,12 +1672,15 @@ class JenkinsLiveTests(ForgejoClient, unittest.TestCase):
         self.assertIn(f"FINALIZE-KEY {hashlib.sha256(DB_PASSWORD.encode()).hexdigest()}", build.console)
         self.assertEqual(assets["shop-desktop-manifest.txt"], sum(64 + 2 + len(f"./{path}\n") for path in DESKTOP_SET))
         self.assertEqual(assets["shop-desktop-manifest.sig"], 64 + 1)
-        # GitHub: the tag waited for, the workflow dispatched on it, its run watched and its files
-        # downloaded -- every call on the publish agent (vps), with the App's token; none on release.
+        # GitHub: the merge waited for on main before the tag was made, then the tag waited for, the
+        # workflow dispatched on it, its run watched and its files downloaded -- every call on the publish
+        # agent (vps), with the App's token; none on release.
         mine = [line for line in calls if f" args={DESKTOP} " in f"{line} "]
-        self.assertEqual([line.split()[0] for line in mine], ["wait-ref", "dispatch", "run-status", "download-artifacts"],
-                         mine)
-        self.assertIn(f"args={DESKTOP} release-windows.yml v1.0.0 tag=v1.0.0", mine[1])
+        self.assertEqual([line.split()[0] for line in mine],
+                         ["wait-ref", "wait-ref", "dispatch", "run-status", "download-artifacts"], mine)
+        self.assertRegex(mine[0], rf"args={DESKTOP} refs/heads/main 0 [0-9a-f]{{40}}$")
+        self.assertIn(f"args={DESKTOP} refs/tags/v1.0.0 0", mine[1])
+        self.assertIn(f"args={DESKTOP} release-windows.yml v1.0.0 tag=v1.0.0", mine[2])
         for line in mine:
             self.assertIn(f"agent=vps token=set owner={MIRROR_OWNER} ", line)
         self.assertEqual([line for line in calls if "agent=release" in line], [])

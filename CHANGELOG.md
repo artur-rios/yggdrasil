@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **An application release no longer loses its tag on the way to GitHub.** Forgejo pushes the release's merge
+  and its tag to the GitHub mirror in a push each, and started together the tag's push can find `main` moved
+  under it: GitHub refuses that push whole, the tag with it, so the Windows workflow never starts on the tag and
+  the release fails on its missing Windows files (chimera v0.1.3), until the owner syncs the mirror by hand and
+  runs `release-resume`. The release pull request now makes the tag once GitHub's `main` is at the merge commit,
+  waiting up to five minutes for it (and tagging anyway after that, the tag's push then carrying the merge too);
+  `scripts/github.sh wait-ref` takes the commit a branch must be at.
+
 ## [0.13.19] - 2026-11-23
 
 ### Fixed
