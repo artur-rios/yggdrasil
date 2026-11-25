@@ -1685,6 +1685,35 @@ class ReleaseLibraryTests(unittest.TestCase):
         self.assertIn("the pull request is merged and tagged ${tag}; finish the release with the release-resume job "
                       "(REPOSITORY=${ctx.app}, TAG=${tag})", lib.code[start:end])
 
+    def test_given_a_merge_with_a_github_mirror_when_read_then_the_tag_waits_for_the_mirror_to_push_the_merge(self):
+        # Forgejo pushes the merge and the tag to the mirror in two pushes, one each; started together, the
+        # second can fail on main (its old value moved under it) and take the tag down with it, and the
+        # Windows workflow then never starts on the tag (chimera v0.1.3). So the tag waits for GitHub's main to
+        # be at the merge commit -- a poll outside node(), one look at a time -- and is made either way.
+        lib = self.lib
+        self.assertRegex(lib.code, r"String mergeAndTag\(Map ctx, String sha, String version, String tag, boolean skipped\)")
+        start, end = lib.functions["releasePullRequest"]
+        self.assertIn("mergeAndTag(ctx, state.sha, version, tag, skipped)", lib.code[start:end])
+        start, end = lib.functions["mergeAndTag"]
+        body = lib.code[start:end]
+        merged = body.index("'merge-pr'")
+        waited = body.index("waitForMirroredMerge(ctx, commit)")
+        self.assertLess(merged, waited)
+        self.assertLess(waited, body.index("ensureTag(ctx, tag, commit)"))
+        # Only with a mirror, and not after a skip (GitHub may not be answering at all).
+        self.assertRegex(body, r"if \(ctx\.mirror != null && !skipped\) \{\s*waitForMirroredMerge\(ctx, commit\)")
+        # The merge and the tag are each a short stay on the publish agent; the wait is between them.
+        for label, node_start, node_end in lib.agent_blocks():
+            self.assertNotIn("waitForMirroredMerge", lib.reachable(node_start, node_end), f"line {lib.line(node_start)}: {label}")
+        start, end = lib.functions["waitForMirroredMerge"]
+        body = lib.code[start:end]
+        self.assertRegex(body, r"pollGithub\(ctx, MERGE_WAIT_SECONDS, \"[^\"\n]*\",\s*\['wait-ref', ctx\.repo, 'refs/heads/main', '0', "
+                               r"commit\], \[0\], TAG_POLL_SECONDS\)")
+        # Not there in time: the tag is made anyway (its own push may carry both), with a note.
+        self.assertNotIn("error ", body)
+        self.assertIn("echo ", body)
+        self.assertRegex(lib.code, r"@Field static final int MERGE_WAIT_SECONDS = [1-9][0-9]*\n")
+
     def test_given_a_failure_between_the_merge_and_the_tag_when_read_then_it_says_how_to_finish(self):
         lib = self.lib
         start, end = lib.functions["mergeAndTag"]

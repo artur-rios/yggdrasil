@@ -147,6 +147,8 @@ import org.jenkinsci.plugins.workflow.steps.FlowInterruptedException
 @Field static final int ACTIONS_POLL_SECONDS = 60
 @Field static final int TAG_POLL_SECONDS = 10
 @Field static final int TAG_WAIT_SECONDS = 600
+// How long a release's tag waits for the mirror to have pushed its merge (waitForMirroredMerge).
+@Field static final int MERGE_WAIT_SECONDS = 300
 // The label of the lockable resources a check takes one of before it asks for a ci executor (runCheck):
 // how many checks run at once (platform/jenkins/controller/casc.yaml declares them, four).
 @Field static final String CI_CHECK_SLOTS = 'ci-check'
@@ -1197,7 +1199,7 @@ void releasePullRequest(Map ctx, Map state, List environments) {
     deployTo(app, environment, version, state.sha, false, ctx.repo, inputs, null, note)
   }
 
-  String merged = mergeAndTag(ctx, state.sha, version, tag)
+  String merged = mergeAndTag(ctx, state.sha, version, tag, skipped)
   // From here on the pull request is merged and the tag pushed: a failure cannot be undone by running
   // this build again (the merge would be refused), so it says how to finish instead.
   Map published = null
@@ -1349,29 +1351,51 @@ boolean rejected(FlowInterruptedException interruption) {
 
 // Stage Merge and tag, on the publish agent: the pull request merged at the deployed commit (merge-pr
 // refuses if its head moved) with the title release_notes.py knows, and the tag on the merge commit --
-// made unless an earlier run made it there already. Returns the merge commit.
-String mergeAndTag(Map ctx, String sha, String version, String tag) {
+// made unless an earlier run made it there already. With a GitHub mirror, and the GitHub Actions checks
+// not skipped, the tag waits for the mirror to have pushed the merge (waitForMirroredMerge), between two
+// stays on the publish agent. Returns the merge commit.
+String mergeAndTag(Map ctx, String sha, String version, String tag, boolean skipped) {
   String merged = null
   stage('Merge and tag') {
-    merged = onPublishAgent(ctx, true, false) {
-      String commit = tool('forge.sh', ['merge-pr', ctx.repo, env.CHANGE_ID, sha, "release: v${version} (#${env.CHANGE_ID})"], true)
-      if (!(commit ==~ COMMIT)) {
-        error "forge.sh merge-pr answered '${printable(commit)}', not a commit"
-      }
-      // Merged, and not tagged yet: a failure from here says so, and how to finish.
-      try {
-        ensureTag(ctx, tag, commit)
-      } catch (FlowInterruptedException interruption) {
-        echo untaggedNote(ctx, tag, commit)
-        throw interruption
-      } catch (Exception problem) {
-        error "${failureText(problem)}\n${untaggedNote(ctx, tag, commit)}"
-      }
-      return commit
+    String commit = onPublishAgent(ctx, true, false) {
+      return tool('forge.sh', ['merge-pr', ctx.repo, env.CHANGE_ID, sha, "release: v${version} (#${env.CHANGE_ID})"], true)
     }
+    if (!(commit ==~ COMMIT)) {
+      error "forge.sh merge-pr answered '${printable(commit)}', not a commit"
+    }
+    // Merged, and not tagged yet: a failure from here says so, and how to finish.
+    try {
+      if (ctx.mirror != null && !skipped) {
+        waitForMirroredMerge(ctx, commit)
+      }
+      onPublishAgent(ctx, true, false) {
+        ensureTag(ctx, tag, commit)
+      }
+    } catch (FlowInterruptedException interruption) {
+      echo untaggedNote(ctx, tag, commit)
+      throw interruption
+    } catch (Exception problem) {
+      error "${failureText(problem)}\n${untaggedNote(ctx, tag, commit)}"
+    }
+    merged = commit
     echo "Merged as ${merged.take(7)}, tagged ${tag}."
   }
   return merged
+}
+
+// Until GitHub's main is at the merge `commit`, for up to MERGE_WAIT_SECONDS, outside node(). Forgejo
+// pushes each change to the mirror in a push of its own, as it happens: the merge's, then the tag's. When
+// the two run at once, the tag's push can find main moved under it (the merge's push got there first),
+// and GitHub refuses that push whole, the tag with it -- the Windows workflow then never starts on the
+// tag, and nothing pushes it again until the mirror's next sync, hours later. Once the merge is on
+// GitHub, the tag's push is the only one. Not there in time, the tag is made anyway: its push carries
+// the merge too.
+void waitForMirroredMerge(Map ctx, String commit) {
+  Map look = pollGithub(ctx, MERGE_WAIT_SECONDS, "The merge ${commit.take(7)} on GitHub",
+                        ['wait-ref', ctx.repo, 'refs/heads/main', '0', commit], [0], TAG_POLL_SECONDS)
+  if (!look.finished) {
+    echo "GitHub's main is not at the merge ${commit.take(7)} after ${MERGE_WAIT_SECONDS} s: tagging it anyway, and the tag's push to the mirror carries the merge too."
+  }
 }
 
 // On the publish agent, with the write token: the tag on `sha`, created when the git server has none;
