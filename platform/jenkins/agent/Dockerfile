@@ -2,7 +2,7 @@
 # talking to the host's engine through the mounted socket, curl/jq for the GitHub API calls in
 # scripts/github.sh, and Python with PyYAML for scripts/catalog.py, which deploy.sh asks for the
 # environment's options.
-FROM jenkins/inbound-agent:3391.va_37fa_a_305d6d-6-jdk25@sha256:6bd8d94dfa129319dd6217155c97773fa2a648c8b52f235c55db0a6aa50275d9
+FROM jenkins/inbound-agent:3396.ve02b_5cde31b_2-5-jdk25@sha256:f4199977fecfc539e8e79158e962531845f241d8f7b0b32ee5fc1369f7144c16
 
 USER root
 RUN apt-get update \
