@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Jenkins 2.580.3 LTS.** The controller image moves from 2.580.2 to 2.580.3 (newer ASM, Spring, Spring Security,
+  Guava and Node.js, no behaviour change), and the deploy-agent and build-agent images from inbound-agent
+  3391.va_37fa_a_305d6d-6 to 3396.ve02b_5cde31b_2-5, still on JDK 25. `platform.sh up` on the controller host
+  rebuilds them; the plugins resolve again to their latest compatible versions in that rebuild.
+
 ## [0.13.20] - 2026-11-25
 
 ### Fixed
