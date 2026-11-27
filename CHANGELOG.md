@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.21] - 2026-11-27
+
 ### Changed
 
 - **Jenkins 2.580.3 LTS.** The controller image moves from 2.580.2 to 2.580.3 (newer ASM, Spring, Spring Security,
@@ -1767,7 +1769,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.20...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.21...HEAD
+[0.13.21]: https://github.com/artur-rios/yggdrasil/compare/v0.13.20...v0.13.21
 [0.13.20]: https://github.com/artur-rios/yggdrasil/compare/v0.13.19...v0.13.20
 [0.13.19]: https://github.com/artur-rios/yggdrasil/compare/v0.13.18...v0.13.19
 [0.13.18]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...v0.13.18
