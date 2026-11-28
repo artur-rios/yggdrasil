@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.21] - 2026-11-28
+
+### Changed
+
+- **Jenkins 2.580.3 LTS.** The controller image moves from 2.580.2 to 2.580.3 (newer ASM, Spring, Spring Security,
+  Guava and Node.js, no behaviour change), and the deploy-agent and build-agent images from inbound-agent
+  3391.va_37fa_a_305d6d-6 to 3396.ve02b_5cde31b_2-5, still on JDK 25. `platform.sh up` on the controller host
+  rebuilds them; the plugins resolve again to their latest compatible versions in that rebuild.
+
 ## [0.13.20] - 2026-11-25
 
 ### Fixed
@@ -1760,7 +1769,8 @@ pull and the first deploy of each application.
 - The console (Flutter) for the web and Android, showing every system's status and, expanded, each of its
   applications.
 
-[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.20...HEAD
+[Unreleased]: https://github.com/artur-rios/yggdrasil/compare/v0.13.21...HEAD
+[0.13.21]: https://github.com/artur-rios/yggdrasil/compare/v0.13.20...v0.13.21
 [0.13.20]: https://github.com/artur-rios/yggdrasil/compare/v0.13.19...v0.13.20
 [0.13.19]: https://github.com/artur-rios/yggdrasil/compare/v0.13.18...v0.13.19
 [0.13.18]: https://github.com/artur-rios/yggdrasil/compare/v0.13.17...v0.13.18
